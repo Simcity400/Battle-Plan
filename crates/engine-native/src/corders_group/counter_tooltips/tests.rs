@@ -1,8 +1,11 @@
 use super::*;
-use crate::{
-    carmy_group, corders_group::Root, creference_registry as registry, reference_bucket as bucket,
-    walk::Outcome,
+use engine_native_parts::{
+    carmy_group,
+    creference_registry as registry,
+    reference_bucket as bucket,
 };
+use crate::corders_group::Root;
+use engine_native_memory::walk::Outcome;
 use std::collections::BTreeMap;
 
 const BASE: usize = 0x140000000;

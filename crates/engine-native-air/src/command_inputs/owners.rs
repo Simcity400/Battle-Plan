@@ -239,7 +239,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
                 if direct > 0 {
                     direct as u32
                 } else {
-                    let pool = field::<u64>(self.memory, pointer, crate::cair_wing::POOL)? as usize;
+                    let pool = field::<u64>(self.memory, pointer, engine_native_parts::cair_wing_layout::POOL)? as usize;
                     self.object(pool, WingPool)?;
                     let strategic =
                         field::<u64>(self.memory, pool, engine_native_parts::cair_wing_pool::OWNER)? as usize;

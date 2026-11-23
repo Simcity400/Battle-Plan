@@ -1,7 +1,7 @@
 pub mod subject;
 pub mod status;
 
-use crate::{
+use engine_native_parts::{
     cair_base_access_relation,
     cattache_relation,
     cboost_party_popularity_relation,
@@ -19,9 +19,8 @@ use crate::{
     coffer_air_base_access_relation,
     coffer_docking_rights_relation,
     coffer_military_access_relation,
-    crelation::subject as csubject_relation,
-    cwar_relation,
 };
+use crate::{crelation::subject as csubject_relation, cwar_relation};
 use engine_sites::Rva;
 
 pub const TYPE_ID: usize = 0x08;

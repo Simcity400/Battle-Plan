@@ -269,7 +269,7 @@ pub fn walk_with_reserved_visit(
 fn reserved_vector_at(
     memory: &impl Memory,
     base: usize,
-    country: Result<ccountry::Country, &'static str>,
+    country: Result<engine_native_memory::country_identity::Country, &'static str>,
     known_count: &mut Option<u32>,
     visit: &mut dyn FnMut(u32, usize, usize),
 ) -> Result<(usize, u32), &'static str> {
@@ -837,7 +837,7 @@ mod tests {
 
     struct ReservedMemory<'a> {
         bytes: &'a [u8],
-        root: Result<ccountry::Country, &'static str>,
+        root: Result<engine_native_memory::country_identity::Country, &'static str>,
         fail_once: Option<usize>,
         faults: std::cell::Cell<usize>,
         root_reads: std::cell::Cell<usize>,
@@ -862,7 +862,7 @@ mod tests {
             &self,
             base: usize,
             state: usize,
-        ) -> Option<Result<ccountry::Country, &'static str>> {
+        ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
             assert_eq!((base, state), (BASE, GS));
             Some(self.root)
         }
@@ -871,7 +871,7 @@ mod tests {
     fn cached_reserved(bytes: &[u8]) -> ReservedMemory<'_> {
         ReservedMemory {
             bytes,
-            root: Ok(ccountry::Country {
+            root: Ok(engine_native_memory::country_identity::Country {
                 pointer: RESERVED_COUNTRY,
                 id: 0,
                 canonical_slot: 0,

@@ -1,11 +1,7 @@
 
 use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
-use engine_native::{
-    ccharacter::Literal,
-    ccountry,
-    cstate,
-    crelation::subject::{Name, NameWalk},
-};
+use engine_native_memory::msvc_string::Literal;
+use engine_native::{ccountry, cstate, crelation::subject::{Name, NameWalk}};
 use engine_native_parts::{
     cideology_group,
     modifier_accumulator,
@@ -28,11 +24,11 @@ use crate::{
         PENDING_MISSION,
         PENDING_MISSION_PRESENT,
         PORTRAIT_GFX,
-        VTABLE_RVA,
     },
     operative_action,
     operative_action_implementation,
 };
+use engine_native_parts::coperative_leader_layout::VTABLE_RVA;
 use engine_sites::Rva;
 
 pub const ROOT_OUT_FACTOR: &[u8] = b"root_out_resistance_effectiveness_factor";
@@ -530,7 +526,7 @@ pub fn effect_roots<M: Memory>(
     if variant != operative_action::COUNTER_INTELLIGENCE {
         roots[0] = at(
             countries.resolve(row.owner_country)?.pointer,
-            ccountry::MODIFIER_ACCUMULATOR,
+            engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         )?;
     }
     roots[1] = at(row.native_pointer, MODIFIER_ACCUMULATOR)?;
@@ -596,7 +592,7 @@ fn root_out_operands_of<M: Memory>(
         modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)
             .map(|value| value.effective)
     };
-    let country_factor = factor(at(owner.pointer, ccountry::MODIFIER_ACCUMULATOR)?)?;
+    let country_factor = factor(at(owner.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?)?;
     let operative_factor = factor(at(operative, MODIFIER_ACCUMULATOR)?)?;
     let mut context = targets.country;
     if let Some(state) = targets.state {

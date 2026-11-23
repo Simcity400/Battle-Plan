@@ -1,9 +1,19 @@
 
 use engine_sites::Rva;
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
 use crate::{
-    Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
-    cland_combatant, cnaval_combat, cpdx_array::Array, cprovince, crailway_gun, ctask_force, cunit,
-    memory::Raw, read, walk::Outcome,
+    carmy,
+    cgame_state,
+    cland_combatant,
+    cnaval_combat,
+    cprovince,
+    ctask_force,
+    cunit,
+};
+use engine_native_parts::{
+    cland_border_war_combat,
+    cland_border_war_combatant,
+    crailway_gun,
 };
 
 mod country_sets;
@@ -99,7 +109,7 @@ pub fn movement_combat_side(
             .checked_add(cland_combatant::UNITS)
             .and_then(|address| Array::read(memory, address, 8))
             .ok_or("movement combat side units invalid")?;
-        crate::allocation::reserve(attackers, units.count as usize)
+        engine_allocation::reserve(attackers, units.count as usize)
             .map_err(|_| "movement combat allocation failed")?;
         for index in 0..units.count {
             let at = units
@@ -404,10 +414,10 @@ pub fn walk_with(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(participants),
-        crate::walk::Buffer::Count,
-        Some(crate::walk::Buffer::Growing(classes)),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(participants),
+        engine_native_memory::walk::Buffer::Count,
+        Some(engine_native_memory::walk::Buffer::Growing(classes)),
         |source, _| visit(source),
     )
 }
@@ -465,9 +475,9 @@ pub fn walk_members(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(participants),
-        crate::walk::Buffer::Growing(pointers),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(participants),
+        engine_native_memory::walk::Buffer::Growing(pointers),
         None,
         visit,
     )
@@ -481,10 +491,10 @@ fn walk_members_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut participants: crate::walk::Buffer<'_, u64>,
-    mut pointers: crate::walk::Buffer<'_, usize>,
-    mut classes: Option<crate::walk::Buffer<'_, u32>>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut participants: engine_native_memory::walk::Buffer<'_, u64>,
+    mut pointers: engine_native_memory::walk::Buffer<'_, usize>,
+    mut classes: Option<engine_native_memory::walk::Buffer<'_, u32>>,
     mut visit: impl FnMut(Source, Members<'_>),
 ) -> Walk {
     let keep = pointers.is_growing()

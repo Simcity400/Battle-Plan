@@ -8,7 +8,7 @@ fn put(bytes: &mut [u8], at: usize, value: u64) {
 }
 fn visit() -> cfleet::TaskForceVisit {
     cfleet::TaskForceVisit {
-        country: engine_native::ccountry::Country {
+        country: engine_native_memory::country_identity::Country {
             id: 1,
             canonical_slot: 1,
             pointer: 1,
@@ -178,7 +178,7 @@ fn null_location_has_no_local_modifier_demand_and_empty_hq_is_known() {
         !memory
             .reads
             .borrow()
-            .contains(&(TASK + crate::naval_mission_inputs::LOCAL_MODIFIERS))
+            .contains(&(TASK + engine_native::ctask_force::mission_layout::LOCAL_MODIFIERS))
     );
 }
 

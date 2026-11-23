@@ -1,4 +1,4 @@
-pub use engine_native_parts::supply_node_layout::{STRIDE, PROVINCE, MOTORIZATION_OVERRIDES, KIND_SUPPLY_HUB, KIND_NAVAL_BASE};
+use engine_native_parts::supply_node_layout::{STRIDE, PROVINCE};
 
 use engine_sites::Rva;
 pub const INDEX: usize = 0;

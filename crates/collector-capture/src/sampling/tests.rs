@@ -5,14 +5,14 @@ mod stitch_barrier;
 use super::*;
 
 struct NoDivisionReads;
-impl engine_native::Memory for NoDivisionReads {
+impl engine_native_memory::Memory for NoDivisionReads {
     fn copy(&self, address: usize, _: &mut [u8]) -> bool {
         panic!("division handoff retried native input at {address:#x}");
     }
 }
 
 struct NoRosterRetry<'a>(&'a [u8]);
-impl engine_native::Memory for NoRosterRetry<'_> {
+impl engine_native_memory::Memory for NoRosterRetry<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         use super::divisions_test_kit as kit;
         assert!(
@@ -293,7 +293,7 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
 #[test]
 fn a_rejected_fronts_job_returns_its_part_and_keeps_the_orders_failure() {
     use collector_plans::extended::plans::{Capacities, Captured};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let shared =
     // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
     unsafe { Shared::new(0, 0, 1) };
@@ -380,7 +380,7 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
 #[test]
 fn a_rejected_stitch_keeps_an_earlier_order_failure() {
     use collector_plans::extended::plans::{Capacities, Captured};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let shared =
     // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
     unsafe { Shared::new(0, 0, 1) };
@@ -451,7 +451,7 @@ fn stitch_request(base: usize, earlier: Option<&'static str>) -> acquisition::Or
 
 #[test]
 fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let shared =
     // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
     unsafe { Shared::new(0, 0, 1) };
@@ -635,7 +635,7 @@ fn a_drained_stitch_panic_is_counted_and_stops_the_pool() {
 
 #[test]
 fn a_stitch_settles_with_the_reason_of_its_join_segment() {
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let pool =
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
     unsafe { acquisition::Pool::start(1, collector_workers::roles::MAX_JOBS) }.unwrap();
@@ -734,7 +734,7 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
         bytes: &'a [u8],
         attempts: std::cell::Cell<usize>,
     }
-    impl engine_native::Memory for FirstRosterFault<'_> {
+    impl engine_native_memory::Memory for FirstRosterFault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == kit::C0 + ccountry::DIVISIONS {
                 self.attempts.set(self.attempts.get() + 1);
@@ -1058,9 +1058,9 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
     struct Counterset(i32, u32);
     impl Memory for Counterset {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let bytes = if address == engine_native::cship::NEXT_ID_RVA.0 {
+            let bytes = if address == engine_native_memory::save_allocation_counters::NEXT_ID_RVA.0 {
                 self.0.to_le_bytes()
-            } else if address == engine_native::creference_registry::ID_COUNTER_RVA.0 {
+            } else if address == engine_native_memory::save_allocation_counters::ID_COUNTER_RVA.0 {
                 self.1.to_le_bytes()
             } else {
                 return false;
@@ -1936,7 +1936,7 @@ fn table_retry_preserves_admitted_politics_mutations() {
         self as politics, Event, LaneCursor, StagingFixture,
     };
     let _serial = politics::staging_test();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -2015,13 +2015,14 @@ fn wars_typed_walk_keeps_full_validation_from_any_starting_storage() {
 #[test]
 fn wars_primary_faults_preserve_native_validation_scope() {
     use collector_states::wars_test_kit as kit;
-    use engine_native::{ccountry, cgame_state, crelation, memory::SliceMemory};
+    use engine_native::{ccountry, cgame_state, crelation};
+    use engine_native_memory::memory::SliceMemory;
     use engine_native_politics::cdiplomacy_status;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -2043,11 +2044,11 @@ fn wars_primary_faults_preserve_native_validation_scope() {
         (kit::D0, false),
         (kit::WAR1 + crelation::TYPE_ID, false),
         (kit::WAR1 + crelation::START_HOUR, false),
-        (kit::D0 + cdiplomacy_status::OWNED_RELATIONS, false),
+        (kit::D0 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, false),
         (kit::O0 + 8, false),
         (kit::OTHER + crelation::TYPE_ID, false),
         (kit::RETIRED + crelation::TYPE_ID, false),
-        (kit::D0 + cdiplomacy_status::RELATIONS, false),
+        (kit::D0 + engine_native_parts::cdiplomacy_status_layout::RELATIONS, false),
         (kit::M0 + 8, true),
         (kit::status(1, 2), true),
     ] {
@@ -2115,13 +2116,17 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::divisions_test_kit as kit;
     use engine_deployment::{carmy_upgrades_requests, cupgrade_delivery};
     use engine_native::{
-        cequipment_variant_pool, cgame_state, cprovince, cunit, memory::SliceMemory,
+        cequipment_variant::pool as cequipment_variant_pool,
+        cgame_state,
+        cprovince,
+        cunit,
     };
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -2233,11 +2238,11 @@ fn divisions_split_copy_matches_direct_walk_on_fault_matrix() {
     }
 }
 
-fn divisions_presentation_memory() -> impl engine_native::Memory {
+fn divisions_presentation_memory() -> impl engine_native_memory::Memory {
     use super::divisions_test_kit as kit;
-    use engine_native::csub_unit_definition as stats;
+    use engine_native_parts::csub_unit_definition as stats;
     struct Memory(Vec<u8>);
-    impl engine_native::Memory for Memory {
+    impl engine_native_memory::Memory for Memory {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == carmy::COUNTER_ATTRITION_THRESHOLD_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&500_i64.to_le_bytes());
@@ -2258,7 +2263,7 @@ fn divisions_presentation_memory() -> impl engine_native::Memory {
             .copy_from_slice(&(stats as u64).to_le_bytes());
         let acclimatization = army + carmy::ACCLIMATIZATION;
         bytes[acclimatization..acclimatization + 8].copy_from_slice(
-            &(engine_native::acclimatization_data::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::acclimatization_data::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
     }
     Memory(bytes)
@@ -2390,7 +2395,7 @@ fn divisions_copied_sources_distinguish_semantic_faults_and_empty_census() {
 fn divisions_owned_census_survives_a_private_core_field_fault() {
     use super::divisions_test_kit as kit;
     struct Fault<'a>(&'a [u8]);
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let fault = kit::A1 + carmy::STRENGTH;
             if address <= fault && address.saturating_add(output.len()) > fault {
@@ -2440,7 +2445,7 @@ fn divisions_shared_empty_country_census_preserves_independent_fog_success() {
         &memory,
         kit::BASE,
         kit::GAME_STATE,
-        engine_native::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
         Some(census.intel_sources()),
     );
     assert_eq!(shared, direct);
@@ -2459,7 +2464,7 @@ fn divisions_owned_batch_does_not_retry_a_failed_field_into_success() {
         bytes: &'a [u8],
         pending: std::cell::Cell<bool>,
     }
-    impl engine_native::Memory for OnceFault<'_> {
+    impl engine_native_memory::Memory for OnceFault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let fault = kit::A1 + carmy::STRENGTH;
             if address <= fault
@@ -2498,14 +2503,14 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
         bytes: &'a [u8],
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
     }
-    impl engine_native::Memory for Traced<'_> {
+    impl engine_native_memory::Memory for Traced<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push((address, output.len()));
             kit::memory(self.bytes).copy(address, output)
         }
     }
     struct NoRead;
-    impl engine_native::Memory for NoRead {
+    impl engine_native_memory::Memory for NoRead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("completed core repeated a read");
         }
@@ -2601,7 +2606,7 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
 fn divisions_seeded_worker_rejects_changed_context_without_reacquiring_inputs() {
     use super::divisions_test_kit as kit;
     struct NoRead;
-    impl engine_native::Memory for NoRead {
+    impl engine_native_memory::Memory for NoRead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("invalid worker context must not acquire live state");
         }
@@ -2638,7 +2643,7 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
         bytes: &'a [u8],
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
     }
-    impl engine_native::Memory for Traced<'_> {
+    impl engine_native_memory::Memory for Traced<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.calls.borrow_mut().push((address, output.len()));
             kit::memory(self.bytes).copy(address, output)
@@ -2888,7 +2893,7 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
 struct CampaignClockMemory {
     bytes: Vec<u8>,
 }
-impl engine_native::Memory for CampaignClockMemory {
+impl engine_native_memory::Memory for CampaignClockMemory {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x1000_u64.to_le_bytes());
@@ -2897,7 +2902,7 @@ impl engine_native::Memory for CampaignClockMemory {
             output.copy_from_slice(&7_i64.to_le_bytes());
             true
         } else {
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &self.bytes,
             }

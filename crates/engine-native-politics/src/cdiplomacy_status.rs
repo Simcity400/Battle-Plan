@@ -1,7 +1,5 @@
-#[cfg(any(test, feature = "test-support"))]
-pub use engine_native_parts::cdiplomacy_status_layout::{RELATION_COUNT, RELATION_CAPACITY, OWNED_RELATION_COUNT, OWNED_RELATION_CAPACITY};
-pub use engine_native_parts::cdiplomacy_status_layout::{OWNED_RELATIONS, OWNED_WARGOALS, ENEMY_COUNTRIES, WARTIME_ALLIES};
-pub use engine_native_parts::cdiplomacy_status_layout::{VTABLE_RVA, COUNTRY, FACTION, OVERLORD, CURRENT_AUTONOMY_STATUS, SUBJECTS, RELATIONS};
+use engine_native_parts::cdiplomacy_status_layout::{OWNED_WARGOALS, ENEMY_COUNTRIES};
+use engine_native_parts::cdiplomacy_status_layout::{VTABLE_RVA, COUNTRY};
 
 use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
 use engine_native::{ccountry, cwar_relation::goals as cwar_goal};
@@ -131,7 +129,7 @@ fn war_goals(
 fn read_capitulation(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<(CapitulationRow, usize), &'static str> {
     let diplomacy = country
         .pointer

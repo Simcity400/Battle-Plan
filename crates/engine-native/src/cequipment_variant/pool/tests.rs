@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cequipment_variant, cgame_state, memory::SliceMemory};
+use crate::{cequipment_variant, cgame_state};
+use engine_native_memory::memory::SliceMemory;
 
 fn p32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -62,7 +63,7 @@ fn stockpile_fixture() -> Vec<u8> {
             );
         }
     }
-    p64(&mut bytes, 0xa000, cequipment_variant::VTABLE_RVA.0 as u64);
+    p64(&mut bytes, 0xa000, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     p64(&mut bytes, 0xa008, 0xfedc_ba98_0000_0046);
     bytes
 }
@@ -76,7 +77,7 @@ fn stockpiles_authenticate_aliases_and_count_later_countries_after_capacity() {
     };
     let mut rows = vec![StockpileRow::default(); 4];
     assert_eq!(
-        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut rows)),
         Outcome::Rows { len: 3 }
     );
     assert_eq!(
@@ -92,7 +93,7 @@ fn stockpiles_authenticate_aliases_and_count_later_countries_after_capacity() {
         bytes: &bytes,
     };
     assert!(matches!(
-        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows)),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut rows)),
         Outcome::Unavailable { .. }
     ));
     p64(&mut bytes, 0x9000 + cproduction_status::COUNTRY, 0x4000);
@@ -118,7 +119,7 @@ fn no_country_census_is_unavailable_but_authenticated_empty_stockpiles_are_empty
         bytes: &bytes,
     };
     assert_eq!(
-        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Count),
         Outcome::Rows { len: 0 }
     );
     bytes[0x2000..0x2020].fill(0);
@@ -127,7 +128,7 @@ fn no_country_census_is_unavailable_but_authenticated_empty_stockpiles_are_empty
         bytes: &bytes,
     };
     assert_eq!(
-        walk_stockpiles_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
+        walk_stockpiles_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Count),
         Outcome::Unavailable {
             reason: "stockpile country census contains no countries"
         }
@@ -282,7 +283,7 @@ fn bank(entries: usize) -> Vec<u8> {
             slot + equipment_entry::AMOUNT,
             (i64::MIN + entry as i64) as u64,
         );
-        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        p64(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             variant + 8,
@@ -389,7 +390,7 @@ fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
             slot + equipment_entry::AMOUNT,
             (i64::MIN + entry as i64) as u64,
         );
-        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        p64(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             variant + 8,
@@ -400,7 +401,7 @@ fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
         base: 0,
         bytes: &bytes,
     };
-    let census = crate::read_census::ReadCensus::new(&source);
+    let census = engine_native_memory::read_census::ReadCensus::new(&source);
     let sources = [DivisionSource {
         pointer: POOL,
         division: 7,

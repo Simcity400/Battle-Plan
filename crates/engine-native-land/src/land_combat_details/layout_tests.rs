@@ -1,7 +1,19 @@
 use engine_native::{carmy, cgame_state, cland_combatant, cnaval_combat, cprovince, cunit};
 use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
 use engine_native_parts::{cland_border_war_combat, cland_border_war_combatant};
-use crate::land_combat_details::{detail_demand, CommanderLearningTrait, CommanderTimedTrait, CommanderTrait, Commanders, DetailArenas, DetailCounts, DetailsRow, Leaders, Span, read_details, read_details_sharing};
+use crate::land_combat_details::{
+    detail_demand,
+    CommanderTimedTrait,
+    Commanders,
+    DetailArenas,
+    DetailCounts,
+    DetailsRow,
+    Leaders,
+    Span,
+    read_details,
+    read_details_sharing,
+};
+use engine_native::cunit_leader::{CommanderLearningTrait, CommanderTrait};
 use crate::land_combat_details::details::{
     DetailReader,
     copy_detail_spans,

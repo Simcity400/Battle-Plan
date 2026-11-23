@@ -272,9 +272,9 @@ fn raw_shared_modifier_snapshot_avoids_native_recensus() {
             &self,
             address: usize,
             key: u32,
-        ) -> Option<Result<engine_native_parts::modifier_accumulator::Value, &'static str>> {
+        ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
             assert_eq!(address, 0x99999);
-            Some(Ok(engine_native_parts::modifier_accumulator::Value {
+            Some(Ok(engine_native_memory::modifier_cache::Value {
                 raw: if key == 5 { -654321 } else { 0 },
                 present: key == 5,
             }))
@@ -456,8 +456,8 @@ fn worker_modifier_batches_keep_mod_sized_populations_on_the_original_pass() {
             &self,
             _: usize,
             key: u32,
-        ) -> Option<Result<engine_native_parts::modifier_accumulator::Value, &'static str>> {
-            Some(Ok(engine_native_parts::modifier_accumulator::Value {
+        ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
+            Some(Ok(engine_native_memory::modifier_cache::Value {
                 raw: -(key as i64),
                 present: true,
             }))
@@ -670,8 +670,8 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
         m.put(c + ccountry::FOG_NETWORK_TABLE_COUNT, &fog.to_le_bytes());
         m.u64(c + ccountry::DIPLOMACY_STATUS, diplomacy_at(slot) as u64);
         m.u64(c + ccountry::INTEL_TABLE, intel(slot) as u64);
-        m.u64(diplomacy_at(slot), cdiplomacy_status::VTABLE_RVA.0 as u64);
-        m.u64(diplomacy_at(slot) + cdiplomacy_status::COUNTRY, c as u64);
+        m.u64(diplomacy_at(slot), engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+        m.u64(diplomacy_at(slot) + engine_native_parts::cdiplomacy_status_layout::COUNTRY, c as u64);
         let capitulated = u8::from(slot % 7 == 0);
         m.put(
             diplomacy_at(slot) + cdiplomacy_status::CAPITULATED,
@@ -697,9 +697,9 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
         operands[22 * 8..].copy_from_slice(&(slot as i64 * 10).to_le_bytes());
         m.put(regional(slot), &operands);
         if slot == 1 {
-            m.array(c + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
+            m.array(c + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0, 0);
             m.array(
-                diplomacy_at(slot) + cdiplomacy_status::ENEMY_COUNTRIES,
+                diplomacy_at(slot) + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
                 ENEMIES,
                 enemies,
             );

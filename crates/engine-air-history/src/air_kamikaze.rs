@@ -1,12 +1,14 @@
 
-use crate::{
-    Memory, cfleet, cloop_history, cnaval_combat,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, cstrategic_air, cstrategic_region, ctask_force, cunit, loop_history_record_fields,
-    loop_history_window,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     read,
 };
+use engine_native::{cfleet, cnaval_combat, cprovince, ctask_force, cunit};
+use crate::{cloop_history, loop_history_record_fields, loop_history_window};
+use engine_native_air::cstrategic_air;
+use engine_native_parts::cstrategic_region;
 use engine_sites::Rva;
 
 pub const ENEMY_SHIPS_SUNK: usize = 43;
@@ -203,7 +205,7 @@ fn pointers(
 pub fn task_force_combats(
     memory: &impl Memory,
     base: usize,
-    country: crate::ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     mut emit: impl FnMut(TaskForceCombat) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let fleet_vtable = rva(base, cfleet::VTABLE_RVA)?;
@@ -218,7 +220,7 @@ pub fn task_force_combats(
     ];
     let fleets = country
         .pointer
-        .checked_add(crate::ccountry::FLEETS)
+        .checked_add(engine_native::ccountry::FLEETS)
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("naval-patrol fleet vector unreadable or invalid")?;
     let (mut fleet_pointers, mut task_pointers) = ([0; BATCH], [0; BATCH]);
@@ -665,11 +667,11 @@ pub fn country_air_roots(
 ) -> Result<usize, &'static str> {
     const MANAGER: [RecordField; 2] = [
         field(0, 0, 8),
-        field(crate::cstrategic_air_manager::COUNTRY_AIR, 8, 16),
+        field(engine_native_air::cstrategic_air_manager::COUNTRY_AIR, 8, 16),
     ];
     const ROOTS: usize = 512;
     let manager = game_state
-        .checked_add(crate::cgame_state::STRATEGIC_AIR_MANAGER)
+        .checked_add(engine_native::cgame_state::STRATEGIC_AIR_MANAGER)
         .and_then(|at| read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
@@ -683,7 +685,7 @@ pub fn country_air_roots(
         &mut bytes,
         "strategic air manager unreadable",
     )?;
-    if qword(&bytes, 0) != rva(base, crate::cstrategic_air_manager::VTABLE_RVA)? {
+    if qword(&bytes, 0) != rva(base, engine_native_air::cstrategic_air_manager::VTABLE_RVA)? {
         return Err("strategic air manager vtable mismatch");
     }
     let slots = header(&bytes, 8)?;
@@ -717,7 +719,7 @@ pub fn country_air_roots(
 pub fn authenticate_roots(
     memory: &impl Memory,
     base: usize,
-    countries: &crate::ccountry::Reader<'_, impl Memory>,
+    countries: &engine_native::ccountry::Reader<'_, impl Memory>,
     roots: &[usize],
     slot: impl Fn(usize) -> u32,
 ) -> Result<(), &'static str> {
@@ -755,7 +757,7 @@ pub fn window_sum(values: &[i64]) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ccountry::Country, memory::SliceMemory};
+    use engine_native_memory::{country_identity::Country, memory::SliceMemory};
     use std::cell::Cell;
 
     const BASE: usize = 0x1_0000_0000;
@@ -810,7 +812,7 @@ mod tests {
         combat: impl Fn(usize, usize) -> Option<(bool, u32, u32)>,
     ) -> Image {
         let mut image = Image(vec![0; 0xb0_0000]);
-        image.vector(COUNTRY + crate::ccountry::FLEETS, FLEETS, fleets as u32);
+        image.vector(COUNTRY + engine_native::ccountry::FLEETS, FLEETS, fleets as u32);
         for f in 0..fleets {
             let fleet = FLEET + f * FLEET_SIZE;
             image.q(FLEETS + f * 8, fleet as u64);
@@ -837,7 +839,7 @@ mod tests {
                 let vtable = if naval {
                     cnaval_combat::VTABLE_RVA
                 } else {
-                    crate::cland_combat::VTABLE_RVA
+                    engine_native::cland_combat::VTABLE_RVA
                 };
                 image.q(combat, (BASE + vtable.0) as u64);
                 image.q(combat + cnaval_combat::PROVINCE, province_at as u64);
@@ -904,7 +906,7 @@ mod tests {
     fn a_land_combat_is_skipped_where_a_naval_combats_province_would_be_unreadable() {
         let mut image = fleets(1, 2, |_, t| Some((t == 1, 11, 7)));
         let land = image.0.len() - 8;
-        image.q(land, (BASE + crate::cland_combat::VTABLE_RVA.0) as u64);
+        image.q(land, (BASE + engine_native::cland_combat::VTABLE_RVA.0) as u64);
         image.q(TASK + 0x1c0, land as u64);
         assert_eq!(
             walk(&image).0,
@@ -951,8 +953,8 @@ mod tests {
         assert!(calls <= 3 + 30 * 2 + 30 * 4);
     }
 
-    fn air_objects(countries: u32) -> (crate::ccountry::synthetic::World, Vec<usize>) {
-        let mut world = crate::ccountry::synthetic::World::new(BASE, countries, 0x10);
+    fn air_objects(countries: u32) -> (engine_native::ccountry::synthetic::World, Vec<usize>) {
+        let mut world = engine_native::ccountry::synthetic::World::new(BASE, countries, 0x10);
         let roots = (0..=countries)
             .map(|slot| {
                 let root = world.alloc(cstrategic_air::COUNTRY + 4);
@@ -969,10 +971,10 @@ mod tests {
         let (mut world, roots) = air_objects(200);
         let slots: Vec<u32> = (1..=200).collect();
         let targets: Vec<usize> = slots.iter().map(|&slot| roots[slot as usize]).collect();
-        let check = |world: &crate::ccountry::synthetic::World, targets: &[usize]| {
+        let check = |world: &engine_native::ccountry::synthetic::World, targets: &[usize]| {
             let countries = world.memory();
             let readers =
-                crate::ccountry::Reader::new(&countries, BASE, world.game_state()).unwrap();
+                engine_native::ccountry::Reader::new(&countries, BASE, world.game_state()).unwrap();
             let memory = Counting(world.memory(), Cell::new(0));
             let result = authenticate_roots(&memory, BASE, &readers, targets, |at| slots[at]);
             (result, memory.1.get())

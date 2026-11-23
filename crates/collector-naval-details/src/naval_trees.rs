@@ -2,7 +2,8 @@ use crate::{
     naval_tree_changes::{self, Changes, Counts, Held, Store},
     table_conversion::unavailable,
 };
-use engine_native::{Memory, cfex_air, cfex_member, cnaval_combat, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{cfex_air, cfex_member, cnaval_combat};
 use engine_native_naval::naval_ship_modifier_inputs;
 use engine_naval_history::{
     naval_modifier_trees as trees, naval_modifier_trees::Definitions, naval_modifier_trees::KEYS,

@@ -1,18 +1,26 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, corders_group,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{
-        Gathered, RecordField, RecordLayout, RecordSources, gather_records_once, packed_fields,
-        packed_map, packed_stride,
+        Gathered,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        gather_records_once,
+        packed_fields,
+        packed_map,
+        packed_stride,
     },
-    read, read_slice,
+    read,
+    read_slice,
     walk::Outcome,
 };
+use crate::corders_group;
 
 #[cfg(test)]
-use crate::memory::gather_records;
+use engine_native_memory::memory::gather_records;
 
 pub mod child_fronts;
 
@@ -60,7 +68,7 @@ pub(crate) fn census_instance(
         .ok_or("root order absent from its group's census")
 }
 
-pub fn plan_field<T: crate::memory::Raw>(
+pub fn plan_field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -72,7 +80,7 @@ pub fn plan_field<T: crate::memory::Raw>(
 }
 
 #[inline(always)]
-pub fn gathered_field<T: crate::memory::Raw>(
+pub fn gathered_field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -116,7 +124,7 @@ pub struct AssignedSources {
 impl AssignedSources {
     pub fn try_with_capacity(capacity: usize) -> std::io::Result<Self> {
         Ok(Self {
-            pointers: crate::allocation::filled(capacity, 0)?,
+            pointers: engine_allocation::filled(capacity, 0)?,
             ..Self::default()
         })
     }
@@ -130,7 +138,7 @@ impl AssignedSources {
     }
     pub fn try_grow(&mut self, capacity: usize) -> std::io::Result<()> {
         let capacity = capacity.max(self.pointers.len());
-        crate::allocation::resize_default(&mut self.pointers, capacity)?;
+        engine_allocation::resize_default(&mut self.pointers, capacity)?;
         self.reset();
         Ok(())
     }
@@ -165,8 +173,8 @@ impl AssignedSources {
     fn retain(&mut self, ordinal: usize, pointer: usize) {
         if ordinal == self.used && self.failure.is_none() {
             if ordinal == self.pointers.len() {
-                let result = crate::allocation::add(ordinal, 1)
-                    .and_then(|len| crate::allocation::resize_default(&mut self.pointers, len));
+                let result = engine_allocation::add(ordinal, 1)
+                    .and_then(|len| engine_allocation::resize_default(&mut self.pointers, len));
                 if result.is_err() {
                     self.failure = Some("plan assigned host allocation failed");
                     return;
@@ -194,7 +202,7 @@ fn plan_order_ids(
             .element(first, 8)
             .ok_or("plan graph address overflow")?;
         let Some(bytes) =
-            crate::memory::read_slice_uninit(memory, address, &mut scratch[..count * 8])
+            engine_native_memory::memory::read_slice_uninit(memory, address, &mut scratch[..count * 8])
         else {
             return Err("plan graph pointers unreadable");
         };
@@ -259,13 +267,13 @@ const NAMES: (usize, usize) = {
         if at < first {
             first = at;
         }
-        if at + crate::msvc_string::STRIDE > end {
-            end = at + crate::msvc_string::STRIDE;
+        if at + engine_native_memory::msvc_string::STRIDE > end {
+            end = at + engine_native_memory::msvc_string::STRIDE;
         }
         index += 1;
     }
     assert!(
-        end - first == NAME_STRINGS.len() * crate::msvc_string::STRIDE,
+        end - first == NAME_STRINGS.len() * engine_native_memory::msvc_string::STRIDE,
         "the name strings are one contiguous span"
     );
     assert!(
@@ -416,7 +424,7 @@ impl OrderBatch {
                 &PLAN_LAYOUT,
                 &mut self.records,
                 &mut self.complete,
-                crate::batch_fallback::Batch::OrderPlans,
+                engine_native_memory::batch_fallback::Batch::OrderPlans,
             );
         }
         for (index, visit) in self.visits[..self.size].iter().enumerate() {
@@ -446,14 +454,14 @@ impl OrderBatch {
                 &NAME_LAYOUT,
                 &mut self.names,
                 &mut self.named,
-                crate::batch_fallback::Batch::OrderPlans,
+                engine_native_memory::batch_fallback::Batch::OrderPlans,
             );
         }
         for index in 0..self.size {
             let names = self.names(lists, index);
             for offset in NAME_STRINGS {
-                if let Some(header) = names.get::<[u8; crate::msvc_string::STRIDE]>(offset)
-                    && let Some((address, len)) = crate::msvc_string::heap_span(&header)
+                if let Some(header) = names.get::<[u8; engine_native_memory::msvc_string::STRIDE]>(offset)
+                    && let Some((address, len)) = engine_native_memory::msvc_string::heap_span(&header)
                 {
                     memory.prefetch(address, len);
                 }
@@ -514,8 +522,8 @@ impl PlanOrder {
     ) -> Result<bool, ()> {
         self.sorted.clear();
         self.rows.clear();
-        crate::allocation::reserve(&mut self.sorted, len).map_err(|_| ())?;
-        crate::allocation::reserve(&mut self.rows, len).map_err(|_| ())?;
+        engine_allocation::reserve(&mut self.sorted, len).map_err(|_| ())?;
+        engine_allocation::reserve(&mut self.rows, len).map_err(|_| ())?;
         self.sorted.extend(
             census
                 .map(|(_, visit)| visit)
@@ -608,7 +616,7 @@ pub fn stitch_plans(
             .iter()
             .try_fold(0_usize, |sum, part| add(sum, part.walk.outcome.len()))?;
         grow_payload(output, rows, "plan row allocation failed")?;
-        crate::allocation::reserve(&mut order.rows, rows)
+        engine_allocation::reserve(&mut order.rows, rows)
             .map_err(|_| "plan order allocation failed")?;
         let (mut row, mut members, mut ids, mut bytes) = (0, 0, 0, 0);
         for part in parts {
@@ -767,7 +775,7 @@ pub fn walk_plans_ordered_with_sources(
         let census = || census_orders(visits, census_order).map(|(_, visit)| visit);
         let invalid = plan_field::<u64>(
             memory,
-            engine_sites::at(base, crate::creference_registry::INVALID_REFERENCE_RVA)
+            engine_sites::at(base, engine_native_parts::creference_registry::INVALID_REFERENCE_RVA)
                 .ok_or("plan field unreadable or address overflow")?,
             0,
         )?;
@@ -884,14 +892,14 @@ pub fn walk_plans_ordered_with_sources(
                         let address = pointer
                             .checked_add(offset)
                             .ok_or("plan name address overflow")?;
-                        *span = match names_record.get::<[u8; crate::msvc_string::STRIDE]>(offset) {
-                            Some(header) => crate::msvc_string::append_with_header(
+                        *span = match names_record.get::<[u8; engine_native_memory::msvc_string::STRIDE]>(offset) {
+                            Some(header) => engine_native_memory::msvc_string::append_with_header(
                                 memory,
                                 &header,
                                 names,
                                 &mut report.names,
                             )?,
-                            None => crate::msvc_string::append(
+                            None => engine_native_memory::msvc_string::append(
                                 memory,
                                 address,
                                 names,
@@ -942,7 +950,7 @@ pub fn walk_plans_ordered_with_sources(
                         );
                     }
                     if !copied || gathered < attempted {
-                        crate::batch_fallback::record(crate::batch_fallback::Batch::OrderPlans);
+                        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::OrderPlans);
                     }
                     for index in first..first + batched {
                         let member = (if copied {
@@ -1151,7 +1159,7 @@ struct PlanRecords {
     pointers: [usize; PLAN_BATCH],
     name_pointers: [usize; PLAN_BATCH],
     staging: bool,
-    reads: crate::memory::ReadCounts,
+    reads: engine_native_memory::memory::ReadCounts,
     ticks: u64,
 }
 
@@ -1186,7 +1194,7 @@ impl PlanRecords {
         self.gathered = 0;
         self.names_gathered = 0;
         self.staging = true;
-        self.reads = crate::memory::ReadCounts::ZERO;
+        self.reads = engine_native_memory::memory::ReadCounts::ZERO;
         self.ticks = 0;
     }
 
@@ -1242,15 +1250,15 @@ impl PlanRecords {
         if first == end {
             return;
         }
-        let begin = crate::clock::qpc();
-        let census = crate::memory::ReadCounts::take_current();
+        let begin = engine_native_memory::clock::qpc();
+        let census = engine_native_memory::memory::ReadCounts::take_current();
         gather_records_once(
             memory,
             &self.pointers[..end - first],
             &PLAN_LAYOUT,
             &mut self.records[first * PLAN_STRIDE..end * PLAN_STRIDE],
             &mut self.complete[first..end],
-            crate::batch_fallback::Batch::OrderPlans,
+            engine_native_memory::batch_fallback::Batch::OrderPlans,
         );
         if names_first != names_end {
             gather_records_once(
@@ -1259,14 +1267,14 @@ impl PlanRecords {
                 &NAME_LAYOUT,
                 &mut self.names[names_first * NAME_STRIDE..names_end * NAME_STRIDE],
                 &mut self.named[names_first..names_end],
-                crate::batch_fallback::Batch::OrderPlans,
+                engine_native_memory::batch_fallback::Batch::OrderPlans,
             );
         }
         self.reads += memory.take_deferred_reads();
         census.add_current();
         self.gathered = end;
         self.names_gathered = names_end;
-        self.ticks += crate::clock::since(begin);
+        self.ticks += engine_native_memory::clock::since(begin);
     }
 
     #[inline(always)]
@@ -1310,7 +1318,7 @@ impl PlanRecords {
             .records
             .get(index * PLAN_STRIDE..(index + 1) * PLAN_STRIDE)
         {
-            crate::prefetch::span(record.as_ptr() as usize, PLAN_STRIDE);
+            engine_native_memory::prefetch::span(record.as_ptr() as usize, PLAN_STRIDE);
         }
         if let Some(&row) = self.name_rows.get(index)
             && row != NO_NAME_ROW
@@ -1318,7 +1326,7 @@ impl PlanRecords {
                 .names
                 .get(row as usize * NAME_STRIDE..(row as usize + 1) * NAME_STRIDE)
         {
-            crate::prefetch::span(names.as_ptr() as usize, NAME_STRIDE);
+            engine_native_memory::prefetch::span(names.as_ptr() as usize, NAME_STRIDE);
         }
     }
 }
@@ -1343,7 +1351,7 @@ impl SuccessorLists {
         &self.census
     }
 
-    pub fn plan_gathers(&self) -> (crate::memory::ReadCounts, u64) {
+    pub fn plan_gathers(&self) -> (engine_native_memory::memory::ReadCounts, u64) {
         (self.plans.reads, self.plans.ticks)
     }
 
@@ -1373,7 +1381,7 @@ impl SuccessorLists {
     fn push(&mut self, instance: u32) {
         if self.listing {
             if self.pending.len() == self.pending.capacity()
-                && crate::allocation::reserve(&mut self.pending, 1).is_err()
+                && engine_allocation::reserve(&mut self.pending, 1).is_err()
             {
                 self.stop();
                 return;
@@ -1396,7 +1404,7 @@ impl SuccessorLists {
             self.stop();
             return 0;
         };
-        if crate::allocation::reserve(&mut self.words, 3 + count_usize).is_err() {
+        if engine_allocation::reserve(&mut self.words, 3 + count_usize).is_err() {
             self.stop();
             return 0;
         }
@@ -1460,7 +1468,7 @@ fn census_sequence(before: usize, ordinal: u32) -> Result<u32, &'static str> {
 fn census_order_of(visits: &[Visit], len: usize, census: &mut Vec<u32>) {
     const UNSET: u32 = u32::MAX;
     census.clear();
-    if crate::allocation::reserve(census, len).is_err() {
+    if engine_allocation::reserve(census, len).is_err() {
         return;
     }
     census.resize(len, UNSET);
@@ -1677,7 +1685,7 @@ pub fn stitch_census(
         }
         if visits.len() < len {
             let more = len - visits.len();
-            crate::allocation::reserve(visits, more)
+            engine_allocation::reserve(visits, more)
                 .map_err(|_| "army order traversal allocation failed")?;
             visits.resize(len, Visit::default());
         }
@@ -2125,7 +2133,7 @@ impl<M: Memory> Graph<'_, M> {
                             staged += 1;
                         }
                     } else {
-                        crate::batch_fallback::record(crate::batch_fallback::Batch::OrderCensus);
+                        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::OrderCensus);
                     }
                     let mut records = [0_u8; PLAN_BATCH * CENSUS_STRIDE];
                     let mut complete = [false; PLAN_BATCH];
@@ -2135,7 +2143,7 @@ impl<M: Memory> Graph<'_, M> {
                         &CENSUS_LAYOUT,
                         &mut records[..staged * CENSUS_STRIDE],
                         &mut complete,
-                        crate::batch_fallback::Batch::OrderCensus,
+                        engine_native_memory::batch_fallback::Batch::OrderCensus,
                     );
                     for slot in 0..count {
                         let pointer = if copied {
@@ -2404,7 +2412,7 @@ impl<M: Memory> Graph<'_, M> {
             .max(4);
         self.report.minimum_visits = required;
         let mut expanded = Vec::new();
-        crate::allocation::reserve_exact(&mut expanded, required)
+        engine_allocation::reserve_exact(&mut expanded, required)
             .map_err(|_| "army order traversal allocation failed")?;
         expanded.resize(required, Visit::default());
         for entry in self.visits.iter().filter(|entry| entry.pointer != 0) {
@@ -2490,7 +2498,7 @@ pub(crate) fn grow_payload<T: Default>(
     reason: &'static str,
 ) -> Result<(), &'static str> {
     if required > output.len() {
-        crate::allocation::reserve(output, required - output.len()).map_err(|_| reason)?;
+        engine_allocation::reserve(output, required - output.len()).map_err(|_| reason)?;
         output.resize_with(required, T::default);
     }
     Ok(())

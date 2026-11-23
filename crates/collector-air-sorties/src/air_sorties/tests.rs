@@ -1,15 +1,12 @@
 use super::*;
 use engine_map_air::map_air_base_reference::BaseReference;
 use engine_native_air::{air_mission, cair_base, ccountry_air_container};
+use engine_native_parts::{cair_wing_pool, cstrategic_region, csub_unit_definition};
 use engine_native::{
-    cair_wing_pool,
     cgame_state,
-    cstrategic_region,
-    csub_unit_definition,
-    cweather_manager,
-    memory::SliceMemory,
-    sweather_per_region,
+    cweather_manager::{self, region_weather as sweather_per_region},
 };
+use engine_native_memory::memory::SliceMemory;
 use std::cell::Cell;
 
 const MODULE: usize = 0x4000_0000;
@@ -30,7 +27,7 @@ fn held_patrol_night_reads_each_demanded_region_once_and_reuses_manager() {
     let region = world.alloc(0x180);
     let list = world.alloc(8);
     let province = world.alloc(0x200);
-    let clocks = world.alloc(2 * engine_native::sweather_per_province::CLOCK_STRIDE);
+    let clocks = world.alloc(2 * engine_native::cweather_manager::province_weather::CLOCK_STRIDE);
     world.d(game + cgame_state::CURRENT_HOUR, 43_800_000);
     world.put(manager + cweather_manager::SUSPEND_FLAGS, &[1, 0]);
     world.array(manager + cweather_manager::PROVINCE_CLOCKS, clocks, 2);
@@ -40,7 +37,7 @@ fn held_patrol_night_reads_each_demanded_region_once_and_reuses_manager() {
     world.q(list, province as u64);
     world.vtable(province, engine_native::cprovince::VTABLE_RVA);
     world.d(province + engine_native::cprovince::ID, 1);
-    let marker = clocks + engine_native::sweather_per_province::CLOCK_STRIDE + APPLIED_NIGHT_FACTOR;
+    let marker = clocks + engine_native::cweather_manager::province_weather::CLOCK_STRIDE + APPLIED_NIGHT_FACTOR;
     world.q(marker, 50_001);
     struct Trace<'a> {
         memory: SliceMemory<'a>,
@@ -204,8 +201,8 @@ impl Memory for Counting<'_> {
     }
     fn copy_records(
         &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.count();
@@ -237,7 +234,7 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
         world.d(links + slot as usize * 4, slot);
         world.vtable(country, ccountry::VTABLE_RVA);
         world.d(country + ccountry::ID, slot);
-        world.accumulator(country + ccountry::MODIFIER_ACCUMULATOR, 2_000);
+        world.accumulator(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 2_000);
         let map = country + COUNTRY_REGION_MAP;
         let sentinel = world.alloc(16);
         let buckets = world.alloc(16);
@@ -306,7 +303,7 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
             let object = world.alloc(0x80);
             world.array(object + cair_base::COUNTRY_CONTAINERS, containers, slots);
             BaseWitness {
-                handle: ((index as u64 + 1) << 32) | u64::from(cair_base::TYPE),
+                handle: ((index as u64 + 1) << 32) | u64::from(engine_native_parts::cair_base_layout::TYPE),
                 base: Some(BaseReference {
                     object,
                     state: Some(index as u32 + 1),

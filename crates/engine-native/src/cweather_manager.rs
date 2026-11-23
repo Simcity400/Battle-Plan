@@ -1,17 +1,19 @@
 pub mod region_weather;
 pub mod province_weather;
 
-use crate::{
+use engine_native_memory::{
     Memory,
-    cgame_state,
     cpdx_array::Array,
     memory::{FieldBatch, RecordField, RecordLayout, RecordSources},
     read,
+    walk::Outcome,
+};
+use crate::{
+    cgame_state,
     cweather_manager::{
         province_weather as sweather_per_province,
         region_weather as sweather_per_region,
     },
-    walk::Outcome,
 };
 use engine_sites::Rva;
 
@@ -126,7 +128,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             .checked_add(SUSPEND_FLAGS)
             .ok_or("weather suspension address overflow")?;
         let mut flags = [0; 2];
-        if !crate::read_slice(self.memory, address, &mut flags) {
+        if !engine_native_memory::read_slice(self.memory, address, &mut flags) {
             return Err("weather suspension flags unreadable");
         }
         Ok(flags)
@@ -151,8 +153,8 @@ impl<'a, M: Memory> Reader<'a, M> {
                 .ok_or("held weather daylight feather unreadable")
         };
         Ok([
-            word(crate::air_fuel_defines::CONTEXT_SUBTRACT_RVA)?,
-            word(crate::air_fuel_defines::CONTEXT_SCALE_RVA)?,
+            word(engine_native_parts::air_fuel_defines::CONTEXT_SUBTRACT_RVA)?,
+            word(engine_native_parts::air_fuel_defines::CONTEXT_SCALE_RVA)?,
         ])
     }
 
@@ -209,14 +211,14 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("naval custom sea length overflow")?;
         let bytes =
             unsafe { std::slice::from_raw_parts_mut(output.as_mut_ptr().cast::<u8>(), len) };
-        if data == 0 || !crate::read_slice(self.memory, data, bytes) {
+        if data == 0 || !engine_native_memory::read_slice(self.memory, data, bytes) {
             return Err("naval custom sea values unreadable");
         }
         Ok(())
     }
 
     pub fn custom_sea(&self, region_id: i32, count: u32) -> Result<Vec<i16>, &'static str> {
-        let mut values = crate::allocation::filled(count as usize, 0)
+        let mut values = engine_allocation::filled(count as usize, 0)
             .map_err(|_| "naval custom sea allocation failed")?;
         self.custom_sea_into(region_id, &mut values)?;
         Ok(values)
@@ -309,11 +311,11 @@ pub fn movement_modifiers(
         0
     } else {
         let region = usize::try_from(region).map_err(|_| "movement region pointer invalid")?;
-        let expected = engine_sites::at(base, crate::cstrategic_region::VTABLE_RVA)
+        let expected = engine_sites::at(base, engine_native_parts::cstrategic_region::VTABLE_RVA)
             .ok_or("movement region vtable withheld")?;
         let fields = FieldBatch::gather(
             memory,
-            movement_fields(region, [(0, 8), (crate::cstrategic_region::ID, 4)]),
+            movement_fields(region, [(0, 8), (engine_native_parts::cstrategic_region::ID, 4)]),
         );
         if movement_batched::<u64, 2>(memory, &fields, 0, region)? != expected as u64 {
             return Err("movement region vtable mismatch");
@@ -404,7 +406,7 @@ fn movement_fields<const N: usize>(
     })
 }
 
-fn movement_batched<T: crate::memory::Raw, const N: usize>(
+fn movement_batched<T: engine_native_memory::memory::Raw, const N: usize>(
     memory: &impl Memory,
     fields: &FieldBatch<N>,
     index: usize,
@@ -418,7 +420,7 @@ fn movement_batched<T: crate::memory::Raw, const N: usize>(
         .ok_or("movement weather field unreadable")
 }
 
-fn movement_field<T: crate::memory::Raw>(
+fn movement_field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,

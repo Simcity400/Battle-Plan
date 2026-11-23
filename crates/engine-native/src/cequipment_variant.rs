@@ -1,4 +1,4 @@
-pub use engine_native_parts::equipment_variant_identity::{VTABLE_RVA, identity, identity_from_header};
+use engine_native_parts::equipment_variant_identity::{VTABLE_RVA, identity};
 use engine_native_parts::equipment_variant_identity::identity_header;
 pub mod pool;
 
@@ -8,13 +8,17 @@ pub mod mutations;
 pub mod source_mutations;
 pub use design::*;
 
-use crate::{
-    Memory, cequipment_type, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
-    msvc_string, read, read_slice,
+    msvc_string,
+    read,
+    read_slice,
     walk::Outcome,
 };
+use engine_native_parts::cequipment_type;
+use crate::cgame_state;
 
 pub use engine_executable::native_values::equipment_variant::REFERENCE_TYPE;
 pub const TYPE: usize = 0x08;
@@ -210,7 +214,7 @@ pub fn walk_registry(
                 );
                 let required = len + copied.min(retained);
                 if required > output.len() {
-                    crate::allocation::reserve(output, required - output.len())
+                    engine_allocation::reserve(output, required - output.len())
                         .map_err(|_| "variant registry allocation failed")?;
                     output.resize(required, RegistryRow::default());
                 }
@@ -309,7 +313,7 @@ pub fn walk_definitions_carried<D: Default>(
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
         if variants.len() > output.len() {
-            crate::allocation::reserve(output, variants.len() - output.len())
+            engine_allocation::reserve(output, variants.len() - output.len())
                 .map_err(|_| "variant definition allocation failed")?;
             output.resize_with(variants.len(), DefinitionRow::default);
         }
@@ -424,7 +428,7 @@ pub fn walk_definitions_carried<D: Default>(
         let mut equipment = [0; BATCH * 20];
         let mut archetypes = [0; BATCH];
         let mut archetype_bytes = [0; BATCH * 12];
-        let mut references = crate::creference_registry::ScopedResolver::new(base);
+        let mut references = engine_native_parts::creference_registry::ScopedResolver::new(base);
         for sources in variants.chunks(BATCH) {
             let mut carried: [Option<D>; BATCH] = std::array::from_fn(|_| None);
             let mut misses = [0; BATCH];
@@ -646,7 +650,7 @@ pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;
 pub const STAT_FIXED_ONE: i64 = 100_000;
 pub const AIRCRAFT_DESIGNER_PLANE_MASK: u64 = 0x1d00_26fc_00;
 pub const BY_BLOOD_ALONE_MASK: u32 = 0x0000_0100;
-const DLC_FEATURE_MASK_RVA: Rva = crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA;
+const DLC_FEATURE_MASK_RVA: Rva = engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuietToken {
@@ -752,8 +756,8 @@ impl WitnessSites {
             variant_vtable: engine_sites::resolve(base, VTABLE_RVA).ok(),
             def_vtable: engine_sites::resolve(base, cequipment_type::VTABLE_RVA).ok(),
             null_def_vtable: engine_sites::resolve(base, cequipment_type::NULL_VTABLE_RVA).ok(),
-            module_vtable: engine_sites::resolve(base, crate::cequipment_module::VTABLE_RVA).ok(),
-            upgrade_vtable: engine_sites::resolve(base, crate::cequipment_upgrade::VTABLE_RVA).ok(),
+            module_vtable: engine_sites::resolve(base, engine_native_parts::cequipment_module::VTABLE_RVA).ok(),
+            upgrade_vtable: engine_sites::resolve(base, engine_native_parts::cequipment_upgrade::VTABLE_RVA).ok(),
             specific_bonus_vtable: engine_sites::resolve(base, SPECIFIC_BONUS_VTABLE_RVA).ok(),
             trait_bonus_vtable: engine_sites::resolve(base, TRAIT_BONUS_VTABLE_RVA).ok(),
             dlc_mask: None,
@@ -1064,7 +1068,7 @@ fn compute_modified_lanes(
             let add_stats = stat_pair_array(
                 memory,
                 upgrade,
-                crate::cequipment_upgrade::ADD_STATS,
+                engine_native_parts::cequipment_upgrade::ADD_STATS,
                 "variant stat upgrade stats unreadable",
             )?;
             for stat_i in 0..add_stats.count {
@@ -1087,7 +1091,7 @@ fn compute_modified_lanes(
             let mult_stats = stat_pair_array(
                 memory,
                 upgrade,
-                crate::cequipment_upgrade::MULTIPLY_STATS,
+                engine_native_parts::cequipment_upgrade::MULTIPLY_STATS,
                 "variant stat upgrade stats unreadable",
             )?;
             for stat_i in 0..mult_stats.count {
@@ -1110,7 +1114,7 @@ fn compute_modified_lanes(
             let avg_stats = stat_pair_array(
                 memory,
                 upgrade,
-                crate::cequipment_upgrade::AVERAGE_STATS,
+                engine_native_parts::cequipment_upgrade::AVERAGE_STATS,
                 "variant stat upgrade stats unreadable",
             )?;
             for stat_i in 0..avg_stats.count {
@@ -1172,7 +1176,7 @@ fn compute_modified_lanes(
             let add_stats = stat_pair_array(
                 memory,
                 module,
-                crate::cequipment_module::ADD_STATS,
+                engine_native_parts::cequipment_module::ADD_STATS,
                 "variant stat module stats unreadable",
             )?;
             for stat_i in 0..add_stats.count {
@@ -1194,7 +1198,7 @@ fn compute_modified_lanes(
             let mult_stats = stat_pair_array(
                 memory,
                 module,
-                crate::cequipment_module::MULTIPLY_STATS,
+                engine_native_parts::cequipment_module::MULTIPLY_STATS,
                 "variant stat module stats unreadable",
             )?;
             for stat_i in 0..mult_stats.count {
@@ -1216,7 +1220,7 @@ fn compute_modified_lanes(
             let avg_stats = stat_pair_array(
                 memory,
                 module,
-                crate::cequipment_module::AVERAGE_STATS,
+                engine_native_parts::cequipment_module::AVERAGE_STATS,
                 "variant stat module stats unreadable",
             )?;
             for stat_i in 0..avg_stats.count {
@@ -1567,7 +1571,7 @@ fn read_organisation_verified(
             "design MIO bonus array invalid",
         ));
     };
-    crate::allocation::resize_default(&mut row.bonuses, array.count as usize)
+    engine_allocation::resize_default(&mut row.bonuses, array.count as usize)
         .map_err(|_| OrganisationReadError::Fault("design MIO bonus allocation failed"))?;
     if array.count > 0 {
         for (index, bonus) in row.bonuses.iter_mut().enumerate() {
@@ -1644,7 +1648,7 @@ pub fn walk_stats_carried(
 ) -> Outcome {
     let result = (|| {
         if variants.len() > output.len() {
-            crate::allocation::reserve(output, variants.len() - output.len())
+            engine_allocation::reserve(output, variants.len() - output.len())
                 .map_err(|_| "variant stat allocation failed")?;
             output.resize(variants.len(), StatsRow::default());
         }
@@ -2111,7 +2115,7 @@ impl Literal {
             let mut bytes = [0; 256];
             self.copy(memory, &mut bytes[..self.len])?;
             if end > output.len() {
-                crate::allocation::reserve(output, end - output.len()).map_err(|_| allocation)?;
+                engine_allocation::reserve(output, end - output.len()).map_err(|_| allocation)?;
                 output.resize(end, 0);
             }
             output[start..end].copy_from_slice(&bytes[..self.len]);

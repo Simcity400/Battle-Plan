@@ -1,5 +1,5 @@
 use engine_native_memory::{Memory, cpdx_array::Array};
-use engine_native::{cequipment_variant, cnaval_combatant::field};
+use engine_native::cnaval_combatant::field;
 
 use engine_native::cfex_air::VTABLE_RVA;
 
@@ -37,7 +37,7 @@ pub(crate) fn read_hits(
     buffers: &mut crate::naval_member_details::DetailBuffers<'_>,
 ) -> Result<(), &'static str> {
     use engine_native::cfex_member::{EntryOutput, append_entries};
-    use crate::naval_member_details::DETAIL_ARENA_CAPACITY;
+    use engine_native::cfex_member::DETAIL_ARENA_CAPACITY;
     let mut counts = [0usize; 2];
     let mut arrays = [Array::default(); 3];
     for (header, (offset, lane)) in arrays.iter_mut().zip([(0x100, 1), (0x118, 0), (0x130, 0)]) {
@@ -178,7 +178,7 @@ pub(crate) fn read_buffer(
     let variant = field::<u64>(memory, pointer, 0xf0)? as usize;
     if variant != 0 {
         if field::<u64>(memory, variant, 0)?
-            != engine_sites::at(base, cequipment_variant::VTABLE_RVA)
+            != engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
                 .ok_or("naval plane variant module overflow")? as u64
         {
             return Err("naval plane variant identity mismatch");

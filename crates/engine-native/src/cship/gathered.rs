@@ -3,17 +3,19 @@ use super::{
     ANTI_AIR_BASE, BASE_ORGANISATION, DEFINITION_VALID, EQUIPMENT_POOL, FALLBACK_SPRITE,
     FORMATION_FLAGS, MODEL_NUMBER, SUBUNIT_DEFINITION, SUBUNIT_INDEX, TASK_FORCE,
 };
-use crate::{
+use engine_native_memory::{
     Memory,
-    cequipment_variant::{self, pool as cequipment_variant_pool},
-    cgame_state,
     cpdx_array::Array,
-    ctask_force,
-    cunit,
-    equipment_entry,
     memory::{Raw, RecordLayout, RecordSources, scalar_from_bytes},
     msvc_string,
 };
+use crate::{
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
+    ctask_force,
+    cunit,
+};
+use engine_native_parts::equipment_entry;
 use std::cmp::Ordering;
 
 const WIDTH: usize = msvc_string::STRIDE;
@@ -750,13 +752,13 @@ impl ShipFields {
         let Some(fields) = naval_power_fields(original) else {
             return;
         };
-        let Some(expected) = engine_sites::at(self.base, cequipment_variant::VTABLE_RVA) else {
+        let Some(expected) = engine_sites::at(self.base, engine_native_parts::equipment_variant_identity::VTABLE_RVA) else {
             return;
         };
         let header: [u8; 16] = original.bytes[0][..16]
             .try_into()
             .expect("variant identity span");
-        if cequipment_variant::identity_from_header(expected, header).is_err() {
+        if engine_native_parts::equipment_variant_identity::identity_from_header(expected, header).is_err() {
             return;
         }
         self.naval_variants[slot] = Object::gather(memory, original.pointer, fields);
@@ -926,7 +928,7 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        let address = |row: usize, field: &crate::memory::RecordField| {
+        let address = |row: usize, field: &engine_native_memory::memory::RecordField| {
             sources
                 .pointer(row)
                 .filter(|&pointer| pointer != 0)
@@ -972,7 +974,7 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.source.authenticated_countries(base, game_state)
     }
 
@@ -980,7 +982,7 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.source.authenticated_reserved_country(base, game_state)
     }
 
@@ -988,7 +990,7 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.source
             .authenticated_reserved_country_observation(base, game_state)
     }
@@ -997,11 +999,11 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
         &self,
         address: usize,
         key: u32,
-    ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+    ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
         self.source.modifier_accumulator_value(address, key)
     }
 
-    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+    fn modifier_definitions(&self) -> Option<&engine_native_memory::modifier_cache::PassDefinitions> {
         self.source.modifier_definitions()
     }
 }
@@ -1087,7 +1089,7 @@ impl<M: Memory, const N: usize> Memory for SwitchedObject<'_, M, N> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.source.authenticated_countries(base, game_state)
     }
 
@@ -1095,7 +1097,7 @@ impl<M: Memory, const N: usize> Memory for SwitchedObject<'_, M, N> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.source.authenticated_reserved_country(base, game_state)
     }
 
@@ -1103,7 +1105,7 @@ impl<M: Memory, const N: usize> Memory for SwitchedObject<'_, M, N> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.source
             .authenticated_reserved_country_observation(base, game_state)
     }
@@ -1112,11 +1114,11 @@ impl<M: Memory, const N: usize> Memory for SwitchedObject<'_, M, N> {
         &self,
         address: usize,
         key: u32,
-    ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+    ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
         self.source.modifier_accumulator_value(address, key)
     }
 
-    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+    fn modifier_definitions(&self) -> Option<&engine_native_memory::modifier_cache::PassDefinitions> {
         self.source.modifier_definitions()
     }
 }

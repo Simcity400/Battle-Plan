@@ -1,4 +1,4 @@
-pub use engine_native_parts::cair_base_layout::{HANDLE, HOST_REFERENCE, TYPE, VTABLE_RVA};
+use engine_native_parts::cair_base_layout::{HOST_REFERENCE, VTABLE_RVA};
 
 use engine_native_memory::{
     Memory,
@@ -7,7 +7,7 @@ use engine_native_memory::{
     read,
     walk::Outcome,
 };
-use crate::{cair_wing, ccountry_air_container, cstrategic_air_manager};
+use crate::{ccountry_air_container, cstrategic_air_manager};
 use engine_native_parts::cair_wing_pool;
 use engine_native::{ccountry, cgame_state, cprovince, cstate};
 use engine_sites::Rva;
@@ -89,7 +89,7 @@ const WING_FIELDS: [RecordField; 2] = [
         len: 32,
     },
     RecordField {
-        source_offset: crate::cair_wing::POOL,
+        source_offset: engine_native_parts::cair_wing_layout::POOL,
         destination_offset: 32,
         len: 8,
     },
@@ -485,9 +485,9 @@ impl<M: Memory> Reader<'_, M> {
         state.last_plan = planned;
         let expected_pool = engine_sites::at(self.base, cair_wing_pool::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let expected_primary = engine_sites::at(self.base, cair_wing::VTABLE_RVA)
+        let expected_primary = engine_sites::at(self.base, engine_native_parts::cair_wing_layout::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let expected_secondary = engine_sites::at(self.base, cair_wing::SECONDARY_VTABLE_RVA)
+        let expected_secondary = engine_sites::at(self.base, engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let RegistrationScratch {
             container_bytes,
@@ -782,7 +782,7 @@ pub struct RegistrationBuffers<'a> {
     pub resolved: &'a mut [ResolvedLink],
 }
 
-pub type ResolvedLink = Option<ccountry::Country>;
+pub type ResolvedLink = Option<engine_native_memory::country_identity::Country>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegistrationWalk {
@@ -847,7 +847,7 @@ impl Resolver<'_> {
         &mut self,
         countries: &ccountry::Reader<'_, impl Memory>,
         raw: u32,
-    ) -> Result<ccountry::Country, &'static str> {
+    ) -> Result<engine_native_memory::country_identity::Country, &'static str> {
         let cell = raw as usize;
         if let Some(Some(country)) = self.cells.get(cell) {
             return Ok(*country);

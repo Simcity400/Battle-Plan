@@ -112,7 +112,8 @@ fn walk_shared(
     mut names: engine_native_memory::walk::Buffer<'_, u8>,
     mut each: impl FnMut(u32, usize),
 ) -> engine_native::crelation::subject::NameWalk {
-    use engine_native::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
+    use engine_native_memory::msvc_string::Literal;
+    use engine_native::crelation::subject::{Name, NameWalk};
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
@@ -290,7 +291,7 @@ pub fn walk_captured_operatives_buffer(
                         let identity = read::<[u8; 16]>(memory, leader)
                             .ok_or("captured operative referent unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                            != engine_sites::at(base, coperative_leader::VTABLE_RVA)
+                            != engine_sites::at(base, engine_native_parts::coperative_leader_layout::VTABLE_RVA)
                                 .ok_or("module address overflow")?
                                 as u64
                             || u64::from_le_bytes(identity[8..].try_into().unwrap()) != operative
@@ -326,7 +327,7 @@ const BLOCK: usize = DEFENSE + 8;
 fn root_block(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     link: Link,
     block: &mut [u8; BLOCK],
 ) -> Result<Option<(usize, bool)>, &'static str> {
@@ -352,7 +353,7 @@ fn root_block(
 
 fn agency_link(
     memory: &impl Memory,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     link: Link,
 ) -> Result<usize, &'static str> {
     let link = link
@@ -369,7 +370,7 @@ fn agency_link(
 pub fn root(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Option<usize>, &'static str> {
     let pointer = agency_link(memory, country, Link::Unread)?;
     if pointer == 0 {
@@ -381,7 +382,7 @@ pub fn root(
 fn authenticate(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     pointer: usize,
 ) -> Result<Option<usize>, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
@@ -985,7 +986,7 @@ mod tests {
         memory.put(bucket + reference_bucket::OBJECT, &0xa000_u64.to_le_bytes());
         memory.put(
             0xa000,
-            &(coperative_leader::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::coperative_leader_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         memory.put(0xa008, &handle.to_le_bytes());
         memory.put(

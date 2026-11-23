@@ -1,6 +1,6 @@
-use crate::{
-    Memory, ccountry, cpdx_array::Array, creference_registry, cstate, cwar_goal_type, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::{ccountry, cstate};
+use engine_native_parts::{creference_registry, cwar_goal_type};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a5_9250);
@@ -103,7 +103,10 @@ mod tests {
 
     #[test]
     fn resolved_goal_authenticates_registry_type_state_and_country_operands() {
-        use crate::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native_parts::{
+            creference_registry as registry,
+            reference_bucket as bucket,
+        };
         let mut world = World::new(0, 2, 0x1600);
         let goal = world.alloc(0x90);
         let definition = world.alloc(0x10);
@@ -143,7 +146,7 @@ mod tests {
             world: &'a World,
             table: usize,
         }
-        impl crate::Memory for MemoryWithRoot<'_> {
+        impl engine_native_memory::Memory for MemoryWithRoot<'_> {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
                 if address == registry::HIGH_ROOT_RVA.0 && destination.len() == 8 {
                     destination.copy_from_slice(&(self.table as u64).to_le_bytes());

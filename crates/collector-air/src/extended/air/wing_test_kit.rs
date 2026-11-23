@@ -1,5 +1,5 @@
 use super::{AirWingCopyContext, AirWingCopyReport, AirWingJob, Capacities, Captured};
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x10000;
@@ -32,10 +32,9 @@ pub fn fixture() -> Vec<u8> {
     use engine_native_air::cair_wing;
     use engine_native::{
         ccountry,
-        cequipment_variant,
-        cequipment_variant_pool,
-        equipment_entry,
+        cequipment_variant::{self, pool as cequipment_variant_pool},
     };
+    use engine_native_parts::equipment_entry;
     let mut bytes = vec![0; 0x40000];
     header(
         &mut bytes,
@@ -95,21 +94,21 @@ pub fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         POOL,
-        engine_native::cair_wing_pool::VTABLE_RVA.0 as u64,
+        engine_native_parts::cair_wing_pool::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut bytes,
-        POOL + engine_native::cair_wing_pool::OWNER,
+        POOL + engine_native_parts::cair_wing_pool::OWNER,
         OWNER_AIR as u64,
     );
     p64(
         &mut bytes,
-        POOL + engine_native::cair_wing_pool::AIR_BASE_REFERENCE,
+        POOL + engine_native_parts::cair_wing_pool::AIR_BASE_REFERENCE,
         0x1234u64,
     );
     header(
         &mut bytes,
-        POOL + engine_native::cair_wing_pool::WINGS,
+        POOL + engine_native_parts::cair_wing_pool::WINGS,
         0x38200,
         2,
     );
@@ -119,14 +118,14 @@ pub fn fixture() -> Vec<u8> {
         (WING, 0x4500_0001u64, 3i32, 1000i64),
         (WING2, 0x4500_0002u64, -5i32, i64::MAX),
     ] {
-        p64(&mut bytes, wing, cair_wing::VTABLE_RVA.0 as u64);
+        p64(&mut bytes, wing, engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
-            wing + cair_wing::SECONDARY,
-            cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
+            wing + engine_native_parts::cair_wing_layout::SECONDARY,
+            engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0 as u64,
         );
-        p64(&mut bytes, wing + cair_wing::SECONDARY + 8, id);
-        p64(&mut bytes, wing + cair_wing::POOL, POOL as u64);
+        p64(&mut bytes, wing + engine_native_parts::cair_wing_layout::SECONDARY + 8, id);
+        p64(&mut bytes, wing + engine_native_parts::cair_wing_layout::POOL, POOL as u64);
         p64(&mut bytes, wing + cair_wing::BASE_OVERRIDE, 0);
         p32(&mut bytes, wing + cair_wing::PLANE_COUNT, 10);
         p32(
@@ -177,7 +176,7 @@ pub fn fixture() -> Vec<u8> {
         }
     }
     for (variant, id) in [(VARIANT, 11u32), (VARIANT2, 12u32)] {
-        p64(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        p64(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
             variant + 8,
@@ -225,7 +224,7 @@ fn collect_typed(memory: &impl Memory, _capacity: &Capacities) -> Split {
                 memory,
                 BASE,
                 &source,
-                engine_native::walk::Buffer::GrowingFrom(&mut equipment, equipment_outcome.len()),
+                engine_native_memory::walk::Buffer::GrowingFrom(&mut equipment, equipment_outcome.len()),
                 0,
             )
             .0;

@@ -2,7 +2,8 @@
 use super::*;
 use crate::country_input_changes::{Domain, Table};
 use engine_governance_tests::{IMAGE_LEN, IMAGE_START};
-use engine_native::{cgame_state, modifier_definition};
+use engine_native::cgame_state;
+use engine_native_parts::modifier_definition;
 use engine_research::{climited_use_tech_bonus as bonus, research_inputs, research_modifiers};
 
 const BASE: usize = 0;
@@ -159,7 +160,7 @@ fn window(bytes: &[u8], start: usize, address: usize, len: usize) -> Option<&[u8
     bytes.get(offset..offset.checked_add(len)?)
 }
 
-impl engine_native::Memory for World {
+impl engine_native_memory::Memory for World {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
         let source = window(&self.image, IMAGE_START, address, out.len())
             .or_else(|| window(&self.heap, HEAP_START, address, out.len()));
@@ -364,7 +365,7 @@ impl World {
             self.put(at + bonus::SPEED_BONUS, value.speed.to_le_bytes());
             self.put(at + bonus::AHEAD_REDUCTION, value.ahead.to_le_bytes());
         }
-        let accumulator = o + ccountry::MODIFIER_ACCUMULATOR;
+        let accumulator = o + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         self.modifier(accumulator, o + STORAGE, 0xcd, spec.country_speed);
         if let Some((name, raw)) = spec.source {
             self.array(accumulator + 0x18, o + CHILDREN, 1);
@@ -438,7 +439,7 @@ fn reference(world: &World) -> Research {
             &inputs[..input_len],
             0,
             &bonuses[..bonus_len],
-            engine_native::walk::Buffer::Growing(&mut modifiers),
+            engine_native_memory::walk::Buffer::Growing(&mut modifiers),
         );
         let Outcome::Rows { len: modifier_len } = modifier_outcome else {
             panic!("country {} modifiers: {modifier_outcome:?}", country.id);
@@ -724,7 +725,7 @@ fn owners(captured: &Captured) -> Vec<u32> {
 }
 
 fn slice_capture(
-    world: &impl engine_native::Memory,
+    world: &impl engine_native_memory::Memory,
     hour: i32,
     fingerprints: &mut SliceFingerprints,
     changes: &Domain,
@@ -736,7 +737,7 @@ fn slice_capture(
     captured
 }
 
-fn primed(world: &impl engine_native::Memory, changes: &Domain) -> SliceFingerprints {
+fn primed(world: &impl engine_native_memory::Memory, changes: &Domain) -> SliceFingerprints {
     let mut fingerprints = SliceFingerprints::new();
     let mut captured = captured();
     let mut part = captured.take_research();
@@ -917,7 +918,7 @@ impl World {
 #[test]
 #[ignore = "bench"]
 fn research_quiet_hours_bench() {
-    fn run(world: &impl engine_native::Memory, countries: usize, label: &str) {
+    fn run(world: &impl engine_native_memory::Memory, countries: usize, label: &str) {
         let changes = Domain::enabled(countries + 64);
         let mut fingerprints = primed(world, &changes);
         let mut reads = 0;
@@ -954,7 +955,7 @@ fn research_quiet_hours_bench() {
             assert_eq!(seed, engine_native_intelligence::country_memory::SeedStatus::Ready);
             let roster = cache.roster_view(&world);
             assert!(
-                engine_native::Memory::authenticated_countries(&roster, BASE, GAME_STATE).is_some(),
+                engine_native_memory::Memory::authenticated_countries(&roster, BASE, GAME_STATE).is_some(),
                 "the roster view serves the census"
             );
             run(&roster, countries, &format!("{label}, roster"));
@@ -967,7 +968,7 @@ struct Reads<'a> {
     addresses: std::cell::RefCell<Vec<usize>>,
 }
 
-impl engine_native::Memory for Reads<'_> {
+impl engine_native_memory::Memory for Reads<'_> {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
         self.addresses.borrow_mut().push(address);
         self.world.copy(address, out)
@@ -996,8 +997,8 @@ fn an_unmarked_slice_reads_only_the_daily_drift() {
     let untouched = [
         SECOND.origin + TEMPLATE..SECOND.origin + IDS,
         SECOND.origin + BONUS..SECOND.origin + CHILD_STORAGE + 0x100,
-        SECOND.origin + ccountry::MODIFIER_ACCUMULATOR
-            ..SECOND.origin + ccountry::MODIFIER_ACCUMULATOR + 0x60,
+        SECOND.origin + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR
+            ..SECOND.origin + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x60,
     ];
     let addresses = reads.addresses.into_inner();
     assert!(
@@ -1068,7 +1069,7 @@ struct Faulty<'a> {
     reads: std::cell::Cell<u32>,
 }
 
-impl engine_native::Memory for Faulty<'_> {
+impl engine_native_memory::Memory for Faulty<'_> {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
         if address == self.address {
             self.reads.set(self.reads.get() + 1);
@@ -1092,7 +1093,7 @@ fn a_persistent_drift_fault_keeps_the_slice_unavailable() {
 }
 
 fn drift_fault_slice(once: bool) {
-    use engine_native::{batch_fallback::Batch, batch_fallback::count};
+    use engine_native_memory::batch_fallback::{Batch, count};
     let mut world = World::new();
     let changes = Domain::enabled(64);
     let mut fingerprints = primed(&world, &changes);
@@ -1151,7 +1152,7 @@ fn a_carried_slice_reads_the_slots_in_roster_order() {
         world: &'a World,
         reads: std::cell::RefCell<Vec<usize>>,
     }
-    impl engine_native::Memory for Banked<'_> {
+    impl engine_native_memory::Memory for Banked<'_> {
         fn copy(&self, address: usize, out: &mut [u8]) -> bool {
             let first = FIRST.origin + SLOT;
             if (first..first + FIRST.slots.len() * 0x100).contains(&address)

@@ -6,7 +6,8 @@ use crate::{
     world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, crelation_status, cweather_manager, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{crelation::status as crelation_status, cweather_manager};
 use engine_native_naval::cstrategic_navy;
 use engine_visibility::visibility_inputs as native;
 use replay_data::{
@@ -328,7 +329,7 @@ impl Captured {
         {
             let carried = held.carried(Domain::RegionAccess);
             let ensured =
-                engine_native::walk::Buffer::Growing(rows).ensure(carried.len());
+                engine_native_memory::walk::Buffer::Growing(rows).ensure(carried.len());
             self.naval_access.outcome = match ensured {
                 Ok(_) if carried.len() <= rows.len() => {
                     rows[..carried.len()].copy_from_slice(carried);
@@ -346,7 +347,7 @@ impl Captured {
             memory,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(rows),
         );
         self.naval_access.outcome = outcome;
         if let Some(held) = &mut held {
@@ -453,7 +454,7 @@ impl Captured {
                             memory,
                             base,
                             game_state,
-                            engine_native::walk::Buffer::Growing(&mut self.countries.rows),
+                            engine_native_memory::walk::Buffer::Growing(&mut self.countries.rows),
                             &crate::country_input_changes::Observer,
                             force_full,
                         )
@@ -463,7 +464,7 @@ impl Captured {
                             memory,
                             base,
                             game_state,
-                            engine_native::walk::Buffer::Growing(&mut self.countries.rows),
+                            engine_native_memory::walk::Buffer::Growing(&mut self.countries.rows),
                         )
                     };
                 }
@@ -473,7 +474,7 @@ impl Captured {
                         memory,
                         base,
                         game_state,
-                        engine_native::walk::Buffer::Growing(&mut self.states.rows),
+                        engine_native_memory::walk::Buffer::Growing(&mut self.states.rows),
                         &mut extent,
                     );
                     if let Some(features) = self.dlc_mask.rows.first_mut() {
@@ -503,7 +504,7 @@ impl Captured {
                         memory,
                         base,
                         game_state,
-                        engine_native::walk::Buffer::Growing(&mut self.land_units),
+                        engine_native_memory::walk::Buffer::Growing(&mut self.land_units),
                     );
                     self.land_order.rows[0] = match units {
                         Outcome::Rows { len } => Some(len),
@@ -519,8 +520,8 @@ impl Captured {
                             game_state,
                             &mut self.links.rows,
                             crelation_status::WarBuffers {
-                                rows: engine_native::walk::Buffer::Growing(&mut self.wars.rows),
-                                countries: engine_native::walk::Buffer::Growing(
+                                rows: engine_native_memory::walk::Buffer::Growing(&mut self.wars.rows),
+                                countries: engine_native_memory::walk::Buffer::Growing(
                                     &mut self.war_links.first,
                                 ),
                             },

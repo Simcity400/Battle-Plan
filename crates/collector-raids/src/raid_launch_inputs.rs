@@ -6,7 +6,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
 use engine_native_air::raid_launch_inputs as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AceRangeInputRow,
@@ -86,7 +87,7 @@ pub struct Captured {
     command_power: CaptureRows<native::CommandPowerRow>,
     selection: SliceSelection,
     essentials: Vec<native::Essential>,
-    memo: engine_native::modifier_definition::DefinitionMemo,
+    memo: engine_native_parts::modifier_definition::DefinitionMemo,
     volunteer_air: native::VolunteerAir,
 }
 
@@ -253,12 +254,12 @@ impl Captured {
                 memo: &self.memo,
                 keys: &keys,
                 essentials: &mut self.essentials,
-                countries: engine_native::walk::Buffer::Growing(&mut self.countries.rows),
-                command_power: engine_native::walk::Buffer::Growing(&mut self.command_power.rows),
-                reservations: engine_native::walk::Buffer::Growing(&mut self.reservations.first),
-                archetypes: engine_native::walk::Buffer::Growing(&mut self.archetypes.rows),
-                sites: engine_native::walk::Buffer::Growing(&mut self.sites.rows),
-                aces: engine_native::walk::Buffer::Growing(&mut self.aces.rows),
+                countries: engine_native_memory::walk::Buffer::Growing(&mut self.countries.rows),
+                command_power: engine_native_memory::walk::Buffer::Growing(&mut self.command_power.rows),
+                reservations: engine_native_memory::walk::Buffer::Growing(&mut self.reservations.first),
+                archetypes: engine_native_memory::walk::Buffer::Growing(&mut self.archetypes.rows),
+                sites: engine_native_memory::walk::Buffer::Growing(&mut self.sites.rows),
+                aces: engine_native_memory::walk::Buffer::Growing(&mut self.aces.rows),
             },
             &|slot| selection.contains(slot),
             Some(&mut self.volunteer_air),

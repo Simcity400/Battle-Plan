@@ -2,7 +2,7 @@ use super::*;
 use crate::acquisition_jobs::OrdersRequest;
 use collector_divisions::orders::Orders;
 use collector_raw::raw::RawLog;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[test]

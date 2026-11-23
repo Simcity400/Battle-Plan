@@ -1393,7 +1393,7 @@ fn compare_token(
     writer: TokenWriter,
     report: &mut Report,
 ) -> io::Result<()> {
-    if id == engine_native::cpdx_lexer::FIXED15_TOKEN && matches!(writer, TokenWriter::Token) {
+    if id == engine_native_memory::cpdx_lexer::FIXED15_TOKEN && matches!(writer, TokenWriter::Token) {
         return Err(invalid(format!(
             "{label} uses reserved token 0x167; the token writer formats fixed15 rather than its lexical name"
         )));

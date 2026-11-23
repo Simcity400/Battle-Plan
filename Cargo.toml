@@ -24,15 +24,24 @@ unimplemented = "warn"
 [workspace.dependencies]
 # Begin generated declarations (tools/check-feature-unification.py --fix; do not edit).
 test-unify = { path = "crates/test-unify" }
-unify-bitflags = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
+unify-adler2 = { package = "adler2", version = "2.0.1", default-features = false, features = [] }
+unify-bitflags-1 = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
+unify-bitflags-2 = { package = "bitflags", version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
+unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
+unify-fdeflate = { package = "fdeflate", version = "0.3.7", default-features = false, features = [] }
+unify-flate2 = { package = "flate2", version = "1.1.10", default-features = false, features = ["any_impl", "default", "miniz_oxide", "runtime_detection", "rust_backend"] }
 unify-hashbrown = { package = "hashbrown", version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 unify-indexmap = { package = "indexmap", version = "2.14.2", default-features = false, features = ["default", "std"] }
 unify-lock_api = { package = "lock_api", version = "0.4.14", default-features = false, features = ["arc_lock", "atomic_usize", "default"] }
 unify-log = { package = "log", version = "0.4.34", default-features = false, features = ["alloc", "std"] }
+unify-miniz_oxide-0-8 = { package = "miniz_oxide", version = "0.8.9", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
+unify-miniz_oxide-0-9 = { package = "miniz_oxide", version = "0.9.1", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
+unify-num-traits = { package = "num-traits", version = "0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 unify-once_cell = { package = "once_cell", version = "1.21.4", default-features = false, features = ["alloc", "default", "race", "std"] }
 unify-parking_lot = { package = "parking_lot", version = "0.12.5", default-features = false, features = ["arc_lock", "default"] }
 unify-rustc-hash = { package = "rustc-hash", version = "2.1.3", default-features = false, features = ["default", "std"] }
+unify-simd-adler32 = { package = "simd-adler32", version = "0.3.10", default-features = false, features = ["const-generics", "default", "std"] }
 unify-smallvec = { package = "smallvec", version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
 unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 unify-thiserror = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }

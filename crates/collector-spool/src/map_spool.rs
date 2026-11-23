@@ -13,8 +13,8 @@ use engine_native::{
     corder_instance,
     cship,
     ctask_force,
-    walk::Outcome,
 };
+use engine_native_memory::walk::Outcome;
 use engine_native_politics::chuman;
 use replay_data::{
     rows::AirWingRow, rows::ArmyOrderRow, rows::FleetRow, rows::HumanControllerRow,
@@ -1361,9 +1361,8 @@ mod tests {
 #[cfg(test)]
 mod ship_names_tests {
     use super::*;
-    use engine_native::{
-        cequipment_variant, cname_group_member as member, memory::SliceMemory, msvc_string,
-    };
+    use engine_native::{cequipment_variant, cname_group_member as member};
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
     use replay_data::rows::{Recorded, ShipNamingOperands};
     const SHIP: usize = 0x100;
     const MEMBER: usize = 0xb00;
@@ -1405,7 +1404,7 @@ mod ship_names_tests {
         word(
             &mut bytes,
             EQUIPMENT,
-            cequipment_variant::VTABLE_RVA.0 as u64,
+            engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
         );
         word(
             &mut bytes,

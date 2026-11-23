@@ -116,8 +116,8 @@ fn world() -> TestMemory {
     pointer(&mut bytes, 0xc218, 0xd100);
     pointer(&mut bytes, 0xc300, 0xd100);
     for (base, id) in [(0xd000, 0), (0xd100, 3)] {
-        pointer(&mut bytes, base, cnaval_base::VTABLE_RVA.0);
-        word(&mut bytes, base + cnaval_base::PROVINCE_ID, id);
+        pointer(&mut bytes, base, engine_native_parts::cnaval_base_layout::VTABLE_RVA.0);
+        word(&mut bytes, base + engine_native_parts::cnaval_base_layout::PROVINCE_ID, id);
     }
     header(&mut bytes, STATE + cgame_state::PROVINCES, 0x3200, 4);
     for (id, province, area) in [

@@ -118,7 +118,7 @@ impl ConvoyDesigns {
 fn first_design(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<ConvoyDesign, &'static str> {
     let convoy = country
         .pointer
@@ -148,7 +148,7 @@ fn first_design(
         }
         let pointer = usize::try_from(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
             .map_err(|_| "convoy target variant pointer overflow")?;
-        let variant = cequipment_variant::identity(memory, base, pointer)?;
+        let variant = engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)?;
         return Ok(ConvoyDesign {
             variant: Some(variant),
             surface_detection: word(memory, pointer, SURFACE_DETECTION),
@@ -206,7 +206,7 @@ mod tests {
             entries,
             amounts.len() as u32,
         );
-        world.u64(variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        world.u64(variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         world.u64(
             variant + 8,
             (7_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
@@ -240,8 +240,8 @@ mod tests {
             variant,
         )
     }
-    fn country(memory: &Observed) -> ccountry::Country {
-        ccountry::Country {
+    fn country(memory: &Observed) -> engine_native_memory::country_identity::Country {
+        engine_native_memory::country_identity::Country {
             pointer: memory.world.object(1),
             canonical_slot: 1,
             id: 1,

@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {

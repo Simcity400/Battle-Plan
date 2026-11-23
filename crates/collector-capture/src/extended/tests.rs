@@ -792,7 +792,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
 
 #[test]
 fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
-    use engine_native::{memory::CountedMemory, memory::SliceMemory};
+    use engine_native_memory::memory::{CountedMemory, SliceMemory};
     use replay_frame::frame::TableView;
 
     let slow = [
@@ -960,7 +960,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                     assert_eq!(outcomes[id.index()], expected, "{id:?}");
                     assert_eq!(
                         reads[id.index()],
-                        engine_native::memory::ReadCounts::ZERO,
+                        engine_native_memory::memory::ReadCounts::ZERO,
                         "retried {id:?}"
                     );
                     assert_eq!(ticks[id.index()], 0, "partial cost for {id:?}");
@@ -1464,7 +1464,7 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
         engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -1628,7 +1628,7 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
     let mut capacity = Capacities::default();
     capacity.production.rows[3..7].fill(1);
     let mut captured = Captured::with_capacities(&capacity);
-    let memory = engine_native::memory::CountedMemory::new(Reads(std::cell::Cell::new(0)));
+    let memory = engine_native_memory::memory::CountedMemory::new(Reads(std::cell::Cell::new(0)));
     let bytes = captured.allocated_bytes();
     let mut request = collector_test_support::with_allocations_denied(|| {
         captured.take_variants_request(11, 0x1000, slot + 1, false)
@@ -1680,7 +1680,7 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
         {
             assert_eq!(
                 counts[table.index()],
-                engine_native::memory::ReadCounts::ZERO
+                engine_native_memory::memory::ReadCounts::ZERO
             );
         }
         let expected = match failure {
@@ -2775,7 +2775,7 @@ impl Memory for SourceReads {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.borrow_mut().push((address, destination.len()));
         self.bytes.as_ref().is_some_and(|bytes| {
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: air::wing_test_kit::BASE,
                 bytes,
             }
@@ -2807,7 +2807,7 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
         captured
             .country_appearance
             .raw
-            .reserve(engine_native::raw_country_observations::Capacity {
+            .reserve(engine_native_memory::raw_country_observations::Capacity {
                 links: 8,
                 ..Default::default()
             })
@@ -3003,7 +3003,7 @@ fn cached_and_unsynchronised_packs_are_helper_packs() {
 
 #[test]
 fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let tables = [
         TableId::RaidAirScores,
         TableId::RailCooldowns,
@@ -3074,7 +3074,7 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
 
 #[test]
 fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     for completed in [true, false] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let countries = engine_allocation::shared(
@@ -3112,7 +3112,7 @@ fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
 
 #[test]
 fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
-    use engine_native::memory::CountedMemory;
+    use engine_native_memory::memory::CountedMemory;
     use replay_data::cadence::SKIPPED_REASON;
     struct NoRead;
     impl Memory for NoRead {
@@ -3166,7 +3166,7 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
             {
                 assert_eq!(
                     reads[table.index()],
-                    engine_native::memory::ReadCounts::ZERO,
+                    engine_native_memory::memory::ReadCounts::ZERO,
                     "{table:?}"
                 );
             }

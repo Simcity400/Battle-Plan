@@ -1,5 +1,5 @@
 
-use crate::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 
 pub const BUCKETS: usize = 0x988;
 pub const BUCKET_CAPACITY: &str = "original-tag bucket arena capacity exceeded";
@@ -63,11 +63,11 @@ fn scan(
         .checked_add(BUCKETS)
         .filter(|_| state != 0)
         .ok_or("original-tag game state null or overflowed")?;
-    let (outer_header, outer) = header(memory, address, crate::cpdx_array::STRIDE)?;
+    let (outer_header, outer) = header(memory, address, engine_native_memory::cpdx_array::STRIDE)?;
     demand.buckets = outer.count as usize;
     for ordinal in 0..outer.count {
         let address = outer
-            .element(ordinal, crate::cpdx_array::STRIDE)
+            .element(ordinal, engine_native_memory::cpdx_array::STRIDE)
             .ok_or("original-tag bucket address overflow")?;
         let (header, source) = header(memory, address, 4)?;
         let start = demand.members;
@@ -106,16 +106,16 @@ pub fn capture(
     capture_buffer(
         memory,
         state,
-        crate::walk::Buffer::Growing(buckets),
-        crate::walk::Buffer::Growing(members),
+        engine_native_memory::walk::Buffer::Growing(buckets),
+        engine_native_memory::walk::Buffer::Growing(members),
     )
 }
 
 fn capture_buffer(
     memory: &impl Memory,
     state: usize,
-    mut buckets: crate::walk::Buffer<'_, Bucket>,
-    mut members: crate::walk::Buffer<'_, u32>,
+    mut buckets: engine_native_memory::walk::Buffer<'_, Bucket>,
+    mut members: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Capture {
     let mut demand = Demand::default();
     let len = (|| {
@@ -141,7 +141,7 @@ fn capture_buffer(
             let output = members
                 .get_mut(bucket.start..end)
                 .ok_or("original-tag member span outside arena")?;
-            crate::cpdx_array::copy_u32s(
+            engine_native_memory::cpdx_array::copy_u32s(
                 memory,
                 bucket.source,
                 output,

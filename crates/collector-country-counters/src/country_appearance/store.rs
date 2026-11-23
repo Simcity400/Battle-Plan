@@ -1,10 +1,13 @@
 use super::Captured;
 use crate::country_input_changes::{self as changes, Changes, Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{
-    capture_text::Owned, ccountry::AppearanceGlobals, ccountry::Country,
-    ccountry::OwnedAppearanceRow, cpdx_array::Array, walk::Outcome,
+use engine_native_memory::{
+    capture_text::Owned,
+    country_identity::Country,
+    cpdx_array::Array,
+    walk::Outcome,
 };
+use engine_native::ccountry::{AppearanceGlobals, OwnedAppearanceRow};
 
 #[derive(Default)]
 struct HeldCountry {

@@ -1,8 +1,14 @@
 
-use crate::{
-    Memory, ccontinuous_national_focus, ccountry, cnational_focus, cnational_focus_tree,
-    cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
 };
+use crate::{ccontinuous_national_focus, cnational_focus, cnational_focus_tree};
+use engine_native::ccountry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x027b_7ad8);
@@ -63,7 +69,7 @@ struct Token {
 }
 
 struct Tokens<'a> {
-    bytes: crate::walk::Buffer<'a, u8>,
+    bytes: engine_native_memory::walk::Buffer<'a, u8>,
     len: usize,
     required: usize,
 }
@@ -99,7 +105,7 @@ impl Tokens<'_> {
     }
 }
 
-const ROOT_FIELDS: [crate::memory::RecordField; 6] = crate::memory::packed_fields([
+const ROOT_FIELDS: [engine_native_memory::memory::RecordField; 6] = engine_native_memory::memory::packed_fields([
     (0, 8),
     (CURRENT, 16),
     (PROGRESS, 8),
@@ -107,18 +113,18 @@ const ROOT_FIELDS: [crate::memory::RecordField; 6] = crate::memory::packed_field
     (COMPLETED_COUNT, 4),
     (COMPLETED_DATA, 16),
 ]);
-const ROOT_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&ROOT_FIELDS, 53).unwrap();
-const STRING_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0, 32)]);
-const STRING_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&STRING_FIELDS, 32).unwrap();
-const COMPLETED_FIELDS: [crate::memory::RecordField; 1] =
-    crate::memory::packed_fields([(cnational_focus::TOKEN, 32)]);
-const COMPLETED_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&COMPLETED_FIELDS, 32).unwrap();
+const ROOT_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ROOT_FIELDS, 53).unwrap();
+const STRING_FIELDS: [engine_native_memory::memory::RecordField; 1] = engine_native_memory::memory::packed_fields([(0, 32)]);
+const STRING_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&STRING_FIELDS, 32).unwrap();
+const COMPLETED_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+    engine_native_memory::memory::packed_fields([(cnational_focus::TOKEN, 32)]);
+const COMPLETED_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&COMPLETED_FIELDS, 32).unwrap();
 
 pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32) -> FocusWalk {
-    walk_buffer(memory, base, country, country_id, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, country, country_id, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -135,9 +141,9 @@ pub fn walk(
         base,
         country,
         country_id,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(completed),
-        crate::walk::Buffer::Growing(tokens),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(completed),
+        engine_native_memory::walk::Buffer::Growing(tokens),
     )
 }
 
@@ -146,9 +152,9 @@ pub fn walk_buffer(
     base: usize,
     country: usize,
     country_id: u32,
-    mut rows: crate::walk::Buffer<'_, Row>,
-    mut completed: crate::walk::Buffer<'_, CompletedRow>,
-    tokens: crate::walk::Buffer<'_, u8>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
+    mut completed: engine_native_memory::walk::Buffer<'_, CompletedRow>,
+    tokens: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> FocusWalk {
     let mut arena = Tokens {
         bytes: tokens,
@@ -164,8 +170,8 @@ pub fn walk_buffer(
     let roots = &roots[..usize::from(root.is_some())];
     let root_batch = crate::governance_batch::Records::gather(
         memory,
-        crate::batch_fallback::Batch::GovernanceFocusProgress,
-        crate::memory::RecordSources::Pointers(roots),
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusProgress,
+        engine_native_memory::memory::RecordSources::Pointers(roots),
         &ROOT_LAYOUT,
     );
     let batched = root_batch.view(memory);
@@ -212,7 +218,7 @@ fn summary(
     country: usize,
     country_id: u32,
     root: usize,
-    output: &mut crate::walk::Buffer<'_, Row>,
+    output: &mut engine_native_memory::walk::Buffer<'_, Row>,
     arena: &mut Tokens<'_>,
 ) -> Result<Outcome, &'static str> {
     let tree = read::<u64>(memory, at(country, ccountry::FOCUS_TREE)?)
@@ -256,8 +262,8 @@ fn summary(
     }
     let batch = crate::governance_batch::Records::gather(
         memory,
-        crate::batch_fallback::Batch::GovernanceFocusDefinitions,
-        crate::memory::RecordSources::Pointers(&strings[..string_count]),
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusDefinitions,
+        engine_native_memory::memory::RecordSources::Pointers(&strings[..string_count]),
         &STRING_LAYOUT,
     );
     let batched = batch.view(memory);
@@ -311,7 +317,7 @@ fn completed_rows(
     memory: &impl Memory,
     country_id: u32,
     root: usize,
-    output: &mut crate::walk::Buffer<'_, CompletedRow>,
+    output: &mut engine_native_memory::walk::Buffer<'_, CompletedRow>,
     arena: &mut Tokens<'_>,
 ) -> Result<Outcome, &'static str> {
     let roster = Array::read(memory, at(root, COMPLETED_DATA)?, COMPLETED_STRIDE)
@@ -320,8 +326,8 @@ fn completed_rows(
     let admitted = output.len().min(roster.count as usize);
     let pointer_batch = crate::governance_batch::Records::gather(
         memory,
-        crate::batch_fallback::Batch::GovernanceFocusPointers,
-        crate::memory::RecordSources::Strided {
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusPointers,
+        engine_native_memory::memory::RecordSources::Strided {
             base: roster.data,
             stride: COMPLETED_STRIDE,
             count: admitted,
@@ -331,8 +337,8 @@ fn completed_rows(
     let targets = pointer_batch.targets(0);
     let definition_batch = crate::governance_batch::Records::gather(
         memory,
-        crate::batch_fallback::Batch::GovernanceFocusDefinitions,
-        crate::memory::RecordSources::Pointers(&targets),
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusDefinitions,
+        engine_native_memory::memory::RecordSources::Pointers(&targets),
         &COMPLETED_LAYOUT,
     );
     let pointers = pointer_batch.view(memory);
@@ -408,7 +414,7 @@ fn optional_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1_4000_0000;
     const COUNTRY: usize = 0x1000;

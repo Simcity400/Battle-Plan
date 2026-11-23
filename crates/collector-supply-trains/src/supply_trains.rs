@@ -5,12 +5,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec, reserve};
-use engine_native::{
-    Memory,
-    ccountry_supply_system,
-    supply_train_entry,
-    walk::{Buffer, Outcome},
-};
+use engine_native_memory::{Memory, walk::{Buffer, Outcome}};
+use engine_native::ccountry_supply_system::{self, train_entry as supply_train_entry};
 use engine_native_land::supply_node;
 use replay_data::{
     rows::ByteRun, rows::Recorded, rows::SparseBytes, rows::SupplyNodeRow, rows::TableId,
@@ -911,7 +907,7 @@ mod tests {
             hour: 9,
             force_full: false,
         };
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

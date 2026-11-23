@@ -620,7 +620,7 @@ mod tests {
             &[first, second, first],
         );
         f.node(
-            country + engine_native::ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             b"",
             &[],
             &[child],
@@ -628,7 +628,7 @@ mod tests {
         let nodes = tree(
             &f,
             0,
-            country + engine_native::ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             keys::LAND_REINFORCE_RATE,
         )
         .unwrap();
@@ -656,7 +656,7 @@ mod tests {
                 (b"commander".as_slice(), 250, -700)
             );
         }
-        let root = country + engine_native::ccountry::MODIFIER_ACCUMULATOR;
+        let root = country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         let full = tree(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
         let printed = printed_nodes(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
         assert_eq!(printed.len(), full.len());

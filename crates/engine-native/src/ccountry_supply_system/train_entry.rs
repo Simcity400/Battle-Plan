@@ -1,4 +1,6 @@
-use crate::{Memory, cequipment_variant, creference_registry, read};
+use engine_native_memory::{Memory, read};
+use crate::cequipment_variant;
+use engine_native_parts::creference_registry;
 pub const STRIDE: usize = 0x18;
 pub const VARIANT: usize = 0;
 pub const COUNT: usize = 8;
@@ -18,7 +20,7 @@ pub(crate) fn decode(memory: &impl Memory, base: usize, bytes: &[u8]) -> Result<
         }
         let pointer = creference_registry::resolve(memory, base, variant)?
             .ok_or("allocated train variant unresolved")?;
-        if cequipment_variant::identity(memory, base, pointer)? != variant {
+        if engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)? != variant {
             return Err("allocated train variant identity mismatch");
         }
         if read::<u64>(memory, pointer + cequipment_variant::DEFINITION).is_none_or(|p| p == 0) {

@@ -32,7 +32,6 @@ viewer-runtime.workspace = true
 viewer-unit-reads.workspace = true
 game-model.workspace = true
 engine-executable.workspace = true
-engine-native.workspace = true
 content-reader-localisation.workspace = true
 content-reader-naval-path.workspace = true
 content-reader-regions.workspace = true
@@ -42,6 +41,7 @@ replay-derive.workspace = true
 replay-frame.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 content-reader-script = { workspace = true, features = ["test-support"] }
 viewer-counter-kit = { workspace = true, features = ["test-support"] }
@@ -72,13 +72,16 @@ content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-tracing = { workspace = true }
 unify-uuid = { workspace = true }

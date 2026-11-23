@@ -3,7 +3,8 @@ use recorder_derive_framework::{
     deployed::{invalid, number, row},
     framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns},
 };
-use engine_native::{cbuilding_database::RAILWAY_TEMPLATE_TOKEN, cbuilding_status::PROVINCE_FLAG};
+use engine_native_parts::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
+use engine_native::cprovince::buildings::PROVINCE_FLAG;
 use replay_columnar::{
     leaf::{Reader, Writer as Bytes},
     store::{Kept, TableView},

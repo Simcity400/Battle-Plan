@@ -15,7 +15,7 @@ pub struct Row {
 }
 
 pub fn read(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> Result<Row, &'static str> {

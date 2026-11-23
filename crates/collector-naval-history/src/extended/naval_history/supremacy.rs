@@ -60,7 +60,7 @@ fn supremacy_pool_u64(log: &RawLog<SUPREMACY_N>, start: usize) -> u64 {
 
 fn sspan(
     log: &mut RawLog<SUPREMACY_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -70,7 +70,7 @@ fn sspan(
 
 fn copy_supremacy_pass(
     job: &mut SupremacyJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
@@ -80,7 +80,7 @@ fn copy_supremacy_pass(
 
 fn copy_supremacy_pass_mode(
     job: &mut SupremacyJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
@@ -97,7 +97,7 @@ fn copy_supremacy_pass_mode(
 
 fn copy_supremacy_tables(
     job: &mut SupremacyJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) {

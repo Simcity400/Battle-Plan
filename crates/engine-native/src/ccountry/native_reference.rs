@@ -5,7 +5,8 @@ use std::{
 };
 
 use super::{AuthenticatedRoster, Country, Reader};
-use crate::{Memory, allocation, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_allocation as allocation;
 
 type CountryResult = Result<Country, &'static str>;
 type SlotResult = Result<Option<Country>, &'static str>;
@@ -427,7 +428,7 @@ impl<M: Memory> Memory for ObservedLinks<'_, '_, M> {
             if let Some(result) = *cell {
                 result
             } else {
-                let result = crate::read::<u32>(self.context.memory, address)
+                let result = engine_native_memory::read::<u32>(self.context.memory, address)
                     .ok_or("country link unreadable or outside country table");
                 *cell = Some(result);
                 self.context

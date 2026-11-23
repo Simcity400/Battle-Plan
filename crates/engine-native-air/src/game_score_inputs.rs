@@ -234,7 +234,7 @@ pub fn read_slot_zero(
     memory: &impl Memory,
     base: usize,
     countries: Array,
-) -> Result<Option<ccountry::Country>, &'static str> {
+) -> Result<Option<engine_native_memory::country_identity::Country>, &'static str> {
     let pointer = countries
         .element(0, 8)
         .and_then(|at| read::<u64>(memory, at))
@@ -256,7 +256,7 @@ pub fn read_slot_zero(
         ccountry::ID,
         "game score country slot zero identity unreadable",
     )?;
-    Ok(Some(ccountry::Country {
+    Ok(Some(engine_native_memory::country_identity::Country {
         pointer,
         canonical_slot: 0,
         id,
@@ -758,7 +758,7 @@ fn read_site_batch(
         gathered[start..start + whole].fill(true);
         start += whole + 1;
     }
-    let expected = engine_sites::at(base, cair_base::VTABLE_RVA);
+    let expected = engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA);
     let mut access_rows = [0_usize; SITE_BATCH];
     let mut access_at = [0_usize; SITE_BATCH];
     let mut accesses = 0;
@@ -857,7 +857,7 @@ pub fn read_air_site(
     }
     let identity =
         read::<[u8; 16]>(memory, pointer).ok_or("game score air-site identity unreadable")?;
-    if engine_sites::at(base, cair_base::VTABLE_RVA)
+    if engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA)
         != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize)
     {
         return Err("game score air-site vtable mismatch");

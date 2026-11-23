@@ -2,7 +2,7 @@ use super::{
     Capacities, Captured, IntelCopyContext, IntelCopyReport, IntelJob,
     copy_intel_refresh_with_divisions,
 };
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x10000;

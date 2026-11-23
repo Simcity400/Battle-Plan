@@ -1,6 +1,8 @@
 
-use crate::{
-    Memory, ccountry_supply_system as country_supply, csupply_system, read, walk::Outcome,
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::ccountry_supply_system::{
+    self as country_supply,
+    world as csupply_system,
 };
 
 pub const STRIDE: usize = 0x18;
@@ -22,7 +24,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -35,7 +37,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -43,7 +45,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let systems = csupply_system::Reader::new(memory, base, game_state)?;
@@ -84,14 +86,14 @@ pub(crate) fn read_country(
     country: u32,
     output: &mut Vec<Row>,
 ) -> Outcome {
-    read_country_buffer(memory, pointer, country, crate::walk::Buffer::Growing(output))
+    read_country_buffer(memory, pointer, country, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 pub(crate) fn read_country_buffer(
     memory: &impl Memory,
     pointer: usize,
     country: u32,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let header = pointer
@@ -211,7 +213,7 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const COUNTRY: usize = 0x1000;
     const BUCKETS: usize = 0x1400;
@@ -255,7 +257,7 @@ mod tests {
             },
             COUNTRY,
             19,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
         )
     }
 

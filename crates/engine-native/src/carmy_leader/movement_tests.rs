@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Memory, carmy, corder_instance as order, corders_group as group, cunit};
+use engine_native_memory::Memory;
+use crate::{carmy, corder_instance as order, corders_group as group, cunit};
 
 const ARMY: usize = 0x1000;
 const HQ: usize = 0x2000;
@@ -159,8 +160,8 @@ fn primary_prefix_collision_preserves_native_fallback_and_clear_reuses_storage()
     let source = Observed::new(fixture);
     let mut cache = PrimaryRootCache::new(1, 4);
     assert_eq!(cache.resolve(&source, 0, hq), Ok(ROOT));
-    let header = crate::read::<[u8; 16]>(&source, ROOT + order::ASSIGNED_MEMBER_DATA).unwrap();
-    let members = crate::cpdx_array::Array::from_header(header, 8).unwrap();
+    let header = engine_native_memory::read::<[u8; 16]>(&source, ROOT + order::ASSIGNED_MEMBER_DATA).unwrap();
+    let members = engine_native_memory::cpdx_array::Array::from_header(header, 8).unwrap();
     let before = source.count(MEMBERS);
     assert!(
         cache
@@ -315,13 +316,13 @@ impl Fixture {
 }
 impl Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0
+        if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0
             && destination.len() == 4
         {
             destination.copy_from_slice(&self.flags.to_le_bytes());
             return true;
         }
-        crate::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &self.bytes,
         }
@@ -356,7 +357,7 @@ fn a_nonzero_class_never_reads_the_trade_feature_flags() {
         Ok(Some(LEADER + 0x418))
     );
     assert_eq!(
-        source.count(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
+        source.count(engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
         0
     );
 }
@@ -477,7 +478,7 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
             for address in [
                 GROUP + group::LEADER,
                 GROUP + group::HQ_PROVIDER,
-                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
+                engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
             ] {
                 assert!(memoized.count(address) <= 1, "{fault:?} {address:#x}");
             }
@@ -537,7 +538,7 @@ fn refused_memo_growth_is_named_as_the_allocation_failure() {
     );
     let mut refused = LeaderMemo::vacant();
     assert_eq!(
-        crate::allocation::test_support::with_allocations_denied(|| {
+        engine_allocation::test_support::with_allocations_denied(|| {
             movement_accumulator_memoized(&fixture, 0, &seed, &mut refused)
         }),
         Err("movement leader memo allocation failed")
@@ -571,7 +572,7 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
         Some(GROUP),
         Some(GROUP + group::LEADER),
         Some(LEADER),
-        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
+        Some(engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
         Some(GROUP + group::HQ_PROVIDER),
         Some(MEMBERS),
     ] {
@@ -623,7 +624,7 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
                 GROUP + group::LEADER,
                 GROUP + group::TRAINING,
                 GROUP + group::HQ_PROVIDER,
-                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
+                engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
             ] {
                 assert_eq!(census.count(address), 1, "hour {hour} {address:#x}");
             }
@@ -752,7 +753,7 @@ fn only_primary_roots_and_immediate_parent_participate() {
     f.root(GROUP, group::SECONDARY_ORDER_DATA, ARMY);
     assert_eq!(movement_accumulator(&f, 0, ARMY), Ok(Some(LEADER + 0x418)));
     f.word(GROUP + group::PARENT, PARENT as u64);
-    f.word(PARENT, crate::carmy_group::VTABLE_RVA.0 as u64);
+    f.word(PARENT, engine_native_parts::carmy_group::VTABLE_RVA.0 as u64);
     f.word(PARENT + group::HANDLE, group::REFERENCE_TYPE as u64);
     f.root(PARENT, group::PRIMARY_ORDER_DATA, ARMY);
     f.bytes[ARMY + crate::corders_group_member::HOST_OFFSET + PRIMARY_ROOT_DIRTY] = 1;
@@ -786,7 +787,7 @@ fn counter_dig_in_factor_keeps_native_one_and_wrapping_commander_modifier() {
     struct Definitions<'a>(&'a Fixture);
     impl Memory for Definitions<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
+            if address == engine_native_parts::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                 return true;
             }
@@ -815,7 +816,7 @@ fn counter_dig_in_factor_keeps_native_one_and_wrapping_commander_modifier() {
         MEMBERS,
         1,
     );
-    fixture.word(MEMBERS, crate::modifier_keys::COMBAT_ENTRENCHMENT as u64);
+    fixture.word(MEMBERS, engine_executable::modifier_keys::COMBAT_ENTRENCHMENT as u64);
     for modifier in [-150_000_i64, 17, i64::MAX] {
         fixture.word(MEMBERS + 8, modifier as u64);
         assert_eq!(
@@ -854,7 +855,7 @@ fn prepared_movement_ranges_preserve_serial_faults_and_shared_admission() {
         Some(GROUP),
         Some(GROUP + group::LEADER),
         Some(LEADER),
-        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
+        Some(engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
         Some(GROUP + group::HQ_PROVIDER),
         Some(ROOTS),
         Some(MEMBERS),

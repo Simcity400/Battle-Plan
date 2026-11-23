@@ -25,7 +25,8 @@ pub(super) fn walk_shared(
     mut names: engine_native_memory::walk::Buffer<'_, u8>,
     mut each: impl FnMut(u32, usize),
 ) -> engine_native::crelation::subject::NameWalk {
-    use engine_native::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
+    use engine_native_memory::msvc_string::Literal;
+    use engine_native::crelation::subject::{Name, NameWalk};
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
@@ -86,7 +87,7 @@ pub(super) fn walk_shared(
 fn root(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Option<usize>, &'static str> {
     let pointer = usize::try_from(field::<u64>(
         memory,

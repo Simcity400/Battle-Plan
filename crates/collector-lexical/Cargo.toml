@@ -13,8 +13,8 @@ doctest = false
 test-support = ["collector-extended-support/test-support"]
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-allocation.workspace = true
-engine-native.workspace = true
 replay-data.workspace = true
 replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
@@ -25,7 +25,6 @@ collector-projection.workspace = true
 collector-raw.workspace = true
 
 [dev-dependencies]
-engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
 collector-extended-support = { workspace = true, features = ["test-support"] }
@@ -42,6 +41,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-lexical = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

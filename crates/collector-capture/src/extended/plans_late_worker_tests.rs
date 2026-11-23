@@ -2,7 +2,7 @@ use collector_plans::extended::plans::{
     Capacities,
     tests::{execution_capture, execution_image, pass},
 };
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 
 #[test]
 fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {

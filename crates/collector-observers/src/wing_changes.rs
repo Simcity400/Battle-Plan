@@ -5,7 +5,7 @@ use crate::{
 use engine_mutations::air_wing_equipment_mutations::{
     ATTACHMENT_COVERAGE, MAP_MUTATIONS, MISSION, MUTATIONS, TRAINING_STOP, pools,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},

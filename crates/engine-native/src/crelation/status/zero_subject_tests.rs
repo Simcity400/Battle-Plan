@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 const STATUS: usize = 0x100;
 const SUBJECT: usize = 0x600;

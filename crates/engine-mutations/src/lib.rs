@@ -3,38 +3,11 @@ use engine_deployment::cdeployment_status;
 #[cfg(test)]
 use engine_events::politics_sites;
 use engine_focus::cnational_focus_progress;
-#[cfg(test)]
-use engine_native::carmy;
+use engine_allocation as allocation;
 use engine_native::{
-    Memory,
-    allocation,
-    cair_wing_pool,
-    ccharacter,
-    ccountry,
-    cequipment_production_license,
-    cfaction,
-    cgame_state,
-    clicensed_production_status,
-    cpdx_array,
-    cprovince,
-    creferenced_division_template,
-    crelation,
-    crelation_status,
-    cstate,
-    province_definition,
-    read,
-};
-use engine_native_politics::{
-    ccountry_characters,
-    cdiplomacy_status,
-    cpolitical_party,
-    cpolitical_status,
-};
-use engine_native_air::{
-    cair_base,
-    ccountry_air_container,
-    cstrategic_air,
-    cstrategic_air_manager,
+    cproduction_status::equipment_license as cequipment_production_license,
+    cprovince::{self, definition as province_definition},
+    crelation::{self, status as crelation_status},
 };
 use engine_projects::{nproject_cprogram_status, nproject_cproject};
 use engine_railways::{cprovince_railway_info, crailway_manager};
@@ -83,7 +56,5 @@ pub mod unit_leader_mutations;
 pub mod world_input_mutations;
 pub mod world_lifetime_sites;
 
-#[cfg(test)]
-use engine_native::memory;
 
 pub mod war_participation_sites;

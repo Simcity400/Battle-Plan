@@ -5,7 +5,8 @@ use crate::{
 };
 use engine_allocation::{copy_vec, owned_vec};
 use engine_land_inputs::cfaction_theater_manager as native;
-use engine_native::{Memory, cfaction, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cfaction;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::FactionAdvisorRow,
     rows::FactionTheatreRow, rows::TableId, rows::tables,

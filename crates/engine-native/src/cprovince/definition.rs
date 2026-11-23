@@ -18,7 +18,7 @@ pub const MAX_CENSUS_RECORDS: u32 = 1 << 16;
 pub struct MovementDefinition {
     pub terrain_flags: u8,
     pub terrain_index: i32,
-    pub neighbours: Vec<crate::province_neighbour::Record>,
+    pub neighbours: Vec<engine_native_parts::province_neighbour::Record>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,17 +28,19 @@ pub struct MovementCensus {
 }
 
 pub fn read_movement_census(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
 ) -> Result<MovementCensus, &'static str> {
-    use crate::{cgame_state, cprovince, cterrain_type, province_neighbour as neighbour, read};
+    use crate::{cgame_state, cprovince};
+    use engine_native_parts::{cterrain_type, province_neighbour as neighbour};
+    use engine_native_memory::read;
     let module = |key: Rva| engine_sites::at(base, key).ok_or("province definition site withheld");
     let game_state = read::<u64>(memory, module(cgame_state::SINGLETON_RVA)?)
         .filter(|&pointer| pointer != 0)
         .ok_or("game state unreadable or null")? as usize;
     let census = game_state
         .checked_add(cgame_state::PROVINCES)
-        .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
+        .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
         .ok_or("province census header unreadable or invalid")?;
     if census.count < 2 {
         return Err("no province census: load a save first");
@@ -82,7 +84,7 @@ pub fn read_movement_census(
         }
         let terrain_index = read::<i32>(memory, field(terrain, cterrain_type::DATABASE_INDEX)?)
             .ok_or("terrain index unreadable")?;
-        let entries = crate::cpdx_array::Array::read(
+        let entries = engine_native_memory::cpdx_array::Array::read(
             memory,
             field(definition, NEIGHBOURS)?,
             neighbour::STRIDE,
@@ -92,7 +94,7 @@ pub fn read_movement_census(
             return Err("neighbour count exceeds the province census");
         }
         let mut bytes = vec![0; entries.count as usize * neighbour::STRIDE];
-        if !crate::read_slice(memory, entries.data, &mut bytes) {
+        if !engine_native_memory::read_slice(memory, entries.data, &mut bytes) {
             return Err("neighbour entries unreadable");
         }
         let neighbours = bytes
@@ -124,9 +126,9 @@ pub(crate) struct GeometryFields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        cgame_state, cprovince, cterrain_type, memory::SliceMemory, province_neighbour as neighbour,
-    };
+    use crate::{cgame_state, cprovince};
+    use engine_native_parts::{cterrain_type, province_neighbour as neighbour};
+    use engine_native_memory::memory::SliceMemory;
 
     const MODULE: usize = 0x1_4000_0000;
     const START: usize = MODULE + cgame_state::SINGLETON_RVA.0;

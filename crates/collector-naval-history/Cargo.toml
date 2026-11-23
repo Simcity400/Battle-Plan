@@ -14,6 +14,8 @@ default = []
 test-support = ["collector-air/test-support", "dep:collector-test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-native-air.workspace = true
 engine-visibility.workspace = true
 engine-deployment.workspace = true
@@ -67,6 +69,7 @@ collector-observers = { workspace = true, features = ["advisor_changes", "adviso
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

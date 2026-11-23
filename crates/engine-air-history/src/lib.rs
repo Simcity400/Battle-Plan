@@ -1,26 +1,5 @@
 
-#[cfg(test)]
-use engine_native::cland_combat;
-use engine_native::{
-    Memory,
-    allocation,
-    cair_wing_pool,
-    ccountry,
-    cfleet,
-    cgame_state,
-    cnaval_combat,
-    cpdx_array,
-    cprovince,
-    cstrategic_region,
-    csub_unit_definition,
-    ctask_force,
-    cunit,
-    memory,
-    read,
-    walk,
-};
-use engine_native_politics::cdiplomacy_status;
-use engine_native_air::{cair_wing, cstrategic_air, cstrategic_air_manager};
+use engine_allocation as allocation;
 
 pub mod air_history_mutations;
 pub mod air_kamikaze;

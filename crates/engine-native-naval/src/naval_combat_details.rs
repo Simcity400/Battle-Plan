@@ -184,7 +184,7 @@ pub fn walk_details_timed(
                             details[lengths[0]] = row;
                             lengths[0] += 1;
                         }
-                        Err(PLANE_CAPACITY | crate::naval_member_details::DETAIL_ARENA_CAPACITY) => {
+                        Err(PLANE_CAPACITY | engine_native::cfex_member::DETAIL_ARENA_CAPACITY) => {
                             unread[0] += 1
                         }
                         Err(reason) => errors[0] = Some(reason),
@@ -392,7 +392,7 @@ fn commander_input(
         .ok_or("naval commander demand overflow")?;
     let index = buffers.commander_inputs_len;
     if !buffers.commander_inputs.ensure(index + 1)? {
-        return Err(crate::naval_member_details::DETAIL_ARENA_CAPACITY);
+        return Err(engine_native::cfex_member::DETAIL_ARENA_CAPACITY);
     }
     buffers.commander_inputs[index] = crate::naval_commander_inputs::capture(
         memory,

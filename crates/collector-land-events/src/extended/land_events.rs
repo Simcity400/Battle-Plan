@@ -2,7 +2,7 @@ use crate::land_events::{LIVE, Observer};
 use crate::land_events::Drain;
 use collector_primitives::table_capture::{grow_capacity, grow_vec};
 use engine_allocation as allocation;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::{
     rows::DestroyedDivisionsRow, rows::LandCombatResultsRow, rows::LandEquipmentLoss,
     rows::LandEventCoverageRow, rows::LandResultSide, rows::LandSideLosses, rows::TableId,
@@ -1143,7 +1143,7 @@ mod tests {
     fn native_destruction_to_replay_roundtrip_recovers_without_stale_events() {
         #[derive(Default)]
         struct Memory(std::collections::BTreeMap<usize, u8>);
-        impl engine_native::Memory for Memory {
+        impl engine_native_memory::Memory for Memory {
             fn copy(&self, p: usize, out: &mut [u8]) -> bool {
                 for (n, b) in out.iter_mut().enumerate() {
                     let Some(v) = self.0.get(&(p + n)) else {

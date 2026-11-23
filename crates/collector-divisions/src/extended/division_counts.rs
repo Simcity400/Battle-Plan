@@ -1,7 +1,7 @@
 use crate::division_census::Census;
 use collector_primitives::table_capture::CaptureRows;
 use collector_projection::table_conversion::table;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::{rows::DivisionCensusRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
@@ -54,7 +54,7 @@ impl Captured {
     }
     pub fn install(&mut self, census: &Census) {
         if let Err(reason) =
-            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(census.country_count())
+            engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(census.country_count())
         {
             self.rows.outcome = Outcome::Unavailable { reason };
             return;

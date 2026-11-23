@@ -1,6 +1,6 @@
 
 use crate::table_conversion::{table, unavailable};
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::rows::{TABLE_COUNT, TableId};
 use replay_data::{BranchId, Hour, rows::RowCodec, rows::TableRows, rows::TableSchema};
 use replay_frame::{frame::FrameEncoder, frame::TableInput, frame::TableView};

@@ -12,10 +12,13 @@ doctest = false
 [features]
 default = ["air_base_changes", "wing_changes"]
 air_base_changes = []
-test-support = ["collector-primitives/test-support", "dep:collector-test-support", "engine-native/layout-fixtures"]
+test-support = ["collector-primitives/test-support", "dep:collector-test-support", "dep:engine-native-politics", "engine-native/layout-fixtures", "engine-native-air/layout-fixtures", "engine-native-parts/layout-fixtures"]
 wing_changes = ["collector-observers/wing_changes"]
 
 [dependencies]
+engine-native-politics = { workspace = true, optional = true }
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-native-air.workspace = true
 engine-deployment.workspace = true
 collector-test-support = { workspace = true, optional = true }
@@ -79,6 +82,7 @@ collector-observers = { workspace = true, features = ["advisor_changes", "adviso
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

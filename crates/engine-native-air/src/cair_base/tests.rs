@@ -1,3 +1,5 @@
+use crate::cair_wing;
+use engine_native_parts::cair_base_layout::{HANDLE, TYPE};
 use super::*;
 use engine_native_memory::memory::SliceMemory;
 
@@ -224,7 +226,7 @@ fn host_registration_fixture() -> Vec<u8> {
         wing(
             &mut bytes,
             pointer,
-            (id << 32) | cair_wing::TYPE as u64,
+            (id << 32) | engine_native_parts::cair_wing_layout::TYPE as u64,
             POOL_A,
         );
         qword(
@@ -252,7 +254,7 @@ fn host_registration_fixture() -> Vec<u8> {
     for country in [COUNTRY_A, COUNTRY_B] {
         array(
             &mut bytes,
-            country + ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             0,
             0,
             0,
@@ -498,9 +500,9 @@ fn original_carrier_plane_sum_wraps_repeats_and_keeps_empty_pool_zero() {
     assert_eq!(
         observed.wings[..3],
         [
-            (11_u64 << 32) | cair_wing::TYPE as u64,
-            (11_u64 << 32) | cair_wing::TYPE as u64,
-            (12_u64 << 32) | cair_wing::TYPE as u64,
+            (11_u64 << 32) | engine_native_parts::cair_wing_layout::TYPE as u64,
+            (11_u64 << 32) | engine_native_parts::cair_wing_layout::TYPE as u64,
+            (12_u64 << 32) | engine_native_parts::cair_wing_layout::TYPE as u64,
         ]
     );
 }
@@ -936,14 +938,14 @@ const WING_A: usize = 0x3a00;
 const WING_B: usize = 0x3b00;
 
 fn wing(bytes: &mut [u8], at: usize, handle: u64, pool: usize) {
-    qword(bytes, at, (IMAGE + cair_wing::VTABLE_RVA.0) as u64);
+    qword(bytes, at, (IMAGE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0) as u64);
     qword(
         bytes,
-        at + cair_wing::SECONDARY,
-        (IMAGE + cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
+        at + engine_native_parts::cair_wing_layout::SECONDARY,
+        (IMAGE + engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0) as u64,
     );
-    qword(bytes, at + cair_wing::REFERENCE_TYPE, handle);
-    qword(bytes, at + cair_wing::POOL, pool as u64);
+    qword(bytes, at + engine_native_parts::cair_wing_layout::REFERENCE_TYPE, handle);
+    qword(bytes, at + engine_native_parts::cair_wing_layout::POOL, pool as u64);
 }
 
 fn registration_fixture() -> Vec<u8> {
@@ -1023,7 +1025,7 @@ fn registration_fixture() -> Vec<u8> {
     wing(
         &mut bytes,
         WING_A,
-        (11_u64 << 32) | u64::from(cair_wing::TYPE),
+        (11_u64 << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE),
         POOL_A,
     );
     wing(&mut bytes, WING_B, u64::MAX, POOL_A);
@@ -1058,8 +1060,8 @@ fn registered(
     first
 }
 
-fn stale_country() -> ccountry::Country {
-    ccountry::Country {
+fn stale_country() -> engine_native_memory::country_identity::Country {
+    engine_native_memory::country_identity::Country {
         pointer: 0xdead,
         canonical_slot: 1,
         id: 9,
@@ -1093,7 +1095,7 @@ fn registered_slots_keep_native_order_reserved_slots_and_empty_containers() {
     );
     assert_eq!(
         &wings[..2],
-        [(11_u64 << 32) | u64::from(cair_wing::TYPE), u64::MAX]
+        [(11_u64 << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE), u64::MAX]
     );
 }
 
@@ -1145,7 +1147,7 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
     let (walk, rows, wings) = registered(&bytes, 4, 8);
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
     assert_eq!((walk.wings_len, walk.required_wings), (4, 4));
-    let repeated = (11_u64 << 32) | u64::from(cair_wing::TYPE);
+    let repeated = (11_u64 << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE);
     assert_eq!(&wings[..4], [repeated, repeated, u64::MAX, u64::MAX]);
     assert_eq!(
         rows[2],
@@ -1191,7 +1193,7 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
         Some(POOL),
         Some(POOL + cair_wing_pool::WINGS),
         Some(SHORT_WINGS),
-        Some(WING + cair_wing::POOL + 7),
+        Some(WING + engine_native_parts::cair_wing_layout::POOL + 7),
     ] {
         let run = |reset_each_base| {
             let memory = Traced {
@@ -1316,9 +1318,9 @@ fn registration_wings_admit_only_two_complete_fields_and_keep_the_fault_prefix()
     let bytes = registration_fixture();
     let fields = [
         (WING_A, 32),
-        (WING_A + cair_wing::POOL, 8),
+        (WING_A + engine_native_parts::cair_wing_layout::POOL, 8),
         (WING_B, 32),
-        (WING_B + cair_wing::POOL, 8),
+        (WING_B + engine_native_parts::cair_wing_layout::POOL, 8),
     ];
     for (field_index, &(address, size)) in fields.iter().enumerate() {
         for byte in 0..size {
@@ -1363,7 +1365,7 @@ fn registration_wings_admit_only_two_complete_fields_and_keep_the_fault_prefix()
                 address + byte
             );
             if walked.wings_len != 0 {
-                assert_eq!(wings[0], (11_u64 << 32) | u64::from(cair_wing::TYPE));
+                assert_eq!(wings[0], (11_u64 << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE));
             }
         }
     }
@@ -1384,22 +1386,22 @@ fn registration_faults_never_become_absence() {
         ),
         (WING_TABLE_A, 0, "air pool wing pointer unreadable or null"),
         (
-            WING_A + cair_wing::REFERENCE_TYPE,
+            WING_A + engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
             0,
             "registered air wing has a null reference handle",
         ),
         (
-            WING_A + cair_wing::SECONDARY,
+            WING_A + engine_native_parts::cair_wing_layout::SECONDARY,
             0x1234,
             "air pool wing vtable mismatch",
         ),
         (
-            WING_A + cair_wing::POOL,
+            WING_A + engine_native_parts::cair_wing_layout::POOL,
             POOL_B as u64,
             "registered air wing backlink differs from containing pool",
         ),
         (
-            WING_B + cair_wing::POOL,
+            WING_B + engine_native_parts::cair_wing_layout::POOL,
             0,
             "registered air wing backlink differs from containing pool",
         ),

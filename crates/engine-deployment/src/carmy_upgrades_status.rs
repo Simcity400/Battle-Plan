@@ -7,12 +7,9 @@ pub const PERSISTENT_VTABLE_RVA: Rva = Rva(0x2a4ba60);
 pub const GROUPS_DATA: usize = 0x20;
 pub const GROUPS_COUNT: usize = 0x2c;
 
-use crate::{
-    Memory, army_upgrade_request_row, carmy_upgrades_requests,
-    cpdx_array::Array,
-    cupgrade_delivery, equipment_entry, read,
-    walk::{Buffer, Outcome},
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use crate::{army_upgrade_request_row, carmy_upgrades_requests, cupgrade_delivery};
+use engine_native_parts::equipment_entry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outcomes {
@@ -33,14 +30,14 @@ impl Outcomes {
     }
 }
 
-pub fn count(memory: &impl Memory, base: usize, sources: &[crate::cequipment_variant_pool::DivisionSource]) -> Outcomes {
+pub fn count(memory: &impl Memory, base: usize, sources: &[engine_native::cequipment_variant::pool::DivisionSource]) -> Outcomes {
     walk_buffer(memory, base, sources, Buffer::Count, Buffer::Count, Buffer::Count, Buffer::Count)
 }
 
 pub fn walk(
     memory: &impl Memory,
     base: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[engine_native::cequipment_variant::pool::DivisionSource],
     groups: &mut Vec<carmy_upgrades_requests::Row>,
     requests: &mut Vec<army_upgrade_request_row::Row>,
     deliveries: &mut Vec<cupgrade_delivery::Row>,
@@ -60,7 +57,7 @@ pub fn walk(
 fn walk_buffer(
     memory: &impl Memory,
     base: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[engine_native::cequipment_variant::pool::DivisionSource],
     groups: Buffer<'_, carmy_upgrades_requests::Row>,
     requests: Buffer<'_, army_upgrade_request_row::Row>,
     deliveries: Buffer<'_, cupgrade_delivery::Row>,
@@ -74,7 +71,7 @@ fn walk_buffer(
         for source in sources {
             let outer = source
                 .pointer
-                .checked_add(crate::carmy::REQUESTS)
+                .checked_add(engine_native::carmy::REQUESTS)
                 .and_then(|address| read::<u64>(memory, address))
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .filter(|&pointer| pointer != 0)
@@ -305,7 +302,11 @@ impl<'a, R: Default> Sink<'a, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{carmy, cequipment_variant, cequipment_variant_pool, memory::SliceMemory};
+    use engine_native::{
+        carmy,
+        cequipment_variant::{self, pool as cequipment_variant_pool},
+    };
+    use engine_native_memory::memory::SliceMemory;
 
     const STATUS: usize = 0x6000;
     const GROUPS: usize = 0x6800;
@@ -396,11 +397,11 @@ mod tests {
             ARMY + carmy::SECONDARY_BASE,
             carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
-        put64(&mut bytes, ARMY + crate::cunit::HANDLE, 9000);
+        put64(&mut bytes, ARMY + engine_native::cunit::HANDLE, 9000);
         put64(
             &mut bytes,
             EQUIPMENT,
-            cequipment_variant::VTABLE_RVA.0 as u64,
+            engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
         );
         put64(&mut bytes, EQUIPMENT + cequipment_variant::TYPE, 70);
         for ordinal in 0..2 {

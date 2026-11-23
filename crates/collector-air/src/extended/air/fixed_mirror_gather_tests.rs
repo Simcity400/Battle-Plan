@@ -88,9 +88,9 @@ fn registration_wing_fields() -> [(usize, usize); 4] {
     use super::air_bases_test_kit as kit;
     [
         (kit::W0, 32),
-        (kit::W0 + cair_wing::POOL, 8),
+        (kit::W0 + engine_native_parts::cair_wing_layout::POOL, 8),
         (kit::W1, 32),
-        (kit::W1 + cair_wing::POOL, 8),
+        (kit::W1 + engine_native_parts::cair_wing_layout::POOL, 8),
     ]
 }
 
@@ -151,17 +151,17 @@ fn registration_mirror_copies_the_chunk_before_semantic_admission() {
     for (address, value, reason) in [
         (kit::W0, 0_u64, "air pool wing vtable mismatch"),
         (
-            kit::W0 + cair_wing::SECONDARY,
+            kit::W0 + engine_native_parts::cair_wing_layout::SECONDARY,
             0,
             "air pool wing vtable mismatch",
         ),
         (
-            kit::W0 + cair_wing::POOL,
+            kit::W0 + engine_native_parts::cair_wing_layout::POOL,
             kit::POOL0 as u64 + 0x100,
             "registered air wing backlink differs from containing pool",
         ),
         (
-            kit::W0 + cair_wing::REFERENCE_TYPE,
+            kit::W0 + engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
             0,
             "registered air wing has a null reference handle",
         ),

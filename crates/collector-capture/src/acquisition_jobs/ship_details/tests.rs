@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use std::sync::mpsc;
 
 struct Unreadable;

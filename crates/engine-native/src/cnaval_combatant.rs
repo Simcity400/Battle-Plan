@@ -1,6 +1,7 @@
 
 use engine_sites::Rva;
-use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read};
+use crate::{cfex_member, cship};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a5_d3b8);
 pub const COMBAT: usize = 0x18;

@@ -177,7 +177,7 @@ fn units(
         .checked_add(count)
         .ok_or("naval side unit demand overflow")?;
     if !fits {
-        return Err(crate::naval_member_details::DETAIL_ARENA_CAPACITY);
+        return Err(engine_native::cfex_member::DETAIL_ARENA_CAPACITY);
     }
     *len += count;
     Ok([start, count])

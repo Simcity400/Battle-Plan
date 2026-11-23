@@ -295,7 +295,7 @@ fn member(
             if variant == 0 {
                 return Ok(());
             }
-            context::authenticate(m, base, variant, engine_native::cequipment_variant::VTABLE_RVA)?;
+            context::authenticate(m, base, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA)?;
             field::<u64>(m, variant, 0x480)? as usize
         }
         _ => return Ok(()),

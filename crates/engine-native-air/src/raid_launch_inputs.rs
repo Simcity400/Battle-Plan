@@ -377,7 +377,7 @@ fn ace_range_with_normalization(
     key: u32,
     memo: &DefinitionMemo,
 ) -> Result<AceRangeTerms, &'static str> {
-    let mut range = [modifier_accumulator::Value::default()];
+    let mut range = [engine_native_memory::modifier_cache::Value::default()];
     let mut normalization = [None; 2];
     let mut fuel = [None; 1];
     let mut combat = [None; 3];
@@ -430,7 +430,7 @@ fn ace_type_terms(
     key: u32,
     memo: &DefinitionMemo,
 ) -> Result<AceTypeTerms, &'static str> {
-    let mut range = [modifier_accumulator::Value::default()];
+    let mut range = [engine_native_memory::modifier_cache::Value::default()];
     let mut combat = [None; 3];
     modifier_accumulator::lookup_many_at_keeping(
         memory,
@@ -542,7 +542,7 @@ fn search(
     count: u32,
     mut probe: impl FnMut(u32) -> Result<[u8; 16], &'static str>,
     sorted: &[(u32, usize)],
-    out: &mut [modifier_accumulator::Value; MODIFIERS],
+    out: &mut [engine_native_memory::modifier_cache::Value; MODIFIERS],
 ) -> Result<(), &'static str> {
     let mut lower = 0;
     for &(key, column) in sorted {
@@ -562,12 +562,12 @@ fn search(
         }
         *value = match found {
             Some(entry) if u32::from_le_bytes(entry[..4].try_into().unwrap()) == key => {
-                modifier_accumulator::Value {
+                engine_native_memory::modifier_cache::Value {
                     raw: i64::from_le_bytes(entry[8..].try_into().unwrap()),
                     present: true,
                 }
             }
-            _ => modifier_accumulator::Value::default(),
+            _ => engine_native_memory::modifier_cache::Value::default(),
         };
     }
     Ok(())
@@ -827,7 +827,7 @@ fn emit(
 
 const COUNTRY_FIELDS: [RecordField; 4] = [
     RecordField {
-        source_offset: ccountry::MODIFIER_ACCUMULATOR,
+        source_offset: engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         destination_offset: 0,
         len: 16,
     },
@@ -960,7 +960,7 @@ fn sliced(
             .ok_or("raid launch site withheld")
     };
     let (site_vtable, container_vtable, ace_vtable, strategic_vtable) = (
-        module(cair_base::VTABLE_RVA)?,
+        module(engine_native_parts::cair_base_layout::VTABLE_RVA)?,
         module(ccountry_air_container::VTABLE_RVA)?,
         module(cace::VTABLE_RVA)?,
         module(cstrategic_air::VTABLE_RVA)?,
@@ -1017,7 +1017,7 @@ fn sliced(
             .then(|| Array::from_header(header[..16].try_into().unwrap(), STRIDE))
             .flatten()
             .ok_or("modifier accumulator header unreadable or invalid")?;
-        let mut values = [modifier_accumulator::Value::default(); MODIFIERS];
+        let mut values = [engine_native_memory::modifier_cache::Value::default(); MODIFIERS];
         if accumulator.count as usize <= ACCUMULATOR_ENTRIES {
             let bytes = &mut entries[..accumulator.count as usize * STRIDE];
             if !bytes.is_empty() && !memory.copy(accumulator.data, bytes) {
@@ -1744,7 +1744,7 @@ pub(crate) mod tests {
         memory.u32(COUNTRY + ccountry::ID, 2);
         memory.u64(COUNTRY + ccountry::ALLOCATED_COMMAND_POWER, 3_000_000);
         memory.accumulator(
-            COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+            COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             0x11_000,
             &[
                 (AIR_RANGE, 20_000),
@@ -1791,8 +1791,8 @@ pub(crate) mod tests {
         memory.array(STRATEGIC + cstrategic_air::FIRST_AIR_SITES, SITES, 1);
         memory.array(STRATEGIC + cstrategic_air::SECOND_AIR_SITES, SITES, 0);
         memory.u64(SITES, SITE as u64);
-        memory.u64(SITE, cair_base::VTABLE_RVA.0 as u64);
-        memory.u64(SITE + cair_base::HANDLE, 0x0000_0009_0000_0041);
+        memory.u64(SITE, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+        memory.u64(SITE + engine_native_parts::cair_base_layout::HANDLE, 0x0000_0009_0000_0041);
         memory.array(SITE + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 2);
         memory.u64(CONTAINERS, 0);
         memory.u64(CONTAINERS + 8, CONTAINER as u64);
@@ -2127,8 +2127,8 @@ pub(crate) mod tests {
         memory.u32(GS + cgame_state::PLAYER_RECORDS + 0xc, 1);
         memory.array(STRATEGIC + cstrategic_air::FIRST_AIR_SITES, SITES, 2);
         memory.u64(SITES + 8, SITE_B as u64);
-        memory.u64(SITE_B, cair_base::VTABLE_RVA.0 as u64);
-        memory.u64(SITE_B + cair_base::HANDLE, 0x0000_000a_0000_0041);
+        memory.u64(SITE_B, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+        memory.u64(SITE_B + engine_native_parts::cair_base_layout::HANDLE, 0x0000_000a_0000_0041);
         memory.array(SITE_B + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 1);
         memory
     }
@@ -2138,8 +2138,8 @@ pub(crate) mod tests {
         let mut memory = site_fixture();
         memory.array(SITE_B + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 2);
         memory.u32(SITE_B + cair_base::COUNTRY_CONTAINERS + 12, 9);
-        memory.u64(SITE_B, cair_base::VTABLE_RVA.0 as u64);
-        memory.u64(SITE_B + cair_base::HANDLE, 0x42);
+        memory.u64(SITE_B, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+        memory.u64(SITE_B + engine_native_parts::cair_base_layout::HANDLE, 0x42);
         let unavailable = |run: &Run| match run.walk.sites {
             Outcome::Unavailable { reason } => reason,
             other => panic!("{other:?}"),
@@ -2438,8 +2438,8 @@ pub(crate) mod tests {
         memory.u64(container + ccountry_air_container::CAPACITY_RAW, 100_000);
         for index in 0..site_count {
             let site = sites + index * 0x100;
-            memory.u64(site, cair_base::VTABLE_RVA.0 as u64);
-            memory.u64(site + cair_base::HANDLE, ((index as u64 + 1) << 32) | 0x41);
+            memory.u64(site, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+            memory.u64(site + engine_native_parts::cair_base_layout::HANDLE, ((index as u64 + 1) << 32) | 0x41);
             memory.array(
                 site + cair_base::COUNTRY_CONTAINERS,
                 containers,
@@ -2468,7 +2468,7 @@ pub(crate) mod tests {
                 .collect();
             entries.sort_unstable();
             memory.accumulator(
-                country + ccountry::MODIFIER_ACCUMULATOR,
+                country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
                 country + B_ACCUMULATOR,
                 &entries,
             );
@@ -2661,7 +2661,7 @@ pub(crate) mod tests {
 
     struct Census<'a, M> {
         inner: &'a M,
-        slots: Vec<Option<ccountry::Country>>,
+        slots: Vec<Option<engine_native_memory::country_identity::Country>>,
         arrays: [Array; 2],
     }
 
@@ -2715,8 +2715,8 @@ pub(crate) mod tests {
             &self,
             _base: usize,
             _game_state: usize,
-        ) -> Option<ccountry::AuthenticatedRoster<'_>> {
-            Some(ccountry::AuthenticatedRoster::new(&self.slots, self.arrays))
+        ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
+            Some(engine_native_memory::country_identity::AuthenticatedRoster::new(&self.slots, self.arrays))
         }
     }
 

@@ -227,7 +227,7 @@ fn roster_view_keeps_scoped_authentication_and_fresh_faulted_byte_reads() {
 
 #[test]
 fn roster_headers_and_proved_links_remove_guards_without_reading_ordinary_fields() {
-    fn queries(memory: &impl Memory) -> (Vec<Option<ccountry::Country>>, Vec<ccountry::Country>) {
+    fn queries(memory: &impl Memory) -> (Vec<Option<engine_native_memory::country_identity::Country>>, Vec<engine_native_memory::country_identity::Country>) {
         let reader = ccountry::Reader::new(memory, 0, 0x1000).unwrap();
         (
             (1..reader.count())
@@ -551,7 +551,7 @@ impl Memory for Synthetic {
     }
 }
 
-fn shared_walks(memory: &impl Memory) -> (Vec<ccountry::Country>, Vec<ccountry::LinkRow>) {
+fn shared_walks(memory: &impl Memory) -> (Vec<engine_native_memory::country_identity::Country>, Vec<ccountry::LinkRow>) {
     let reader = ccountry::Reader::new(memory, 0, 0x1000).unwrap();
     let countries = (1..reader.count())
         .filter_map(|slot| reader.at(slot).unwrap())
@@ -621,23 +621,23 @@ fn negative_filter_learns_every_supported_width_and_reports_owned_storage() {
     }
     assert_eq!(
         cache.allocated_bytes(),
-        256 * (std::mem::size_of::<Entry>() + std::mem::size_of::<Option<ccountry::Country>>())
+        256 * (std::mem::size_of::<Entry>() + std::mem::size_of::<Option<engine_native_memory::country_identity::Country>>())
             + 2 * 4 * std::mem::size_of::<u64>()
             + std::mem::size_of::<usize>()
             + std::mem::size_of::<u64>()
-            + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
+            + std::mem::size_of::<Box<[Option<engine_native_memory::country_identity::Country>]>>()
             + 3 * std::mem::size_of::<usize>()
             + std::mem::size_of::<[Array; 2]>()
-            + std::mem::size_of::<Option<ccountry::ReservedCountryObservation>>()
+            + std::mem::size_of::<Option<engine_native_memory::country_identity::ReservedCountryObservation>>()
     );
     assert_eq!(
         Cache::with_capacity(0).allocated_bytes(),
         std::mem::size_of::<usize>()
             + std::mem::size_of::<u64>()
-            + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
+            + std::mem::size_of::<Box<[Option<engine_native_memory::country_identity::Country>]>>()
             + 3 * std::mem::size_of::<usize>()
             + std::mem::size_of::<[Array; 2]>()
-            + std::mem::size_of::<Option<ccountry::ReservedCountryObservation>>()
+            + std::mem::size_of::<Option<engine_native_memory::country_identity::ReservedCountryObservation>>()
     );
 }
 
@@ -882,8 +882,8 @@ impl<M: Memory> Memory for ByteOnly<'_, M> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct CountryResults {
-    slots: Vec<Result<Option<ccountry::Country>, &'static str>>,
-    resolved: Vec<Result<ccountry::Country, &'static str>>,
+    slots: Vec<Result<Option<engine_native_memory::country_identity::Country>, &'static str>>,
+    resolved: Vec<Result<engine_native_memory::country_identity::Country, &'static str>>,
     links: Vec<Result<Option<u32>, &'static str>>,
 }
 
@@ -931,7 +931,7 @@ fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
                 .ok_or("country array unreadable or invalid");
             expected_reserved = Some(match countries {
                 Ok(array) => ccountry::observe_reserved_from_array(&original, 0, array),
-                Err(reason) => ccountry::ReservedCountryObservation::from_result(Err(reason)),
+                Err(reason) => engine_native_memory::country_identity::ReservedCountryObservation::from_result(Err(reason)),
             });
             let countries = countries?;
             let links = Array::read(&original, 0x1000 + cgame_state::COUNTRY_LINKS, 4)
@@ -1045,7 +1045,7 @@ fn authenticated_roster_keeps_arbitrary_link_reads_and_context_identity() {
         );
     }
     let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
-    let country = ccountry::Country {
+    let country = engine_native_memory::country_identity::Country {
         pointer: 0x2000,
         canonical_slot: 1,
         id: 7,
@@ -1097,7 +1097,7 @@ fn authenticated_roster_reprepare_replaces_aliases_nulls_and_short_storage() {
     let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
     assert_eq!(
         reader.at(1),
-        Ok(Some(ccountry::Country {
+        Ok(Some(engine_native_memory::country_identity::Country {
             pointer: 0x2800,
             canonical_slot: 1,
             id: 1

@@ -1,6 +1,6 @@
 use crate::{history_events, history_projection::Held, history_reducer::Store};
 use engine_land_inputs::{combat_log_events as event, combat_log_history as native};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::rows::*;
 use replay_frame::frame::{TableInput, TableView};
 use std::{

@@ -1,7 +1,9 @@
 use super::*;
 use collector_observers::rail_changes::{Changes, Counts, Target, Watches};
 use engine_mutations::railway_mutations;
-use engine_native::{cbuilding, memory::SliceMemory, province_definition};
+use engine_native_parts::cbuilding;
+use engine_native_memory::memory::SliceMemory;
+use engine_native::cprovince::definition as province_definition;
 use engine_railways::{
     crailway_manager as manager, crailway_manager::BuildingOutcomes, crailway_manager::RailCarry,
     crailway_manager::fresh_inputs::RailwayBuildingRow,
@@ -450,7 +452,7 @@ fn a_hooked_write_reads_only_its_batch() {
         level: 6,
     }));
 
-    drop(rails.mark_building(engine_native::cbuilding_status::PROVINCE_FLAG, 3));
+    drop(rails.mark_building(engine_native::cprovince::buildings::PROVINCE_FLAG, 3));
     set_health(&mut bytes, 3, 3, 2, 7_000_000);
     let after = hour(&bytes, &mut store);
     assert_eq!(batches_read(&after.reads), vec![0]);

@@ -1,8 +1,9 @@
-pub use engine_native_parts::coperative_leader_layout::{CODENAME, VTABLE_RVA};
+use engine_native_parts::coperative_leader_layout::VTABLE_RVA;
 
 use engine_sites::Rva;
 use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
-use engine_native::{ccharacter::Literal, ccountry, crelation::subject::{Name, NameWalk}};
+use engine_native_memory::msvc_string::Literal;
+use engine_native::{ccountry, crelation::subject::{Name, NameWalk}};
 use crate::{
     cintelligence_agency,
     coperation_instance,

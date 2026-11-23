@@ -1,4 +1,4 @@
-pub use engine_native::carmy_combat_inputs::{EXILE_ORIGIN, NAME_GROUP_MEMBER};
+use engine_native::carmy_combat_inputs::{EXILE_ORIGIN, NAME_GROUP_MEMBER};
 
 use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
 use engine_native::{carmy, cunit};
@@ -420,8 +420,7 @@ pub fn capture_context_buffer(
     expected_handle: u64,
     mut terms: engine_native_memory::walk::Buffer<'_, WidthTerm>,
 ) -> Result<ContextRow, &'static str> {
-    use engine_native::ccountry;
-    use crate::combat_sources::share;
+        use crate::combat_sources::share;
     let verified = sources
         .verified
         .filter(|(verified, handle, _)| *verified == pointer && *handle == expected_handle);
@@ -445,7 +444,7 @@ pub fn capture_context_buffer(
     let country = countries.resolve(owner)?;
     let country_accumulator = country
         .pointer
-        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .ok_or("land combat context country address overflow")?;
     let country_modifiers = *share(&mut sources.context_modifiers, country_accumulator, || {
         context_modifiers(memory, country_accumulator)

@@ -23,7 +23,7 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.0.allocated_bytes()
     }
-    pub fn outcomes(&self) -> [engine_native::walk::Outcome; N] {
+    pub fn outcomes(&self) -> [engine_native_memory::walk::Outcome; N] {
         self.0.outcomes()
     }
     pub fn tables(&self) -> [TableView; N] {
@@ -43,7 +43,7 @@ impl Captured {
     }
     pub fn capture(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         state: usize,
         hour: i32,

@@ -1,13 +1,8 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cfex_group, cgame_state, cland_border_war_combat, cland_combat,
-    cnaval_combatant,
-    cnaval_combatant::{Side, field},
-    cpdx_array::Array,
-    cprovince, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_parts::{cfex_group, cland_border_war_combat};
+use crate::{cgame_state, cland_combat, cnaval_combatant::{self, Side, field}, cprovince};
 use std::collections::HashSet;
 type GroupSet = HashSet<usize>;
 
@@ -79,15 +74,15 @@ pub fn walk_timed(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(combats),
-        crate::walk::Buffer::Growing(participants),
-        crate::walk::Buffer::Growing(groups),
+        engine_native_memory::walk::Buffer::Growing(combats),
+        engine_native_memory::walk::Buffer::Growing(participants),
+        engine_native_memory::walk::Buffer::Growing(groups),
         now,
     )
 }
 
 pub fn storage_demand(memory: &impl Memory, base: usize, game_state: usize) -> Capture {
-    crate::allocation::advisory(|| storage_demand_advisory(memory, base, game_state))
+    engine_allocation::advisory(|| storage_demand_advisory(memory, base, game_state))
 }
 
 fn storage_demand_advisory(memory: &impl Memory, base: usize, game_state: usize) -> Capture {
@@ -96,9 +91,9 @@ fn storage_demand_advisory(memory: &impl Memory, base: usize, game_state: usize)
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Growing(&mut groups),
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Growing(&mut groups),
         |_| 0,
     )
     .capture
@@ -108,9 +103,9 @@ fn walk_timed_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut combats: crate::walk::Buffer<'_, Row>,
-    mut participants: crate::walk::Buffer<'_, cnaval_combatant::Row>,
-    mut groups: crate::walk::Buffer<'_, usize>,
+    mut combats: engine_native_memory::walk::Buffer<'_, Row>,
+    mut participants: engine_native_memory::walk::Buffer<'_, cnaval_combatant::Row>,
+    mut groups: engine_native_memory::walk::Buffer<'_, usize>,
     mut now: impl FnMut(usize) -> u64,
 ) -> TimedCapture {
     let start = now(0);
@@ -276,10 +271,10 @@ fn members(
     base: usize,
     combat: u64,
     sides: [Side; 2],
-    output: &mut crate::walk::Buffer<'_, cnaval_combatant::Row>,
+    output: &mut engine_native_memory::walk::Buffer<'_, cnaval_combatant::Row>,
     len: &mut usize,
     unread: &mut u32,
-    groups: &mut crate::walk::Buffer<'_, usize>,
+    groups: &mut engine_native_memory::walk::Buffer<'_, usize>,
     required_group_capacity: &mut usize,
 ) -> Result<(), &'static str> {
     let group_vtable = engine_sites::at(base, cfex_group::VTABLE_RVA)
@@ -291,7 +286,7 @@ fn members(
         let capacity = (roots.count as usize)
             .checked_mul(2)
             .ok_or("naval group capacity overflow")?;
-        crate::allocation::reserve_set(&mut seen, capacity)
+        engine_allocation::reserve_set(&mut seen, capacity)
             .map_err(|_| "collector allocation failed")?;
         for index in 0..roots.count {
             let group = pointer(memory, roots, index)?;

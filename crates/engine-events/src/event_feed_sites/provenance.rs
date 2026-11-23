@@ -2,9 +2,9 @@
 #[cfg(test)]
 use super::pointer;
 use super::{CountryIdentity, identity, state, value, verify_vtable};
-#[cfg(test)]
-use crate::cdiplomacy_status;
-use crate::{Memory, ccountry, cgame_state, crelation, cstate, cwar_relation, peace_conference};
+use engine_native_memory::Memory;
+use engine_native::{ccountry, cgame_state, crelation, cstate, cwar_relation};
+use crate::peace_conference;
 use engine_sites::Rva;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +240,7 @@ impl<'a, M: Memory> World<'a, M> {
     pub fn country_record(
         &self,
         country: usize,
-    ) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
+    ) -> Result<(engine_native_memory::country_identity::Country, CountryIdentity), &'static str> {
         verify_vtable(self.memory, self.base, country, ccountry::VTABLE_RVA)?;
         let reference = value(self.memory, country, ccountry::ID)?;
         let (resolved, identity) = identity(self.memory, self.base, &self.countries, reference)?;
@@ -256,9 +256,9 @@ impl<'a, M: Memory> World<'a, M> {
             self.memory,
             self.base,
             diplomacy,
-            cdiplomacy_status::VTABLE_RVA,
+            engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
         )?;
-        self.country_object(pointer(self.memory, diplomacy, cdiplomacy_status::COUNTRY)?)
+        self.country_object(pointer(self.memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?)
     }
 
     pub fn war_endpoints(&self, war: usize) -> Result<[CountryIdentity; 2], &'static str> {

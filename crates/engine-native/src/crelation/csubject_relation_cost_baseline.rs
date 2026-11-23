@@ -18,8 +18,8 @@ pub(super) fn walk_owned(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
         false,
         &mut pass,
     );
@@ -31,8 +31,8 @@ fn walk_from(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     matrix: bool,
     pass: &mut Pass<'_>,
 ) -> NameWalk {
@@ -66,9 +66,9 @@ fn walk_from(
             let source = reader.array(
                 diplomacy,
                 if matrix {
-                    cdiplomacy_status::RELATIONS
+                    engine_native_parts::cdiplomacy_status_layout::RELATIONS
                 } else {
-                    cdiplomacy_status::OWNED_RELATIONS
+                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
                 },
             )?;
             if matrix && source.count <= highest_slot {
@@ -148,7 +148,7 @@ fn walk_from(
 fn relation<M: Memory>(
     reader: &Reader<'_, M>,
     pointer: usize,
-    owner: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
     matrix_index: Option<u32>,
     pass: &mut Pass<'_>,
 ) -> Result<Option<Row>, &'static str> {
@@ -187,7 +187,7 @@ fn relation<M: Memory>(
         for diplomacy in [first_diplomacy, second_diplomacy] {
             reader.occurrence(
                 diplomacy,
-                cdiplomacy_status::OWNED_RELATIONS,
+                engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                 pointer,
                 1,
                 pass,

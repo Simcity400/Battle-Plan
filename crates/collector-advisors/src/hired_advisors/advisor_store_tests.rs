@@ -3,8 +3,12 @@ use super::*;
 use crate::advisor_pool_changes::{Counts, Pair, Watches};
 use engine_characters::advisor_tokens as tokens;
 use engine_native::{
-    cadvisor, ccharacter, ccharacter_manager, ccountry, cgame_state, memory::SliceMemory,
+    cadvisor,
+    ccharacter::{self, manager as ccharacter_manager},
+    ccountry,
+    cgame_state,
 };
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const BASE: usize = 0x0001_4000_0000;
@@ -57,11 +61,11 @@ fn world() -> Vec<u8> {
         p64(
             &mut bytes,
             pool,
-            (BASE + engine_native_politics::ccountry_characters::VTABLE_RVA.0) as u64,
+            (BASE + engine_native::ccountry::rosters::VTABLE_RVA.0) as u64,
         );
         p64(
             &mut bytes,
-            pool + engine_native_politics::ccountry_characters::OWNER,
+            pool + engine_native::ccountry::rosters::OWNER,
             country as u64,
         );
         let array = pool + 0x200;

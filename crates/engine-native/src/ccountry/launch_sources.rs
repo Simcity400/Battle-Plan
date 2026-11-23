@@ -1,11 +1,13 @@
 use engine_native_parts::cnaval_base_layout as naval_base_layout;
 
-use crate::{
-    Memory, cgame_state, cpdx_array::Array,
-    cstate,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
 };
+use crate::{cgame_state, cstate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DomainCapture {
@@ -118,8 +120,8 @@ impl ReservedOwnedStates {
             memory,
             base,
             state,
-            crate::walk::Buffer::Growing(scratch),
-            crate::walk::Buffer::Growing(output),
+            engine_native_memory::walk::Buffer::Growing(scratch),
+            engine_native_memory::walk::Buffer::Growing(output),
         )
     }
 
@@ -128,8 +130,8 @@ impl ReservedOwnedStates {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        mut scratch: crate::walk::Buffer<'_, Occurrence>,
-        mut output: crate::walk::Buffer<'_, u32>,
+        mut scratch: engine_native_memory::walk::Buffer<'_, Occurrence>,
+        mut output: engine_native_memory::walk::Buffer<'_, u32>,
     ) -> DomainCapture {
         let root = self
             .root
@@ -324,8 +326,8 @@ pub(crate) fn capture_naval(
         memory,
         base,
         navy,
-        crate::walk::Buffer::Growing(scratch),
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(scratch),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -333,8 +335,8 @@ pub fn capture_naval_buffer(
     memory: &impl Memory,
     base: usize,
     navy: usize,
-    mut scratch: crate::walk::Buffer<'_, Occurrence>,
-    mut output: crate::walk::Buffer<'_, LaunchNavalBase>,
+    mut scratch: engine_native_memory::walk::Buffer<'_, Occurrence>,
+    mut output: engine_native_memory::walk::Buffer<'_, LaunchNavalBase>,
 ) -> NavalCapture {
     if navy == 0 {
         return NavalCapture {

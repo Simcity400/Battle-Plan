@@ -13,6 +13,8 @@ doctest = false
 test-support = ["collector-hooks/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-native-naval.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
@@ -42,7 +44,8 @@ collector-memory = { workspace = true, features = ["test-support"] }
 collector-naval-management = { workspace = true, features = ["test-support"] }
 collector-primitives = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
+engine-native-naval = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

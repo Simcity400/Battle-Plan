@@ -1,9 +1,7 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry,  cpdx_array, cpdx_array::Array, cstate, read, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::{self, Array}, read, walk::Outcome};
+use crate::{ccountry, cstate};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a5_9250);
 pub const RECIPIENT: usize = 0x3c;
@@ -34,7 +32,7 @@ pub struct Walk {
     pub required: Demand,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -56,8 +54,8 @@ pub fn walk(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(states),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(states),
     )
 }
 
@@ -65,8 +63,8 @@ fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut states: crate::walk::Buffer<'_, u32>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut states: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Walk {
     let mut len = 0;
     let mut state_len = 0_usize;
@@ -89,15 +87,15 @@ fn walk_buffer(
             if diplomacy == 0 {
                 return Err("owned wargoal diplomacy root is null");
             }
-            if engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+            if engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
                 != Some(field::<u64>(memory, diplomacy, 0)? as usize)
-                || field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)?
+                || field::<u64>(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?
                     != country.pointer as u64
             {
                 return Err("owned wargoal diplomacy identity mismatch");
             }
             let goals = diplomacy
-                .checked_add(cdiplomacy_status::OWNED_WARGOALS)
+                .checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("owned wargoal array unreadable or invalid")?;
             required.rows = required

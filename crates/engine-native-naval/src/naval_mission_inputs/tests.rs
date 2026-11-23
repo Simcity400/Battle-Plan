@@ -101,7 +101,7 @@ fn task_force() -> Vec<u8> {
 
 fn visit(kind: u32) -> cfleet::TaskForceVisit {
     cfleet::TaskForceVisit {
-        country: ccountry::Country {
+        country: engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 1,
             id: 1,

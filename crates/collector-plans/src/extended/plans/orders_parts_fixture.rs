@@ -2,18 +2,20 @@ use collector_extended_support::bench_world::{Heap, World};
 use engine_land_inputs::{cfront, cfront_section};
 use engine_native::{
     carmy,
-    carmy_group,
-    ccontroller_area,
     ccountry,
     cgame_state,
     corder_instance as order,
     corders_group as group,
     corders_group_member,
     cprovince,
-    creference_registry as registry,
     cstate,
     ctheatre,
     cunit,
+};
+use engine_native_parts::{
+    carmy_group,
+    ccontroller_area,
+    creference_registry as registry,
     reference_bucket as bucket,
 };
 use engine_native_politics::cdiplomacy_status;
@@ -91,19 +93,19 @@ fn build_in(mut bytes: Vec<u8>) -> World {
     let mut owner = 0;
     for id in 1..=2 {
         let country =
-            heap.alloc((ccountry::MODIFIER_ACCUMULATOR + 0x20).max(ccountry::DIPLOMACY_STATUS + 8));
+            heap.alloc((engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x20).max(ccountry::DIPLOMACY_STATUS + 8));
         heap.vtable(country, ccountry::VTABLE_RVA);
         heap.u32(country + ccountry::ID, id);
         heap.u64(countries + id as usize * 8, heap.ptr(country));
-        heap.array(country + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
+        heap.array(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0, 0);
         if id == 1 {
             owner = country;
         }
     }
-    let diplomacy = heap.alloc(cdiplomacy_status::RELATIONS + 16);
-    heap.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
+    let diplomacy = heap.alloc(engine_native_parts::cdiplomacy_status_layout::RELATIONS + 16);
+    heap.vtable(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA);
     heap.u64(owner + ccountry::DIPLOMACY_STATUS, heap.ptr(diplomacy));
-    heap.pointers(diplomacy + cdiplomacy_status::RELATIONS, &[0, 0, 0]);
+    heap.pointers(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, &[0, 0, 0]);
     let state = heap.alloc(cstate::CONTROLLER + 8);
     heap.vtable(state, cstate::VTABLE_RVA);
     heap.u32(state + cstate::CONTROLLER, 2);

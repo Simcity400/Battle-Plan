@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccharacter::Literal, ccountry, cgame_state, coperation,
-    coperation_instance as operation, read,
-};
+use engine_native_memory::{Memory, msvc_string::Literal, read};
+use engine_native::{ccountry, cgame_state};
+use engine_native_intelligence::{coperation, coperation_instance as operation};
 use engine_sites::Rva;
 
 pub const COMPLETION_RVA: Rva = Rva(0x0149_f710);

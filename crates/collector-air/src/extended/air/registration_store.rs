@@ -77,7 +77,7 @@ impl Fresh<'_> {
             kept[4..capacity].fill(0);
             kept[capacity + 8..].fill(0);
         } else if span.len == 32 && names(self.wings, 0) {
-            kept[8..engine_native_air::cair_wing::SECONDARY].fill(0);
+            kept[8..engine_native_parts::cair_wing_layout::SECONDARY].fill(0);
         }
     }
 }

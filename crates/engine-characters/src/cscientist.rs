@@ -22,13 +22,13 @@ const SOURCE_FILES_RVA: Rva = Rva(0x0369_19e0);
     reason = "Retain visibility status and the independently optional filename span and source line."
 )]
 pub fn visibility(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     scientist: usize,
-    names: &mut crate::walk::Buffer<'_, u8>,
+    names: &mut engine_native_memory::walk::Buffer<'_, u8>,
     used: &mut usize,
 ) -> Result<(u8, Option<(usize, usize, u32)>), &'static str> {
-    use crate::{cpdx_array::Array, read};
+    use engine_native_memory::{cpdx_array::Array, read};
     let at = |p: usize, n: usize| {
         p.checked_add(n)
             .ok_or("scientist visibility address overflow")
@@ -117,7 +117,7 @@ pub fn visibility(
         }
         node = word(at(node, 8)?)?;
     }
-    let string = engine_native::msvc_string::Descriptor::read(
+    let string = engine_native_memory::msvc_string::Descriptor::read(
         memory,
         string.ok_or("source filename block absent")?,
     )?;
@@ -139,7 +139,7 @@ pub const SIZE: usize = 0x138;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Memory, memory::SliceMemory, walk::Buffer};
+    use engine_native_memory::{Memory, memory::SliceMemory, walk::Buffer};
     struct Fixture(Vec<u8>);
     impl Memory for Fixture {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {

@@ -500,10 +500,10 @@ pub fn map_intel_subject(
 ) -> Result<bool, &'static str> {
     let parties = match (subject.relation_type, subject.parties) {
         (None, None) => return Ok(false),
-        (Some(kind), None) if kind != engine_native::csubject_relation::TYPE_VALUE => {
+        (Some(kind), None) if kind != engine_native::crelation::subject::TYPE_VALUE => {
             return Ok(false);
         }
-        (Some(kind), Some(parties)) if kind == engine_native::csubject_relation::TYPE_VALUE => {
+        (Some(kind), Some(parties)) if kind == engine_native::crelation::subject::TYPE_VALUE => {
             parties
         }
         _ => return Err("visibility subject has inconsistent native branches"),

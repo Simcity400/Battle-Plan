@@ -1,5 +1,7 @@
+#[cfg(test)]
+use crate::cequipment_variant;
 
-use crate::{Memory, cequipment_variant, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_b258);
@@ -48,7 +50,7 @@ pub(crate) fn read_row(
         owner,
         ordinal,
         pointer,
-        &mut crate::walk::Buffer::Growing(handles),
+        &mut engine_native_memory::walk::Buffer::Growing(handles),
         used,
     )
 }
@@ -59,7 +61,7 @@ pub(crate) fn read_row_buffer(
     owner: u32,
     ordinal: u32,
     pointer: usize,
-    handles: &mut crate::walk::Buffer<'_, u64>,
+    handles: &mut engine_native_memory::walk::Buffer<'_, u64>,
     used: usize,
 ) -> Result<(Option<Row>, usize, usize), &'static str> {
     let head =
@@ -78,7 +80,7 @@ pub(crate) fn read_row_buffer(
         .ok()
         .filter(|pointer| *pointer != 0)
         .ok_or("production licence parent pointer unreadable or null")?;
-    let parent = cequipment_variant::identity(memory, base, parent)?;
+    let parent = engine_native_parts::equipment_variant_identity::identity(memory, base, parent)?;
     let array = Array::from_header(
         head[EQUIPMENT..EQUIPMENT + 16].try_into().unwrap(),
         EQUIPMENT_STRIDE,
@@ -99,7 +101,7 @@ pub(crate) fn read_row_buffer(
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("production licence equipment pointer unreadable or null")?;
-        handles[used + index as usize] = cequipment_variant::identity(memory, base, variant)?;
+        handles[used + index as usize] = engine_native_parts::equipment_variant_identity::identity(memory, base, variant)?;
     }
     Ok((
         Some(Row {
@@ -126,7 +128,7 @@ pub(crate) fn read_row_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1000;
     const LICENSE: usize = 0x1100;
@@ -171,7 +173,7 @@ mod tests {
         put(
             &mut bytes,
             VARIANT,
-            &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,

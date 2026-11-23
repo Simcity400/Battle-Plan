@@ -1,6 +1,6 @@
 use super::{Certificate, Entry};
 use engine_allocation as allocation;
-use engine_native::{Memory, cpdx_array};
+use engine_native_memory::{Memory, cpdx_array};
 use engine_native_air::{
     cair_regional_mission::{Registration, WingIdentity},
     cstrategic_air,

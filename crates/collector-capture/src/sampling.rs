@@ -24,23 +24,24 @@ use collector_states::{acquisition_states, acquisition_wars};
 #[cfg(test)]
 use engine_native::cunit;
 #[cfg(any(test, feature = "test-support"))]
-use engine_native::memory::CountedMemory;
+use engine_native_memory::memory::CountedMemory;
 #[cfg(test)]
-use engine_native::memory::ReadCounts;
-use engine_native::{
+use engine_native_memory::memory::ReadCounts;
+use engine_native_memory::{
     Memory,
     capture_text::Owned,
+    memory::LiveMemory,
+    save_allocation_counters::{self, AllocationCounters},
+    walk::Outcome,
+};
+use engine_native::{
     carmy,
     ccountry,
-    cfaction,
-    cfaction_system,
+    cfaction::{self, system as cfaction_system},
     cgame_state::{self, Clock},
     cprovince,
     cstate,
     cwar_relation,
-    memory::LiveMemory,
-    save_allocation_counters::{self, AllocationCounters},
-    walk::Outcome,
 };
 use engine_native_intelligence::country_memory::{Cache, SeedStatus};
 use replay_data::rows::TABLE_COUNT;
@@ -392,7 +393,7 @@ pub struct Captured {
     pub table_ns: [u64; TABLE_COUNT],
     pub phases: HourPhases,
     #[cfg(feature = "acquisition_profile")]
-    pub table_reads: [engine_native::memory::ReadCounts; TABLE_COUNT],
+    pub table_reads: [engine_native_memory::memory::ReadCounts; TABLE_COUNT],
     pub total_ns: u64,
     pub force_full: bool,
     pub qpc: i64,
@@ -887,7 +888,7 @@ pub struct Shared {
         Option<Box<collector_divisions::extended::province_unit_order::ProvinceUnitStore>>,
     >,
     province_unit_store_bytes: AtomicU64,
-    area_store: UnsafeCell<Option<Box<engine_native::controller_areas::Store>>>,
+    area_store: UnsafeCell<Option<Box<engine_native::cprovince::controller_areas::Store>>>,
     area_store_bytes: AtomicU64,
     province_store: UnsafeCell<Option<Box<engine_native::cprovince::carry::RowStore>>>,
     province_store_bytes: AtomicU64,
@@ -1329,7 +1330,7 @@ impl Shared {
         })?;
         let area_store = store(
             cfg!(feature = "area_changes"),
-            engine_native::controller_areas::Store::new,
+            engine_native::cprovince::controller_areas::Store::new,
         )?;
         let province_store = store(
             cfg!(feature = "province_changes"),
@@ -1891,7 +1892,7 @@ impl Shared {
     /// # Safety
     /// Prepare only unpublished attach state or isolated fixture state using its own image, before
     /// publishing a callback that can use these buffers.
-    pub unsafe fn prepare_clock_capture(&mut self, memory: &impl engine_native::Memory) {
+    pub unsafe fn prepare_clock_capture(&mut self, memory: &impl engine_native_memory::Memory) {
         let native = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         self.prepare_clock_len(native);
     }
@@ -1907,7 +1908,7 @@ impl Shared {
     /// # Safety
     /// Only the spool's exclusive sizing pass may prepare this session's frames while respecting
     /// every slot claim.
-    pub unsafe fn prepare_frame_clocks(&self, memory: &impl engine_native::Memory) {
+    pub unsafe fn prepare_frame_clocks(&self, memory: &impl engine_native_memory::Memory) {
         let native = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         let required = native.max(self.clock_required());
         if required > self.clock_frames.load(Ordering::Acquire) {
@@ -1984,7 +1985,7 @@ impl Shared {
     )]
     unsafe fn prepared_clock_capture(
         &self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
     ) -> &mut ClockCapture {
         let required = cgame_state::campaign_id_len(memory, self.base).unwrap_or(0);
         self.clock_required.fetch_max(required, Ordering::Release);
@@ -2002,7 +2003,7 @@ impl Shared {
     /// # Safety
     /// Prepare only unpublished attach state or isolated fixture state using its own image, before
     /// publishing a callback that can use these buffers.
-    pub unsafe fn prepare_roster(&mut self, memory: &impl engine_native::Memory) {
+    pub unsafe fn prepare_roster(&mut self, memory: &impl engine_native_memory::Memory) {
         let roster = self
             .roster
             .get_mut()
@@ -2023,7 +2024,7 @@ impl Shared {
     /// pre-images.
     unsafe fn sample_roster(
         &self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         clock: Option<Clock<&[u8]>>,
     ) {
         self.sample_content_roster(memory, clock.map(|clock| clock.hour));
@@ -2186,7 +2187,7 @@ impl ClockCapture {
     }
     fn read(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<(Clock<&[u8]>, u64), &'static str> {
         let clock = cgame_state::read_clock_prepared(memory, base, &mut self.entry)?;
@@ -2378,7 +2379,7 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     let _reads = collector_memory::read_accounting::Scope::new();
     let memory = unsafe { LiveMemory::new() };
     #[cfg(feature = "acquisition_profile")]
-    let memory = engine_native::memory::CountedMemory::new(memory);
+    let memory = engine_native_memory::memory::CountedMemory::new(memory);
     let world_generation = collector_lifetime::world_lifetime::generation();
     let clock_start = qpc();
     let clock_capture = unsafe { shared.prepared_clock_capture(&memory) };
@@ -2639,7 +2640,7 @@ impl Drop for CallbackPriority {
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     let memory = unsafe { LiveMemory::new() };
     #[cfg(feature = "acquisition_profile")]
-    let memory = engine_native::memory::CountedMemory::new(memory);
+    let memory = engine_native_memory::memory::CountedMemory::new(memory);
     unsafe { acquire_with_memory(shared, dispatch, memory) };
 }
 
@@ -2820,8 +2821,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let characters_refresh = decode::characters_refresh_hour(clock.hour, force_full);
             let projects_refresh = decode::projects_refresh_hour(clock.hour, force_full);
             let lexical_max =
-                engine_sites::at(shared.base, engine_native::cpdx_lexer::MAX_TOKEN_ID_RVA)
-                    .and_then(|at| engine_native::read::<i32>(&memory, at))
+                engine_sites::at(shared.base, engine_native_memory::cpdx_lexer::MAX_TOKEN_ID_RVA)
+                    .and_then(|at| engine_native_memory::read::<i32>(&memory, at))
                     .unwrap_or(-1);
             let lexical_refresh = decode::lexical_refresh_hour(clock.hour, force_full)
                 || lexical_max != shared.lexical_max.load(Ordering::Relaxed);
@@ -7306,8 +7307,8 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-fn modifier_table_moved(shared: &Shared, memory: &impl engine_native::Memory) -> bool {
-    let observed = engine_native::modifier_definition::table(memory, shared.base)
+fn modifier_table_moved(shared: &Shared, memory: &impl engine_native_memory::Memory) -> bool {
+    let observed = engine_native_parts::modifier_definition::table(memory, shared.base)
         .map_or([0, u64::MAX], |table| {
             [table.data as u64, u64::from(table.count)]
         });
@@ -7332,13 +7333,13 @@ fn new_division_mark(
     collector_new_divisions::new_divisions::next_mark(
         &shared.division_mark,
         daily,
-        engine_sites::at(shared.base, engine_native::cship::NEXT_ID_RVA)
-            .and_then(|at| engine_native::read::<i32>(memory, at)),
+        engine_sites::at(shared.base, engine_native_memory::save_allocation_counters::NEXT_ID_RVA)
+            .and_then(|at| engine_native_memory::read::<i32>(memory, at)),
         engine_sites::at(
             shared.base,
-            engine_native::creference_registry::ID_COUNTER_RVA,
+            engine_native_memory::save_allocation_counters::ID_COUNTER_RVA,
         )
-        .and_then(|at| engine_native::read::<u32>(memory, at)),
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at)),
     )
 }
 
@@ -7363,7 +7364,7 @@ pub unsafe fn sample_command_roster(memory: &LiveMemory, state: usize) {
     if !shared.is_null() {
         let shared = unsafe { &*shared };
         if !shared.roster_ready.load(Ordering::Acquire) {
-            let hour = engine_native::read(memory, state + cgame_state::CURRENT_HOUR);
+            let hour = engine_native_memory::read(memory, state + cgame_state::CURRENT_HOUR);
             shared.sample_content_roster(memory, hour);
         }
     }

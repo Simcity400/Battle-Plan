@@ -4,7 +4,7 @@ use crate::{
     lanes::{self, Refusal, Writer},
 };
 use engine_events::map_event_sites as site;
-use engine_native::{Memory, memory::LiveMemory};
+use engine_native_memory::{Memory, memory::LiveMemory};
 use replay_data::{rows::MapEventFamily as Family, rows::MapEventFault as Fault};
 use std::{
     cell::Cell,
@@ -179,7 +179,7 @@ enum Event {
         anchor: u32,
         visibility: u32,
         fog: bool,
-        intel: engine_native::cpdx_array::Array,
+        intel: engine_native_memory::cpdx_array::Array,
     },
     Province(u32),
     ScriptedRefresh(u32),
@@ -271,7 +271,7 @@ impl Event {
                 let mut copied = 0;
                 while copied < key.1 {
                     let len = (key.1 - copied).min(chunk.len());
-                    if !engine_native::read_slice(memory, key.0 + copied, &mut chunk[..len]) {
+                    if !engine_native_memory::read_slice(memory, key.0 + copied, &mut chunk[..len]) {
                         return Err("map event activity key unreadable");
                     }
                     out.put(&chunk[..len]);
@@ -466,7 +466,7 @@ unsafe extern "system-unwind" fn building_notification(
             if client as u8 == 0 || text as u8 == 0 || source == 0 {
                 return Ok(None);
             }
-            let reason = engine_native::read::<u32>(&memory, source)
+            let reason = engine_native_memory::read::<u32>(&memory, source)
                 .ok_or("map event building reason unreadable")?;
             let after = site::level_health(&memory, building, level as u16 as i16)?;
             if !building_shows(client as u8, text as u8, reason, before as i64, after) {

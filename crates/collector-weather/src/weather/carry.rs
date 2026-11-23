@@ -18,15 +18,15 @@ impl Pass {
     fn read(
         memory: &impl Memory,
         manager: usize,
-        array: engine_native::cpdx_array::Array,
+        array: engine_native_memory::cpdx_array::Array,
         cursor: usize,
         budget: usize,
     ) -> Option<Self> {
         Some(Self {
             data: array.data,
             count: array.count,
-            cursor: engine_native::read::<i32>(memory, manager.checked_add(cursor)?)?,
-            budget: engine_native::read::<i32>(memory, manager.checked_add(budget)?)?,
+            cursor: engine_native_memory::read::<i32>(memory, manager.checked_add(cursor)?)?,
+            budget: engine_native_memory::read::<i32>(memory, manager.checked_add(budget)?)?,
         })
     }
 
@@ -129,8 +129,8 @@ fn advanced(first: u32, visits: u32, count: u32) -> u32 {
 pub fn read_words(
     memory: &impl Memory,
     manager: usize,
-    provinces: Option<engine_native::cpdx_array::Array>,
-    regions: Option<engine_native::cpdx_array::Array>,
+    provinces: Option<engine_native_memory::cpdx_array::Array>,
+    regions: Option<engine_native_memory::cpdx_array::Array>,
 ) -> Option<Words> {
     Some(Words {
         manager,
@@ -148,7 +148,7 @@ pub fn read_words(
             cweather_manager::REGION_CURSOR,
             cweather_manager::REGIONS_PER_UPDATE,
         )?,
-        flags: engine_native::read::<[u8; 3]>(
+        flags: engine_native_memory::read::<[u8; 3]>(
             memory,
             manager.checked_add(cweather_manager::INITIAL_MODE)?,
         )?,
@@ -187,8 +187,8 @@ impl WeatherCarry {
         &mut self,
         memory: &impl Memory,
         manager: usize,
-        provinces: Option<engine_native::cpdx_array::Array>,
-        regions: Option<engine_native::cpdx_array::Array>,
+        provinces: Option<engine_native_memory::cpdx_array::Array>,
+        regions: Option<engine_native_memory::cpdx_array::Array>,
     ) {
         self.now = read_words(memory, manager, provinces, regions);
         self.windows = self.now.and_then(|now| self.windows_of(now));
@@ -254,7 +254,7 @@ fn in_window(slot: u32, (first, visits): (u32, u32), count: u32) -> bool {
 
 fn gather(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     stride: usize,
     layout: &RecordLayout<'_>,
     first: u32,
@@ -394,7 +394,7 @@ enum Followed {
 
 fn follow(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     stride: usize,
     layout: &RecordLayout<'_>,
     carry: &mut WeatherCarry,
@@ -447,7 +447,7 @@ fn follow(
 
 fn region_combat(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     slot: u32,
 ) -> Option<RegionModifiers> {
     array
@@ -455,8 +455,8 @@ fn region_combat(
         .and_then(|record| record.checked_add(sweather_per_region::MODIFIERS))
         .and_then(|accumulator| {
             let mut values =
-                [engine_native::modifier_accumulator::Value::default(); COMBAT_KEYS.len()];
-            engine_native::modifier_accumulator::lookup_many_at(
+                [engine_native_memory::modifier_cache::Value::default(); COMBAT_KEYS.len()];
+            engine_native_parts::modifier_accumulator::lookup_many_at(
                 memory,
                 accumulator,
                 &COMBAT_KEYS,
@@ -511,7 +511,7 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
 
 fn follow_combat(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     carry: &mut WeatherCarry,
     (first, visits): (u32, u32),
 ) -> bool {
@@ -612,7 +612,7 @@ pub(super) fn capture_custom_sea(memory: &impl Memory, job: &mut WeatherJob) {
 
 fn read_province(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     slot: u32,
     out: &mut Vec<super::entries::Entry>,
 ) -> bool {
@@ -705,7 +705,7 @@ pub(super) fn capture_province_statics(memory: &impl Memory, job: &mut WeatherJo
 
 fn read_province_statics(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     definition_vtable: Option<usize>,
     headers: &mut Vec<u8>,
     list: &mut Vec<u8>,

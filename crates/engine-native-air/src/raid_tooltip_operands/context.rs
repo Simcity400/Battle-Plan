@@ -96,7 +96,7 @@ pub(super) fn source(
     let kind = if airbase == 0 {
         -1
     } else {
-        authenticate(m, base, airbase, cair_base::VTABLE_RVA)?;
+        authenticate(m, base, airbase, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
         i64::from(field::<i32>(m, airbase, cair_base::KIND)?)
     };
     sink.push(NAME, SOURCE_AIR_BASE_KIND, kind)
@@ -270,7 +270,7 @@ fn interceptors(
     const LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&SCREEN, 16).expect("valid wing screen layout");
     let wing_vtable =
-        engine_sites::at(base, cair_wing::VTABLE_RVA).ok_or("raid tooltip vtable withheld")? as u64;
+        engine_sites::at(base, engine_native_parts::cair_wing_layout::VTABLE_RVA).ok_or("raid tooltip vtable withheld")? as u64;
     let mut ordinal = 0u32;
     let mut raw = [0u8; BATCH * 8];
     let mut pointers = [0usize; BATCH];
@@ -321,7 +321,7 @@ fn interceptor(
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
     let associated = pointer(m, wing, 0x90 + crate::air_mission::WING)?;
-    authenticate(m, base, associated, cair_wing::VTABLE_RVA)?;
+    authenticate(m, base, associated, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
     sink.push(
         INTERCEPTION_ENABLED,
         *ordinal,
@@ -450,13 +450,13 @@ pub(super) fn wing(
         ],
         sink,
     )?;
-    let pool = pointer(m, wing, cair_wing::POOL)?;
+    let pool = pointer(m, wing, engine_native_parts::cair_wing_layout::POOL)?;
     authenticate(m, base, pool, cair_wing_pool::VTABLE_RVA)?;
     let base_ref = field::<u64>(m, pool, cair_wing_pool::AIR_BASE_REFERENCE)?;
     if let Some(airbase) = creference_registry::resolve(m, base, base_ref)? {
-        authenticate(m, base, airbase, cair_base::VTABLE_RVA)?;
+        authenticate(m, base, airbase, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
         let state = pointer(m, airbase, cair_base::STATE)?;
-        let host = field::<u64>(m, airbase, cair_base::HOST_REFERENCE)?;
+        let host = field::<u64>(m, airbase, engine_native_parts::cair_base_layout::HOST_REFERENCE)?;
         if state != 0
             && let Some(id) = region(m, base, land_base_province(m, base, game, airbase, state)?)?
         {
@@ -541,7 +541,7 @@ mod tests {
         for index in 0..70usize {
             let wing = 0x1000 + index * 0x800;
             put(0x400 + index * 8, wing as u64);
-            put(wing, cair_wing::VTABLE_RVA.0 as u64);
+            put(wing, engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64);
             put(wing + 0xc0, if index % 3 == 0 { REGION as u64 } else { 0 });
             put(wing + 0x90 + crate::air_mission::WING, wing as u64);
             put(wing + 0xa0, 4 | index as u64);

@@ -3,7 +3,8 @@ use crate::{
     slicing::{SliceFingerprints, SliceSelection},
     table_conversion::{table, unavailable},
 };
-use engine_native::{Memory, ccountry, walk::Buffer, walk::Outcome};
+use engine_native_memory::{Memory, walk::{Buffer, Outcome}};
+use engine_native::ccountry;
 use engine_resources::{cstrategic_resource, resource_map as native, resource_map::RouteKey};
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;

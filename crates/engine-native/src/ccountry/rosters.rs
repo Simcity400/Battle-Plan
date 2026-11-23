@@ -1,10 +1,8 @@
 
 use engine_sites::Rva;
 use super::{CONTROLLED_STATES, CORE_STATES, Country, OWNED_STATES, PRIDE_OF_THE_FLEET, Reader};
-use crate::{
-    Memory,  cpdx_array, cpdx_array::Array, cproduction_status, cstate,
-    cunit_leader, read, walk::Buffer,
-};
+use engine_native_memory::{Memory, cpdx_array::{self, Array}, read, walk::Buffer};
+use crate::{cproduction_status, cstate, cunit_leader};
 
 pub const NEIGHBORS: usize = 0x1088;
 
@@ -462,7 +460,7 @@ mod pride_demand_tests {
     use std::cell::RefCell;
 
     struct Tracked<'a> {
-        memory: crate::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         denied: Option<usize>,
         reads: RefCell<Vec<(usize, usize)>>,
     }

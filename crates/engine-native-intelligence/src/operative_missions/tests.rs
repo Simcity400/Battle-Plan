@@ -756,7 +756,7 @@ fn root_out(
     );
     for (accumulator, entries, value) in [
         (
-            0x3000 + ccountry::MODIFIER_ACCUMULATOR,
+            0x3000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             COUNTRY_ENTRIES,
             country_factor,
         ),

@@ -5,22 +5,20 @@ use engine_native_air::{
     cstrategic_air,
     cstrategic_air_manager as air_manager,
 };
+use engine_native_parts::{cair_wing_pool, csub_unit_definition as stats};
 use engine_native::{
-    cair_wing_pool,
     carmy,
     ccountry,
-    cequipment_variant as variant,
-    cequipment_variant_pool as equipment,
+    cequipment_variant::{self as variant, pool as equipment},
     cfleet,
     cgame_state,
     cprovince,
     creferenced_division_template as template,
     cship,
-    csub_unit_definition as stats,
     ctask_force,
     cunit,
-    memory::{CountedMemory, LiveMemory},
 };
+use engine_native_memory::memory::{CountedMemory, LiveMemory};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Shape {
@@ -108,7 +106,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
     let variants: Vec<_> = (1..=3)
         .map(|id| {
             let p = h.alloc(16);
-            h.ptr(p, variant::VTABLE_RVA.0);
+            h.ptr(p, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0);
             h.u64(
                 p + variant::TYPE,
                 (id << 32) | variant::REFERENCE_TYPE as u64,
@@ -136,7 +134,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
     let mut ship_id = 0;
     for slot in 1..=shape.countries {
         let country =
-            h.alloc(ccountry::MODIFIER_ACCUMULATOR.max(ccountry::DIVISION_TEMPLATES) + 0x100);
+            h.alloc(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR.max(ccountry::DIVISION_TEMPLATES) + 0x100);
         h.ptr(country, ccountry::VTABLE_RVA.0);
         h.u32(country + ccountry::ID, slot as u32);
         countries.push(country);
@@ -184,7 +182,7 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
             h.ptr(army + cunit::STAT_BLOCK, stat);
             h.ptr(
                 army + carmy::ACCLIMATIZATION,
-                engine_native::acclimatization_data::VTABLE_RVA.0,
+                engine_native_parts::acclimatization_data::VTABLE_RVA.0,
             );
             let viewers = h.alloc(3 * engine_visibility::unit_viewer_entry::STRIDE);
             h.ptr(army + cunit::VIEWER_DATA, viewers);
@@ -226,22 +224,22 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         for _ in share(shape.wings, shape.countries, slot) {
             let wing = h.alloc(cair_wing::COUNTRY_OVERRIDE + 16);
             wing_id += 1;
-            h.ptr(wing, cair_wing::VTABLE_RVA.0);
-            h.ptr(wing + cair_wing::SECONDARY, cair_wing::SECONDARY_VTABLE_RVA.0);
+            h.ptr(wing, engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
+            h.ptr(wing + engine_native_parts::cair_wing_layout::SECONDARY, engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0);
             h.u64(
-                wing + cair_wing::REFERENCE_TYPE,
-                (wing_id << 32) | cair_wing::TYPE as u64,
+                wing + engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
+                (wing_id << 32) | engine_native_parts::cair_wing_layout::TYPE as u64,
             );
             h.bytes[wing + cair_wing::NAME..wing + cair_wing::NAME + 4].copy_from_slice(b"Wing");
             h.u64(
-                wing + cair_wing::NAME + engine_native::msvc_string::LENGTH,
+                wing + cair_wing::NAME + engine_native_memory::msvc_string::LENGTH,
                 4,
             );
             h.u64(
-                wing + cair_wing::NAME + engine_native::msvc_string::CAPACITY,
-                engine_native::msvc_string::INLINE_CAPACITY,
+                wing + cair_wing::NAME + engine_native_memory::msvc_string::CAPACITY,
+                engine_native_memory::msvc_string::INLINE_CAPACITY,
             );
-            h.ptr(wing + cair_wing::POOL, pool);
+            h.ptr(wing + engine_native_parts::cair_wing_layout::POOL, pool);
             h.ptr(wing + cair_wing::EQUIPMENT_POOL, equipment::VTABLE_RVA.0);
             let bank = h.alloc(16);
             h.ptr(bank, variants[0]);
@@ -257,13 +255,13 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
         }
         h.array(pool + cair_wing_pool::WINGS, &wings);
         let base = h.alloc(cair_base::SIZE);
-        h.ptr(base, cair_base::VTABLE_RVA.0);
+        h.ptr(base, engine_native_parts::cair_base_layout::VTABLE_RVA.0);
         h.u64(
-            base + cair_base::HANDLE,
-            ((slot as u64) << 32) | cair_base::TYPE as u64,
+            base + engine_native_parts::cair_base_layout::HANDLE,
+            ((slot as u64) << 32) | engine_native_parts::cair_base_layout::TYPE as u64,
         );
         h.u64(
-            base + cair_base::HOST_REFERENCE,
+            base + engine_native_parts::cair_base_layout::HOST_REFERENCE,
             (slot as u64) << 32 | cship::HANDLE_TYPE as u64,
         );
         h.u32(base + cair_base::CAPACITY, wings.len() as u32 * 10);

@@ -182,12 +182,12 @@ fn party(bytes: &mut [u8], index: u32, token: &[u8]) {
     put(
         bytes,
         pointer,
-        ((BASE + cpolitical_party::VTABLE_RVA.0) as u64).to_le_bytes(),
+        ((BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
-    put(bytes, pointer + cpolitical_party::ID, id.to_le_bytes());
+    put(bytes, pointer + engine_native_parts::cpolitical_party_layout::ID, id.to_le_bytes());
     put(
         bytes,
-        pointer + cpolitical_party::IDEOLOGY_GROUP,
+        pointer + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP,
         (ideology as u64).to_le_bytes(),
     );
     put(
@@ -208,7 +208,7 @@ fn party(bytes: &mut [u8], index: u32, token: &[u8]) {
         ideology,
         ((BASE + cideology_group::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
-    put(bytes, ideology + cpolitical_party::ID, id.to_le_bytes());
+    put(bytes, ideology + engine_native_parts::cpolitical_party_layout::ID, id.to_le_bytes());
     inline(bytes, ideology + cideology_group::TOKEN, token);
 }
 
@@ -423,14 +423,14 @@ fn leader_fixture() -> Vec<u8> {
     party(&mut bytes, 1, b"b");
     array(
         &mut bytes,
-        0x4000 + cpolitical_party::COUNTRY_LEADERS,
+        0x4000 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS,
         0x6000,
         2,
         2,
     );
     array(
         &mut bytes,
-        0x4100 + cpolitical_party::COUNTRY_LEADERS,
+        0x4100 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS,
         0x6040,
         1,
         1,
@@ -444,7 +444,7 @@ fn leader_fixture() -> Vec<u8> {
         put(
             &mut bytes,
             leader,
-            ((BASE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
+            ((BASE + engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -460,7 +460,7 @@ fn leader_fixture() -> Vec<u8> {
     for (leader, (character, id)) in [(LEADERS[0], CHARACTERS[0]), (LEADERS[2], CHARACTERS[1])] {
         put(
             &mut bytes,
-            leader + ccountry_leader::CHARACTER,
+            leader + engine_native_parts::ccountry_leader_layout::CHARACTER,
             (character as u64).to_le_bytes(),
         );
         put(
@@ -549,14 +549,14 @@ fn party_leaders_keep_party_and_vector_order_null_parents_and_ids() {
     let mut bytes = leader_fixture();
     array(
         &mut bytes,
-        0x4000 + cpolitical_party::COUNTRY_LEADERS,
+        0x4000 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS,
         0,
         0,
         0,
     );
     array(
         &mut bytes,
-        0x4100 + cpolitical_party::COUNTRY_LEADERS,
+        0x4100 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS,
         0,
         0,
         0,
@@ -596,7 +596,7 @@ fn unauthenticated_party_leaders_fail_the_table() {
         (0x7080 + 0x20, 6),
         (0x7080 + 8, 0x9_0000),
         (0x4100, 7),
-        (0x4000 + cpolitical_party::COUNTRY_LEADERS, 0x9_0000),
+        (0x4000 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS, 0x9_0000),
     ] {
         let mut bytes = leader_fixture();
         put(&mut bytes, address, value.to_le_bytes());

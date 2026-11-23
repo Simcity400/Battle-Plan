@@ -1,4 +1,3 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::super::*;
 pub fn walk(
     memory: &impl Memory,
@@ -28,7 +27,7 @@ pub fn walk(
                 continue;
             };
             let diplomacy = diplomacy(memory, base, country)?;
-            let owned = array(memory, diplomacy, cdiplomacy_status::OWNED_RELATIONS, 8)?;
+            let owned = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 8)?;
             let mut has_war = false;
             for ordinal in 0..owned.count {
                 let relation = element(memory, owned, ordinal)?;
@@ -136,22 +135,16 @@ pub fn walk(
 }
 
 fn factories(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
-    countries: &crate::ccountry::Reader<'_, impl crate::Memory>,
-    country: crate::ccountry::Country,
+    countries: &crate::ccountry::Reader<'_, impl engine_native_memory::Memory>,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<i32, &'static str> {
-    use crate::{
-        cbuilding,
-        cprovince::buildings as cbuilding_status,
-        cbuilding_template,
-        ccountry,
-        cpdx_array::Array,
-        cstate,
-        read,
-    };
-    fn field<T: crate::memory::Raw>(
-        memory: &impl crate::Memory,
+    use engine_native_parts::{cbuilding, cbuilding_template};
+    use crate::{cprovince::buildings as cbuilding_status, ccountry, cstate};
+    use engine_native_memory::{cpdx_array::Array, read};
+    fn field<T: engine_native_memory::memory::Raw>(
+        memory: &impl engine_native_memory::Memory,
         pointer: usize,
         offset: usize,
     ) -> Result<T, &'static str> {
@@ -161,7 +154,7 @@ fn factories(
             .ok_or("war factory field unreadable or address overflow")
     }
     fn authenticate(
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         pointer: usize,
         rva: engine_sites::Rva,

@@ -1,22 +1,21 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 
-use crate::{
+use engine_native_memory::{
     Memory,
-    cair_base_access_relation,
-    cattache_relation,
-    ccountry,
-     cdocking_rights_relation,
-    cmilitary_access_relation,
-    coffer_air_base_access_relation,
-    coffer_docking_rights_relation,
-    coffer_military_access_relation,
     cpdx_array::Array,
-    crelation::{self, subject as csubject_relation},
-    cwar_relation,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     read,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::{
+    cair_base_access_relation,
+    cattache_relation,
+    cdocking_rights_relation,
+    cmilitary_access_relation,
+    coffer_air_base_access_relation,
+    coffer_docking_rights_relation,
+    coffer_military_access_relation,
+};
+use crate::{ccountry, crelation::{self, subject as csubject_relation}, cwar_relation};
 use engine_sites::Rva;
 
 mod baseline;
@@ -131,8 +130,8 @@ const COUNTRY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COUNTRY_FIELDS, COUNTRY_BYTES).expect("valid country layout");
 const DIPLOMACY_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
-    field(cdiplomacy_status::COUNTRY, 8, 8),
-    field(cdiplomacy_status::OWNED_RELATIONS, 16, 16),
+    field(engine_native_parts::cdiplomacy_status_layout::COUNTRY, 8, 8),
+    field(engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 16, 16),
 ];
 const DIPLOMACY_BYTES: usize = 32;
 const DIPLOMACY_LAYOUT: RecordLayout<'static> =
@@ -229,7 +228,7 @@ fn gather_candidates(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
     resolver: &mut Resolver,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     diplomacy: usize,
     matrix: &mut Option<Result<Array, &'static str>>,
     records: &[u8],
@@ -270,7 +269,7 @@ fn gather_candidates(
             Some(result) => result.ok()?,
             None => {
                 let array = diplomacy
-                    .checked_add(cdiplomacy_status::RELATIONS)
+                    .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
                     .and_then(|address| Array::read(memory, address, 8))?;
                 *matrix = Some(Ok(array));
                 array
@@ -414,9 +413,9 @@ fn links_observed_inner(
         let mut subject_seen = target_words(countries.count())?;
         let (mut len, mut unread) = (0_usize, 0_u32);
         let (mut war_len, mut war_unread) = (0, 0_u32);
-        let diplomacy_vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+        let diplomacy_vtable = engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let mut members = [None::<ccountry::Country>; BATCH];
+        let mut members = [None::<engine_native_memory::country_identity::Country>; BATCH];
         let mut country_pointers = [0_usize; BATCH];
         let mut country_records = [0_u8; BATCH * COUNTRY_BYTES];
         let mut diplomacy_pointers = [0_usize; BATCH];
@@ -437,7 +436,7 @@ fn links_observed_inner(
                 }
                 Ok((country, diplomacy, rule)) => {
                     let array = diplomacy
-                        .checked_add(cdiplomacy_status::ENEMY_COUNTRIES)
+                        .checked_add(engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES)
                         .and_then(|address| Array::read(memory, address, 4))
                         .ok_or("ordered reserved enemy vector unreadable or invalid");
                     let count = array.as_ref().map_or(0, |array| array.count as usize);
@@ -523,7 +522,7 @@ fn links_observed_inner(
                     memory.prefetch(owned.data, owned.count.min(BATCH as u32) as usize * 8);
                 }
                 memory.prefetch(
-                    diplomacy.wrapping_add(cdiplomacy_status::ENEMY_COUNTRIES),
+                    diplomacy.wrapping_add(engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES),
                     16,
                 );
             }
@@ -603,7 +602,7 @@ fn links_observed_inner(
                         &records[..count * OWNED_BYTES],
                         &mut candidates,
                     ) {
-                        crate::batch_fallback::record(crate::batch_fallback::Batch::RelationLinks);
+                        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::RelationLinks);
                     }
                     for record in records[..count * OWNED_BYTES].chunks_exact(OWNED_BYTES) {
                         let word =
@@ -704,7 +703,7 @@ fn links_observed_inner(
                                     None => {
                                         (*matrix.insert(
                                             diplomacy
-                                                .checked_add(cdiplomacy_status::RELATIONS)
+                                                .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
                                                 .and_then(|address| Array::read(memory, address, 8))
                                                 .ok_or("relation matrix unreadable or invalid"),
                                         ))?
@@ -819,7 +818,7 @@ fn links_observed_inner(
                     let mut failure = None;
                     let enemies = if read_enemies || ordered_hour.is_some() {
                         let result = diplomacy
-                            .checked_add(cdiplomacy_status::ENEMY_COUNTRIES)
+                            .checked_add(engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES)
                             .and_then(|address| Array::read(memory, address, 4))
                             .ok_or(if ordered_hour.is_some() {
                                 "ordered enemy vector unreadable or invalid"
@@ -1034,7 +1033,7 @@ const SERIALIZABLE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SERIALIZABLE_FIELDS, 16).expect("valid serializable layout");
 
 fn target_words(count: u32) -> Result<Vec<u64>, &'static str> {
-    crate::allocation::filled((count as usize).div_ceil(u64::BITS as usize), 0)
+    engine_allocation::filled((count as usize).div_ceil(u64::BITS as usize), 0)
         .map_err(|_| "relation target set allocation failed")
 }
 
@@ -1165,7 +1164,7 @@ fn walk_buffers(
             let owner = read_owner(memory, base, country, active[1] && owned_failure.is_none())?;
             if active[1] && owned_failure.is_none() {
                 let words = (owner.matrix.count as usize).div_ceil(u64::BITS as usize);
-                crate::allocation::resize(&mut targets, words, 0)
+                engine_allocation::resize(&mut targets, words, 0)
                     .map_err(|_| "relation target set allocation failed")?;
             }
             if owner.matrix.count <= highest_slot {
@@ -1272,7 +1271,7 @@ struct Owner {
 fn read_owner(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     owned: bool,
 ) -> Result<Owner, &'static str> {
     let diplomacy = country
@@ -1294,9 +1293,9 @@ fn read_owner(
     let copied = memory.copy_scattered(
         [
             diplomacy,
-            at(cdiplomacy_status::COUNTRY)?,
-            at(cdiplomacy_status::RELATIONS)?,
-            at(cdiplomacy_status::OWNED_RELATIONS)?,
+            at(engine_native_parts::cdiplomacy_status_layout::COUNTRY)?,
+            at(engine_native_parts::cdiplomacy_status_layout::RELATIONS)?,
+            at(engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)?,
         ],
         &mut [
             &mut vtable,
@@ -1309,7 +1308,7 @@ fn read_owner(
         return Err("country diplomacy unreadable");
     }
     let expected =
-        engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).ok_or("module address overflow")?;
+        engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(vtable) != expected as u64 {
         return Err("diplomacy vtable mismatch");
     }
@@ -1336,7 +1335,7 @@ fn read_owner(
 fn owned_targets(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     owned: Array,
     matrix: Array,
     targets: &mut [u64],
@@ -1401,7 +1400,7 @@ struct Pass<'p, 'm, M: Memory> {
     memory: &'m M,
     base: usize,
     countries: &'p ccountry::Reader<'m, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     owner: Owner,
     status_vtable: u64,
     active: [bool; 2],
@@ -1544,14 +1543,14 @@ fn gather(pointers: &[usize], mask: u64, output: &mut [usize; BATCH]) -> usize {
 
 #[derive(Default)]
 pub struct Resolver {
-    references: Vec<(u32, ccountry::Country)>,
+    references: Vec<(u32, engine_native_memory::country_identity::Country)>,
     diplomacies: Vec<(u32, usize, usize)>,
     generation: u32,
     required_links: usize,
     required_slots: usize,
 }
 
-const VACANT_COUNTRY: ccountry::Country = ccountry::Country {
+const VACANT_COUNTRY: engine_native_memory::country_identity::Country = engine_native_memory::country_identity::Country {
     pointer: 0,
     canonical_slot: 0,
     id: 0,
@@ -1585,16 +1584,16 @@ impl Resolver {
         let links = self.required_links.max(self.references.len());
         let slots = self.required_slots.max(self.diplomacies.len());
         let additional = links - self.references.len();
-        crate::allocation::reserve_exact(&mut self.references, additional)?;
+        engine_allocation::reserve_exact(&mut self.references, additional)?;
         self.references.resize(links, (0, VACANT_COUNTRY));
         let additional = slots - self.diplomacies.len();
-        crate::allocation::reserve_exact(&mut self.diplomacies, additional)?;
+        engine_allocation::reserve_exact(&mut self.diplomacies, additional)?;
         self.diplomacies.resize(slots, (0, 0, 0));
         Ok(())
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.references.capacity() * size_of::<(u32, ccountry::Country)>()
+        self.references.capacity() * size_of::<(u32, engine_native_memory::country_identity::Country)>()
             + self.diplomacies.capacity() * size_of::<(u32, usize, usize)>()
     }
 
@@ -1614,7 +1613,7 @@ impl Resolver {
         &mut self,
         countries: &ccountry::Reader<'_, impl Memory>,
         raw: u32,
-    ) -> Result<ccountry::Country, &'static str> {
+    ) -> Result<engine_native_memory::country_identity::Country, &'static str> {
         let generation = self.generation;
         let Some(cell) = self
             .references
@@ -1633,7 +1632,7 @@ impl Resolver {
 
     pub(crate) fn diplomacy(
         &mut self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         validate: impl FnOnce() -> Result<usize, &'static str>,
     ) -> Result<usize, &'static str> {
         let generation = self.generation;
@@ -1730,7 +1729,7 @@ pub struct ZeroRelation {
 pub fn zero_relation(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<ZeroRelation, &'static str> {
     let diplomacy = diplomacy_root(memory, base, country)?;
     let status = status_at(memory, base, diplomacy, 0)?;
@@ -1887,7 +1886,7 @@ fn status_at(
 
 fn relation_matrix(memory: &impl Memory, diplomacy: usize) -> Result<Array, &'static str> {
     diplomacy
-        .checked_add(cdiplomacy_status::RELATIONS)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("relation matrix unreadable or invalid")
 }
@@ -1980,8 +1979,8 @@ fn country_target_with(
 }
 
 const CO_CANDIDATE_VECTORS: [usize; 2] = [
-    cdiplomacy_status::WARTIME_ALLIES,
-    cdiplomacy_status::ENEMY_COUNTRIES,
+    engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
+    engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
 ];
 
 fn co_candidate_vector(
@@ -2041,7 +2040,7 @@ pub fn co_belligerent_inputs(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     output: &mut Vec<u32>,
 ) -> CoBelligerentInputs {
     co_belligerent_inputs_observed_buffer(
@@ -2054,7 +2053,7 @@ pub fn co_belligerent_inputs(
     )
 }
 #[cfg(test)]
-pub(crate) fn co_belligerent_inputs_observed(memory: &impl Memory, base: usize, countries: &ccountry::Reader<'_, impl Memory>, country: ccountry::Country, output: &mut Vec<u32>, observed: &mut ForwardZeroObservation) -> CoBelligerentInputs {
+pub(crate) fn co_belligerent_inputs_observed(memory: &impl Memory, base: usize, countries: &ccountry::Reader<'_, impl Memory>, country: engine_native_memory::country_identity::Country, output: &mut Vec<u32>, observed: &mut ForwardZeroObservation) -> CoBelligerentInputs {
     co_belligerent_inputs_observed_buffer(memory, base, countries, country, Buffer::Growing(output), observed)
 }
 
@@ -2063,7 +2062,7 @@ pub fn co_belligerent_inputs_observed_buffer(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     mut output: Buffer<'_, u32>,
     observed: &mut ForwardZeroObservation,
 ) -> CoBelligerentInputs {
@@ -2508,7 +2507,7 @@ pub fn reserved_visibility_demand(
 pub fn co_belligerent_demand(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let diplomacy = diplomacy_root(memory, base, country)?;
     let mut required = 1_usize;
@@ -2524,7 +2523,7 @@ pub fn co_belligerents(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     output: &mut Vec<u32>,
 ) -> Result<(usize, usize), &'static str> {
     co_belligerents_buffer(
@@ -2542,16 +2541,16 @@ pub fn co_belligerents(
 }
 
 #[cfg(test)]
-pub(crate) fn co_belligerents_native(memory: &impl Memory, base: usize, countries: &ccountry::NativeReferenceContext<'_, impl Memory>, country: ccountry::Country, output: &mut Vec<u32>) -> Result<(usize, usize), &'static str> {
-    co_belligerents_native_buffer(memory, base, countries, country, crate::walk::Buffer::Growing(output))
+pub(crate) fn co_belligerents_native(memory: &impl Memory, base: usize, countries: &ccountry::NativeReferenceContext<'_, impl Memory>, country: engine_native_memory::country_identity::Country, output: &mut Vec<u32>) -> Result<(usize, usize), &'static str> {
+    co_belligerents_native_buffer(memory, base, countries, country, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 pub fn co_belligerents_native_buffer(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
-    country: ccountry::Country,
-    output: crate::walk::Buffer<'_, u32>,
+    country: engine_native_memory::country_identity::Country,
+    output: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Result<(usize, usize), &'static str> {
     countries.canonical_slot(0)?;
     co_belligerents_buffer(
@@ -2567,8 +2566,8 @@ pub fn co_belligerents_native_buffer(
 fn co_belligerents_buffer(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
-    mut output: crate::walk::Buffer<'_, u32>,
+    country: engine_native_memory::country_identity::Country,
+    mut output: engine_native_memory::walk::Buffer<'_, u32>,
     canonical_candidate: impl FnMut(u32) -> Result<u32, &'static str>,
     mut canonical_target: impl FnMut(u32) -> Result<Option<u32>, &'static str>,
 ) -> Result<(usize, usize), &'static str> {
@@ -2600,7 +2599,7 @@ fn co_belligerents_buffer(
 fn diplomacy_root(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let pointer = country
         .pointer
@@ -2612,12 +2611,12 @@ fn diplomacy_root(
         return Err("country diplomacy is null");
     }
     let expected =
-        engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).ok_or("module address overflow")?;
+        engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).ok_or("module address overflow")?;
     if read::<u64>(memory, pointer) != Some(expected as u64) {
         return Err("diplomacy vtable mismatch");
     }
     if pointer
-        .checked_add(cdiplomacy_status::COUNTRY)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::COUNTRY)
         .and_then(|address| read::<u64>(memory, address))
         != Some(country.pointer as u64)
     {
@@ -2656,7 +2655,7 @@ fn read_tuples(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    owner: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
     target_country: u32,
     serializable: Array,
     output: &mut Buffer<'_, TupleRow>,

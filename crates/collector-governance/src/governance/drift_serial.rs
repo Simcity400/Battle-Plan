@@ -1,4 +1,4 @@
-use engine_native::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_research::{
     cresearch_slot, ctechnology, ctechnology_status, research_inputs, research_modifiers,
 };
@@ -216,9 +216,9 @@ impl Store {
         base: usize,
         owner: u32,
         country: usize,
-        mut inputs: engine_native::walk::Buffer<'_, research_inputs::Row>,
-        mut bonuses: engine_native::walk::Buffer<'_, research_inputs::BonusRow>,
-        mut modifiers: engine_native::walk::Buffer<'_, research_modifiers::Row>,
+        mut inputs: engine_native_memory::walk::Buffer<'_, research_inputs::Row>,
+        mut bonuses: engine_native_memory::walk::Buffer<'_, research_inputs::BonusRow>,
+        mut modifiers: engine_native_memory::walk::Buffer<'_, research_modifiers::Row>,
     ) -> Carried<[usize; 3]> {
         let Some(held) = self
             .research

@@ -1,5 +1,6 @@
 use engine_native_air::{cair_base, cair_wing};
-use engine_native::{carmy, cfleet, cship, ctask_force, memory::ReadCounts, walk::Outcome};
+use engine_native::{carmy, cfleet, cship, ctask_force};
+use engine_native_memory::{memory::ReadCounts, walk::Outcome};
 use crate::support::unit_world::{self as fixture, Shape};
 
 fn run(shape: Shape, timed: bool) {

@@ -6,7 +6,7 @@ use engine_deployment::{
     cdeployment_status::LocalSelection, cdeployment_status::LocalSubunitRow,
     cdeployment_status::LocalSubunitWalk,
 };
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use std::{cell::Cell, ops::Range};
 
 #[derive(Clone, Debug)]
@@ -79,7 +79,7 @@ fn held<'a>(
 }
 
 pub fn capture(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     store: &mut LocalStore,

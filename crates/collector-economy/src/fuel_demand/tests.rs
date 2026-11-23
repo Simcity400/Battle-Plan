@@ -213,7 +213,10 @@ impl AirMemory {
         self.put(address + 12, &count.to_le_bytes());
     }
     fn registry(&mut self, handle: u64, pointer: usize, table: usize) {
-        use engine_native::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native_parts::{
+            creference_registry as registry,
+            reference_bucket as bucket,
+        };
         let root = registry::LOW_ROOTS_RVA.0 + handle as u32 as usize * 8;
         let entries = table + 0x100;
         self.span(root, 8);
@@ -238,16 +241,13 @@ impl AirMemory {
 
 #[test]
 fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
-    use engine_native::{
+    use engine_native_parts::{
         air_fuel_defines as defines,
         cair_wing_pool,
-        ccountry,
-        cgame_state,
-        cprovince,
         cstrategic_region,
-        cweather_manager,
-        msvc_string,
     };
+    use engine_native::{ccountry, cgame_state, cprovince, cweather_manager};
+    use engine_native_memory::msvc_string;
     use engine_native_air::{
         air_mission,
         cair_base,
@@ -341,12 +341,12 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
         memory.array(air + cstrategic_air::SECOND_AIR_SITES, LIST, 1);
         memory.put(CONTAINERS + id as usize * 8, &(ENTRY as u64).to_le_bytes());
     }
-    let base_ref = 1_u64 << 32 | u64::from(cair_base::TYPE);
-    let wing_ref = 2_u64 << 32 | u64::from(cair_wing::TYPE);
+    let base_ref = 1_u64 << 32 | u64::from(engine_native_parts::cair_base_layout::TYPE);
+    let wing_ref = 2_u64 << 32 | u64::from(engine_native_parts::cair_wing_layout::TYPE);
     memory.registry(base_ref, BASE, 0x2700000);
-    memory.registry(wing_ref, WING + cair_wing::SECONDARY, 0x2710000);
-    memory.put(BASE, &(cair_base::VTABLE_RVA.0 as u64).to_le_bytes());
-    memory.put(BASE + cair_base::HANDLE, &base_ref.to_le_bytes());
+    memory.registry(wing_ref, WING + engine_native_parts::cair_wing_layout::SECONDARY, 0x2710000);
+    memory.put(BASE, &(engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64).to_le_bytes());
+    memory.put(BASE + engine_native_parts::cair_base_layout::HANDLE, &base_ref.to_le_bytes());
     memory.array(
         BASE + cair_base::COUNTRY_CONTAINERS,
         CONTAINERS,
@@ -365,8 +365,8 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     memory.put(POOLS, &(POOL as u64).to_le_bytes());
     memory.put(POOL, &(cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     memory.array(POOL + cair_wing_pool::WINGS, WINGS, 2);
-    memory.put(WING, &(cair_wing::VTABLE_RVA.0 as u64).to_le_bytes());
-    memory.put(WING + cair_wing::REFERENCE_TYPE, &wing_ref.to_le_bytes());
+    memory.put(WING, &(engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64).to_le_bytes());
+    memory.put(WING + engine_native_parts::cair_wing_layout::REFERENCE_TYPE, &wing_ref.to_le_bytes());
     memory.put(WING + 0xa4, &1_u32.to_le_bytes());
     memory.put(WING + 0x170, &1_i32.to_le_bytes());
     memory.put(WING + cair_wing::BASE_FUEL, &100_000_i64.to_le_bytes());

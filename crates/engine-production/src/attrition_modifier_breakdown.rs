@@ -1,7 +1,6 @@
 
-use crate::{
-    Memory, cpdx_array::Array, modifier_accumulator, modifier_definition, msvc_string, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read};
+use engine_native_parts::{modifier_accumulator, modifier_definition};
 
 mod repeats;
 pub use repeats::RepeatCache;
@@ -43,19 +42,19 @@ pub struct Frame {
 }
 
 pub struct Buffers<'a> {
-    pub requests: crate::walk::Buffer<'a, Request>,
+    pub requests: engine_native_memory::walk::Buffer<'a, Request>,
     pub request_len: usize,
     pub request_required: usize,
-    pub roots: crate::walk::Buffer<'a, Root>,
+    pub roots: engine_native_memory::walk::Buffer<'a, Root>,
     pub root_len: usize,
     pub root_required: usize,
-    pub nodes: crate::walk::Buffer<'a, RawNode>,
+    pub nodes: engine_native_memory::walk::Buffer<'a, RawNode>,
     pub node_len: usize,
     pub node_required: usize,
-    pub text: crate::walk::Buffer<'a, u8>,
+    pub text: engine_native_memory::walk::Buffer<'a, u8>,
     pub text_len: usize,
     pub text_required: usize,
-    pub stack: crate::walk::Buffer<'a, Frame>,
+    pub stack: engine_native_memory::walk::Buffer<'a, Frame>,
     pub stack_required: usize,
     pub repeats: Option<&'a mut RepeatCache>,
 }

@@ -2,7 +2,7 @@
 use engine_allocation as allocation;
 use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
 use engine_native_air::cair_base;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::{rows::AirReferenceWitnessRow, rows::tables};
 use replay_frame::frame::TableView;
 

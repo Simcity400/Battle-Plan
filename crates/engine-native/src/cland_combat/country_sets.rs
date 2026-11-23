@@ -1,5 +1,6 @@
 use super::{ATTACKER, DEFENDER, INDICATOR_FRAME_HIGH, Reader, Source};
-use crate::{Memory, cland_combatant};
+use engine_native_memory::Memory;
+use crate::cland_combatant;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountrySetsRow {
@@ -29,7 +30,7 @@ pub fn read_country_sets_buffer(
     base: usize,
     source: Source,
     max_len: usize,
-    mut tags: crate::walk::Buffer<'_, u32>,
+    mut tags: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Result<(CountrySetsRow, usize), CountrySetError> {
     let reader = Reader {
         memory,

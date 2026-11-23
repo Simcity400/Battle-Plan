@@ -1,8 +1,7 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cpdx_array::Array, cship, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::cship;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a9_a258);
 pub const SHIP_HANDLE: usize = 0x08;
@@ -55,18 +54,18 @@ impl<M: Memory> Memory for EntryRun<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.source.authenticated_countries(base, game_state)
     }
 
-    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+    fn modifier_definitions(&self) -> Option<&engine_native_memory::modifier_cache::PassDefinitions> {
         self.source.modifier_definitions()
     }
 }
 
 pub struct EntryRecord<'a> {
     pointer: usize,
-    fields: &'a [crate::memory::RecordField],
+    fields: &'a [engine_native_memory::memory::RecordField],
     record: &'a [u8],
 }
 
@@ -101,7 +100,7 @@ pub fn append_entries<M: Memory, T>(
     mut output: EntryOutput<'_, T>,
     length: &mut usize,
     mut decode: impl FnMut(&EntryMemory<'_, M>, usize) -> Result<T, &'static str>,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
 ) -> Result<[usize; 2], &'static str> {
     let count = array.count as usize;
     let end = length
@@ -111,7 +110,7 @@ pub fn append_entries<M: Memory, T>(
     match &mut output {
         EntryOutput::Owned(rows) => {
             rows.truncate(*length);
-            crate::allocation::reserve_push_batch(rows, count)
+            engine_allocation::reserve_push_batch(rows, count)
                 .map_err(|_| "naval detail allocation failed")?;
         }
         EntryOutput::Slice(rows) if end > rows.len() => return Err(DETAIL_ARENA_CAPACITY),
@@ -124,7 +123,7 @@ pub fn append_entries<M: Memory, T>(
         .max()
         .unwrap_or(0);
     let layout = (row_bytes != 0 && row_bytes <= ENTRY_RECORD)
-        .then(|| crate::memory::RecordLayout::new(fields, row_bytes))
+        .then(|| engine_native_memory::memory::RecordLayout::new(fields, row_bytes))
         .flatten();
     let mut elements = [0_u8; ENTRY_RUN * ENTRY_STRIDE];
     let mut records = [0_u8; ENTRY_RUN * ENTRY_RECORD];
@@ -159,13 +158,13 @@ pub fn append_entries<M: Memory, T>(
                 ) as usize;
             }
             complete = memory.copy_records(
-                crate::memory::RecordSources::Pointers(&pointers[..run]),
+                engine_native_memory::memory::RecordSources::Pointers(&pointers[..run]),
                 layout,
                 &mut records[..run * row_bytes],
             ) / fields.len().max(1);
         }
         if !copied || (object.is_some() && complete < run) {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::NavalEntryRuns);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::NavalEntryRuns);
         }
         for offset in 0..run {
             let index = first + offset as u32;

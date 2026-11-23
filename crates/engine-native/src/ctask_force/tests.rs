@@ -1,8 +1,13 @@
 use super::*;
 use crate::{
-    ccountry, cgame_state, cland_combatant, cnaval_combat, cnaval_combatant, cprovince,
-    memory::SliceMemory,
+    ccountry,
+    cgame_state,
+    cland_combatant,
+    cnaval_combat,
+    cnaval_combatant,
+    cprovince,
 };
+use engine_native_memory::memory::SliceMemory;
 
 const STATE: usize = 0x100;
 const COUNTRIES: usize = 0x200;
@@ -168,7 +173,7 @@ fn growing_motion_keeps_the_first_full_routes_beyond_previous_capacity() {
 
 struct CombatLinksMemory {
     bytes: Vec<u8>,
-    registry: crate::creference_registry::test_support::Fixture,
+    registry: engine_native_parts::creference_registry::test_support::Fixture,
     fault: Option<usize>,
     change_header: bool,
     header_reads: std::cell::Cell<usize>,
@@ -197,7 +202,8 @@ impl Memory for CombatLinksMemory {
 }
 
 fn combat_links_fixture() -> (CombatLinksMemory, [u64; 2]) {
-    use crate::{cland_combat, creference_registry::test_support::Fixture};
+    use crate::cland_combat;
+    use engine_native_parts::creference_registry::test_support::Fixture;
     const NAVAL: usize = 0x3500;
     let first = (u64::from(u32::MAX) << 32) | 0xfedc_ba98;
     let naval = (0x8000_0000_u64 << 32) | 0xfedc_ba98;
@@ -221,7 +227,7 @@ fn combat_links_fixture() -> (CombatLinksMemory, [u64; 2]) {
     registry.entry(Fixture::index(first), 1, first, (COMBAT + 0x10) as u64);
     registry.entry(Fixture::index(naval), 1, naval, (NAVAL + 0x10) as u64);
     registry.put(
-        0x1000 + crate::creference_registry::COUNT,
+        0x1000 + engine_native_parts::creference_registry::COUNT,
         &2_u32.to_le_bytes(),
     );
     (
@@ -273,17 +279,17 @@ fn combat_links_authenticate_full_identities_and_stop_at_first_native_naval_type
     put64(
         &mut memory.bytes,
         COMBAT,
-        crate::cland_border_war_combat::VTABLE_RVA.0 as u64,
+        engine_native_parts::cland_border_war_combat::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut memory.bytes,
         COMBAT + 0x10,
-        crate::cland_border_war_combat::BODY_VTABLE_RVA.0 as u64,
+        engine_native_parts::cland_border_war_combat::BODY_VTABLE_RVA.0 as u64,
     );
     put64(
         &mut memory.bytes,
         SIDE,
-        crate::cland_border_war_combatant::VTABLE_RVA.0 as u64,
+        engine_native_parts::cland_border_war_combatant::VTABLE_RVA.0 as u64,
     );
     assert_eq!(
         collect_combat_links(&memory, false).1[0].combat_links,
@@ -293,7 +299,7 @@ fn combat_links_authenticate_full_identities_and_stop_at_first_native_naval_type
 
 #[test]
 fn combat_link_suffix_faults_and_changed_headers_preserve_later_motion_prefixes() {
-    use crate::creference_registry::test_support::Fixture;
+    use engine_native_parts::creference_registry::test_support::Fixture;
     for failure in 0..7 {
         let (mut memory, links) = combat_links_fixture();
         let unit = memory.bytes[TASK..TASK + 0x300].to_vec();
@@ -426,7 +432,7 @@ fn mission_fixture() -> Vec<u8> {
         );
         put(
             &mut bytes,
-            region + crate::cstrategic_region::ID,
+            region + engine_native_parts::cstrategic_region::ID,
             &id.to_le_bytes(),
         );
     }
@@ -434,11 +440,11 @@ fn mission_fixture() -> Vec<u8> {
     put64(
         &mut bytes,
         mission,
-        crate::cnaval_mission::VTABLE_RVA.0 as u64,
+        engine_native_parts::cnaval_mission::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut bytes,
-        mission + crate::cnaval_mission::TASK_FORCE,
+        mission + engine_native_parts::cnaval_mission::TASK_FORCE,
         TASK as u64,
     );
     put(&mut bytes, mission + MISSION_OWNER, &42_u32.to_le_bytes());
@@ -449,7 +455,7 @@ fn mission_fixture() -> Vec<u8> {
     );
     array(
         &mut bytes,
-        mission + crate::cnaval_mission::ACCESSIBLE_REGIONS,
+        mission + engine_native_parts::cnaval_mission::ACCESSIBLE_REGIONS,
         ACCESSIBLE,
         3,
     );
@@ -536,7 +542,7 @@ fn mission_rows_keep_accessible_regions_in_order_with_repeats() {
     );
     array(
         &mut idle,
-        TASK + NAVAL_MISSION + crate::cnaval_mission::ACCESSIBLE_REGIONS,
+        TASK + NAVAL_MISSION + engine_native_parts::cnaval_mission::ACCESSIBLE_REGIONS,
         ACCESSIBLE,
         0,
     );
@@ -546,7 +552,7 @@ fn mission_rows_keep_accessible_regions_in_order_with_repeats() {
     );
     for (at, value) in [
         (TASK + NAVAL_MISSION, 1),
-        (TASK + NAVAL_MISSION + crate::cnaval_mission::TASK_FORCE, 0),
+        (TASK + NAVAL_MISSION + engine_native_parts::cnaval_mission::TASK_FORCE, 0),
     ] {
         for (fixture, rows) in [(&bytes, 1), (&bytes, 0), (&idle, 1)] {
             let mut forged = fixture.clone();

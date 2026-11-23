@@ -156,7 +156,7 @@ fn primary_memberships_are_prepared_only_for_the_consuming_paradrop_branch() {
 struct Image {
     bytes: BTreeMap<usize, u8>,
     reads: RefCell<Vec<(usize, usize)>>,
-    reserved: Option<Result<ccountry::Country, &'static str>>,
+    reserved: Option<Result<engine_native_memory::country_identity::Country, &'static str>>,
 }
 impl Image {
     fn put(&mut self, address: usize, bytes: &[u8]) {
@@ -186,7 +186,7 @@ impl Memory for Image {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         ((base, state) == (BASE, STATE))
             .then_some(self.reserved)
             .flatten()
@@ -517,9 +517,9 @@ fn cold_paradrop_terms_grow_from_original_scalars_and_modifier_headers() {
     let mut image = Image::default();
     image.put(PARA + order::CONDITION_CACHE, &[1]);
     image.word(PARA + order::ACCUMULATED_PREPARATION, 10);
-    image.put(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, &[0; 16]);
+    image.put(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, &[0; 16]);
     image.word(GROUP + corders_group::LEADER, 0);
-    image.reserved = Some(Ok(ccountry::Country {
+    image.reserved = Some(Ok(engine_native_memory::country_identity::Country {
         pointer: COUNTRY,
         canonical_slot: 0,
         id: 0,
@@ -580,7 +580,7 @@ fn cold_paradrop_terms_grow_from_original_scalars_and_modifier_headers() {
             .reads
             .borrow()
             .iter()
-            .filter(|&&(at, _)| at == COUNTRY + ccountry::MODIFIER_ACCUMULATOR)
+            .filter(|&&(at, _)| at == COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
             .count(),
         1
     );
@@ -694,8 +694,8 @@ fn naval_stat_fault_preserves_para_sibling_and_seed_fields_are_not_reread() {
         DEFINITION + engine_native::cprovince::definition::ID,
         &7_u32.to_le_bytes(),
     );
-    image.put(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, &[0; 16]);
-    image.reserved = Some(Ok(ccountry::Country {
+    image.put(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, &[0; 16]);
+    image.reserved = Some(Ok(engine_native_memory::country_identity::Country {
         canonical_slot: 0,
         id: 0,
         pointer: COUNTRY,

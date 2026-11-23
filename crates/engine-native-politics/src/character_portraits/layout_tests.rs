@@ -781,8 +781,8 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
         u64_at(&mut bytes, node + 16, head as u64);
         u32_at(&mut bytes, node + 0x20, ideology as u32);
         u64_at(&mut bytes, node + 0x28, role as u64);
-        u64_at(&mut bytes, role, ccountry_leader::VTABLE_RVA.0 as u64);
-        u64_at(&mut bytes, role + ccountry_leader::CHARACTER, FIRST as u64);
+        u64_at(&mut bytes, role, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0 as u64);
+        u64_at(&mut bytes, role + engine_native_parts::ccountry_leader_layout::CHARACTER, FIRST as u64);
     }
     let mut leaders = [ccountry_leader::Row::default(); 2];
     assert_eq!(

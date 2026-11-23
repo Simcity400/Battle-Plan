@@ -1,10 +1,7 @@
 
 use super::{SECONDARY_BASE, SECONDARY_VTABLE_RVA, VTABLE_RVA};
-use crate::{
-    Memory,
-    cname_group_member::{Names, Span, StringErrors, copy_string},
-    cunit, msvc_string, read,
-};
+use engine_native_memory::{Memory, msvc_string, read};
+use crate::{cname_group_member::{Names, Span, StringErrors, copy_string}, cunit};
 
 pub(super) const NAME: usize = 0x258;
 const ERRORS: StringErrors = [
@@ -52,7 +49,7 @@ pub fn cached_name_demand(
     id: u64,
 ) -> Result<usize, &'static str> {
     let mut names = Names {
-        bytes: crate::walk::Buffer::Count,
+        bytes: engine_native_memory::walk::Buffer::Count,
         len: 0,
         required: 0,
     };

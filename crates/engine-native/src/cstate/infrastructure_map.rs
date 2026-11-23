@@ -1,14 +1,7 @@
 use engine_sites::Rva;
-use crate::{
+use engine_native_memory::{
     Memory,
-    cbuilding,
-    cbuilding_database,
-    cprovince::{buildings as status, self},
-    cbuilding_template as template,
-    ccountry,
-    cgame_state,
     cpdx_array::Array,
-    cstate,
     memory::{
         RecordField,
         RecordLayout,
@@ -16,9 +9,15 @@ use crate::{
         gather_records,
         packed_fields,
     },
-    modifier_accumulator,
     read,
 };
+use engine_native_parts::{
+    cbuilding,
+    cbuilding_database,
+    cbuilding_template as template,
+    modifier_accumulator,
+};
+use crate::{cprovince::{buildings as status, self}, ccountry, cgame_state, cstate};
 
 const INFRASTRUCTURE_DEFINITIONS: usize = 0x280;
 const STATE_MAXIMUM: usize = 0x2b8;
@@ -68,7 +67,7 @@ pub struct Infrastructure {
     pub maximum: i32,
 }
 
-fn field<T: crate::memory::Raw>(memory: &impl Memory, object: usize, offset: usize) -> Result<T, &'static str> {
+fn field<T: engine_native_memory::memory::Raw>(memory: &impl Memory, object: usize, offset: usize) -> Result<T, &'static str> {
     object.checked_add(offset).and_then(|address| read(memory, address)).ok_or("infrastructure map operand unreadable")
 }
 
@@ -76,7 +75,7 @@ fn array(memory: &impl Memory, object: usize, offset: usize, stride: usize) -> R
     object.checked_add(offset).and_then(|address| Array::read(memory, address, stride)).ok_or("infrastructure map array invalid")
 }
 
-fn global<T: crate::memory::Raw>(memory: &impl Memory, base: usize, key: Rva) -> Result<T, &'static str> {
+fn global<T: engine_native_memory::memory::Raw>(memory: &impl Memory, base: usize, key: Rva) -> Result<T, &'static str> {
     engine_sites::at(base, key).and_then(|address| read(memory, address)).ok_or("infrastructure map operand unreadable")
 }
 
@@ -205,7 +204,7 @@ fn free_slots(memory: &impl Memory, base: usize, game: usize, state: usize, coun
     let owner = field::<u32>(memory, state, cstate::OWNER)?;
     let country = countries.resolve(owner)?;
     let state_accumulator = cstate::country_modifier_accumulator(memory, game, state, owner)?;
-    let country_accumulator = country.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR).ok_or("infrastructure map country accumulator overflow")?;
+    let country_accumulator = country.pointer.checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR).ok_or("infrastructure map country accumulator overflow")?;
     let modifier = |root, key| modifier_accumulator::lookup_effective_at(memory, base, root, key).map(|value| value.effective);
     let mut slots = modifier(state_accumulator, LOCAL_BUILDING_SLOTS)?.wrapping_add(modifier(country_accumulator, GLOBAL_BUILDING_SLOTS)?);
     if slots > 0 {
@@ -252,7 +251,7 @@ impl Plan {
         let maximum = if state_maximum > 0 { state_maximum } else { global(memory, base, DEFAULT_MAXIMUM)? };
         let entries = array(memory, definition, EXCLUSIVE, 4)?;
         let mut exclusive = Vec::new();
-        crate::allocation::reserve(&mut exclusive, entries.count as usize).map_err(|_| "infrastructure map exclusivity allocation failed")?;
+        engine_allocation::reserve(&mut exclusive, entries.count as usize).map_err(|_| "infrastructure map exclusivity allocation failed")?;
         for index in 0..entries.count {
             exclusive.push(entries.element(index, 4).and_then(|address| read(memory, address)).ok_or("infrastructure map exclusivity token unreadable")?);
         }
@@ -329,7 +328,7 @@ pub struct Cache {
     generation: u64,
     technologies: Vec<(u64, i32)>,
     categories: Vec<(usize, i32)>,
-    controllers: Vec<(u32, ccountry::Country)>,
+    controllers: Vec<(u32, engine_native_memory::country_identity::Country)>,
 }
 
 impl Cache {
@@ -341,7 +340,7 @@ impl Cache {
         self.plan.as_ref().map_or(0, Plan::allocated_bytes)
             + self.technologies.capacity() * size_of::<(u64, i32)>()
             + self.categories.capacity() * size_of::<(usize, i32)>()
-            + self.controllers.capacity() * size_of::<(u32, ccountry::Country)>()
+            + self.controllers.capacity() * size_of::<(u32, engine_native_memory::country_identity::Country)>()
     }
 }
 
@@ -353,7 +352,7 @@ pub struct Hour<'a, M: Memory> {
     generation: u64,
     technologies: &'a mut Vec<(u64, i32)>,
     categories: &'a mut Vec<(usize, i32)>,
-    controllers: &'a mut Vec<(u32, ccountry::Country)>,
+    controllers: &'a mut Vec<(u32, engine_native_memory::country_identity::Country)>,
     countries: Option<Result<ccountry::Reader<'a, M>, &'static str>>,
     fort: Option<Result<i32, &'static str>>,
     states: Option<Result<Array, &'static str>>,
@@ -401,18 +400,18 @@ impl<'a, M: Memory> Hour<'a, M> {
         }
         authenticate(self.memory, self.base, category, cstate::CATEGORY_VTABLE_RVA)?;
         let limit = category_limit(self.memory, category, self.plan.token, self.plan.maximum)?;
-        if crate::allocation::reserve(self.categories, 1).is_ok() {
+        if engine_allocation::reserve(self.categories, 1).is_ok() {
             self.categories.push((category, limit));
         }
         Ok(limit)
     }
 
-    fn controller(&mut self, raw: u32) -> Result<ccountry::Country, &'static str> {
+    fn controller(&mut self, raw: u32) -> Result<engine_native_memory::country_identity::Country, &'static str> {
         if let Some(&(_, country)) = self.controllers.iter().find(|(held, _)| *held == raw) {
             return Ok(country);
         }
         let country = self.countries()?.resolve(raw)?;
-        if crate::allocation::reserve(self.controllers, 1).is_ok() {
+        if engine_allocation::reserve(self.controllers, 1).is_ok() {
             self.controllers.push((raw, country));
         }
         Ok(country)
@@ -429,7 +428,7 @@ impl<'a, M: Memory> Hour<'a, M> {
         let status = field::<u64>(self.memory, controller.pointer, ccountry::TECHNOLOGY_STATUS)? as usize;
         let limits = array(self.memory, status, TECHNOLOGY_LIMITS, 4)?;
         let limit = limits.element(self.plan.ordinal, 4).and_then(|address| read::<i32>(self.memory, address)).ok_or("infrastructure map technology limit unavailable")?;
-        if slot < self.technologies.len() || crate::allocation::resize_default(self.technologies, slot + 1).is_ok() {
+        if slot < self.technologies.len() || engine_allocation::resize_default(self.technologies, slot + 1).is_ok() {
             self.technologies[slot] = (self.generation, limit);
         }
         Ok(limit)
@@ -544,7 +543,7 @@ impl<'a, M: Memory> Hour<'a, M> {
     }
 }
 
-pub fn snapshot(memory: &impl Memory, base: usize, game: usize, census: crate::walk::Outcome, rows: &mut [cstate::Row]) {
+pub fn snapshot(memory: &impl Memory, base: usize, game: usize, census: engine_native_memory::walk::Outcome, rows: &mut [cstate::Row]) {
     let rows = &mut rows[..census.len()];
     for row in rows.iter_mut() { row.infrastructure = None; }
     let mut cache = Cache::default();

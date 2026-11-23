@@ -1,5 +1,6 @@
 
-use crate::{Memory, cpdx_array::Array, nproject_cprogram_status, nproject_cproject, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::{nproject_cprogram_status, nproject_cproject};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a4_0e38);
@@ -113,7 +114,7 @@ pub(crate) fn from_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn put<T: AsRef<[u8]>>(bytes: &mut [u8], at: usize, value: T) {
         let value = value.as_ref();

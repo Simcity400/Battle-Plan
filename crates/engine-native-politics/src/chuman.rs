@@ -1,4 +1,4 @@
-pub use engine_native_parts::chuman_layout::{VTABLE_RVA, STRIDE, COUNTRY_TAG};
+use engine_native_parts::chuman_layout::{VTABLE_RVA, STRIDE, COUNTRY_TAG};
 
 use engine_sites::Rva;
 use engine_native_memory::{

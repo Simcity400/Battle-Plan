@@ -1,5 +1,6 @@
 use collector_hooks::hook::Hook;
-use engine_native::{Memory, cgame_state};
+use engine_native_memory::Memory;
+use engine_native::cgame_state;
 use std::{
     cell::Cell,
     ops::Range,

@@ -5,14 +5,15 @@ pub const CACHED_NAME: usize = 0x10;
 pub(crate) fn cached_name(
     memory: &impl Memory,
     pointer: usize,
-) -> Result<crate::msvc_string::Descriptor, &'static str> {
+) -> Result<engine_native_memory::msvc_string::Descriptor, &'static str> {
     let address = pointer
         .checked_add(CACHED_NAME)
         .ok_or("peace name address overflow")?;
-    crate::msvc_string::Descriptor::read(memory, address)
+    engine_native_memory::msvc_string::Descriptor::read(memory, address)
 }
 
-use crate::{Memory, cstate_peace_action as state, read};
+use engine_native_memory::{Memory, read};
+use crate::cstate_peace_action as state;
 
 pub const TAKER: usize = 0x30;
 pub const GIVER: usize = 0x34;
@@ -165,7 +166,7 @@ pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
         } else {
             let identity = read::<[u8; 16]>(memory, selected as usize)
                 .ok_or("peace selected ship identity unreadable")?;
-            if engine_sites::at(base, crate::cship::VTABLE_RVA).map(|value| value as u64)
+            if engine_sites::at(base, engine_native::cship::VTABLE_RVA).map(|value| value as u64)
                 != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
             {
                 return Err("peace selected ship vtable mismatch");

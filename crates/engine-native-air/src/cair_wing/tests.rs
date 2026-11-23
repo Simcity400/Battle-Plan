@@ -1515,7 +1515,7 @@ fn equipment_extension_preserves_duplicate_variants_zero_and_signed_amounts() {
     p64(
         &mut bytes,
         VARIANT,
-        engine_native::cequipment_variant::VTABLE_RVA.0 as u64,
+        engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
     );
     p64(&mut bytes, VARIANT + 8, variant);
     for (index, amount) in [0_i64, i64::MIN, i64::MAX].into_iter().enumerate() {

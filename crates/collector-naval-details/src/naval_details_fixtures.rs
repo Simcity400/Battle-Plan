@@ -1,5 +1,6 @@
 
-use engine_native::{Memory, cgame_state, memory::SliceMemory};
+use engine_native_memory::{Memory, memory::SliceMemory};
+use engine_native::cgame_state;
 
 pub const IMAGE: usize = 0x1400_0000;
 pub const STATE: usize = 0x1000;
@@ -88,50 +89,50 @@ impl Fixture {
         this.array(WEATHER + 0x40, WEATHER_REGIONS, 1);
         this.u64(
             WEATHER_REGIONS,
-            (IMAGE + engine_native::sweather_per_region::VTABLE_RVA.0) as u64,
+            (IMAGE + engine_native::cweather_manager::region_weather::VTABLE_RVA.0) as u64,
         );
-        this.u32(WEATHER_REGIONS + engine_native::sweather_per_region::ID, 0);
+        this.u32(WEATHER_REGIONS + engine_native::cweather_manager::region_weather::ID, 0);
         this.u64(
             TERRAIN,
-            (IMAGE + engine_native::cterrain_type::VTABLE_RVA.0) as u64,
+            (IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64,
         );
         this.put(TERRAIN + 0x10, &[1]);
         this.inline(TERRAIN + 0xb8 + 0x48, b"terrain");
         this.inline(WEATHER_REGIONS + 0x58 + 0x48, b"weather");
         this.u64(
-            REFERENCE_TABLE + engine_native::creference_registry::ENTRIES,
+            REFERENCE_TABLE + engine_native_parts::creference_registry::ENTRIES,
             REFERENCE_BUCKETS as u64,
         );
         this.u32(
-            REFERENCE_TABLE + engine_native::creference_registry::COUNT,
+            REFERENCE_TABLE + engine_native_parts::creference_registry::COUNT,
             1,
         );
         this.u32(
-            REFERENCE_TABLE + engine_native::creference_registry::MASK,
+            REFERENCE_TABLE + engine_native_parts::creference_registry::MASK,
             7,
         );
         this.put(
-            REFERENCE_TABLE + engine_native::creference_registry::OVERFLOW_DISTANCE,
+            REFERENCE_TABLE + engine_native_parts::creference_registry::OVERFLOW_DISTANCE,
             &[5],
         );
         let hash = CONVOY_HANDLE
             .rotate_left(32)
-            .wrapping_mul(engine_native::creference_registry::HASH_MULTIPLIER);
+            .wrapping_mul(engine_native_parts::creference_registry::HASH_MULTIPLIER);
         let slot = (((hash >> 32) as u32 ^ hash as u32) & 7) as usize;
-        let bucket = REFERENCE_BUCKETS + slot * engine_native::reference_bucket::STRIDE;
-        this.put(bucket + engine_native::reference_bucket::DISTANCE, &[1]);
+        let bucket = REFERENCE_BUCKETS + slot * engine_native_parts::reference_bucket::STRIDE;
+        this.put(bucket + engine_native_parts::reference_bucket::DISTANCE, &[1]);
         this.u64(
-            bucket + engine_native::reference_bucket::TYPE,
+            bucket + engine_native_parts::reference_bucket::TYPE,
             CONVOY_HANDLE,
         );
         this.u64(
-            bucket + engine_native::reference_bucket::OBJECT,
+            bucket + engine_native_parts::reference_bucket::OBJECT,
             CONVOY as u64,
         );
         this.put(
             REFERENCE_BUCKETS
-                + 13 * engine_native::reference_bucket::STRIDE
-                + engine_native::reference_bucket::DISTANCE,
+                + 13 * engine_native_parts::reference_bucket::STRIDE
+                + engine_native_parts::reference_bucket::DISTANCE,
             &[255],
         );
         this.u64(
@@ -144,58 +145,58 @@ impl Fixture {
         this.u64(CONVOY + 0x28, 70_000);
         this.u64(
             VARIANT,
-            (IMAGE + engine_native::cequipment_variant::VTABLE_RVA.0) as u64,
+            (IMAGE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
         );
         this.u64(VARIANT + 8, (1_u64 << 32) | 42);
         this.u64(VARIANT + 0x208, 24_000);
         this.u64(VARIANT + 0x2e0, 100_000);
         this.u64(VARIANT + 0x2e8, 100_000);
         this.u64(
-            SHIP_TABLE + engine_native::creference_registry::ENTRIES,
+            SHIP_TABLE + engine_native_parts::creference_registry::ENTRIES,
             SHIP_BUCKETS as u64,
         );
         this.u32(
-            SHIP_TABLE + engine_native::creference_registry::MASK,
+            SHIP_TABLE + engine_native_parts::creference_registry::MASK,
             SHIP_MASK as u32,
         );
         this.put(
-            SHIP_TABLE + engine_native::creference_registry::OVERFLOW_DISTANCE,
+            SHIP_TABLE + engine_native_parts::creference_registry::OVERFLOW_DISTANCE,
             &[16],
         );
         this.put(
             SHIP_BUCKETS
-                + (SHIP_MASK + 1 + 16) * engine_native::reference_bucket::STRIDE
-                + engine_native::reference_bucket::DISTANCE,
+                + (SHIP_MASK + 1 + 16) * engine_native_parts::reference_bucket::STRIDE
+                + engine_native_parts::reference_bucket::DISTANCE,
             &[255],
         );
-        this.u64(WING, (IMAGE + engine_native_air::cair_wing::VTABLE_RVA.0) as u64);
+        this.u64(WING, (IMAGE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0) as u64);
         this.u64(
-            WING + engine_native_air::cair_wing::SECONDARY,
-            (IMAGE + engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
+            WING + engine_native_parts::cair_wing_layout::SECONDARY,
+            (IMAGE + engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0) as u64,
         );
-        this.u64(WING + engine_native_air::cair_wing::REFERENCE_TYPE, WING_HANDLE);
-        this.u64(WING + engine_native_air::cair_wing::POOL, (WING + 0x100) as u64);
+        this.u64(WING + engine_native_parts::cair_wing_layout::REFERENCE_TYPE, WING_HANDLE);
+        this.u64(WING + engine_native_parts::cair_wing_layout::POOL, (WING + 0x100) as u64);
         this.u64(
             WING + 0x100,
-            (IMAGE + engine_native::cair_wing_pool::VTABLE_RVA.0) as u64,
+            (IMAGE + engine_native_parts::cair_wing_pool::VTABLE_RVA.0) as u64,
         );
         this.u64(
-            WING + 0x100 + engine_native::cair_wing_pool::DEFINITION,
+            WING + 0x100 + engine_native_parts::cair_wing_pool::DEFINITION,
             (WING + 0x200) as u64,
         );
         this.u64(
             WING + 0x200,
-            (IMAGE + engine_native::csub_unit_definition::VTABLE_RVA.0) as u64,
+            (IMAGE + engine_native_parts::csub_unit_definition::VTABLE_RVA.0) as u64,
         );
         this.u32(
-            WING + 0x200 + engine_native::csub_unit_definition::DATABASE_INDEX,
+            WING + 0x200 + engine_native_parts::csub_unit_definition::DATABASE_INDEX,
             1,
         );
         let mut occupied = vec![false; SHIP_MASK + 1];
         this.register(
             SHIP_BUCKETS,
             WING_HANDLE,
-            WING + engine_native_air::cair_wing::SECONDARY,
+            WING + engine_native_parts::cair_wing_layout::SECONDARY,
             &mut occupied,
         );
         let mut next_ship_id = 1_u32;
@@ -208,7 +209,7 @@ impl Fixture {
                 (IMAGE + engine_native::ccountry::VTABLE_RVA.0) as u64,
             );
             this.u32(country + engine_native::ccountry::ID, slot as u32 + 1);
-            let root = country + engine_native::ccountry::MODIFIER_ACCUMULATOR;
+            let root = country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
             this.inline(root + 0x48, b"country");
             let root_data = root_entries + slot * ROOT_ENTRIES * 16;
             this.array(root, root_data, ROOT_ENTRIES);
@@ -283,7 +284,7 @@ impl Fixture {
             this.u64(province + 0xc8, region as u64);
             this.u64(
                 region,
-                (IMAGE + engine_native::cstrategic_region::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_parts::cstrategic_region::VTABLE_RVA.0) as u64,
             );
             this.u64(region + 0x30, terrain_link as u64);
             this.u32(region + 0x58, 0);
@@ -328,15 +329,15 @@ impl Fixture {
                 this.u64(group_slot, group as u64);
                 this.u64(
                     group,
-                    (IMAGE + engine_native::cfex_group::VTABLE_RVA.0) as u64,
+                    (IMAGE + engine_native_parts::cfex_group::VTABLE_RVA.0) as u64,
                 );
-                this.u64(group + engine_native::cfex_group::SIDE, side as u64);
+                this.u64(group + engine_native_parts::cfex_group::SIDE, side as u64);
                 this.u64(
-                    group + engine_native::cfex_group::OPPONENT_GROUP,
+                    group + engine_native_parts::cfex_group::OPPONENT_GROUP,
                     (body + 0x1000 + (1 - number) * 0x400) as u64,
                 );
                 this.array(
-                    group + engine_native::cfex_group::MEMBERS,
+                    group + engine_native_parts::cfex_group::MEMBERS,
                     member_slot,
                     SHIPS_PER_COMBAT / 2,
                 );
@@ -386,7 +387,7 @@ impl Fixture {
                     this.u64(ship + 0x8f8, (task + 0xb00) as u64);
                     this.u64(
                         ship + engine_native::cship::EQUIPMENT_POOL,
-                        (IMAGE + engine_native::cequipment_variant_pool::VTABLE_RVA.0) as u64,
+                        (IMAGE + engine_native::cequipment_variant::pool::VTABLE_RVA.0) as u64,
                     );
                     this.u64(ship + engine_native::cship::STRENGTH, 100_000);
                     this.u64(ship + engine_native::cship::ORGANISATION, 100_000);
@@ -419,7 +420,7 @@ impl Fixture {
             }
         }
         this.u32(
-            SHIP_TABLE + engine_native::creference_registry::COUNT,
+            SHIP_TABLE + engine_native_parts::creference_registry::COUNT,
             (combats * SHIPS_PER_COMBAT + 1) as u32,
         );
         this
@@ -436,7 +437,7 @@ impl Fixture {
         for slot in 0..countries {
             let root = COUNTRY_BASE
                 + slot * COUNTRY_STRIDE
-                + engine_native::ccountry::MODIFIER_ACCUMULATOR;
+                + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
             let data = self.pointer(root);
             let entries = if matches!(hour, Hour::AllChanged) {
                 ROOT_ENTRIES
@@ -565,10 +566,10 @@ impl Fixture {
             let relations = self.allocate((COUNTRY_COUNT + 1) * 8);
             self.u64(
                 diplomacy,
-                (IMAGE + engine_native_politics::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
             );
             self.array(
-                diplomacy + engine_native_politics::cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
                 relations,
                 COUNTRY_COUNT + 1,
             );
@@ -588,8 +589,8 @@ impl Fixture {
                 let member = BODIES + index * STRIDE + 0x3000 + ordinal * 0x300;
                 let handle = self.pointer(member + engine_native::cfex_member::SHIP_HANDLE) as u64;
                 let at =
-                    SHIP_BUCKETS + Self::bucket(handle) * engine_native::reference_bucket::STRIDE;
-                self.put(at, &[0; engine_native::reference_bucket::STRIDE]);
+                    SHIP_BUCKETS + Self::bucket(handle) * engine_native_parts::reference_bucket::STRIDE;
+                self.put(at, &[0; engine_native_parts::reference_bucket::STRIDE]);
             }
         }
         self
@@ -615,17 +616,17 @@ impl Fixture {
     pub fn bucket(handle: u64) -> usize {
         let hash = handle
             .rotate_left(32)
-            .wrapping_mul(engine_native::creference_registry::HASH_MULTIPLIER);
+            .wrapping_mul(engine_native_parts::creference_registry::HASH_MULTIPLIER);
         (((hash >> 32) as u32 ^ hash as u32) as usize) & SHIP_MASK
     }
     pub fn register(&mut self, buckets: usize, handle: u64, pointer: usize, occupied: &mut [bool]) {
         let slot = Self::bucket(handle);
         assert!(!occupied[slot], "synthetic reference bucket collision");
         occupied[slot] = true;
-        let at = buckets + slot * engine_native::reference_bucket::STRIDE;
-        self.put(at + engine_native::reference_bucket::DISTANCE, &[1]);
-        self.u64(at + engine_native::reference_bucket::TYPE, handle);
-        self.u64(at + engine_native::reference_bucket::OBJECT, pointer as u64);
+        let at = buckets + slot * engine_native_parts::reference_bucket::STRIDE;
+        self.put(at + engine_native_parts::reference_bucket::DISTANCE, &[1]);
+        self.u64(at + engine_native_parts::reference_bucket::TYPE, handle);
+        self.u64(at + engine_native_parts::reference_bucket::OBJECT, pointer as u64);
     }
     pub fn inline(&mut self, at: usize, value: &[u8]) {
         self.put(at, value);
@@ -655,7 +656,7 @@ impl Memory for Fixture {
                 .unwrap(),
         ) == LEXER_MARK
         {
-            let witness = IMAGE + engine_native::cpdx_lexer::INITIALIZED_RVA.0;
+            let witness = IMAGE + engine_native_memory::cpdx_lexer::INITIALIZED_RVA.0;
             let served = if (witness..witness + 64).contains(&address) {
                 Some(LEXER + (address - witness))
             } else if address == IMAGE + 0x0343_9158 || address == IMAGE + 0x0343_9150 {
@@ -677,21 +678,21 @@ impl Memory for Fixture {
             destination.copy_from_slice(&(STATE as u64).to_le_bytes());
             return true;
         }
-        if address == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0 + 8
+        if address == IMAGE + engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 8
             && destination.len() == 8
         {
             destination.copy_from_slice(&(REFERENCE_TABLE as u64).to_le_bytes());
             return true;
         }
         if matches!(address,
-            x if x == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0 + 51 * 8
-                || x == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0 + 52 * 8)
+            x if x == IMAGE + engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 51 * 8
+                || x == IMAGE + engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 52 * 8)
             && destination.len() == 8
         {
             destination.copy_from_slice(&(SHIP_TABLE as u64).to_le_bytes());
             return true;
         }
-        if address == IMAGE + engine_native::modifier_definition::TABLE_RVA.0
+        if address == IMAGE + engine_native_parts::modifier_definition::TABLE_RVA.0
             && destination.len() >= 8
         {
             destination.fill(0);
@@ -703,8 +704,8 @@ impl Memory for Fixture {
             return true;
         }
         if matches!(address,
-            x if x == IMAGE + engine_native::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0
-                || x == IMAGE + engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0)
+            x if x == IMAGE + engine_native_parts::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0
+                || x == IMAGE + engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0)
         {
             destination.fill(0);
             return true;
@@ -736,7 +737,7 @@ pub fn live_shape() -> LiveShape {
     let mut memory = Fixture::new(3);
     let keys = TREE_KEYS;
     memory.u64(
-        WING + 0x200 + engine_native::csub_unit_definition::AIR_FLAGS,
+        WING + 0x200 + engine_native_parts::csub_unit_definition::AIR_FLAGS,
         0x400,
     );
     let weather_provinces = memory.allocate(4 * 0x330);
@@ -744,8 +745,8 @@ pub fn live_shape() -> LiveShape {
     let mut occupied: Vec<_> = (0..=SHIP_MASK)
         .map(|slot| {
             memory.0[SHIP_BUCKETS
-                + slot * engine_native::reference_bucket::STRIDE
-                + engine_native::reference_bucket::DISTANCE
+                + slot * engine_native_parts::reference_bucket::STRIDE
+                + engine_native_parts::reference_bucket::DISTANCE
                 - STATE]
                 != 0
         })
@@ -774,19 +775,19 @@ pub fn live_shape() -> LiveShape {
                 memory.register(SHIP_BUCKETS, reference, pointer, &mut occupied);
                 reference
             };
-            let base_handle = handle(engine_native_air::cair_base::TYPE, air_base, &mut memory);
+            let base_handle = handle(engine_native_parts::cair_base_layout::TYPE, air_base, &mut memory);
             let wing_handle = handle(
-                engine_native_air::cair_wing::TYPE,
-                wing + engine_native_air::cair_wing::SECONDARY,
+                engine_native_parts::cair_wing_layout::TYPE,
+                wing + engine_native_parts::cair_wing_layout::SECONDARY,
                 &mut memory,
             );
             memory.u64(
                 air_base,
-                (IMAGE + engine_native_air::cair_base::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_parts::cair_base_layout::VTABLE_RVA.0) as u64,
             );
-            memory.u64(air_base + engine_native_air::cair_base::HANDLE, base_handle);
+            memory.u64(air_base + engine_native_parts::cair_base_layout::HANDLE, base_handle);
             memory.u64(
-                air_base + engine_native_air::cair_base::HOST_REFERENCE,
+                air_base + engine_native_parts::cair_base_layout::HOST_REFERENCE,
                 ship_handle,
             );
             memory.array(
@@ -817,29 +818,29 @@ pub fn live_shape() -> LiveShape {
             memory.u64(block + 0x320, pool as u64);
             memory.u64(
                 pool,
-                (IMAGE + engine_native::cair_wing_pool::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_parts::cair_wing_pool::VTABLE_RVA.0) as u64,
             );
             memory.u64(
-                pool + engine_native::cair_wing_pool::DEFINITION,
+                pool + engine_native_parts::cair_wing_pool::DEFINITION,
                 (WING + 0x200) as u64,
             );
             memory.u64(
-                pool + engine_native::cair_wing_pool::AIR_BASE_REFERENCE,
+                pool + engine_native_parts::cair_wing_pool::AIR_BASE_REFERENCE,
                 base_handle,
             );
             memory.array(
-                pool + engine_native::cair_wing_pool::WINGS,
+                pool + engine_native_parts::cair_wing_pool::WINGS,
                 block + 0x480,
                 1,
             );
             memory.u64(block + 0x480, wing as u64);
-            memory.u64(wing, (IMAGE + engine_native_air::cair_wing::VTABLE_RVA.0) as u64);
+            memory.u64(wing, (IMAGE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0) as u64);
             memory.u64(
-                wing + engine_native_air::cair_wing::SECONDARY,
-                (IMAGE + engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
+                wing + engine_native_parts::cair_wing_layout::SECONDARY,
+                (IMAGE + engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0) as u64,
             );
-            memory.u64(wing + engine_native_air::cair_wing::REFERENCE_TYPE, wing_handle);
-            memory.u64(wing + engine_native_air::cair_wing::POOL, pool as u64);
+            memory.u64(wing + engine_native_parts::cair_wing_layout::REFERENCE_TYPE, wing_handle);
+            memory.u64(wing + engine_native_parts::cair_wing_layout::POOL, pool as u64);
             memory.u64(
                 ship + engine_native::cship::CARRIER_AIR_BASE,
                 air_base as u64,
@@ -850,7 +851,7 @@ pub fn live_shape() -> LiveShape {
         }
     }
     memory.u32(
-        SHIP_TABLE + engine_native::creference_registry::COUNT,
+        SHIP_TABLE + engine_native_parts::creference_registry::COUNT,
         (3 * SHIPS_PER_COMBAT + 1 + 24) as u32,
     );
     for combat in 0..3 {
@@ -869,7 +870,7 @@ pub fn live_shape() -> LiveShape {
     );
     for country in 0..6 {
         let root =
-            COUNTRY_BASE + country * COUNTRY_STRIDE + engine_native::ccountry::MODIFIER_ACCUMULATOR;
+            COUNTRY_BASE + country * COUNTRY_STRIDE + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         let children = memory.pointer(root + 0x18);
         for child in 0..8 {
             let parent = memory.pointer(children + child * 8) + 0x10;
@@ -914,10 +915,10 @@ pub struct LiveShape(pub Fixture);
 impl Memory for LiveShape {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if matches!(address,
-                x if x == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0
-                    + engine_native_air::cair_base::TYPE as usize * 8
-                    || x == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0
-                        + engine_native_air::cair_wing::TYPE as usize * 8)
+                x if x == IMAGE + engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
+                    + engine_native_parts::cair_base_layout::TYPE as usize * 8
+                    || x == IMAGE + engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
+                        + engine_native_parts::cair_wing_layout::TYPE as usize * 8)
             && output.len() == 8
         {
             output.copy_from_slice(&(SHIP_TABLE as u64).to_le_bytes());

@@ -9,7 +9,7 @@ use collector_projection::projection::{
 };
 use engine_allocation::{copy_vec, owned_vec, reserve_exact};
 use engine_characters::advisor_tokens;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native_politics::ccountry_characters as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AdvisorTokenRow,
@@ -285,14 +285,14 @@ impl Captured {
                     base,
                     game_state,
                     if active {
-                        engine_native::walk::Buffer::Growing(&mut self.active.rows)
+                        engine_native_memory::walk::Buffer::Growing(&mut self.active.rows)
                     } else {
-                        engine_native::walk::Buffer::Count
+                        engine_native_memory::walk::Buffer::Count
                     },
                     if retired {
-                        engine_native::walk::Buffer::Growing(&mut self.retired.rows)
+                        engine_native_memory::walk::Buffer::Growing(&mut self.retired.rows)
                     } else {
-                        engine_native::walk::Buffer::Count
+                        engine_native_memory::walk::Buffer::Count
                     },
                 ),
             };
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn appointed_advisors_walk_every_hour() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn active_characters_walk_every_hour_and_keep_null_records() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

@@ -8,18 +8,14 @@ use collector_raw::raw::RawLog;
 use engine_air_history::cloop_history;
 use engine_allocation as allocation;
 use engine_map_air::map_air_base_reference;
-use engine_native::{
+use engine_native_memory::{
     Memory,
-    cair_wing_pool,
-    ccountry,
-    cgame_state,
     cpdx_array::Array,
-    cprovince,
-    cstate,
-    equipment_entry,
     msvc_string,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::{cair_wing_pool, equipment_entry};
+use engine_native::{ccountry, cgame_state, cprovince, cstate};
 use engine_native_air::{
     cace,
     cair_base,
@@ -1481,7 +1477,7 @@ fn read_equipment_carried(
     memory: &impl Memory,
     base: usize,
     source: &WingSource<'_>,
-    mut output: engine_native::walk::Buffer<'_, rows::WingEquipmentRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, rows::WingEquipmentRow>,
     start: usize,
     reuse: Option<&mut WingReuse<'_>>,
 ) -> (Outcome, usize) {
@@ -1507,7 +1503,7 @@ fn read_equipment_buffer(
     memory: &impl Memory,
     base: usize,
     source: &WingSource<'_>,
-    mut output: engine_native::walk::Buffer<'_, rows::WingEquipmentRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, rows::WingEquipmentRow>,
     start: usize,
 ) -> (Outcome, usize) {
     let mut required = 0;

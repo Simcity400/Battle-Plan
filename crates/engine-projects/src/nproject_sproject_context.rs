@@ -12,7 +12,7 @@ pub const STATE_REFERENCE: usize = 0x28;
 pub const STATE_PRESENT: usize = 0x2c;
 pub const CONSTRUCT_RVA: Rva = Rva(0x01ac_ae90);
 
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -78,7 +78,7 @@ pub fn read_row(memory: &impl Memory, base: usize, address: usize) -> Result<Row
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     struct AbsentPayloads<'a>(SliceMemory<'a>);
 

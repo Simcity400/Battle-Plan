@@ -1,10 +1,7 @@
 use super::*;
-use engine_native::{
-    cgame_state,
-    character_advisor_node,
-    cunit_leader_trait,
-    msvc_tree_node,
-};
+use engine_native::cgame_state;
+use engine_native_parts::{character_advisor_node, cunit_leader_trait};
+use engine_native_memory::msvc_tree_node;
 use engine_native_politics::character_leader_node;
 use std::cell::Cell;
 
@@ -207,9 +204,9 @@ impl World {
             LEADER_ROLE if Self::leader(index) => {
                 window.put(
                     object,
-                    &((MODULE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
+                    &((MODULE + engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
-                window.pointer(object + ccountry_leader::CHARACTER, Self::character(index));
+                window.pointer(object + engine_native_parts::ccountry_leader_layout::CHARACTER, Self::character(index));
             }
             ADVISOR_HEAD => {
                 let target = if self.advisor(index) {
@@ -520,8 +517,8 @@ impl Memory for Counting<'_> {
 
     fn copy_records(
         &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let completed = self.inner.copy_records(sources, layout, destination);
@@ -531,10 +528,10 @@ impl Memory for Counting<'_> {
 
     fn execute_read_plan(
         &self,
-        plan: &engine_native::read_plan::PreparedPlan,
+        plan: &engine_native_memory::read_plan::PreparedPlan,
         destination: &mut [u8],
-    ) -> Option<engine_native::read_plan::Outcome> {
-        use engine_native::read_plan::Outcome as Plan;
+    ) -> Option<engine_native_memory::read_plan::Outcome> {
+        use engine_native_memory::read_plan::Outcome as Plan;
         let outcome = self.inner.execute_read_plan(plan, destination);
         let completed = match outcome {
             Some(Plan::Complete) => plan.reads().len(),

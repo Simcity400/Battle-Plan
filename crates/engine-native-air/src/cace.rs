@@ -251,7 +251,7 @@ pub fn walk_buffer(
 fn presentation(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     pointer: usize,
 ) -> Result<(Presentation, [Option<msvc_string::Descriptor>; 4]), &'static str> {
     let at = |offset| {
@@ -302,7 +302,7 @@ fn presentation(
 pub fn portrait_sources(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     gender: u8,
     index: i32,
 ) -> Result<[Option<msvc_string::Descriptor>; 3], &'static str> {
@@ -365,7 +365,7 @@ pub fn portrait_sources(
 fn read_row(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     pointer: usize,
     ordinal: u32,
     headers: &mut [u8; 96],

@@ -1,5 +1,5 @@
 use collector_raw::raw::{RawLog, Span, is_canonical_range};
-use engine_native::{Memory, memory::SliceMemory, walk::Buffer};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Buffer};
 use std::cell::{Cell, RefCell};
 
 const SHARED_MASK: u32 = 3;

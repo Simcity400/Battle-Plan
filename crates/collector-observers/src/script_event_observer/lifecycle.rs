@@ -4,12 +4,12 @@ pub(super) mod adjustments;
 static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 
 pub(super) fn owner(status: usize) -> Result<usize, &'static str> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if engine_sites::at(
         BASE.load(Ordering::Acquire),
         engine_decisions::cdecision_status::VTABLE_RVA,
     )
-    .is_none_or(|vtable| engine_native::read::<u64>(&memory, status) != Some(vtable as u64))
+    .is_none_or(|vtable| engine_native_memory::read::<u64>(&memory, status) != Some(vtable as u64))
     {
         return Err("decision lifecycle status identity differs");
     }
@@ -18,7 +18,7 @@ pub(super) fn owner(status: usize) -> Result<usize, &'static str> {
 }
 unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let result = (|| -> Result<(), &'static str> {
         if index == 0 || index == 6 {
             if index == 6 {
@@ -151,7 +151,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             feed::decisions::cut(instance);
             let base = BASE.load(Ordering::Acquire);
             if engine_sites::at(base, engine_decisions::ctimed_decision::VTABLE_RVA).is_none_or(
-                |vtable| engine_native::read::<u64>(&memory, instance) != Some(vtable as u64),
+                |vtable| engine_native_memory::read::<u64>(&memory, instance) != Some(vtable as u64),
             ) {
                 Err("mission terminal instance identity differs")
             } else {
@@ -204,7 +204,7 @@ fn cooldown_result(
     instance: usize,
 ) -> Result<(usize, i32), &'static str> {
     if engine_sites::at(base, engine_decisions::cdecision_cooldown::VTABLE_RVA)
-        .is_none_or(|vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64))
+        .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, instance) != Some(vtable as u64))
     {
         return Err("decision cooldown instance identity differs");
     }
@@ -235,7 +235,7 @@ pub(super) fn selected(
         )
     };
     if engine_sites::at(base, vtable)
-        .is_none_or(|vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64))
+        .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, instance) != Some(vtable as u64))
     {
         return Err("decision terminal writer instance identity differs");
     }
@@ -317,7 +317,7 @@ fn duration_result(
 unsafe fn remove(status: usize, definition: usize, flags: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let before = owner(status)
         .and_then(|country| removal_counts(&memory, status, index).map(|counts| (country, counts)));
     type Original = unsafe extern "system-unwind" fn(usize, usize, usize) -> usize;
@@ -467,7 +467,7 @@ mod tests {
             &(engine_decisions::cdecision_cooldown::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         bytes[8..16].copy_from_slice(&99_u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -482,7 +482,7 @@ mod tests {
     fn terminal_writer_uses_store_operands_and_never_reports_pre_effect_words_as_results() {
         let _globals = crate::event_feed_observer::test_globals();
         let bytes = [0xff_u8; 0x40];
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -503,7 +503,7 @@ mod tests {
         bytes[engine_decisions::ctargeted_decision::STATE
             ..engine_decisions::ctargeted_decision::STATE + 4]
             .copy_from_slice(&0_i32.to_le_bytes());
-        let reactivated = engine_native::memory::SliceMemory {
+        let reactivated = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use crate::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const MEMORY_BASE: usize = 0x1000;
 const MEMORY_END: usize = 0xa000;
@@ -404,8 +405,8 @@ fn serial(memory: &impl Memory, count: usize) -> Outcome {
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-fn faulty<'a>(bytes: &'a [u8], at: &[usize], once: bool) -> crate::batch_fallback::Faulty<'a> {
-    crate::batch_fallback::Faulty::new(
+fn faulty<'a>(bytes: &'a [u8], at: &[usize], once: bool) -> engine_native_memory::batch_fallback::Faulty<'a> {
+    engine_native_memory::batch_fallback::Faulty::new(
         SliceMemory {
             base: MEMORY_BASE,
             bytes,
@@ -438,7 +439,7 @@ impl Memory for Counted<'_> {
     }
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
@@ -508,11 +509,11 @@ fn a_persistent_fault_gives_the_serial_result() {
         vec![earlier + COUNTRY, later],
     ] {
         let memory = faulty(&bytes, &persistent, false);
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryFactories);
         let mut rows = Vec::new();
         let outcome = walk_factories(&memory, 0, MEMORY_BASE, &mut rows);
         assert!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before,
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryFactories) > before,
             "{persistent:x?}"
         );
         assert!(
@@ -523,12 +524,12 @@ fn a_persistent_fault_gives_the_serial_result() {
     }
     put(&mut bytes, pointer, &0_u64.to_le_bytes());
     let memory = faulty(&bytes, &[], false);
-    let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
+    let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryFactories);
     assert_eq!(
         walk_factories(&memory, 0, MEMORY_BASE, &mut Vec::new()),
         serial(&memory, count)
     );
-    assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before);
+    assert!(engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryFactories) > before);
 }
 
 #[test]
@@ -537,7 +538,7 @@ fn a_one_shot_fault_refuses_no_more_than_the_serial_walk() {
     let bytes = population(count);
     let (_, pointer, status) = addresses(&bytes, 40);
     for once in [pointer, status, status + MILITARY_FACTORIES + 8] {
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryFactories);
         let memory = faulty(&bytes, &[once], true);
         let mut rows = Vec::new();
         assert_eq!(
@@ -549,7 +550,7 @@ fn a_one_shot_fault_refuses_no_more_than_the_serial_walk() {
             assert_eq!(*row, expected_row(index, index as u32 + 1));
         }
         assert!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryFactories) > before
         );
     }
 }

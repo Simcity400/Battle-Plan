@@ -1,4 +1,4 @@
-pub use engine_native::ccountry::rosters::{OWNER, VTABLE_RVA, characters_object};
+use engine_native::ccountry::rosters::{OWNER, VTABLE_RVA, characters_object};
 
 use engine_native_memory::{
     Memory,
@@ -8,7 +8,8 @@ use engine_native_memory::{
     read_slice,
     walk::Outcome,
 };
-use engine_native::{cadvisor, ccharacter::{self, Literal, NameWalk}, ccountry};
+use engine_native::{cadvisor, ccharacter::{self, NameWalk}, ccountry};
+use engine_native_memory::msvc_string::Literal;
 use engine_sites::Rva;
 
 pub const APPOINTED_ADVISORS: usize = 0x58;

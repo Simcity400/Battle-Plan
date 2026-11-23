@@ -4,7 +4,7 @@ pub use super::output_continuity::{Receipt, holds_publication};
 use crate::line_output::{Drained, Entry, OutputKind};
 use crate::table_conversion::unavailable;
 use engine_allocation::{owned_vec, reserve, reserve_exact, reserve_map};
-use engine_native::cequipment_production_line::KIND_SHIP_REFIT;
+use engine_native::cproduction_status::equipment_line::KIND_SHIP_REFIT;
 use replay_data::{
     BranchId, rows::OutputPurpose, rows::ProductionLineOutputRow, rows::ProductionLineRow,
     rows::Recorded, rows::TableId, rows::TableRows,

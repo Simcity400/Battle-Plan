@@ -1,14 +1,14 @@
 use super::{AirBasesJob, bases::HeldSegment};
 use cair_base::{CarrierIndexedCertificate, CarrierPool, CarrierRegistration, ContainerFuel};
 use collector_raw::raw::RawLog;
-use engine_native::{
+use engine_native_memory::{
     Memory,
-    cair_wing_pool,
-    ccountry,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
 };
+use engine_native_parts::cair_wing_pool;
+use engine_native::ccountry;
 use engine_native_air::{cair_base, ccountry_air_container as container};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -454,7 +454,7 @@ impl<M: Memory> Memory for MetadataMemory<'_, '_, M> {
         }
     }
 }
-fn field<T: engine_native::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn fuel_batches_keep_independent_faults_exact_spans_and_successful_byte_accounting() {
-        use engine_native::read_counts::{CountedMemory, ReadCounts};
+        use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
         struct Batched {
             words: ScalarMemory,
             batches: Cell<usize>,
@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn every_containers_fuel_is_one_gather_resumed_only_after_a_failed_word() {
-        use engine_native::read_counts::{CountedMemory, ReadCounts};
+        use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
         let memory = CountedMemory::new(ScalarMemory {
             demand: Cell::new(Some(-21)),
             allocation: Cell::new(Some(7)),
@@ -924,7 +924,7 @@ mod tests {
 
     #[test]
     fn metadata_reads_owned_subfields_and_does_not_mask_a_failed_observation() {
-        let source = engine_native::memory::SliceMemory {
+        let source = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[7; 16],
         };
@@ -975,7 +975,7 @@ mod tests {
         let read_at = |log: &RawLog<3>, index: &[SnapshotSpan], at| {
             read::<u64>(&SnapshotMemory { log, index }, at)
         };
-        let first = engine_native::memory::SliceMemory {
+        let first = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[7; 16],
         };
@@ -986,7 +986,7 @@ mod tests {
             Some(u64::from_le_bytes([7; 8]))
         );
         log.clear();
-        let second = engine_native::memory::SliceMemory {
+        let second = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[9; 16],
         };
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn a_refused_snapshot_index_cannot_certify_a_later_log() {
-        let source = engine_native::memory::SliceMemory {
+        let source = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[7; 16],
         };

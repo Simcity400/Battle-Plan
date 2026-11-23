@@ -1,9 +1,19 @@
 use engine_native_parts::coperative_leader_layout as operative_layout;
 
-use crate::{
-    Memory, carmy_leader, ccharacter, cnavy_leader, cpdx_array::Array,
-    cunit_leader_skill, cunit_leader_trait, msvc_string, read as read_native, read_slice,
-    unit_leader_trait_experience_entry, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read as read_native,
+    read_slice,
+    walk::Outcome,
+};
+use crate::{carmy_leader, ccharacter};
+use engine_native_parts::{
+    cnavy_leader,
+    cunit_leader_skill,
+    cunit_leader_trait,
+    unit_leader_trait_experience_entry,
 };
 use engine_sites::Rva;
 
@@ -287,7 +297,7 @@ pub struct TextRead {
 pub fn read_text(
     memory: &impl Memory,
     pointer: usize,
-    mut arena: crate::walk::Buffer<'_, u8>,
+    mut arena: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> TextRead {
     let result = (|| {
         let (name, token, required_bytes) = text_literals(memory, pointer)?;
@@ -361,7 +371,7 @@ pub fn read_text_into(
     let end = from
         .checked_add(required)
         .ok_or("unit leader text length overflow")?;
-    crate::walk::grow(bytes, end)?;
+    engine_native_memory::walk::grow(bytes, end)?;
     let middle = from + name.len;
     if !name.copy(memory, &mut bytes[from..middle]) || !token.copy(memory, &mut bytes[middle..end])
     {
@@ -390,7 +400,7 @@ pub fn read_name(
 pub fn read_name_buffer(
     memory: &impl Memory,
     pointer: usize,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     len: &mut usize,
     required: &mut usize,
 ) -> Result<Option<crate::cname_group_member::Span>, &'static str> {
@@ -433,7 +443,7 @@ pub fn read_codename_buffer(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    bytes: crate::walk::Buffer<'_, u8>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
     len: &mut usize,
     required: &mut usize,
     heap: &mut [bool; 2],
@@ -495,14 +505,14 @@ pub fn text_demand(
             continue;
         }
         let (kind, _, _) = identity(memory, base, pointer)?;
-        let text = read_text(memory, pointer, crate::walk::Buffer::Count);
+        let text = read_text(memory, pointer, engine_native_memory::walk::Buffer::Count);
         if let Outcome::Unavailable { reason } = text.outcome {
             return Err(reason);
         }
         required = required.saturating_add(text.required_bytes);
         if has_codename(kind) {
             let mut names = crate::cname_group_member::Names {
-                bytes: crate::walk::Buffer::Count,
+                bytes: engine_native_memory::walk::Buffer::Count,
                 len: 0,
                 required: 0,
             };
@@ -621,8 +631,8 @@ pub fn walk_traits(
     base: usize,
     pointer: usize,
     leader_id: u32,
-    output: crate::walk::Buffer<'_, TraitRow>,
-    arena: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, TraitRow>,
+    arena: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> TraitWalk {
     walk_definitions(
         memory,
@@ -704,8 +714,8 @@ pub fn walk_trait_experience(
         pointer,
         leader_id,
         TRAIT_EXPERIENCE_DATA,
-        crate::walk::Buffer::Exact(output),
-        crate::walk::Buffer::Exact(arena),
+        engine_native_memory::walk::Buffer::Exact(output),
+        engine_native_memory::walk::Buffer::Exact(arena),
         |trait_row, experience| TraitExperienceRow {
             trait_row,
             experience,
@@ -720,8 +730,8 @@ fn walk_definitions<R: Default>(
     pointer: usize,
     leader_id: u32,
     offset: usize,
-    mut output: crate::walk::Buffer<'_, R>,
-    mut arena: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, R>,
+    mut arena: engine_native_memory::walk::Buffer<'_, u8>,
     make: impl Fn(TraitRow, i64) -> R,
 ) -> TraitWalk {
     let result = (|| {
@@ -828,7 +838,7 @@ pub fn handles(
     pointers: &[usize],
     output: &mut [u64],
 ) -> Result<(), &'static str> {
-    const BATCH: usize = crate::cpdx_array::POINTER_PAGE;
+    const BATCH: usize = engine_native_memory::cpdx_array::POINTER_PAGE;
     let mut headers = [[0_u8; 16]; BATCH];
     for (pointers, output) in pointers.chunks(BATCH).zip(output.chunks_mut(BATCH)) {
         let count = pointers.len().min(output.len());
@@ -1003,7 +1013,7 @@ pub const PORTRAIT_STRINGS: [usize; 3] = [0xc0, 0xe0, 0x100];
 #[path = "cunit_leader/hq_portrait_tests.rs"]
 mod hq_portrait_tests;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PortraitRow<T = crate::msvc_string::Text<256>> {
+pub struct PortraitRow<T = engine_native_memory::msvc_string::Text<256>> {
     pub leader: u64,
     pub character: u64,
     pub strings: [T; 3],
@@ -1018,23 +1028,23 @@ pub fn walk_hq_portraits(
     base: usize,
     roots: &[crate::corders_group::Root],
     sources: &mut Vec<(u64, usize)>,
-    output: &mut Vec<PortraitRow<crate::capture_text::Owned>>,
+    output: &mut Vec<PortraitRow<engine_native_memory::capture_text::Owned>>,
 ) -> PortraitWalk {
     walk_hq_portraits_buffer(
         memory,
         base,
         roots,
-        crate::walk::Buffer::Growing(sources),
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(sources),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
-fn walk_hq_portraits_buffer<T: crate::capture_text::Value>(
+fn walk_hq_portraits_buffer<T: engine_native_memory::capture_text::Value>(
     memory: &impl Memory,
     base: usize,
     roots: &[crate::corders_group::Root],
-    mut sources: crate::walk::Buffer<'_, (u64, usize)>,
-    mut output: crate::walk::Buffer<'_, PortraitRow<T>>,
+    mut sources: engine_native_memory::walk::Buffer<'_, (u64, usize)>,
+    mut output: engine_native_memory::walk::Buffer<'_, PortraitRow<T>>,
 ) -> PortraitWalk {
     use crate::corders_group::{HQ_PROVIDER, LEADER};
     let unavailable = |reason| PortraitWalk {
@@ -1116,7 +1126,7 @@ fn walk_hq_portraits_buffer<T: crate::capture_text::Value>(
     }
 }
 
-fn read_portrait<T: crate::capture_text::Value>(
+fn read_portrait<T: engine_native_memory::capture_text::Value>(
     memory: &impl Memory,
     pointer: usize,
     leader: u64,
@@ -1139,29 +1149,29 @@ fn read_portrait<T: crate::capture_text::Value>(
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PortraitPathRow<T = crate::msvc_string::Text<64>> {
+pub struct PortraitPathRow<T = engine_native_memory::msvc_string::Text<64>> {
     pub leader: u64,
     pub country: u32,
     pub tag_reference: u32,
     pub tag: T,
 }
 
-type TagCell<T> = Option<(crate::ccountry::Country, u32, T)>;
+type TagCell<T> = Option<(engine_native_memory::country_identity::Country, u32, T)>;
 
 #[derive(Debug, Default)]
-pub struct PortraitTagMemo<T = crate::msvc_string::Text<64>> {
+pub struct PortraitTagMemo<T = engine_native_memory::msvc_string::Text<64>> {
     cells: Vec<(u32, TagCell<T>)>,
     epoch: u32,
     required: usize,
 }
 
-impl<T: crate::capture_text::Value> PortraitTagMemo<T> {
+impl<T: engine_native_memory::capture_text::Value> PortraitTagMemo<T> {
     pub fn required(&self) -> usize {
         self.required
     }
     pub fn grow(&mut self) -> std::io::Result<()> {
         if self.cells.len() < self.required {
-            crate::allocation::resize_default(&mut self.cells, self.required)?;
+            engine_allocation::resize_default(&mut self.cells, self.required)?;
         }
         Ok(())
     }
@@ -1198,7 +1208,7 @@ pub fn walk_portrait_paths(
     base: usize,
     game_state: usize,
     sources: &[(u64, usize)],
-    output: &mut Vec<PortraitPathRow<crate::capture_text::Owned>>,
+    output: &mut Vec<PortraitPathRow<engine_native_memory::capture_text::Owned>>,
 ) -> Outcome {
     let mut memo = PortraitTagMemo {
         required: 256,
@@ -1213,25 +1223,25 @@ pub fn walk_portrait_paths_memo(
     base: usize,
     game_state: usize,
     sources: &[(u64, usize)],
-    output: &mut Vec<PortraitPathRow<crate::capture_text::Owned>>,
-    memo: &mut PortraitTagMemo<crate::capture_text::Owned>,
+    output: &mut Vec<PortraitPathRow<engine_native_memory::capture_text::Owned>>,
+    memo: &mut PortraitTagMemo<engine_native_memory::capture_text::Owned>,
 ) -> Outcome {
     walk_portrait_paths_memo_buffer(
         memory,
         base,
         game_state,
         sources,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
         memo,
     )
 }
 
-fn walk_portrait_paths_memo_buffer<T: crate::capture_text::Value>(
+fn walk_portrait_paths_memo_buffer<T: engine_native_memory::capture_text::Value>(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     sources: &[(u64, usize)],
-    mut output: crate::walk::Buffer<'_, PortraitPathRow<T>>,
+    mut output: engine_native_memory::walk::Buffer<'_, PortraitPathRow<T>>,
     memo: &mut PortraitTagMemo<T>,
 ) -> Outcome {
     if sources.is_empty() {
@@ -1243,7 +1253,7 @@ fn walk_portrait_paths_memo_buffer<T: crate::capture_text::Value>(
     };
     let Some(tags) = game_state
         .checked_add(crate::cgame_state::COUNTRY_TAGS)
-        .and_then(|p| crate::cpdx_array::Array::read(memory, p, 0x20))
+        .and_then(|p| engine_native_memory::cpdx_array::Array::read(memory, p, 0x20))
     else {
         return Outcome::Unavailable {
             reason: "country tag strings unreadable or invalid",

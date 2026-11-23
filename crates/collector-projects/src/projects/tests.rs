@@ -87,7 +87,7 @@ fn daily_project_siblings_do_no_inactive_native_work_after_shared_faults() {
             false
         }
     }
-    let memory = engine_native::memory::CountedMemory::new(Unreadable);
+    let memory = engine_native_memory::memory::CountedMemory::new(Unreadable);
     let (_, mut captured) = small();
     for hour in 0..24 {
         let accounting = read_accounting::Capture::new();
@@ -573,7 +573,7 @@ fn split_capacities() -> Capacities {
 }
 
 struct ProgramSource<'a> {
-    memory: engine_native::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     pointer: usize,
     fail: Option<usize>,
     partial: usize,
@@ -1064,7 +1064,7 @@ fn split_copy_matches_direct_walk() {
     let memory = kit::memory(&bytes);
     let capacities = split_capacities();
     let direct = kit::direct(&memory, &capacities);
-    let memory = engine_native::memory::CountedMemory::new(memory);
+    let memory = engine_native_memory::memory::CountedMemory::new(memory);
     let native = read_accounting::Capture::new();
     let (split, report, _) = kit::split(&memory, &capacities);
     let counts = native.finish();
@@ -1197,9 +1197,9 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
         &memory,
         kit::BASE,
         kit::GAME_STATE,
-        engine_native::walk::Buffer::Growing(&mut Vec::new()),
-        engine_native::walk::Buffer::Exact(&mut one),
-        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native_memory::walk::Buffer::Exact(&mut one),
+        engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
     );
     assert_eq!(walked.outcome, Outcome::Truncated { len: 1, unread_rows: 2 }, "a one-row output keeps the first program and counts the two it could not hold");
     assert_eq!(one[0].id, kit::program_id(0));
@@ -1227,12 +1227,12 @@ fn program_inline_building_name_is_copied_for_the_arena_read() {
 #[test]
 fn split_copy_matches_direct_walk_on_fault_matrix() {
     use super::projects_test_kit as kit;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1438,7 +1438,7 @@ fn failed_scientist_daily_acquisition_keeps_its_own_read_boundary() {
 
 mod raid_memos {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use replay_data::rows::RaidPathDispatcher;
 
     const GAME: usize = 0x100;

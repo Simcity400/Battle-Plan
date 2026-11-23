@@ -1,7 +1,6 @@
 use super::*;
-use engine_native::{
-    carmy, cfleet, cgame_state, cprovince, cstate, ctask_force, cunit, memory::SliceMemory,
-};
+use engine_native::{carmy, cfleet, cgame_state, cprovince, cstate, ctask_force, cunit};
+use engine_native_memory::memory::SliceMemory;
 use replay_data::rows::TableSchema;
 
 const BASE: usize = 0x10000;
@@ -51,7 +50,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         COUNTRY + ccountry::RADARS_POOL,
-        &(engine_native::cradars_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cradars_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -221,12 +220,12 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         AIR_BASE,
-        &(cair_base::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        AIR_BASE + cair_base::HANDLE,
-        &((4_u64 << 32) | u64::from(cair_base::TYPE)).to_le_bytes(),
+        AIR_BASE + engine_native_parts::cair_base_layout::HANDLE,
+        &((4_u64 << 32) | u64::from(engine_native_parts::cair_base_layout::TYPE)).to_le_bytes(),
     );
     array(
         &mut bytes,
@@ -260,11 +259,11 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         POOL,
-        &(engine_native::cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cair_wing_pool::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
-        POOL + engine_native::cair_wing_pool::WINGS,
+        POOL + engine_native_parts::cair_wing_pool::WINGS,
         0x11900,
         1,
     );
@@ -272,21 +271,21 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         WING,
-        &(engine_native_air::cair_wing::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine_native_air::cair_wing::SECONDARY,
-        &(engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
+        WING + engine_native_parts::cair_wing_layout::SECONDARY,
+        &(engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine_native_air::cair_wing::REFERENCE_TYPE,
-        &((77_u64 << 32) | u64::from(engine_native_air::cair_wing::TYPE)).to_le_bytes(),
+        WING + engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
+        &((77_u64 << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE)).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine_native_air::cair_wing::POOL,
+        WING + engine_native_parts::cair_wing_layout::POOL,
         &(POOL as u64).to_le_bytes(),
     );
     bytes
@@ -386,10 +385,10 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
     assert_eq!(
         complete::<tables::AirBaseRegistrations>(&views[5]),
         &[rows::AirBaseRegistrationRow {
-            base: (4 << 32) | u64::from(cair_base::TYPE),
+            base: (4 << 32) | u64::from(engine_native_parts::cair_base_layout::TYPE),
             slot: 1,
             capacity_raw: engine_native_air::ccountry_air_container::INITIAL_CAPACITY_RAW,
-            wings: vec![(77 << 32) | u64::from(engine_native_air::cair_wing::TYPE)],
+            wings: vec![(77 << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE)],
             carrier: rows::Recorded::Value(None),
             transport_planes: rows::Recorded::Value(rows::Retired),
             fuel_demand_raw: rows::Recorded::Value(None),
@@ -659,7 +658,7 @@ fn areas_and_stationed_units_share_one_traversal_every_hour() {
 #[test]
 fn radar_split_copy_matches_direct_walk() {
     use super::radar_test_kit as kit;
-    use engine_native::{memory::CountedMemory, memory::ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -709,12 +708,12 @@ fn radar_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn radar_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::radar_test_kit as kit;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -781,12 +780,12 @@ fn intel_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn intel_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::intel_test_kit as kit;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;

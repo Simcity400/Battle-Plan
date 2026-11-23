@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, ccountry_supply_system, cgame_state, cpdx_array::Array, read,
-    supply_companion,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::{ccountry, ccountry_supply_system, cgame_state};
+use engine_native_parts::supply_companion;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_02b8);
@@ -42,7 +41,7 @@ pub fn read_root(
 
 pub struct CountrySystem {
     pub pointer: usize,
-    pub country: ccountry::Country,
+    pub country: engine_native_memory::country_identity::Country,
     pub companion: usize,
 }
 
@@ -98,7 +97,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.root
     }
 
-    pub(crate) fn resolve_country(&self, raw: u32) -> Result<ccountry::Country, &'static str> {
+    pub(crate) fn resolve_country(&self, raw: u32) -> Result<engine_native_memory::country_identity::Country, &'static str> {
         self.countries.resolve(raw)
     }
 
@@ -119,7 +118,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(self.canonical_slot(left)? == self.canonical_slot(right)?)
     }
 
-    pub fn country(&self, slot: u32) -> Result<Option<ccountry::Country>, &'static str> {
+    pub fn country(&self, slot: u32) -> Result<Option<engine_native_memory::country_identity::Country>, &'static str> {
         self.countries.at(slot)
     }
 

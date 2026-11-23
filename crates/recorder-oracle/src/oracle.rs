@@ -1487,7 +1487,7 @@ fn compare_extended(
                         .equipment
                         .get(current)
                         .ok_or_else(|| invalid("volunteer archetype content index invalid"))?;
-                    if database.category(definition) & engine_native::cequipment_type::PLANE_MASK
+                    if database.category(definition) & engine_native_parts::cequipment_type::PLANE_MASK
                         != 0
                     {
                         return Ok(true);

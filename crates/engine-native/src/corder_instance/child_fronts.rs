@@ -1,14 +1,15 @@
 
 use engine_sites::Rva;
 use super::{PlanRow, Row, TYPE_LINE, Visit, grow_payload, plan_field};
-use crate::{
-    Memory, carmy_group, ccontroller_area, corders_group,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
     walk::Outcome,
 };
+use engine_native_parts::{carmy_group, ccontroller_area};
+use crate::{corders_group, cprovince};
 
 const ENTRY_VTABLE_RVA: Rva = Rva(0x02a0_2698);
 const DATA: usize = 0x380;
@@ -71,9 +72,9 @@ impl Scratch {
         self.groups.clear();
         self.owners.clear();
         self.pending.clear();
-        crate::allocation::reserve(&mut self.owners, roots.len())
+        engine_allocation::reserve(&mut self.owners, roots.len())
             .map_err(|_| "child front group inputs allocation failed")?;
-        crate::allocation::reserve(&mut self.pending, plans)
+        engine_allocation::reserve(&mut self.pending, plans)
             .map_err(|_| "child front group inputs allocation failed")?;
         self.owners.resize(roots.len(), OwnerInputs::default());
         Ok(())
@@ -82,7 +83,7 @@ impl Scratch {
         if !self.groups.is_empty() {
             return Ok(());
         }
-        crate::allocation::reserve(&mut self.groups, roots.len())
+        engine_allocation::reserve(&mut self.groups, roots.len())
             .map_err(|_| "child front group index allocation failed")?;
         self.groups
             .extend(roots.iter().map(|root| (root.pointer(), root.handle)));

@@ -1,17 +1,14 @@
 use super::{Capacities, Captured, Demand};
 use engine_characters::cscientist;
+use engine_native_memory::{Memory, msvc_tree_node as node};
 use engine_native::{
-    Memory,
     cadvisor,
-    ccharacter,
-    ccharacter_manager,
+    ccharacter::{self, manager as ccharacter_manager},
     ccountry,
     cgame_state as gs,
-    character_advisor_node,
-    creference_registry,
     cunit_leader,
-    msvc_tree_node as node,
 };
+use engine_native_parts::{character_advisor_node, creference_registry};
 use engine_native_politics::{ccountry_characters, ccountry_leader, character_leader_node};
 use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
@@ -135,8 +132,8 @@ impl Populated {
             m.vtable(country, ccountry::VTABLE_RVA);
             m.u32(country + ccountry::ID, slot as u32);
             m.u64(country + ccountry::CHARACTERS, object as u64);
-            m.vtable(object, ccountry_characters::VTABLE_RVA);
-            m.u64(object + ccountry_characters::OWNER, country as u64);
+            m.vtable(object, engine_native::ccountry::rosters::VTABLE_RVA);
+            m.u64(object + engine_native::ccountry::rosters::OWNER, country as u64);
             m.array(object + ccountry_characters::ACTIVE_CHARACTERS, records, 1);
             m.array(
                 object + ccountry_characters::RETIRED_CHARACTERS,
@@ -170,8 +167,8 @@ impl Populated {
                 advisor_node + character_advisor_node::ADVISOR,
                 advisor as u64,
             );
-            m.vtable(leader, ccountry_leader::VTABLE_RVA);
-            m.u64(leader + ccountry_leader::CHARACTER, active as u64);
+            m.vtable(leader, engine_native_parts::ccountry_leader_layout::VTABLE_RVA);
+            m.u64(leader + engine_native_parts::ccountry_leader_layout::CHARACTER, active as u64);
             m.array(leader + ccountry_leader::TRAITS, b + 0x15c0, 1);
             m.u64(b + 0x15c0, TRAITS as u64);
             m.vtable(advisor, cadvisor::VTABLE_RVA);
@@ -194,9 +191,9 @@ impl Populated {
 }
 
 pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
-    use engine_native::{cname_group_member as naming, reference_bucket as bucket};
-    use engine_native_intelligence::coperative_leader;
-    let mut world = Populated::new(countries);
+    use engine_native::cname_group_member as naming;
+    use engine_native_parts::reference_bucket as bucket;
+        let mut world = Populated::new(countries);
     let first = world.data.len();
     let registry = first + countries * 0x1100;
     let entries = registry + 0x40;
@@ -246,7 +243,7 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
             entries + cell * bucket::STRIDE + bucket::OBJECT,
             leader as u64,
         );
-        world.vtable(leader, coperative_leader::VTABLE_RVA);
+        world.vtable(leader, engine_native_parts::coperative_leader_layout::VTABLE_RVA);
         world.u64(leader + cunit_leader::TYPE, reference);
         world.u32(leader + cunit_leader::CATEGORY, 8);
         world.u32(leader + cunit_leader::OWNER, (index + 1) as u32);
@@ -254,11 +251,11 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
             (cunit_leader::NAME, b"A\xfflias".as_slice()),
             (cunit_leader::TOKEN, b"".as_slice()),
             (
-                coperative_leader::CODENAME + naming::FIRST_NAME_TEXT,
+                engine_native_parts::coperative_leader_layout::CODENAME + naming::FIRST_NAME_TEXT,
                 b"GROUP".as_slice(),
             ),
             (
-                coperative_leader::CODENAME + naming::OVERRIDE_NAME,
+                engine_native_parts::coperative_leader_layout::CODENAME + naming::OVERRIDE_NAME,
                 b"Code".as_slice(),
             ),
         ] {
@@ -267,7 +264,7 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
             world.u64(at + 16, value.len() as u64);
             world.u64(at + 24, 15);
         }
-        let member = leader + coperative_leader::CODENAME;
+        let member = leader + engine_native_parts::coperative_leader_layout::CODENAME;
         world.vtable(member, naming::VTABLE_RVA);
         world.u32(member + naming::TYPE, 2);
         world.u32(member + naming::ORDER, index as u32);

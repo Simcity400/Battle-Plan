@@ -1,17 +1,15 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
-use crate::{
+use engine_native_memory::{
     Memory,
-    ccountry,
-     cpdx_array::Array,
-    cprovince,
-    crelation::status as crelation_status,
-    modifier_accumulator::{self, Value},
-    modifier_keys,
+    cpdx_array::Array,
+    modifier_cache::Value,
     read as native_read,
 };
+use crate::{ccountry, cprovince, crelation::status as crelation_status};
+use engine_native_parts::modifier_accumulator;
+use engine_executable::modifier_keys;
 use engine_sites::Rva;
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -47,7 +45,7 @@ pub fn read<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    roster: ccountry::Country,
+    roster: engine_native_memory::country_identity::Country,
     location: Option<usize>,
 ) -> Result<Value, &'static str> {
     let location = location.ok_or("targeted spotting original location unavailable")?;
@@ -65,17 +63,17 @@ pub fn raw<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    roster: ccountry::Country,
+    roster: engine_native_memory::country_identity::Country,
     controller: u32,
 ) -> Result<Value, &'static str> {
     let selected = slot(countries, controller)?;
     let diplomacy = field::<u64>(memory, roster.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
-    auth(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-    if field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)? != roster.pointer as u64 {
+    auth(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    if field::<u64>(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != roster.pointer as u64 {
         return Err("targeted spotting diplomacy owner mismatch");
     }
     let relations = diplomacy
-        .checked_add(cdiplomacy_status::RELATIONS)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("targeted spotting relation matrix invalid")?;
     let status = relations
@@ -136,9 +134,9 @@ mod tests {
         .unwrap() as usize;
         world.u32(links + 8, if controller == 0 { 0 } else { 1 });
         world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
-        world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
-        world.array(diplomacy + cdiplomacy_status::RELATIONS, relations, 3);
+        world.u64(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+        world.u64(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
+        world.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, relations, 3);
         let selected = if controller == 0 { 0 } else { 1 };
         world.u64(relations + selected * 8, status as u64);
         world.u64(status, crelation_status::VTABLE_RVA.0 as u64);

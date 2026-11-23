@@ -1164,7 +1164,7 @@ fn resource_inputs_compare_origins_and_infrastructure_levels() {
     };
     let links = BTreeMap::from([(5_u32, &italy)]);
     let names = BTreeMap::from([(
-        engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN,
+        engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN,
         &b"infra"[..],
     )]);
     let states: Vec<_> = [2, 3, 4]
@@ -1214,7 +1214,7 @@ fn resource_inputs_compare_null_controller_without_a_country_join() {
         ..Default::default()
     }];
     let names = BTreeMap::from([(
-        engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN,
+        engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN,
         b"infra".as_slice(),
     )]);
     let mut row = replay_data::rows::StateResourceInputRow {

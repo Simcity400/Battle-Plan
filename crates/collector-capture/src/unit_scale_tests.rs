@@ -2,7 +2,8 @@
 pub(crate) mod fixture;
 use crate::division_detail::OwnedDetails;
 use collector_divisions::division_census::Census;
-use engine_native::{carmy, cprovince, memory::ReadCounts, walk::Outcome};
+use engine_native::{carmy, cprovince};
+use engine_native_memory::{memory::ReadCounts, walk::Outcome};
 use fixture::Shape;
 
 fn measure(name: &str, shape: Shape, retained: usize, mut work: impl FnMut()) {
@@ -79,7 +80,7 @@ fn unit_scale_moving() {
                         &memory,
                         world.base,
                         world.state,
-                        engine_native::walk::Buffer::Growing(&mut intel),
+                        engine_native_memory::walk::Buffer::Growing(&mut intel),
                         Some(census.intel_sources())
                     ),
                     Outcome::Rows {
@@ -466,7 +467,7 @@ fn division_input_parts_scale() {
                 for (census, &slots) in censuses.iter_mut().zip(&ranges) {
                     scope.spawn(move || {
                         // SAFETY: the synthetic world is immutable and outlives the scoped worker joins.
-                        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+                        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
                         census.capture_inputs_part(&memory, base, state, slots);
                     });
                 }

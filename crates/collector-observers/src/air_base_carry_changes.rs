@@ -5,7 +5,7 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::air_base_mutations::MUTATIONS;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -168,10 +168,10 @@ impl Watches {
 
 #[inline]
 fn handle(offset: usize, first: usize) -> Option<u64> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     first
         .checked_add(offset)
-        .and_then(|address| engine_native::read::<u64>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(&memory, address))
 }
 
 pub trait Changes: Sync {
@@ -197,12 +197,12 @@ impl Changes for Observer {
 
 pub fn capacity_written(base: usize) -> Notification<'static> {
     WATCHES.capacities.fetch_add(1, Ordering::Relaxed);
-    WATCHES.notify(handle(engine_native_air::cair_base::HANDLE, base))
+    WATCHES.notify(handle(engine_native_parts::cair_base_layout::HANDLE, base))
 }
 
 pub fn base_destroyed(base: usize) -> (Notification<'static>, Notification<'static>) {
     (
-        WATCHES.notify(handle(engine_native_air::cair_base::HANDLE, base)),
+        WATCHES.notify(handle(engine_native_parts::cair_base_layout::HANDLE, base)),
         WATCHES.registry.notify(MEMBERSHIP as usize),
     )
 }

@@ -1,5 +1,5 @@
 use super::{Capacities, Captured, SunkCopyContext, SunkCopyReport, SunkJob};
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x100;
@@ -26,10 +26,12 @@ fn short(bytes: &mut [u8], at: usize, value: &[u8]) {
     put(bytes, at + msvc_string::CAPACITY, &15_u64.to_le_bytes());
 }
 
-use engine_native::msvc_string;
+use engine_native_memory::msvc_string;
 
 pub fn fixture() -> Vec<u8> {
-    use engine_native::{cgame_date, cgame_state, cprovince, csub_unit_definition};
+    use engine_native_memory::cgame_date;
+    use engine_native::{cgame_state, cprovince};
+    use engine_native_parts::csub_unit_definition;
     use engine_naval_history::csunk_ship_info;
     let mut bytes = vec![0_u8; 0x2000];
     put(

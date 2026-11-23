@@ -1,7 +1,7 @@
 use super::ScopedFlag;
 use crate::flag_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_scripts::{cflag_manager, cscript_flag};
 use std::ops::Range;
 
@@ -315,7 +315,7 @@ impl FlagStore {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
+        output: &mut engine_native_memory::walk::Buffer<'_, ScopedFlag>,
     ) -> Option<Sample> {
         let mut sample = Sample::default();
         let Self {
@@ -330,7 +330,7 @@ impl FlagStore {
             return None;
         }
         let mut len = 0usize;
-        let copy = |output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
+        let copy = |output: &mut engine_native_memory::walk::Buffer<'_, ScopedFlag>,
                     len: &mut usize,
                     from: usize,
                     to: usize|
@@ -361,7 +361,7 @@ impl FlagStore {
                 memory,
                 base,
                 head,
-                engine_native::walk::Buffer::Growing(scratch),
+                engine_native_memory::walk::Buffer::Growing(scratch),
             );
             let Outcome::Rows { len: count } = read else {
                 return None;
@@ -447,7 +447,7 @@ impl<'a> FlagReuse<'a> {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
+        output: &mut engine_native_memory::walk::Buffer<'_, ScopedFlag>,
         countries: impl FnOnce(&[(usize, u32)]) -> bool,
     ) -> Option<Outcome> {
         let structure = self.changes.structure();

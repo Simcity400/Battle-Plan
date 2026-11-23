@@ -1,4 +1,4 @@
-pub use engine_native_parts::cnaval_base_layout::{HOLDER, HOLDER_COUNTRY, PROVINCE_ID, VTABLE_RVA};
+use engine_native_parts::cnaval_base_layout::{HOLDER, HOLDER_COUNTRY, PROVINCE_ID, VTABLE_RVA};
 
 use engine_sites::Rva;
 pub const CONSTRUCT_RVA: Rva = Rva(0x00f1_2e40);

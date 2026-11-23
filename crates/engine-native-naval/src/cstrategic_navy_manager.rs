@@ -1,5 +1,5 @@
 use engine_native_memory::{Memory, cpdx_array::Array, read};
-use engine_native::{ccountry, cgame_state};
+use engine_native::cgame_state;
 use crate::cstrategic_navy;
 use engine_sites::Rva;
 
@@ -27,7 +27,7 @@ fn with_navy<T>(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     consume: impl FnOnce(usize) -> Result<T, &'static str>,
 ) -> Result<T, &'static str> {
     let array = navies(memory, base, state)?;
@@ -44,7 +44,7 @@ pub fn authenticate(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<(), &'static str> {
     with_navy(memory, base, state, country, |navy| {
         cstrategic_navy::authenticate(memory, base, navy)
@@ -55,7 +55,7 @@ pub fn navy(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     with_navy(memory, base, state, country, |navy| {
         cstrategic_navy::authenticate(memory, base, navy)?;
@@ -67,7 +67,7 @@ pub fn regional_operand(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     region: u32,
 ) -> Result<i64, &'static str> {
     with_navy(memory, base, state, country, |navy| {

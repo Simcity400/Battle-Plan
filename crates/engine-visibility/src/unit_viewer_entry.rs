@@ -1,12 +1,13 @@
 
-use crate::{
-    Memory, carmy, ccountry, cfleet,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    crailway_gun, ctask_force, cunit,
     memory::read,
     read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native::{carmy, ccountry, cfleet, ctask_force, cunit};
+use engine_native_parts::crailway_gun;
 use engine_sites::Rva;
 
 pub const STRIDE: usize = 24;
@@ -198,7 +199,7 @@ impl<M: Memory> Reader<'_, M> {
         output: &mut Buffer<'_, Row>,
         counter: &mut Counter,
     ) -> Result<(), &'static str> {
-        use crate::memory::{RecordField, RecordLayout, RecordSources};
+        use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
         const BATCH: usize = 64;
         const FIELDS: [RecordField; 3] = [
             RecordField {
@@ -299,7 +300,7 @@ impl<M: Memory> Reader<'_, M> {
         }
         let read = self.memory.copy_scattered(addresses, &mut destinations);
         if lens[read.min(GROUP)..].iter().any(|&len| len != 0) {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::UnitIntel);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::UnitIntel);
         }
         std::array::from_fn(|index| (index < read && lens[index] != 0).then_some(lens[index]))
     }

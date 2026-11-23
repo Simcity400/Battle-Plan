@@ -442,7 +442,7 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     use super::naval_test_kit as kit;
     use collector_air::extended::air;
     use engine_native_air::{cair_wing, cstrategic_air};
-    use engine_native::cair_wing_pool;
+    use engine_native_parts::cair_wing_pool;
     let mut bytes = kit::fixture();
     let pointer = |bytes: &mut [u8], address: usize, value: usize| {
         bytes[address..address + 8].copy_from_slice(&(value as u64).to_le_bytes());
@@ -466,18 +466,18 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     array(&mut bytes, POOL + cair_wing_pool::WINGS, WINGS, 2);
     for (ordinal, wing) in [0x73000, 0x75000].into_iter().enumerate() {
         pointer(&mut bytes, WINGS + ordinal * 8, wing);
-        pointer(&mut bytes, wing, cair_wing::VTABLE_RVA.0);
+        pointer(&mut bytes, wing, engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
         pointer(
             &mut bytes,
-            wing + cair_wing::SECONDARY,
-            cair_wing::SECONDARY_VTABLE_RVA.0,
+            wing + engine_native_parts::cair_wing_layout::SECONDARY,
+            engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0,
         );
         pointer(
             &mut bytes,
-            wing + cair_wing::REFERENCE_TYPE,
-            ((ordinal + 1) << 32) | cair_wing::TYPE as usize,
+            wing + engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
+            ((ordinal + 1) << 32) | engine_native_parts::cair_wing_layout::TYPE as usize,
         );
-        pointer(&mut bytes, wing + cair_wing::POOL, POOL);
+        pointer(&mut bytes, wing + engine_native_parts::cair_wing_layout::POOL, POOL);
     }
     let memory = kit::memory(&bytes);
     let mut wings = air::AirWingJob::default();
@@ -735,7 +735,7 @@ fn sunk_history_preserves_duplicate_records_and_never_publishes_a_prefix() {
 #[test]
 fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
     use super::naval_test_kit as kit;
-    struct NoTheatreDetails<'a>(engine_native::memory::SliceMemory<'a>);
+    struct NoTheatreDetails<'a>(engine_native_memory::memory::SliceMemory<'a>);
     impl Memory for NoTheatreDetails<'_> {
         fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
             assert_ne!(address, kit::THEATRE + ctheatre::THEATER_GROUP_DATA);
@@ -807,7 +807,8 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
 #[test]
 fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     use super::naval_test_kit as kit;
-    use engine_native::{ccountry, cgame_state, memory::SliceMemory};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_memory::memory::SliceMemory;
     use engine_native_intelligence::country_memory::Cache;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
@@ -1127,12 +1128,12 @@ fn naval_split_copy_matches_direct_walk_under_truncation() {
 #[test]
 fn naval_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::naval_test_kit as kit;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1178,7 +1179,7 @@ fn supremacy_uses_slot_0() {
 #[test]
 fn supremacy_split_copy_matches_direct_walk() {
     use super::supremacy_test_kit as kit;
-    use engine_native::{memory::CountedMemory, memory::ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -1256,12 +1257,12 @@ fn supremacy_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn supremacy_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::supremacy_test_kit as kit;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1296,7 +1297,7 @@ fn supremacy_split_copy_matches_direct_walk_on_fault_matrix() {
 #[test]
 fn sunk_split_copy_matches_direct_walk() {
     use super::sunk_test_kit as kit;
-    use engine_native::{memory::CountedMemory, memory::ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -1377,12 +1378,12 @@ fn sunk_truncation_matrix_matches_direct_with_same_caps() {
 #[test]
 fn sunk_split_copy_matches_direct_walk_on_fault_matrix() {
     use super::sunk_test_kit as kit;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,
     }
-    impl engine_native::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let Some(end) = address.checked_add(output.len()) else {
                 return false;
@@ -1422,7 +1423,7 @@ fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas()
     bytes[command_name..command_name + 3].copy_from_slice(b"OOB");
     bytes[command_name + 16..command_name + 24].copy_from_slice(&3_u64.to_le_bytes());
     bytes[command_name + 24..command_name + 32].copy_from_slice(&15_u64.to_le_bytes());
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
     };
@@ -1458,12 +1459,12 @@ fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas()
 #[test]
 fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
     struct NoRegistry<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
+        inner: engine_native_memory::memory::SliceMemory<'a>,
         attempts: std::cell::Cell<usize>,
     }
     impl Memory for NoRegistry<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let root = engine_native::creference_registry::LOW_ROOTS_RVA.0
+            let root = engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
                 + corders_group::REFERENCE_TYPE as usize * 8;
             if address == root {
                 self.attempts.set(self.attempts.get() + 1);
@@ -1474,7 +1475,7 @@ fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
     }
     let bytes = naval_test_kit::fixture();
     let memory = NoRegistry {
-        inner: engine_native::memory::SliceMemory {
+        inner: engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         },

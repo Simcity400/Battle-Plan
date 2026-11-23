@@ -6,7 +6,7 @@ use engine_mutations::{
     script_variable_mutations::MUTATIONS, script_variable_mutations::Patch,
     script_variable_mutations::Receiver, script_variable_mutations::store,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ffi::c_void,
     ops::Range,
@@ -405,12 +405,12 @@ fn locate_temporary() -> Option<usize> {
         return None;
     }
     let teb = unsafe { information.assume_init() }.teb;
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let array = engine_native::read::<u64>(&memory, teb.checked_add(0x58)?)?;
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    let array = engine_native_memory::read::<u64>(&memory, teb.checked_add(0x58)?)?;
     let slot = usize::try_from(array)
         .ok()?
         .checked_add(index.checked_mul(8)?)?;
-    let block = usize::try_from(engine_native::read::<u64>(&memory, slot)?).ok()?;
+    let block = usize::try_from(engine_native_memory::read::<u64>(&memory, slot)?).ok()?;
     if block == 0 {
         return None;
     }
@@ -447,7 +447,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "variable_changes")
             && let Ok(tls_index) = engine_sites::resolve(base, TLS_INDEX_RVA)
-            && let Some(index) = engine_native::read::<u32>(memory, tls_index)
+            && let Some(index) = engine_native_memory::read::<u32>(memory, tls_index)
             && let Ok(clear) = engine_sites::resolve(base, CLEAR_RVA)
             && let Ok(end_context) = engine_sites::resolve(base, END_CONTEXT_RVA)
             && MUTATIONS
@@ -649,7 +649,7 @@ macro_rules! context_site {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let end: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(END_CONTEXT.load(Ordering::Acquire)) };
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let written =
                 engine_mutations::script_variable_mutations::context_store(&memory, context);
             let _market = match written {

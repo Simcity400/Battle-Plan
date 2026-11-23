@@ -9,12 +9,12 @@ pub const MODIFIER_ENTRIES: usize = 0x1b0;
 pub const MODIFIER_CAPACITY_REASON: &str = "advisor modifier cache exceeds admitted capacity";
 
 pub fn modifier_entries(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
-) -> Result<crate::cpdx_array::Array, &'static str> {
-    let header = crate::read::<[u8; 16]>(memory, crate::ccharacter::at(pointer, MODIFIER_ENTRIES)?)
+) -> Result<engine_native_memory::cpdx_array::Array, &'static str> {
+    let header = engine_native_memory::read::<[u8; 16]>(memory, crate::ccharacter::at(pointer, MODIFIER_ENTRIES)?)
         .ok_or("advisor modifier cache header unreadable")?;
-    crate::cpdx_array::Array::from_header(header, crate::modifier_entry::STRIDE)
+    engine_native_memory::cpdx_array::Array::from_header(header, engine_native_parts::modifier_entry::STRIDE)
         .ok_or("advisor modifier cache header invalid")
 }
 
@@ -33,7 +33,7 @@ pub struct DefinitionDemand {
 }
 
 pub fn definitions_demand(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) -> Result<[DefinitionDemand; 2], &'static str> {
@@ -44,15 +44,15 @@ pub fn definitions_demand(
             .characters
             .checked_add(1)
             .ok_or("advisor character count overflow")?;
-        let mut tree = crate::msvc_tree_node::Cursor::read(
+        let mut tree = engine_native_memory::msvc_tree_node::Cursor::read(
             memory,
             entry.pointer,
             crate::ccharacter::ADVISOR_MAP_HEAD,
         )?;
         while let Some(node) = tree.next(memory)? {
-            let role = crate::read::<u64>(
+            let role = engine_native_memory::read::<u64>(
                 memory,
-                crate::ccharacter::at(node, crate::character_advisor_node::ADVISOR)?,
+                crate::ccharacter::at(node, engine_native_parts::character_advisor_node::ADVISOR)?,
             )
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
@@ -62,11 +62,11 @@ pub fn definitions_demand(
                 .checked_add(1)
                 .ok_or("advisor row count overflow")?;
             for address in [
-                crate::ccharacter::at(node, crate::character_advisor_node::KEY)?,
+                crate::ccharacter::at(node, engine_native_parts::character_advisor_node::KEY)?,
                 crate::ccharacter::at(role, IDEA_TOKEN)?,
                 crate::ccharacter::at(role, SLOT)?,
             ] {
-                let value = crate::msvc_string::Descriptor::read(memory, address)?;
+                let value = engine_native_memory::msvc_string::Descriptor::read(memory, address)?;
                 total.bytes = total
                     .bytes
                     .checked_add(value.len)
@@ -79,22 +79,22 @@ pub fn definitions_demand(
 }
 
 pub fn modifier_demand(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) -> Result<ModifierDemand, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut demand = ModifierDemand::default();
     crate::ccharacter::manager::visit(memory, base, game_state, |entry| {
-        let mut tree = crate::msvc_tree_node::Cursor::read(
+        let mut tree = engine_native_memory::msvc_tree_node::Cursor::read(
             memory,
             entry.pointer,
             crate::ccharacter::ADVISOR_MAP_HEAD,
         )?;
         while let Some(node) = tree.next(memory)? {
-            let pointer = crate::read::<u64>(
+            let pointer = engine_native_memory::read::<u64>(
                 memory,
-                crate::ccharacter::at(node, crate::character_advisor_node::ADVISOR)?,
+                crate::ccharacter::at(node, engine_native_parts::character_advisor_node::ADVISOR)?,
             )
             .ok_or("advisor role pointer unreadable")?;
             let pointer = usize::try_from(pointer)
@@ -102,11 +102,11 @@ pub fn modifier_demand(
                 .filter(|&pointer| pointer != 0)
                 .ok_or("advisor role pointer null or invalid")?;
             let vtable =
-                crate::read::<u64>(memory, pointer).ok_or("advisor role vtable unreadable")?;
+                engine_native_memory::read::<u64>(memory, pointer).ok_or("advisor role vtable unreadable")?;
             if vtable != expected {
                 return Err("advisor role vtable mismatch");
             }
-            let parent = crate::read::<u64>(memory, crate::ccharacter::at(pointer, CHARACTER)?)
+            let parent = engine_native_memory::read::<u64>(memory, crate::ccharacter::at(pointer, CHARACTER)?)
                 .ok_or("advisor role character parent unreadable")?;
             if parent != entry.pointer as u64 {
                 return Err("advisor role character parent mismatch");
@@ -122,7 +122,7 @@ pub fn modifier_demand(
                 .checked_add(1)
                 .ok_or("advisor row count overflow")?;
             let bytes = (array.count as usize)
-                .checked_mul(crate::modifier_entry::STRIDE)
+                .checked_mul(engine_native_parts::modifier_entry::STRIDE)
                 .ok_or("advisor modifier cache size overflow")?;
             demand.bytes = demand
                 .bytes
@@ -145,11 +145,11 @@ pub struct TooltipRead {
 }
 
 pub fn visit_tooltip_keys(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     mut visit: impl FnMut(usize, [u8; 32]) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    let header = crate::read::<[u8; 17]>(memory, crate::ccharacter::at(pointer, TOOLTIP_KEYS + 8)?)
+    let header = engine_native_memory::read::<[u8; 17]>(memory, crate::ccharacter::at(pointer, TOOLTIP_KEYS + 8)?)
         .ok_or("advisor tooltip table header unreadable")?;
     let data = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
         .map_err(|_| "advisor tooltip table pointer overflow")?;
@@ -185,7 +185,7 @@ pub fn visit_tooltip_keys(
     for index in 0..span {
         let slot = data + index * 0x28;
         let value =
-            crate::read::<[u8; 0x28]>(memory, slot).ok_or("advisor tooltip slot unreadable")?;
+            engine_native_memory::read::<[u8; 0x28]>(memory, slot).ok_or("advisor tooltip slot unreadable")?;
         match value[4] {
             0 => continue,
             255 => return Err("advisor tooltip sentinel inside table"),
@@ -205,17 +205,17 @@ pub fn visit_tooltip_keys(
     Ok(())
 }
 
-pub fn count_tooltip_keys(memory: &impl crate::Memory, pointer: usize) -> Result<TooltipRead, &'static str> {
-    copy_tooltip_keys_buffer(memory, pointer, crate::walk::Buffer::Count)
+pub fn count_tooltip_keys(memory: &impl engine_native_memory::Memory, pointer: usize) -> Result<TooltipRead, &'static str> {
+    copy_tooltip_keys_buffer(memory, pointer, engine_native_memory::walk::Buffer::Count)
 }
 
 
 pub fn copy_tooltip_keys_buffer(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Result<TooltipRead, &'static str> {
-    use crate::ccharacter::Literal;
+    use engine_native_memory::msvc_string::Literal;
     let mut read = TooltipRead {
         recorded: true,
         ..Default::default()
@@ -256,12 +256,12 @@ pub fn copy_tooltip_keys_buffer(
 }
 
 pub fn copy_modifier_entries(
-    memory: &impl crate::Memory,
-    array: crate::cpdx_array::Array,
+    memory: &impl engine_native_memory::Memory,
+    array: engine_native_memory::cpdx_array::Array,
     bytes: &mut [u8],
 ) -> Result<usize, &'static str> {
     let len = (array.count as usize)
-        .checked_mul(crate::modifier_entry::STRIDE)
+        .checked_mul(engine_native_parts::modifier_entry::STRIDE)
         .ok_or("advisor modifier cache size overflow")?;
     if len > bytes.len() {
         return Err("advisor modifier cache exceeds byte capacity");
@@ -269,12 +269,12 @@ pub fn copy_modifier_entries(
     let mut first = 0;
     while first < array.count {
         let count = (array.count - first).min(64) as usize;
-        let start = first as usize * crate::modifier_entry::STRIDE;
-        let end = start + count * crate::modifier_entry::STRIDE;
+        let start = first as usize * engine_native_parts::modifier_entry::STRIDE;
+        let end = start + count * engine_native_parts::modifier_entry::STRIDE;
         let address = array
-            .element(first, crate::modifier_entry::STRIDE)
+            .element(first, engine_native_parts::modifier_entry::STRIDE)
             .ok_or("advisor modifier cache address overflow")?;
-        if !crate::read_slice(memory, address, &mut bytes[start..end]) {
+        if !engine_native_memory::read_slice(memory, address, &mut bytes[start..end]) {
             return Err("advisor modifier cache entries unreadable");
         }
         first += count as u32;
@@ -289,10 +289,10 @@ pub struct MapView<'a, M> {
     pub header: [u8; 16],
     pub sentinel: [u8; 26],
 }
-impl<'a, M: crate::Memory> MapView<'a, M> {
+impl<'a, M: engine_native_memory::Memory> MapView<'a, M> {
     pub fn read(memory: &'a M, character: usize) -> Result<Self, &'static str> {
         Self::with_sentinel(memory, character, |head| {
-            crate::read::<[u8; 26]>(memory, head)
+            engine_native_memory::read::<[u8; 26]>(memory, head)
         })
     }
 
@@ -302,7 +302,7 @@ impl<'a, M: crate::Memory> MapView<'a, M> {
         sentinel: impl FnOnce(usize) -> Option<[u8; 26]>,
     ) -> Result<Self, &'static str> {
         let address = crate::ccharacter::at(character, crate::ccharacter::ADVISOR_MAP_HEAD)?;
-        let header = crate::read::<[u8; 16]>(memory, address)
+        let header = engine_native_memory::read::<[u8; 16]>(memory, address)
             .ok_or("character role map header unreadable")?;
         let head = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
             .ok()
@@ -318,7 +318,7 @@ impl<'a, M: crate::Memory> MapView<'a, M> {
             header,
             sentinel,
         };
-        crate::msvc_tree_node::Cursor::read(&view, character, crate::ccharacter::ADVISOR_MAP_HEAD)?;
+        engine_native_memory::msvc_tree_node::Cursor::read(&view, character, crate::ccharacter::ADVISOR_MAP_HEAD)?;
         Ok(view)
     }
     fn owned(&self, address: usize, len: usize) -> Option<&[u8]> {
@@ -331,7 +331,7 @@ impl<'a, M: crate::Memory> MapView<'a, M> {
         }
     }
 }
-impl<M: crate::Memory> crate::Memory for MapView<'_, M> {
+impl<M: engine_native_memory::Memory> engine_native_memory::Memory for MapView<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if let Some(bytes) = self.owned(address, output.len()) {
             output.copy_from_slice(bytes);
@@ -393,39 +393,40 @@ pub struct Row {
 }
 
 pub fn walk_prefix_entry(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     entry: crate::ccharacter::manager::Entry,
-    output: crate::walk::Buffer<'_, Row>,
-    bytes: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> crate::ccharacter::NameWalk {
     walk_entry_inner_buffer(memory, base, entry, output, bytes, true)
 }
 
 pub fn walk_definitions_entry_buffer(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     entry: crate::ccharacter::manager::Entry,
-    output: crate::walk::Buffer<'_, Row>,
-    bytes: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> crate::ccharacter::NameWalk {
     walk_entry_inner_buffer(memory, base, entry, output, bytes, false)
 }
 
 fn walk_entry_inner_buffer(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     entry: crate::ccharacter::manager::Entry,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     capture_cache: bool,
 ) -> crate::ccharacter::NameWalk {
-    use crate::{
-        ccharacter::{self, Literal, NameWalk, at},
-        character_advisor_node,
+    use crate::ccharacter::{self, NameWalk, at};
+    use engine_native_memory::{
+        msvc_string::Literal,
         msvc_tree_node::Cursor as RoleTree,
         walk::Outcome,
     };
+    use engine_native_parts::character_advisor_node;
     let result = (|| {
         let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let mut len = 0;
@@ -544,7 +545,7 @@ fn walk_entry_inner_buffer(
                 let modifier_len = if capture_cache {
                     let array = modifier_entries(memory, role)?;
                     let needed = (array.count as usize)
-                        .checked_mul(crate::modifier_entry::STRIDE)
+                        .checked_mul(engine_native_parts::modifier_entry::STRIDE)
                         .ok_or("advisor modifier cache size overflow")?;
                     required_bytes = required_bytes
                         .checked_add(needed)
@@ -604,9 +605,9 @@ fn walk_entry_inner_buffer(
 }
 
 pub fn append_tooltips(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     rows: &mut [Row],
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     mut captured: crate::ccharacter::NameWalk,
 ) -> crate::ccharacter::NameWalk {
     for row in &mut rows[..captured.outcome.len()] {
@@ -635,7 +636,7 @@ pub fn append_tooltips(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn tooltip_keys_are_exact_strings_in_occupied_slot_order_and_size_from_native_lengths() {
@@ -662,7 +663,7 @@ mod tests {
             bytes: &bytes,
         };
         let mut output = vec![0; 36];
-        let read = copy_tooltip_keys_buffer(&memory, 0, crate::walk::Buffer::Growing(&mut output)).unwrap();
+        let read = copy_tooltip_keys_buffer(&memory, 0, engine_native_memory::walk::Buffer::Growing(&mut output)).unwrap();
         assert_eq!(
             read,
             TooltipRead {
@@ -689,7 +690,7 @@ mod tests {
             copy_tooltip_keys_buffer(&SliceMemory {
                     base: 0,
                     bytes: &bytes
-                }, 0, crate::walk::Buffer::Growing(&mut output)),
+                }, 0, engine_native_memory::walk::Buffer::Growing(&mut output)),
             Err("advisor tooltip slot count differs from header")
         );
     }
@@ -748,10 +749,10 @@ mod tests {
                 word(&mut bytes, head + offset, node as u64);
                 word(&mut bytes, node + offset, head as u64);
             }
-            bytes[head + crate::msvc_tree_node::NIL] = 1;
+            bytes[head + engine_native_memory::msvc_tree_node::NIL] = 1;
             word(
                 &mut bytes,
-                node + crate::character_advisor_node::ADVISOR,
+                node + engine_native_parts::character_advisor_node::ADVISOR,
                 role as u64,
             );
             word(&mut bytes, role, VTABLE_RVA.0 as u64);
@@ -795,13 +796,13 @@ mod tests {
         const POINTER: usize = 0x100;
         const DATA: usize = 0x400;
         const COUNT: usize = 9;
-        let mut bytes = vec![0; DATA + COUNT * crate::modifier_entry::STRIDE];
+        let mut bytes = vec![0; DATA + COUNT * engine_native_parts::modifier_entry::STRIDE];
         let header = POINTER + MODIFIER_ENTRIES;
         bytes[header..header + 8].copy_from_slice(&(DATA as u64).to_le_bytes());
         bytes[header + 8..header + 12].copy_from_slice(&(COUNT as u32).to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&(COUNT as u32).to_le_bytes());
         for index in 0..COUNT {
-            let start = DATA + index * crate::modifier_entry::STRIDE;
+            let start = DATA + index * engine_native_parts::modifier_entry::STRIDE;
             bytes[start..start + 4].copy_from_slice(&(index as u32 % 7).to_le_bytes());
             bytes[start + 8..start + 16].copy_from_slice(&(-(index as i64)).to_le_bytes());
         }
@@ -810,7 +811,7 @@ mod tests {
             bytes: &bytes,
         };
         let array = modifier_entries(&memory, POINTER).unwrap();
-        let mut output = vec![0; COUNT * crate::modifier_entry::STRIDE];
+        let mut output = vec![0; COUNT * engine_native_parts::modifier_entry::STRIDE];
         assert_eq!(
             copy_modifier_entries(&memory, array, &mut output),
             Ok(output.len())

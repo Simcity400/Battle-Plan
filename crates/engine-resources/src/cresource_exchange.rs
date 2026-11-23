@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, ccountry_resources, cpdx_array::Array, cstrategic_resource, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{ccountry_resources, cstrategic_resource};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29d8e60);
@@ -31,7 +30,7 @@ pub struct Ends {
     pub exporter_resources: usize,
     pub exporter: u32,
     pub importer: u32,
-    pub exporter_country: ccountry::Country,
+    pub exporter_country: engine_native_memory::country_identity::Country,
 }
 
 pub fn authenticate<M: Memory>(
@@ -39,7 +38,7 @@ pub fn authenticate<M: Memory>(
     base: usize,
     countries: &ccountry::Reader<'_, M>,
     pointer: usize,
-    importer: ccountry::Country,
+    importer: engine_native_memory::country_identity::Country,
 ) -> Result<([u8; SIZE], Ends), &'static str> {
     let bytes = read::<[u8; SIZE]>(memory, pointer).ok_or("trade exchange unreadable")?;
     let u32_at = |offset: usize| {
@@ -139,8 +138,8 @@ pub fn walk(
         base,
         game_state,
         descriptors,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(scratch),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(scratch),
     )
 }
 
@@ -149,8 +148,8 @@ pub fn walk_buffer(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut scratch: crate::walk::Buffer<'_, Membership>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut scratch: engine_native_memory::walk::Buffer<'_, Membership>,
 ) -> Outcome {
     let result = (|| {
         for (index, resource) in descriptors.iter().enumerate() {
@@ -305,7 +304,7 @@ impl<M: Memory> Reader<'_, M> {
     fn row(
         &self,
         pointer: usize,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         ordinal: u32,
     ) -> Result<(Row, Membership), &'static str> {
         let (bytes, ends) =

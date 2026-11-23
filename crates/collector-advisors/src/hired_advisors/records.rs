@@ -1,7 +1,7 @@
 use super::appointed::{Domains, Key, key, publish};
 use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native_politics::ccountry_characters as native;
 
 pub const CARRY: bool = cfg!(feature = "character_record_changes");
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn a_quiet_hour_publishes_the_held_records_and_a_moved_token_walks() {
         let world = empty_world();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &world,
         };

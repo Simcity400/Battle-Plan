@@ -1,5 +1,6 @@
 use crate::{Snapshot, changes};
-use engine_native::{Memory, ccountry, read};
+use engine_native_memory::{Memory, read};
+use engine_native::ccountry;
 use engine_native_naval::naval_management as native;
 use engine_sites::Rva;
 use replay_data::rows::*;
@@ -23,7 +24,7 @@ pub type Captured = Snapshot<7>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Entry {
     Country {
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         production: usize,
         navy: usize,
     },
@@ -108,7 +109,7 @@ fn insert<K: Copy + Eq + Hash, V: PartialEq>(
     map.insert(key, value);
     Ok(true)
 }
-fn field<T: engine_native::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -145,7 +146,7 @@ pub struct Session<'a, M: Memory> {
     state: usize,
     store: MutexGuard<'static, Store>,
     observed: bool,
-    navies: Option<Result<engine_native::cpdx_array::Array, &'static str>>,
+    navies: Option<Result<engine_native_memory::cpdx_array::Array, &'static str>>,
 }
 impl<'a, M: Memory> Session<'a, M> {
     #[cfg(test)]
@@ -268,12 +269,12 @@ impl<'a, M: Memory> Session<'a, M> {
         true
     }
 
-    pub fn visit(&mut self, visit: native::CensusVisit) {
+    pub fn visit(&mut self, visit: engine_native::cfleet::CensusVisit) {
         if !self.observed {
             return;
         }
         match visit {
-            native::CensusVisit::Country(country) => {
+            engine_native::cfleet::CensusVisit::Country(country) => {
                 if matches!(self.store.entries.get(&country.pointer), Some(Entry::Country { country: old, .. }) if *old == country)
                 {
                     return;
@@ -329,13 +330,13 @@ impl<'a, M: Memory> Session<'a, M> {
                     }
                 }
             }
-            native::CensusVisit::Fleet { pointer, handle } => {
+            engine_native::cfleet::CensusVisit::Fleet { pointer, handle } => {
                 let entry = Entry::Fleet(handle);
                 if self.retain(pointer, entry) {
                     self.update(pointer, entry, true);
                 }
             }
-            native::CensusVisit::TaskForce { pointer, handle } => {
+            engine_native::cfleet::CensusVisit::TaskForce { pointer, handle } => {
                 let entry = Entry::Task(handle);
                 if self.retain(pointer, entry) {
                     self.update(pointer, entry, true);
@@ -600,8 +601,8 @@ impl<'a, M: Memory> Session<'a, M> {
                     self.memory,
                     self.base,
                     pointer,
-                    engine_native::cship_refit_production_line::VTABLE_RVA,
-                    engine_native::cproduction_line::REFERENCE_TYPE,
+                    engine_native_parts::cship_refit_production_line::VTABLE_RVA,
+                    engine_native_parts::cproduction_line::REFERENCE_TYPE,
                     handle,
                     false,
                 )?;
@@ -610,7 +611,7 @@ impl<'a, M: Memory> Session<'a, M> {
                     progress_raw: field(
                         self.memory,
                         pointer,
-                        engine_native::cproduction_line::PRODUCED,
+                        engine_native_parts::cproduction_line::PRODUCED,
                     )?,
                 };
                 let changed = insert(&mut self.store.lines, handle, row)?;
@@ -622,7 +623,7 @@ impl<'a, M: Memory> Session<'a, M> {
 
     fn observe_line(&mut self, handle: u64) -> Result<(), &'static str> {
         let Some(object) =
-            engine_native::creference_registry::resolve(self.memory, self.base, handle)?
+            engine_native_parts::creference_registry::resolve(self.memory, self.base, handle)?
         else {
             return Ok(());
         };
@@ -764,12 +765,12 @@ impl<'a, M: Memory> Session<'a, M> {
         if !self.observed {
             return Some(changes::UNAVAILABLE);
         }
-        if !matches!(parent.fleets, engine_native::walk::Outcome::Rows { .. })
+        if !matches!(parent.fleets, engine_native_memory::walk::Outcome::Rows { .. })
             || !matches!(
                 parent.task_forces,
-                engine_native::walk::Outcome::Rows { .. }
+                engine_native_memory::walk::Outcome::Rows { .. }
             )
-            || !matches!(parent.ships, engine_native::walk::Outcome::Rows { .. })
+            || !matches!(parent.ships, engine_native_memory::walk::Outcome::Rows { .. })
         {
             self.store.epoch = None;
             return Some("naval management source census incomplete");
@@ -892,7 +893,10 @@ mod tests {
             self.put(pointer + native::SHIP_REFIT_LINE, &line.to_le_bytes());
         }
         fn refit(&mut self, pointer: usize, handle: u64) {
-            use engine_native::{creference_registry as registry, reference_bucket as bucket};
+            use engine_native_parts::{
+                creference_registry as registry,
+                reference_bucket as bucket,
+            };
             const TABLE: usize = 0x40000;
             const BUCKETS: usize = 0x41000;
             self.put(
@@ -915,20 +919,20 @@ mod tests {
             self.put(cell + bucket::OBJECT, &(pointer as u64).to_le_bytes());
             self.put(
                 pointer,
-                &(engine_native::cship_refit_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native_parts::cship_refit_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(
-                pointer + engine_native::cproduction_line::REFERENCE_TYPE,
+                pointer + engine_native_parts::cproduction_line::REFERENCE_TYPE,
                 &handle.to_le_bytes(),
             );
             self.put(
-                pointer + engine_native::cproduction_line::PRODUCED,
+                pointer + engine_native_parts::cproduction_line::PRODUCED,
                 &123_i64.to_le_bytes(),
             );
         }
     }
     fn complete() -> engine_native::cfleet::Capture {
-        let rows = engine_native::walk::Outcome::Rows { len: 0 };
+        let rows = engine_native_memory::walk::Outcome::Rows { len: 0 };
         engine_native::cfleet::Capture {
             fleets: rows,
             task_forces: rows,
@@ -972,7 +976,7 @@ mod tests {
         memory.put(CHILDREN, &detachment.to_le_bytes());
         let mut initial = Session::begin(&memory, 0, 0);
         for (pointer, handle) in [(DESTINATION, destination), (DETACHMENT, detachment)] {
-            initial.visit(native::CensusVisit::TaskForce { pointer, handle });
+            initial.visit(engine_native::cfleet::CensusVisit::TaskForce { pointer, handle });
         }
         let initial = initial.finish(complete());
         let initial_tasks = initial.tables[2].as_ref().unwrap();
@@ -1003,7 +1007,7 @@ mod tests {
         memory.reads.set(0);
         changes::fixture::mark(DESTINATION, false, true);
         let mut surviving = Session::begin(&memory, 0, 0);
-        surviving.visit(native::CensusVisit::TaskForce {
+        surviving.visit(engine_native::cfleet::CensusVisit::TaskForce {
             pointer: DETACHMENT,
             handle: detachment,
         });
@@ -1034,13 +1038,13 @@ mod tests {
         let _guard = changes::fixture::SERIAL.lock().unwrap();
         const LINE: usize = 0x30000;
         let line =
-            u64::from(engine_native::cship_refit_production_line::REFERENCE_TYPE) | (7_u64 << 32);
-        let root = engine_native::creference_registry::LOW_ROOTS_RVA.0 + line as u32 as usize * 8;
+            u64::from(engine_native_parts::cship_refit_production_line::REFERENCE_TYPE) | (7_u64 << 32);
+        let root = engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + line as u32 as usize * 8;
         for cancel_clears_ship in [true, false] {
             changes::fixture::prepare();
             let mut memory = MemoryFixture::default();
             memory.put(
-                engine_native::creference_registry::INVALID_REFERENCE_RVA.0,
+                engine_native_parts::creference_registry::INVALID_REFERENCE_RVA.0,
                 &0_u64.to_le_bytes(),
             );
             memory.refit(LINE, line);
@@ -1114,11 +1118,11 @@ mod tests {
         changes::fixture::prepare();
         let mut memory = MemoryFixture::default();
         memory.put(
-            engine_native::creference_registry::INVALID_REFERENCE_RVA.0,
+            engine_native_parts::creference_registry::INVALID_REFERENCE_RVA.0,
             &0_u64.to_le_bytes(),
         );
         let line =
-            u64::from(engine_native::cship_refit_production_line::REFERENCE_TYPE) | (7_u64 << 32);
+            u64::from(engine_native_parts::cship_refit_production_line::REFERENCE_TYPE) | (7_u64 << 32);
         memory.ship(0x10000, 1, line);
         let mut session = Session::begin(&memory, 0, 0);
         session.ship(
@@ -1187,7 +1191,7 @@ mod tests {
         }
         let mut first = Session::begin(&memory, 0, 0);
         for index in 0..5_000 {
-            first.visit(native::CensusVisit::Fleet {
+            first.visit(engine_native::cfleet::CensusVisit::Fleet {
                 pointer: 0x10000 + index * 0x200,
                 handle: index as u64 + 1,
             });
@@ -1197,7 +1201,7 @@ mod tests {
         memory.reads.set(0);
         let mut quiet = Session::begin(&memory, 0, 0);
         for index in 0..5_000 {
-            let country = ccountry::Country {
+            let country = engine_native_memory::country_identity::Country {
                 pointer: 0x2000000 + index * 0x10000,
                 id: index as u32 + 1,
                 canonical_slot: index as u32,
@@ -1210,8 +1214,8 @@ mod tests {
                     navy: 0,
                 },
             );
-            quiet.visit(native::CensusVisit::Country(country));
-            quiet.visit(native::CensusVisit::Fleet {
+            quiet.visit(engine_native::cfleet::CensusVisit::Country(country));
+            quiet.visit(engine_native::cfleet::CensusVisit::Fleet {
                 pointer: 0x10000 + index * 0x200,
                 handle: index as u64 + 1,
             });
@@ -1225,12 +1229,12 @@ mod tests {
         let allocation_free = collector_test_support::with_allocations_denied(|| {
             let mut held = Session::begin(&memory, 0, 0);
             for index in 0..5_000 {
-                held.visit(native::CensusVisit::Country(ccountry::Country {
+                held.visit(engine_native::cfleet::CensusVisit::Country(engine_native_memory::country_identity::Country {
                     pointer: 0x2000000 + index * 0x10000,
                     id: index as u32 + 1,
                     canonical_slot: index as u32,
                 }));
-                held.visit(native::CensusVisit::Fleet {
+                held.visit(engine_native::cfleet::CensusVisit::Fleet {
                     pointer: 0x10000 + index * 0x200,
                     handle: index as u64 + 1,
                 });
@@ -1263,7 +1267,7 @@ mod tests {
         assert_eq!(retired.tables[1].as_ref().unwrap().len(), 4_999);
         memory.fleet(0x10000, 90_000, 7);
         let mut reused = Session::begin(&memory, 0, 0);
-        reused.visit(native::CensusVisit::Fleet {
+        reused.visit(engine_native::cfleet::CensusVisit::Fleet {
             pointer: 0x10000,
             handle: 90_000,
         });
@@ -1281,7 +1285,7 @@ mod tests {
         unsafe { changes::boundary(true) };
         memory.fleet(0x10000, 90_000, 9);
         let mut reset = Session::begin(&memory, 0, 0);
-        reset.visit(native::CensusVisit::Fleet {
+        reset.visit(engine_native::cfleet::CensusVisit::Fleet {
             pointer: 0x10000,
             handle: 90_000,
         });
@@ -1292,10 +1296,10 @@ mod tests {
         const BASE: usize = 0x9000;
         memory.put(
             BASE,
-            &(engine_native_naval::cnaval_base::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cnaval_base_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         memory.put(
-            BASE + engine_native_naval::cnaval_base::PROVINCE_ID,
+            BASE + engine_native_parts::cnaval_base_layout::PROVINCE_ID,
             &17_u32.to_le_bytes(),
         );
         memory.put(BASE + native::BASE_REPAIR_PRIORITY, &1_i32.to_le_bytes());
@@ -1310,7 +1314,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let initial = bases.finish(engine_native::walk::Outcome::Rows { len: 1 });
+        let initial = bases.finish(engine_native_memory::walk::Outcome::Rows { len: 1 });
         memory.reads.set(0);
         // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
         let mut bases = unsafe { crate::bases::Session::begin(&memory, 0) };
@@ -1321,7 +1325,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let quiet = bases.finish(engine_native::walk::Outcome::Rows { len: 1 });
+        let quiet = bases.finish(engine_native_memory::walk::Outcome::Rows { len: 1 });
         assert_eq!(memory.reads.get(), 0);
         assert!(Arc::ptr_eq(
             initial.tables[0].as_ref().unwrap(),
@@ -1331,7 +1335,7 @@ mod tests {
         changes::fixture::mark(BASE, true, false);
         // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
         let changed = unsafe { crate::bases::Session::begin(&memory, 0) }
-            .finish(engine_native::walk::Outcome::Rows { len: 1 });
+            .finish(engine_native_memory::walk::Outcome::Rows { len: 1 });
         assert!(memory.reads.get() > 0);
         assert!(!Arc::ptr_eq(
             quiet.tables[0].as_ref().unwrap(),
@@ -1342,7 +1346,7 @@ mod tests {
         changes::fixture::mark(BASE, true, true);
         // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
         let gone = unsafe { crate::bases::Session::begin(&memory, 0) }
-            .finish(engine_native::walk::Outcome::Rows { len: 0 });
+            .finish(engine_native_memory::walk::Outcome::Rows { len: 0 });
         assert_eq!(memory.reads.get(), 0);
         assert_eq!(gone.tables[0].as_ref().unwrap().len(), 0);
     }

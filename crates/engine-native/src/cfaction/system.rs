@@ -1,10 +1,7 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry,  cfaction, cgame_state, cpdx_array::Array, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use crate::{ccountry, cfaction, cgame_state};
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_2fd0);
 
@@ -51,8 +48,8 @@ pub fn accounts(memory: &impl Memory, base: usize, state: usize) -> Result<Array
         return Err("faction account system vtable mismatch");
     }
     system
-        .checked_add(crate::cfaction_member_status::ACCOUNTS)
-        .and_then(|at| Array::read(memory, at, crate::cfaction_member_status::STRIDE))
+        .checked_add(engine_native_parts::cfaction_member_status::ACCOUNTS)
+        .and_then(|at| Array::read(memory, at, engine_native_parts::cfaction_member_status::STRIDE))
         .ok_or("faction account array invalid")
 }
 
@@ -87,7 +84,7 @@ pub fn faction(
 }
 
 pub fn count_members(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_members_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_members_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_members(
@@ -100,7 +97,7 @@ pub fn walk_members(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -108,7 +105,7 @@ fn walk_members_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, MemberRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, MemberRow>,
 ) -> Outcome {
     let result = (|| {
         let roster = roster(memory, base, game_state)?;
@@ -200,20 +197,20 @@ fn country_faction(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("country diplomacy unreadable or null")?;
-    let expected = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+    let expected = engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
         .ok_or("module address overflow")?;
     if read::<u64>(memory, diplomacy) != Some(expected as u64) {
         return Err("country diplomacy vtable mismatch");
     }
     if diplomacy
-        .checked_add(cdiplomacy_status::COUNTRY)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::COUNTRY)
         .and_then(|p| read::<u64>(memory, p))
         != Some(country as u64)
     {
         return Err("country diplomacy owner differs from country");
     }
     diplomacy
-        .checked_add(cdiplomacy_status::FACTION)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::FACTION)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("country faction pointer unreadable")
@@ -222,7 +219,7 @@ fn country_faction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory::SliceMemory, msvc_string};
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
 
     const GS: usize = 0x1000;
     const COUNTRIES: usize = 0x2000;
@@ -293,15 +290,15 @@ mod tests {
                 country + ccountry::DIPLOMACY_STATUS,
                 diplomacy as u64,
             );
-            put64(&mut bytes, diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
+            put64(&mut bytes, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
             put64(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::COUNTRY,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 country as u64,
             );
             put64(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::FACTION,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::FACTION,
                 FIRST as u64,
             );
         }
@@ -339,11 +336,11 @@ mod tests {
         put64(
             &mut bytes,
             TEMPLATE_OBJECT,
-            crate::cfaction_template::VTABLE_RVA.0 as u64,
+            engine_native_parts::cfaction_template::VTABLE_RVA.0 as u64,
         );
         put32(
             &mut bytes,
-            TEMPLATE_OBJECT + crate::cfaction_template::IDENTIFIER_TOKEN,
+            TEMPLATE_OBJECT + engine_native_parts::cfaction_template::IDENTIFIER_TOKEN,
             TEMPLATE_TOKEN,
         );
         name(&mut bytes, FIRST, b"Axis");
@@ -369,9 +366,9 @@ mod tests {
         put64(&mut bytes, COUNTRIES, C0 as u64);
         put64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
         put64(&mut bytes, C0 + ccountry::DIPLOMACY_STATUS, D0 as u64);
-        put64(&mut bytes, D0, cdiplomacy_status::VTABLE_RVA.0 as u64);
-        put64(&mut bytes, D0 + cdiplomacy_status::COUNTRY, C0 as u64);
-        put64(&mut bytes, D0 + cdiplomacy_status::FACTION, FIRST as u64);
+        put64(&mut bytes, D0, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+        put64(&mut bytes, D0 + engine_native_parts::cdiplomacy_status_layout::COUNTRY, C0 as u64);
+        put64(&mut bytes, D0 + engine_native_parts::cdiplomacy_status_layout::FACTION, FIRST as u64);
         put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 3);
         put64(&mut bytes, MEMBER_POINTERS + 16, C0 as u64);
         let mut rows = vec![MemberRow::default(); 3];
@@ -397,12 +394,12 @@ mod tests {
         for (address, value, reason) in [
             (COUNTRIES, C2 as u64, "reserved country id is not zero"),
             (
-                D0 + cdiplomacy_status::FACTION,
+                D0 + engine_native_parts::cdiplomacy_status_layout::FACTION,
                 0,
                 "country faction differs from membership roster",
             ),
             (
-                D0 + cdiplomacy_status::COUNTRY,
+                D0 + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 C1 as u64,
                 "country diplomacy owner differs from country",
             ),
@@ -538,8 +535,8 @@ mod tests {
     #[test]
     fn presentation_is_one_record_copy_per_faction_and_one_span_per_template() {
         let counted = |bytes: &[u8]| {
-            crate::memory::ReadCounts::take_current();
-            let memory = crate::memory::CountedMemory::new(SliceMemory { base: 0, bytes });
+            engine_native_memory::memory::ReadCounts::take_current();
+            let memory = engine_native_memory::memory::CountedMemory::new(SliceMemory { base: 0, bytes });
             let walk = cfaction::walk(
                 &memory,
                 0,
@@ -548,7 +545,7 @@ mod tests {
                 &mut vec![0; 4],
             );
             assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
-            crate::memory::ReadCounts::take_current()
+            engine_native_memory::memory::ReadCounts::take_current()
         };
         let templated = counted(&fixture());
         let mut bytes = fixture();
@@ -636,9 +633,9 @@ mod tests {
             (MEMBER_POINTERS + 8, C2 as u64),
             (C2, 0),
             (D2, 0),
-            (D2 + cdiplomacy_status::COUNTRY, C1 as u64),
-            (D2 + cdiplomacy_status::FACTION, SECOND as u64),
-            (D2 + cdiplomacy_status::FACTION, 0),
+            (D2 + engine_native_parts::cdiplomacy_status_layout::COUNTRY, C1 as u64),
+            (D2 + engine_native_parts::cdiplomacy_status_layout::FACTION, SECOND as u64),
+            (D2 + engine_native_parts::cdiplomacy_status_layout::FACTION, 0),
             (COUNTRIES + 8, C2 as u64),
         ] {
             let mut bytes = fixture();
@@ -683,7 +680,7 @@ mod tests {
             Outcome::Unavailable { .. }
         ));
         for diplomacy in [D1, D2] {
-            put64(&mut bytes, diplomacy + cdiplomacy_status::FACTION, 0);
+            put64(&mut bytes, diplomacy + engine_native_parts::cdiplomacy_status_layout::FACTION, 0);
         }
         assert_eq!(members(&bytes, &mut Vec::new()), Outcome::Rows { len: 0 });
     }

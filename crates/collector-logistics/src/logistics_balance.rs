@@ -1,7 +1,8 @@
 use crate::hook::Hook;
 use engine_allocation as allocation;
 use engine_land_inputs::clogistics_status as native;
-use engine_native::{Memory, cgame_state, memory::LiveMemory, read};
+use engine_native_memory::{Memory, memory::LiveMemory, read};
+use engine_native::cgame_state;
 use std::{
     io,
     ops::Range,
@@ -345,12 +346,12 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
             ..Default::default()
         });
     let len = match native::walk_balance_owners(memory, base, state, identities) {
-        engine_native::walk::Outcome::Rows { len } => len,
-        engine_native::walk::Outcome::Unavailable { reason } => {
+        engine_native_memory::walk::Outcome::Rows { len } => len,
+        engine_native_memory::walk::Outcome::Unavailable { reason } => {
             refuse_census(reason);
             return Ok(0);
         }
-        engine_native::walk::Outcome::Truncated { .. } => {
+        engine_native_memory::walk::Outcome::Truncated { .. } => {
             refuse_census("logistics owner census truncated");
             return Ok(0);
         }
@@ -1005,7 +1006,7 @@ mod tests {
     fn native_store_predicate_follows_the_signed_record_count() {
         let mut bytes = [0_u8; 0x20];
         bytes[0x1c..0x20].copy_from_slice(&3_i32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

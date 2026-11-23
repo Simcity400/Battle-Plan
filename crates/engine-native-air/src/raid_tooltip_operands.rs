@@ -449,7 +449,7 @@ fn wing(
     let raw = if raw > 0 {
         raw as u32
     } else {
-        let pool = field::<u64>(memory, pointer, cair_wing::POOL)? as usize;
+        let pool = field::<u64>(memory, pointer, engine_native_parts::cair_wing_layout::POOL)? as usize;
         let holder = field::<u64>(memory, pool, raid_speed_inputs::WING_POOL_OWNER)? as usize;
         field::<u32>(memory, holder, raid_speed_inputs::POOL_OWNER_COUNTRY)?
     };
@@ -473,7 +473,7 @@ fn wing(
     )?;
     modifiers(
         memory,
-        country.pointer + engine_native::ccountry::MODIFIER_ACCUMULATOR,
+        country.pointer + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         WING_COUNTRY_MODIFIERS,
         &[
             keys::AIR_STRATEGIC_BOMBER_BOMBING_FACTOR,
@@ -532,13 +532,13 @@ fn wing(
     countries.of_pointer(owner)?;
     modifiers(
         memory,
-        owner + engine_native::ccountry::MODIFIER_ACCUMULATOR,
+        owner + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         ACE_OWNER_MODIFIERS,
         &[keys::ACE_EFFECTIVENESS_FACTOR],
         sink,
     )?;
     let assigned = field::<u64>(memory, ace, crate::cace::ASSIGNED_WING_REFERENCE)?;
-    if let Some(wing) = unit(memory, base, assigned, cair_wing::VTABLE_RVA)? {
+    if let Some(wing) = unit(memory, base, assigned, engine_native_parts::cair_wing_layout::VTABLE_RVA)? {
         sink.push(
             ACE_WING,
             cair_wing::PLANE_COUNT as u32,
@@ -563,7 +563,7 @@ fn operands(
     target_inputs(memory, state, province, sink)?;
     context::target(memory, base, game, raid, state, province, sink)?;
     let army_pointer = unit(memory, base, army_ref, carmy::VTABLE_RVA)?;
-    let wing_pointer = unit(memory, base, wing_ref, cair_wing::VTABLE_RVA)?;
+    let wing_pointer = unit(memory, base, wing_ref, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
     names::capture(memory, base, army_pointer, wing_pointer, sink)?;
     names::source(memory, base, raid, sink)?;
     context::source(memory, base, game, raid, sink)?;

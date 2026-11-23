@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use crate::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const MODULE: usize = 0x140000000;
 const MEMORY: usize = 0x1000;
@@ -172,7 +173,7 @@ fn reserved_header_failure_keeps_first_observation_without_a_gather_retry() {
         },
         attempts: std::cell::Cell::new(0),
     };
-    let root = ccountry::Country {
+    let root = engine_native_memory::country_identity::Country {
         pointer: COUNTRY_POINTER,
         canonical_slot: 0,
         id: 0,

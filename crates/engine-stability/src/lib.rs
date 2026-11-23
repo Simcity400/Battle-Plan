@@ -1,38 +1,5 @@
 
-#[cfg(test)]
-use engine_native::read_census;
-use engine_native::{
-    Memory,
-    allocation,
-    cadvisor,
-    cattache_relation,
-    ccharacter,
-    ccountry,
-    cdynamic_modifier,
-    cgame_state,
-    cidea,
-    cideology_group,
-    clock,
-    cpdx_array,
-    crelation,
-    cstatic_modifier,
-    cwar_relation,
-    memory,
-    modifier_accumulator,
-    modifier_definition,
-    modifier_entry,
-    msvc_string,
-    read,
-    read_slice,
-    walk,
-};
-use engine_native_politics::{
-    ccountry_characters,
-    ccountry_leader,
-    cdiplomacy_status,
-    cpolitical_party,
-    cpolitical_status,
-};
+use engine_allocation as allocation;
 
 pub mod cdynamic_modifier_container;
 pub mod cfaction_upgrade_status;
@@ -45,9 +12,3 @@ pub mod dynamic_modifier_entry;
 pub mod localization_root_layout;
 pub mod original_tag_lists;
 pub mod political_runtime_scalars;
-
-#[cfg(test)]
-use engine_native_intelligence::country_memory;
-use engine_native::read_counts;
-
-use engine_native::ccountry_manpower;

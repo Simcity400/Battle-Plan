@@ -3,7 +3,8 @@ use collector_division_templates::extended::division_templates::{
     tests::{Fixture, capacity, fixture, large_content, set_name, template_outcomes},
 };
 use engine_native::creferenced_division_template as native;
-use engine_native::{ccountry, memory::SliceMemory, walk::Outcome};
+use engine_native::ccountry;
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 use replay_data::rows::Recorded;
 use replay_frame::frame::TableView;
 use std::sync::Arc;

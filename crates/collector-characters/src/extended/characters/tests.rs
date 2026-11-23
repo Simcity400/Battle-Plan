@@ -1,9 +1,10 @@
 use super::*;
-use engine_native::{cgame_state, cunit_leader_trait};
+use engine_native::cgame_state;
+use engine_native_parts::cunit_leader_trait;
 #[cfg(test)]
 use std::cell::Cell;
 #[cfg(test)]
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[cfg(test)]
 pub(super) fn fixture_capacities() -> Capacities {
@@ -54,7 +55,8 @@ pub(super) const SECOND_ADVISOR: usize = 0x8c60;
 
 #[cfg(test)]
 pub(super) fn two_advisor_fixture(same_character: bool) -> Vec<u8> {
-    use engine_native::{character_advisor_node as node, msvc_tree_node as tree};
+    use engine_native_parts::character_advisor_node as node;
+    use engine_native_memory::msvc_tree_node as tree;
     let mut bytes = characters_test_kit::mapped_fixture();
     let first_node = characters_test_kit::ADV_NODE;
     let second_node = 0x8c00;
@@ -310,7 +312,7 @@ fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
         data,
         65,
     );
-    bytes.resize(0x9000 + 65 * engine_native::modifier_entry::STRIDE, 0);
+    bytes.resize(0x9000 + 65 * engine_native_parts::modifier_entry::STRIDE, 0);
     for index in 0..65 {
         put(&mut bytes, data + index * 16, (index as u32).to_le_bytes());
         put(
@@ -364,12 +366,12 @@ fn advisor_projection_refuses_partial_modifier_entries() {
     let mut captured = Captured::with_capacities(&small_capacities());
     captured.advisors.rows.rows[0] = cadvisor::Row {
         character: 1,
-        modifier_len: engine_native::modifier_entry::STRIDE,
+        modifier_len: engine_native_parts::modifier_entry::STRIDE,
         modifier_recorded: true,
         ..Default::default()
     };
     captured.advisors.rows.outcome = Outcome::Rows { len: 1 };
-    captured.advisors.bytes.len = engine_native::modifier_entry::STRIDE;
+    captured.advisors.bytes.len = engine_native_parts::modifier_entry::STRIDE;
     captured.advisors.bytes.first[..4].copy_from_slice(&77_u32.to_le_bytes());
     captured.advisors.bytes.first[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
@@ -2045,15 +2047,15 @@ fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
     collector_primitives::table_capture::grow_capacity(&mut byte_capacity, first.required_bytes);
     let mut rows = vec![active_ability_record::Row::default(); row_capacity];
     let mut arena = vec![0; byte_capacity];
-    engine_native::read_counts::ReadCounts::take_current();
+    engine_native_memory::read_counts::ReadCounts::take_current();
     let second = walk_abilities(
-        &engine_native::read_counts::CountedMemory::new(memory),
+        &engine_native_memory::read_counts::CountedMemory::new(memory),
         0,
         GAME_STATE,
         &mut rows,
         &mut arena,
     );
-    let with_records = engine_native::read_counts::ReadCounts::take_current();
+    let with_records = engine_native_memory::read_counts::ReadCounts::take_current();
     assert_eq!(second.outcome, Outcome::Rows { len: total });
     assert_eq!(
         (second.bytes_len, second.required_bytes),
@@ -2073,16 +2075,16 @@ fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
         bytes: &bytes,
     };
     let empty = walk_abilities(
-        &engine_native::read_counts::CountedMemory::new(memory),
+        &engine_native_memory::read_counts::CountedMemory::new(memory),
         0,
         GAME_STATE,
         &mut rows,
         &mut arena,
     );
-    let countries_only = engine_native::read_counts::ReadCounts::take_current();
+    let countries_only = engine_native_memory::read_counts::ReadCounts::take_current();
     assert_eq!(empty.outcome, Outcome::Rows { len: 0 });
     let calls =
-        |counts: engine_native::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
+        |counts: engine_native_memory::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
     let countries = u64::from(COUNTRIES);
     assert_eq!(calls(countries_only), 2 + 7 * countries);
     assert_eq!(calls(with_records) - calls(countries_only), 3 * countries);
@@ -2290,7 +2292,7 @@ fn cost_tree(bytes: &mut [u8], field: usize, head: usize, node: usize, stride: u
 }
 
 pub fn cost_fixture() -> Vec<u8> {
-    use engine_native::character_advisor_node;
+    use engine_native_parts::character_advisor_node;
     use engine_native_politics::character_leader_node;
     let mut bytes = vec![0; 0x32000];
     let mut heap = CostHeap { next: COST_HEAP };
@@ -2371,9 +2373,9 @@ pub fn cost_fixture() -> Vec<u8> {
             put(
                 &mut bytes,
                 role,
-                ((IMAGE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
+                ((IMAGE + engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
-            pointer(&mut bytes, role + ccountry_leader::CHARACTER, character);
+            pointer(&mut bytes, role + engine_native_parts::ccountry_leader_layout::CHARACTER, character);
         }
         let advisors = if index % 3 == 1 {
             COST_ADVISORS_PER as u32
@@ -2764,14 +2766,14 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
         put(
             &mut bytes,
             unit,
-            ((IMAGE + coperative_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
+            ((IMAGE + engine_native_parts::coperative_leader_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             unit + cunit_leader::CATEGORY,
             3_i32.to_le_bytes(),
         );
-        let member = unit + coperative_leader::CODENAME;
+        let member = unit + engine_native_parts::coperative_leader_layout::CODENAME;
         bytes[member..member + naming::INPUT_SPAN].fill(0);
         put(
             &mut bytes,
@@ -2853,7 +2855,7 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
     split.grow(&mut small);
     assert!(small.bytes[3] >= 12 + group.len() + custom.len());
     for fault in [
-        UNITS[0] + coperative_leader::CODENAME,
+        UNITS[0] + engine_native_parts::coperative_leader_layout::CODENAME,
         0x8a00,
         0x8a00 + group.len(),
         0x8a40 + custom.len(),
@@ -2870,7 +2872,7 @@ fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth()
     }
     put(
         &mut bytes,
-        UNITS[0] + coperative_leader::CODENAME + naming::TYPE,
+        UNITS[0] + engine_native_parts::coperative_leader_layout::CODENAME + naming::TYPE,
         1_i32.to_le_bytes(),
     );
     let (split, _, _) = kit::split(&kit::memory(&bytes), &capacities);
@@ -2947,7 +2949,7 @@ fn shared_trait_definitions_are_read_once_charged_and_fresh_after_recycling() {
     let mut job = small_wave_job();
     for value in [b'x', b'y'] {
         bytes[DEFINITION + cunit_leader_trait::TOKEN] = value;
-        let source = engine_native::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
+        let source = engine_native_memory::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
         let native = read_accounting::Capture::new();
         let report = copy_characters(&source, context, &mut job, Roles::Independent);
         assert!(report.raw_ok);
@@ -3001,7 +3003,7 @@ fn shared_skills_keep_current_rows_native_costs_and_recycled_freshness() {
             kit::SKILL0 + cunit_leader_skill::LEVEL,
             level.to_le_bytes(),
         );
-        let source = engine_native::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
+        let source = engine_native_memory::memory::CountedMemory::new(WaveMemory::new(&bytes, None));
         let report = copy_characters(&source, context, &mut job, Roles::Independent);
         assert!(report.raw_ok);
         let skill = ADDRESS + kit::SKILL0;

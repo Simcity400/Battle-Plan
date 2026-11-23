@@ -1,15 +1,12 @@
 pub mod modifier_sources;
 
+use engine_native_memory::{Memory, msvc_string::Descriptor, read, recent::Recent};
+use engine_native_parts::cequipment_type;
 use crate::{
-    Memory,
-    cequipment_type,
     cequipment_variant::{self, pool as cequipment_variant_pool},
     cname_group_member,
     ctask_force,
     cunit,
-    msvc_string::Descriptor,
-    read,
-    recent::Recent,
 };
 use engine_sites::Rva;
 
@@ -35,7 +32,7 @@ pub const SUNK_CONVOYS: usize = 0x3c;
 pub const EQUIPMENT_POOL: usize = 0x40;
 pub const CLASS_DATABASE_ID: usize = 0x88;
 pub const SUBUNIT_DEFINITION: usize = 0x80;
-pub const SUBUNIT_INDEX: usize = SUBUNIT_DEFINITION + crate::csub_unit_definition::DATABASE_INDEX;
+pub const SUBUNIT_INDEX: usize = SUBUNIT_DEFINITION + engine_native_parts::csub_unit_definition::DATABASE_INDEX;
 pub const DEFINITION: usize = 0x98;
 pub const CATEGORY: usize = 0xe0;
 pub const FALLBACK_SPRITE: usize = 0xe8;
@@ -54,7 +51,6 @@ pub const EXPERIENCE: usize = 0x708;
 pub const TASK_FORCE: usize = 0x728;
 pub const SIZE: usize = 0x938;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c8_65b0);
-pub use engine_native_memory::save_allocation_counters::NEXT_ID_RVA;
 pub const FIXED_SCALE: i64 = 100_000;
 
 fn name_member(
@@ -193,7 +189,7 @@ impl ModelText {
             dynamic: self
                 .dynamic
                 .as_ref()
-                .map(|text| crate::allocation::copy_vec(text))
+                .map(|text| engine_allocation::copy_vec(text))
                 .transpose()
                 .map_err(|_| "ship model sprite allocation failed")?,
         })
@@ -230,7 +226,7 @@ impl ModelMemo {
     }
 
     fn remember_hull(&mut self, hull: ModelHull) {
-        if crate::allocation::reserve_map(&mut self.hulls, 1).is_ok() {
+        if engine_allocation::reserve_map(&mut self.hulls, 1).is_ok() {
             self.hulls.insert(hull.key, hull);
         }
     }
@@ -372,8 +368,8 @@ fn read_model_observed_inner(
         {
             return Err("ship model variant fields unreadable");
         }
-        row.variant = cequipment_variant::identity_from_header(
-            engine_sites::at(base, cequipment_variant::VTABLE_RVA)
+        row.variant = engine_native_parts::equipment_variant_identity::identity_from_header(
+            engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
                 .ok_or("ship model module overflow")?,
             identity,
         )?;
@@ -439,7 +435,7 @@ pub fn read_model_subunit_index(
         .filter(|_| pointer != 0)
         .ok_or("ship subunit address overflow")?;
     let header = read::<[u8; 12]>(memory, definition).ok_or("ship subunit identity unreadable")?;
-    let expected = engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA)
+    let expected = engine_sites::at(base, engine_native_parts::csub_unit_definition::VTABLE_RVA)
         .ok_or("ship subunit module overflow")? as u64;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected
         || u32::from_le_bytes(header[8..].try_into().unwrap()) != source.class_id as u32
@@ -514,7 +510,7 @@ fn model_text(memory: &impl Memory, address: usize) -> Result<ModelText, &'stati
     let descriptor = Descriptor::read(memory, address)?;
     if descriptor.len > MODEL_TEXT_CAPACITY {
         let mut bytes = Vec::new();
-        descriptor.copy_buffer(memory, &mut crate::walk::Buffer::Growing(&mut bytes), 0)?;
+        descriptor.copy_buffer(memory, &mut engine_native_memory::walk::Buffer::Growing(&mut bytes), 0)?;
         bytes.truncate(descriptor.len);
         return Ok(ModelText {
             len: descriptor.len,
@@ -570,12 +566,12 @@ pub(crate) fn prefetch_row(pointer: usize) {
         (CLASS_DATABASE_ID, 4),
         (TASK_FORCE, 8),
     ] {
-        crate::prefetch::span(pointer.wrapping_add(offset), len);
+        engine_native_memory::prefetch::span(pointer.wrapping_add(offset), len);
     }
 }
 
-pub(crate) const ROW_FIELDS: [crate::memory::RecordField; 7] = {
-    use crate::memory::RecordField;
+pub(crate) const ROW_FIELDS: [engine_native_memory::memory::RecordField; 7] = {
+    use engine_native_memory::memory::RecordField;
     [
         RecordField {
             source_offset: 0,
@@ -615,8 +611,8 @@ pub(crate) const ROW_FIELDS: [crate::memory::RecordField; 7] = {
     ]
 };
 pub(crate) const ROW_STRIDE: usize = 64;
-pub(crate) const ROW_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
+pub(crate) const ROW_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
 
 pub(crate) fn decode_row(
     record: &[u8],
@@ -762,7 +758,7 @@ pub struct OrganisationMemo {
     leader_class: Recent<(usize, u32), [i64; 4], RECENT>,
     doctrine_keys: modifier_sources::DoctrineKeys,
     weather: Option<OrganisationWeather>,
-    definitions: crate::modifier_definition::DefinitionMemo,
+    definitions: engine_native_parts::modifier_definition::DefinitionMemo,
     own: Option<(usize, OrganisationOperands)>,
     modifier_guards: [Option<u16>; 1 << ORGANISATION_KEYS.len()],
 }
@@ -857,8 +853,8 @@ pub struct OrganisationOperands {
     subunit: Option<u32>,
     weather_factor: Option<i64>,
     base_organisation: i64,
-    modifiers: [[crate::modifier_accumulator::Value; 4]; 2],
-    criticals: crate::cpdx_array::Array,
+    modifiers: [[engine_native_memory::modifier_cache::Value; 4]; 2],
+    criticals: engine_native_memory::cpdx_array::Array,
     modifier_guard: u16,
 }
 
@@ -890,7 +886,7 @@ pub fn organisation_modifier_guard_matches(
     let mut current = 0;
     for (index, key) in ORGANISATION_KEYS.into_iter().enumerate() {
         if guard >> (index * 2) & 3 != 0 {
-            let (_, flags) = crate::modifier_definition::effective_observed_memo(
+            let (_, flags) = engine_native_parts::modifier_definition::effective_observed_memo(
                 memory,
                 base,
                 key,
@@ -965,7 +961,7 @@ fn read_organisation_weather(
     base: usize,
     ship: usize,
     sources: [usize; 5],
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<(OrganisationWeather, i64), &'static str> {
     read_organisation_weather_with(memory, base, sources, definitions, || {
         crate::cnaval_combatant::field(memory, ship, 0x270)
@@ -976,10 +972,11 @@ fn read_organisation_weather_with(
     memory: &impl Memory,
     base: usize,
     sources: [usize; 5],
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
     factor: impl FnOnce() -> Result<i64, &'static str>,
 ) -> Result<(OrganisationWeather, i64), &'static str> {
-    use crate::{cnaval_combatant::field, cpdx_array::Array};
+    use crate::cnaval_combatant::field;
+    use engine_native_memory::cpdx_array::Array;
     let [game, task, country, location, definition] = sources;
     let add = |p: usize, o: usize| {
         p.checked_add(o)
@@ -1005,7 +1002,7 @@ fn read_organisation_weather_with(
         memory,
         base,
         add(country, 0x5b8)?,
-        crate::modifier_keys::NAVY_WEATHER_PENALTY,
+        engine_executable::modifier_keys::NAVY_WEATHER_PENALTY,
         definitions,
     )?
     .wrapping_add(100000)
@@ -1070,7 +1067,7 @@ fn doctrine_contribution(
     base: usize,
     task: usize,
     country: usize,
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
     keys: &mut modifier_sources::DoctrineKeys,
 ) -> Result<[i64; 4], &'static str> {
     use crate::{cnaval_combatant::field, cship::modifier_sources as sources};
@@ -1177,9 +1174,8 @@ pub fn read_task_terms(
     task: &TaskForceFields,
     memo: &mut OrganisationMemo,
 ) -> Result<Option<TaskTerms>, &'static str> {
-    use crate::{
-        cnaval_combatant::field, cpdx_array::Array, cship::modifier_sources as sources,
-    };
+    use crate::{cnaval_combatant::field, cship::modifier_sources as sources};
+    use engine_native_memory::cpdx_array::Array;
     let definitions = &memo.definitions;
     let add = |p: usize, o: usize| {
         p.checked_add(o)
@@ -1268,10 +1264,10 @@ pub fn read_task_terms(
             None
         } else {
             auth(fleet, crate::cfleet::VTABLE_RVA)?;
-            crate::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
+            engine_native_parts::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
         };
         let value = if let Some(leader) = leader {
-            auth(leader, crate::cnavy_leader::VTABLE_RVA)?;
+            auth(leader, engine_native_parts::cnavy_leader::VTABLE_RVA)?;
             values(add(leader, 0x418)?)?
         } else {
             [0; 4]
@@ -1332,7 +1328,7 @@ fn influence_terms(
             Ok(())
         }
     };
-    let Some(character) = crate::creference_registry::resolve(memory, base, reference)? else {
+    let Some(character) = engine_native_parts::creference_registry::resolve(memory, base, reference)? else {
         return Ok(None);
     };
     auth(character, crate::ccharacter::VTABLE_RVA)?;
@@ -1340,7 +1336,7 @@ fn influence_terms(
     let leader = if direct != 0 {
         Some(direct)
     } else {
-        crate::creference_registry::resolve(memory, base, field(memory, character, 0xc8)?)?
+        engine_native_parts::creference_registry::resolve(memory, base, field(memory, character, 0xc8)?)?
     };
     let Some(leader) = leader else {
         return Ok(None);
@@ -1348,7 +1344,7 @@ fn influence_terms(
     if field::<i32>(memory, leader, crate::cunit_leader::CATEGORY)? != 2 {
         return Ok(None);
     }
-    auth(leader, crate::cnavy_leader::VTABLE_RVA)?;
+    auth(leader, engine_native_parts::cnavy_leader::VTABLE_RVA)?;
     let mut v = [0i64; 4];
     for offset in [0xf70, 0xf80, 0xfa0, 0xf90] {
         let terms = values(add(ptr(leader, offset)?, 0xe0)?)?;
@@ -1375,9 +1371,8 @@ fn read_organisation_observation(
     ship: usize,
     memo: &mut OrganisationMemo,
 ) -> Result<i64, &'static str> {
-    use crate::{
-        cnaval_combatant::field, cpdx_array::Array, cship::modifier_sources as sources,
-    };
+    use crate::{cnaval_combatant::field, cship::modifier_sources as sources};
+    use engine_native_memory::cpdx_array::Array;
     let definitions = &memo.definitions;
     let add = |p: usize, o: usize| {
         p.checked_add(o)
@@ -1520,10 +1515,10 @@ fn read_organisation_observation(
                 None
             } else {
                 auth(fleet, crate::cfleet::VTABLE_RVA)?;
-                crate::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
+                engine_native_parts::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
             };
             let value = if let Some(leader) = leader {
-                auth(leader, crate::cnavy_leader::VTABLE_RVA)?;
+                auth(leader, engine_native_parts::cnavy_leader::VTABLE_RVA)?;
                 values(add(leader, 0x418)?)?
             } else {
                 [0; 4]
@@ -1667,7 +1662,7 @@ pub fn read_maximum_organisation_from_terms(
             .enumerate()
         {
             if raw.present {
-                let (effective, flags) = crate::modifier_definition::effective_observed_memo(
+                let (effective, flags) = engine_native_parts::modifier_definition::effective_observed_memo(
                     memory,
                     base,
                     key,
@@ -1731,8 +1726,8 @@ pub fn read_maximum_organisation_from_terms(
 fn read_organisation_criticals(
     memory: &impl Memory,
     base: usize,
-    criticals: crate::cpdx_array::Array,
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    criticals: engine_native_memory::cpdx_array::Array,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<[i64; 4], &'static str> {
     let mut critical = [0i64; 4];
     for index in 0..criticals.count {
@@ -1762,7 +1757,7 @@ fn combine_organisation(
     terms: &TaskTerms,
     contributions: [[i64; 4]; 5],
     critical: [i64; 4],
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<[i64; 3], &'static str> {
     let [own, medals, pride, terrain, leader] = contributions;
     let mut total = terms.country;
@@ -1827,11 +1822,11 @@ fn effective_scalar(
     base: usize,
     address: usize,
     key: u32,
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<i64, &'static str> {
-    let value = crate::modifier_accumulator::lookup_at(memory, address, key)?;
+    let value = engine_native_parts::modifier_accumulator::lookup_at(memory, address, key)?;
     if value.present {
-        crate::modifier_definition::effective_memo(memory, base, key, value.raw, definitions)
+        engine_native_parts::modifier_definition::effective_memo(memory, base, key, value.raw, definitions)
     } else {
         Ok(0)
     }
@@ -1841,30 +1836,30 @@ fn organisation_modifier_values(
     memory: &impl Memory,
     base: usize,
     address: usize,
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<[i64; 4], &'static str> {
     organisation_modifier_observation(memory, base, address, definitions)
         .map(|observation| observation.values)
 }
 
 const ORGANISATION_KEYS: [u32; 4] = [
-    crate::modifier_keys::NAVY_ORG,
-    crate::modifier_keys::NAVY_ORG_FACTOR,
-    crate::modifier_keys::MAX_ORGANISATION,
-    crate::modifier_keys::NAVAL_CRITICAL_EFFECT_FACTOR,
+    engine_executable::modifier_keys::NAVY_ORG,
+    engine_executable::modifier_keys::NAVY_ORG_FACTOR,
+    engine_executable::modifier_keys::MAX_ORGANISATION,
+    engine_executable::modifier_keys::NAVAL_CRITICAL_EFFECT_FACTOR,
 ];
 
 fn modifier_guard(flags: Option<u32>) -> u16 {
     match flags {
         None => 1,
-        Some(flags) if flags & crate::modifier_definition::CLAMP_MAXIMUM != 0 => 3,
+        Some(flags) if flags & engine_native_parts::modifier_definition::CLAMP_MAXIMUM != 0 => 3,
         Some(_) => 2,
     }
 }
 
 struct OrganisationModifiers {
     values: [i64; 4],
-    raw: [crate::modifier_accumulator::Value; 4],
+    raw: [engine_native_memory::modifier_cache::Value; 4],
     guard: u16,
 }
 
@@ -1873,15 +1868,16 @@ fn organisation_modifier_observation(
     memory: &impl Memory,
     base: usize,
     address: usize,
-    definitions: &crate::modifier_definition::DefinitionMemo,
+    definitions: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<OrganisationModifiers, &'static str> {
-    use crate::modifier_accumulator::{Value, lookup_many_at};
+    use engine_native_memory::modifier_cache::Value;
+    use engine_native_parts::modifier_accumulator::lookup_many_at;
 
     const SORTED_KEYS: [u32; 4] = [
-        crate::modifier_keys::NAVY_ORG,
-        crate::modifier_keys::NAVY_ORG_FACTOR,
-        crate::modifier_keys::NAVAL_CRITICAL_EFFECT_FACTOR,
-        crate::modifier_keys::MAX_ORGANISATION,
+        engine_executable::modifier_keys::NAVY_ORG,
+        engine_executable::modifier_keys::NAVY_ORG_FACTOR,
+        engine_executable::modifier_keys::NAVAL_CRITICAL_EFFECT_FACTOR,
+        engine_executable::modifier_keys::MAX_ORGANISATION,
     ];
     let mut direct = [Value::default(); 4];
     let mut captured = false;
@@ -1902,7 +1898,7 @@ fn organisation_modifier_observation(
         };
         raw_values[native] = raw;
         if raw.present {
-            let (effective, flags) = crate::modifier_definition::effective_observed_memo(
+            let (effective, flags) = engine_native_parts::modifier_definition::effective_observed_memo(
                 memory,
                 base,
                 key,
@@ -1935,7 +1931,7 @@ mod organisation_tests;
 #[cfg(test)]
 mod cached_name_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::RefCell;
 
     const SHIP: usize = 0x1000;
@@ -2009,7 +2005,7 @@ mod cached_name_tests {
             let memory = tracked(&bytes, None);
             let mut arena = vec![0x7f; 3 + text.len()];
             let mut names = cname_group_member::Names {
-                bytes: crate::walk::Buffer::Growing(&mut arena),
+                bytes: engine_native_memory::walk::Buffer::Growing(&mut arena),
                 len: 3,
                 required: 0,
             };
@@ -2070,7 +2066,7 @@ mod cached_name_tests {
             .collect();
         assert_eq!(heap_reads, [(HEAP, 1), (HEAP + text.len() - 1, 2)]);
         let mut names = cname_group_member::Names {
-            bytes: crate::walk::Buffer::Count,
+            bytes: engine_native_memory::walk::Buffer::Count,
             len: 0,
             required: 0,
         };
@@ -2081,7 +2077,7 @@ mod cached_name_tests {
         assert_eq!(names.required, text.len());
         bytes[HEAP + text.len()] = 1;
         let mut names = cname_group_member::Names {
-            bytes: crate::walk::Buffer::Count,
+            bytes: engine_native_memory::walk::Buffer::Count,
             len: 0,
             required: 0,
         };
@@ -2090,7 +2086,7 @@ mod cached_name_tests {
         bytes[HEAP + text.len()] = 0;
         let mut arena = vec![0; text.len()];
         let mut names = cname_group_member::Names {
-            bytes: crate::walk::Buffer::Growing(&mut arena),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut arena),
             len: 0,
             required: 0,
         };

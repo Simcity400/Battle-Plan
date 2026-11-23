@@ -411,7 +411,7 @@ fn progress(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Resu
         for line in production
             .lines
             .iter()
-            .filter(|line| line.kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT)
+            .filter(|line| line.kind == engine_native::cproduction_status::equipment_line::KIND_SHIP_REFIT)
         {
             let expected = line.base.produced.as_ref().map_or(0, |value| value.raw);
             let label = format!("naval refit line {}.produced", line.base.id);

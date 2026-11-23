@@ -1,8 +1,15 @@
 use engine_deployment::{carmy_upgrades_requests, cupgrade_delivery};
 use engine_native::{
-    carmy, ccountry, cequipment_variant, cequipment_variant_pool, cgame_state, corders_group,
-    cprovince, creferenced_division_template, cunit, memory::SliceMemory,
+    carmy,
+    ccountry,
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
+    corders_group,
+    cprovince,
+    creferenced_division_template,
+    cunit,
 };
+use engine_native_memory::memory::SliceMemory;
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x10000;
@@ -31,7 +38,7 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 fn variant(bytes: &mut [u8], at: usize, id: u32) {
-    p64(bytes, at, cequipment_variant::VTABLE_RVA.0 as u64);
+    p64(bytes, at, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     p64(
         bytes,
         at + 8,

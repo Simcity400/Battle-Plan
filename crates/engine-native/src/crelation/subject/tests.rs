@@ -1,6 +1,6 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use crate::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const GS: usize = 0x1000;
 const COUNTRIES: [usize; 2] = [0x4000, 0x6000];
@@ -60,23 +60,23 @@ fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             DIPLOMACY[owner],
-            cdiplomacy_status::VTABLE_RVA.0 as u64,
+            engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
-            DIPLOMACY[owner] + cdiplomacy_status::COUNTRY,
+            DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             COUNTRIES[owner] as u64,
         );
         let entries: Vec<_> = (0..4).map(|target| status(owner, target) as u64).collect();
         array(
             &mut bytes,
-            diplomacy + cdiplomacy_status::RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             0xa000 + owner * 0x40,
             &entries,
         );
         array(
             &mut bytes,
-            DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+            DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             owned(owner),
             &[RELATION as u64, RETIRED_RELATION as u64, 0x1a000],
         );
@@ -250,7 +250,7 @@ fn matrix_census_can_detect_a_relation_missing_from_both_owned_roots() {
     for diplomacy in DIPLOMACY {
         array(
             &mut bytes,
-            diplomacy + cdiplomacy_status::OWNED_RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             0,
             &[],
         );
@@ -278,7 +278,7 @@ fn matrix_batches_authenticate_empty_tail_cells_and_do_not_read_past_count() {
         }
         array(
             &mut bytes,
-            diplomacy + cdiplomacy_status::RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             0x20000 + owner * 0x400,
             &entries,
         );
@@ -331,7 +331,7 @@ fn mismatched_ownership_target_and_invalid_names_are_unavailable() {
             ),
             2 => array(
                 &mut bytes,
-                DIPLOMACY[1] + cdiplomacy_status::OWNED_RELATIONS,
+                DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                 owned(1),
                 &[RELATION as u64, RELATION as u64],
             ),
@@ -438,7 +438,7 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
         let at = country(slot);
         p64(&mut space.bytes, at, ccountry::VTABLE_RVA.0 as u64);
         p32(&mut space.bytes, at + ccountry::ID, slot as u32);
-        *root = space.alloc(cdiplomacy_status::COUNTRY + 8);
+        *root = space.alloc(engine_native_parts::cdiplomacy_status_layout::COUNTRY + 8);
         p64(
             &mut space.bytes,
             at + ccountry::DIPLOMACY_STATUS,
@@ -447,11 +447,11 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
         p64(
             &mut space.bytes,
             *root,
-            cdiplomacy_status::VTABLE_RVA.0 as u64,
+            engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut space.bytes,
-            *root + cdiplomacy_status::COUNTRY,
+            *root + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             at as u64,
         );
     }
@@ -510,18 +510,18 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
         p64(&mut space.bytes, matrix + 8, back as u64);
         p64(
             &mut space.bytes,
-            diplomacy[subject] + cdiplomacy_status::RELATIONS,
+            diplomacy[subject] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             matrix as u64,
         );
         for offset in [8, 12] {
             p32(
                 &mut space.bytes,
-                diplomacy[subject] + cdiplomacy_status::RELATIONS + offset,
+                diplomacy[subject] + engine_native_parts::cdiplomacy_status_layout::RELATIONS + offset,
                 2,
             );
         }
         space.vector(
-            diplomacy[subject] + cdiplomacy_status::OWNED_RELATIONS,
+            diplomacy[subject] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             &[relation as u64],
         );
         hub_owned.push(relation as u64);
@@ -538,9 +538,9 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
             ..Row::default()
         });
     }
-    space.vector(diplomacy[1] + cdiplomacy_status::RELATIONS, &hub_matrix);
+    space.vector(diplomacy[1] + engine_native_parts::cdiplomacy_status_layout::RELATIONS, &hub_matrix);
     space.vector(
-        diplomacy[1] + cdiplomacy_status::OWNED_RELATIONS,
+        diplomacy[1] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         &hub_owned,
     );
     (space.bytes, rows)
@@ -591,7 +591,7 @@ fn mixed_census_of(
         let country = reader.countries.at(1).unwrap().unwrap();
         let diplomacy = reader.diplomacy(country).unwrap();
         let owned = reader
-            .array(diplomacy, cdiplomacy_status::OWNED_RELATIONS)
+            .array(diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)
             .unwrap();
         let entries: Vec<u64> = (0..owned.count)
             .map(|index| reader.element(owned, index).unwrap() as u64)
@@ -612,11 +612,11 @@ fn mixed_census_of(
             entries.push(other as u64);
         }
     }
-    space.vector(diplomacy + cdiplomacy_status::OWNED_RELATIONS, &entries);
+    space.vector(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, &entries);
     let owned = Array {
         data: u64::from_le_bytes(
-            space.bytes[diplomacy + cdiplomacy_status::OWNED_RELATIONS
-                ..diplomacy + cdiplomacy_status::OWNED_RELATIONS + 8]
+            space.bytes[diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
+                ..diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS + 8]
                 .try_into()
                 .unwrap(),
         ) as usize,
@@ -655,7 +655,7 @@ fn batched_and_serial(
 
 #[test]
 fn batched_subjects_match_the_serial_walk() {
-    use crate::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     const COUNTRIES: usize = 200;
     let (bytes, _, expected) = mixed_census(COUNTRIES);
     let memory = SliceMemory {
@@ -708,7 +708,7 @@ fn subject_fault_sites(bytes: &[u8], owned: Array) -> [std::ops::Range<usize>; 4
 
 #[test]
 fn a_persistent_subject_fault_gives_the_serial_result() {
-    use crate::batch_fallback::{Batch, Faulty, count};
+    use engine_native_memory::batch_fallback::{Batch, Faulty, count};
     let (bytes, owned, _) = mixed_census(200);
     for (site, (range, counted)) in subject_fault_sites(&bytes, owned)
         .into_iter()
@@ -735,7 +735,7 @@ fn a_persistent_subject_fault_gives_the_serial_result() {
 
 #[test]
 fn a_one_shot_subject_fault_refuses_no_more_than_the_serial_walk() {
-    use crate::batch_fallback::Faulty;
+    use engine_native_memory::batch_fallback::Faulty;
     let (bytes, owned, _) = mixed_census(200);
     let healthy = SliceMemory {
         base: 0,
@@ -771,7 +771,7 @@ fn owned_of(bytes: &[u8], slot: u32) -> (usize, Array) {
     let country = reader.countries.at(slot).unwrap().unwrap();
     let diplomacy = reader.diplomacy(country).unwrap();
     let owned = reader
-        .array(diplomacy, cdiplomacy_status::OWNED_RELATIONS)
+        .array(diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)
         .unwrap();
     (diplomacy, owned)
 }

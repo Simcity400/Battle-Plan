@@ -1,3 +1,4 @@
+use engine_native_memory::modifier_cache::PassDefinitions;
 use super::*;
 use std::collections::BTreeMap;
 

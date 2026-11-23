@@ -31,7 +31,7 @@ struct World {
     pages: HashMap<usize, Box<[u8; PAGE]>>,
     next: usize,
     copies: Cell<usize>,
-    roster: Vec<Option<ccountry::Country>>,
+    roster: Vec<Option<engine_native_memory::country_identity::Country>>,
     arrays: Option<[Array; 2]>,
     authenticated: bool,
     poisoned: RefCell<Vec<(usize, usize)>>,
@@ -163,11 +163,11 @@ impl Memory for World {
         &self,
         _base: usize,
         game: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         (self.authenticated && game == GAME)
             .then(|| {
                 self.arrays
-                    .map(|arrays| ccountry::AuthenticatedRoster::new(&self.roster, arrays))
+                    .map(|arrays| engine_native_memory::country_identity::AuthenticatedRoster::new(&self.roster, arrays))
             })
             .flatten()
     }
@@ -273,7 +273,7 @@ fn world(shape: &Shape) -> Built {
         w.u32(country + ccountry::ID, slot as u32);
         w.u64(countries + slot * 8, country as u64);
         w.accumulator(
-            country + ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             &[
                 (0x2b, 5_000),
                 (0x5e, -2_000),
@@ -283,10 +283,10 @@ fn world(shape: &Shape) -> Built {
                 (0x1e9, 13),
             ],
         );
-        let diplomacy = w.object(0x300, engine_native_politics::cdiplomacy_status::VTABLE_RVA.0);
+        let diplomacy = w.object(0x300, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         w.u64(
-            diplomacy + engine_native_politics::cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             country as u64,
         );
         diplomacies.push(diplomacy);
@@ -316,7 +316,7 @@ fn world(shape: &Shape) -> Built {
             w.u64(list + index * 8, relation as u64);
         }
         w.array(
-            diplomacy + engine_native_politics::cdiplomacy_status::OWNED_RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             list,
             shape.relations as u32,
         );
@@ -329,7 +329,7 @@ fn world(shape: &Shape) -> Built {
             w.u64(regions + index * 0xa0 + 8, index as u64);
             w.u64(regions + index * 0xa0 + 0x18, 900 + index as u64);
         }
-        w.roster[slot] = Some(ccountry::Country {
+        w.roster[slot] = Some(engine_native_memory::country_identity::Country {
             pointer: country,
             canonical_slot: slot as u32,
             id: slot as u32,
@@ -362,7 +362,7 @@ fn world(shape: &Shape) -> Built {
             w.u32(list + at * 4, owners[*enemy]);
         }
         w.array(
-            diplomacy + engine_native_politics::cdiplomacy_status::ENEMY_COUNTRIES,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
             list,
             enemies.len() as u32,
         );
@@ -375,7 +375,7 @@ fn world(shape: &Shape) -> Built {
     for (from, &diplomacy) in diplomacies.iter().enumerate() {
         let row = w.alloc(slots * 8);
         w.array(
-            diplomacy + engine_native_politics::cdiplomacy_status::RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             row,
             slots as u32,
         );
@@ -543,7 +543,7 @@ fn world(shape: &Shape) -> Built {
         w.u32(army + cunit::ROSTER_OWNER, owner);
         w.u32(army + cunit::LOGICAL_OWNER, owner);
         let name = w.alloc(0x100);
-        w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
+        w.u64(army + engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER, name as u64);
         w.u64(name, engine_native::cname_group_member::VTABLE_RVA.0 as u64);
         w.u32(name + engine_native::cname_group_member::TYPE, (index % 2) as u32);
         w.u32(name + engine_native::cname_group_member::ORDER, index as u32);

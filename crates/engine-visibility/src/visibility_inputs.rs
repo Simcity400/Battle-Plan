@@ -1,12 +1,14 @@
 
-use crate::{
-    Memory, ccountry, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cstate, dlc_feature_state,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
-    modifier_accumulator, read,
+    read,
     walk::{Buffer, Outcome},
 };
+use engine_native::{ccountry, cgame_state, cstate};
+use crate::dlc_feature_state;
+use engine_native_parts::modifier_accumulator;
 use engine_sites::Rva;
 
 pub const UNIT_MODIFIER: u32 = crate::modifier_keys::INTEL_FROM_COMBAT_FACTOR;
@@ -65,9 +67,9 @@ pub fn countries_buffer_with(
     game_state: usize,
     mut output: Buffer<'_, CountryRow>,
     lookup: &mut impl FnMut(
-        ccountry::Country,
+        engine_native_memory::country_identity::Country,
         usize,
-    ) -> Result<modifier_accumulator::Value, &'static str>,
+    ) -> Result<engine_native_memory::modifier_cache::Value, &'static str>,
 ) -> (Outcome, usize) {
     let mut slots = 0;
     let result = (|| {
@@ -81,11 +83,11 @@ pub fn countries_buffer_with(
             };
             let accumulator = country
                 .pointer
-                .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                 .ok_or("country modifier address overflow")?;
             let raw = lookup(country, accumulator)?;
             let value = if raw.present {
-                crate::modifier_definition::effective(memory, base, UNIT_MODIFIER, raw.raw)?
+                engine_native_parts::modifier_definition::effective(memory, base, UNIT_MODIFIER, raw.raw)?
             } else {
                 0
             };
@@ -275,7 +277,7 @@ pub fn dlc_mask(memory: &impl Memory, base: usize) -> Result<u32, &'static str> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const STATE: usize = 0x100;
     const ARRAY: usize = 0x200;

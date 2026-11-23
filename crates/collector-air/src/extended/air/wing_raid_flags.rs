@@ -1,6 +1,6 @@
 use engine_allocation as allocation;
 use engine_mutations::air_wing_equipment_mutations as sites;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_native_air::{cair_wing, craid_instance};
 
 fn demanded(row: &cair_wing::Row) -> bool {
@@ -99,7 +99,7 @@ impl Store {
                 } else {
                     pointer
                         .checked_add(sites::RAID_REFERENCE)
-                        .and_then(|at| engine_native::read(memory, at))
+                        .and_then(|at| engine_native_memory::read(memory, at))
                 }
             },
             |raw| {
@@ -192,11 +192,11 @@ fn resolve(memory: &impl Memory, base: usize, raw: u64) -> Result<Option<usize>,
     if raw as u32 != craid_instance::REFERENCE_TYPE_VALUE {
         return Err("wing raid reference type unsupported");
     }
-    let Some(pointer) = engine_native::creference_registry::resolve(memory, base, raw)? else {
+    let Some(pointer) = engine_native_parts::creference_registry::resolve(memory, base, raw)? else {
         return Ok(None);
     };
     let identity =
-        engine_native::read::<[u8; 16]>(memory, pointer).ok_or("wing raid identity unreadable")?;
+        engine_native_memory::read::<[u8; 16]>(memory, pointer).ok_or("wing raid identity unreadable")?;
     let expected = engine_sites::at(base, craid_instance::VTABLE_RVA)
         .ok_or("wing raid module address overflow")? as u64;
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected

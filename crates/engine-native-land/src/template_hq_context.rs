@@ -200,8 +200,7 @@ pub fn pools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::cequipment_variant;
-    use engine_native_memory::memory::SliceMemory;
+        use engine_native_memory::memory::SliceMemory;
     fn put(bytes: &mut [u8], at: usize, value: u64) {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
@@ -242,7 +241,7 @@ mod tests {
         );
         put(&mut bytes, 0x2090, 31);
         bytes[0x2094] = 5;
-        put(&mut bytes, 0x3000, cequipment_variant::VTABLE_RVA.0 as u64);
+        put(&mut bytes, 0x3000, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         put(&mut bytes, 0x3008, (u64::from(u32::MAX) << 32) | 70);
         put(&mut bytes, 0x4000, cequipment_type::VTABLE_RVA.0 as u64);
         put(&mut bytes, 0x4008, 41);

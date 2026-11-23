@@ -1,6 +1,8 @@
 use super::*;
 use collector_raw::raw::{RawLog, Recorded};
-use engine_native::{Memory, carmy_group, corders_group, memory::SliceMemory};
+use engine_native_memory::{Memory, memory::SliceMemory};
+use engine_native_parts::carmy_group;
+use engine_native::corders_group;
 use std::sync::atomic::AtomicUsize;
 
 const GROUP: usize = 0x30000;

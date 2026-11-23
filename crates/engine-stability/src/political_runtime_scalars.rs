@@ -1,4 +1,4 @@
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 use engine_sites::Rva;
 
 pub const NAMES: [&str; 6] = [

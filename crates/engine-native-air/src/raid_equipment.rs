@@ -160,7 +160,7 @@ pub fn walk_buffer(
                 let variant = if pointer == 0 {
                     0
                 } else {
-                    cequipment_variant::identity(memory, base, pointer)?
+                    engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)?
                 };
                 let at = start + index as usize;
                 variants[at] = variant;

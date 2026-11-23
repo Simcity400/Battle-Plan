@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::ccountry::Country;
+use engine_native_memory::country_identity::Country;
 use replay_data::event_feed_rows::decisions::{DecisionChange, Operation};
 
 pub(crate) struct PreparedOwner {
@@ -80,7 +80,7 @@ impl PreparedOwner {
                     country
                         .pointer
                         .checked_add(engine_native::ccountry::SURRENDER_TARGET)
-                        .and_then(|at| engine_native::read::<u32>(memory, at))
+                        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
                         .map(|instance| native::CountryIdentity {
                             reference: country.id,
                             id: country.id,

@@ -1,9 +1,14 @@
 
-use crate::{
-    Memory, cequipment_type, cequipment_variant, cmilitary_production_line, cnaval_production_line,
-    cpdx_array::Array, cproduction_line, crailway_gun_production_line, cship_refit_production_line,
-    read_slice,
+use engine_native_memory::{Memory, cpdx_array::Array, read_slice};
+use engine_native_parts::{
+    cequipment_type,
+    cmilitary_production_line,
+    cnaval_production_line,
+    cproduction_line,
+    crailway_gun_production_line,
+    cship_refit_production_line,
 };
+use crate::cequipment_variant;
 use engine_sites::Rva;
 
 pub const EQUIPMENT_VARIANT: usize = 0x88;
@@ -263,7 +268,7 @@ pub(crate) fn read_row(
     }
     let variant_pointer = usize::try_from(u64::from_le_bytes(references[..8].try_into().unwrap()))
         .map_err(|_| "production line variant pointer overflow")?;
-    let variant = cequipment_variant::identity(memory, base, variant_pointer)?;
+    let variant = engine_native_parts::equipment_variant_identity::identity(memory, base, variant_pointer)?;
     let active_factories = i32::from_le_bytes(active_factories);
     let max_factories = max_factories(memory, base, kind, variant_pointer, defines)?;
     let count = active_factories.min(max_factories);

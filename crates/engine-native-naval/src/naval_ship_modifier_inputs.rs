@@ -1,12 +1,8 @@
-pub use engine_native::cship::modifier_sources::{
+use engine_native::cship::modifier_sources::{
     DoctrineKeys,
-    doctrine_keys,
     doctrine_keys_kept,
     selected_class,
-    terrain,
     terrain_class,
-    terrain_from_template_kept,
-    terrain_kept,
     terrain_with_policy,
 };
 use engine_native::cship::modifier_sources::{add, array, auth, element, ptr, site, text};
@@ -274,7 +270,7 @@ pub struct SourceMemo {
     rows: Vec<(SourceRow, Option<usize>)>,
     leaders: engine_native_memory::recent::Recent<usize, usize, 8>,
     classes: engine_native_memory::recent::Recent<(usize, u32, bool), usize, 16>,
-    countries: engine_native_memory::recent::Recent<(usize, u32), engine_native::ccountry::Country, 8>,
+    countries: engine_native_memory::recent::Recent<(usize, u32), engine_native_memory::country_identity::Country, 8>,
     locations: Vec<((usize, usize), LocationTerms, Owned)>,
     terrain_classes: engine_native_memory::recent::Recent<(usize, u32), TerrainClass, 16>,
     influences: engine_native_memory::recent::Recent<usize, (usize, usize), 16>,
@@ -444,9 +440,9 @@ fn location_terms<const TERMINAL: bool>(
         memory,
         base,
         diplomacy,
-        engine_native_politics::cdiplomacy_status::VTABLE_RVA,
+        engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
     )?;
-    let relations = array(memory, diplomacy, engine_native_politics::cdiplomacy_status::RELATIONS, 8)?;
+    let relations = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)?;
     let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
     let relation = if relation != 0 {
         auth(memory, base, relation, engine_native::crelation::status::VTABLE_RVA)?;
@@ -858,8 +854,8 @@ pub fn visit_sources<const TERMINAL: bool>(
     }
     let air_base = ptr(memory, ship, 0x730)?;
     if air_base != 0 {
-        auth(memory, base, air_base, engine_native_air::cair_base::VTABLE_RVA)?;
-        row.air_base = field(memory, air_base, engine_native_air::cair_base::HANDLE)?;
+        auth(memory, base, air_base, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
+        row.air_base = field(memory, air_base, engine_native_parts::cair_base_layout::HANDLE)?;
         row.air_base_maximum = field(memory, air_base, engine_native_air::cair_base::CAPACITY)?;
     }
     let equipment = add(ship, engine_native::cship::EQUIPMENT_POOL)?;
@@ -867,7 +863,7 @@ pub fn visit_sources<const TERMINAL: bool>(
     for index in 0..variants.count {
         let entry = element(variants, index, 16)?;
         let variant = ptr(memory, entry, 0)?;
-        auth(memory, base, variant, engine_native::cequipment_variant::VTABLE_RVA)?;
+        auth(memory, base, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA)?;
         emit(
             SourceRow {
                 scope: 27,

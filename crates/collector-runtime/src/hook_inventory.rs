@@ -279,7 +279,7 @@ pub(crate) fn patches() -> Vec<Patch> {
     for site in &naval_tree_mutations::MUTATIONS[country..] {
         add("naval_tree_changes", site.name, site.rva, FIVE);
     }
-    for site in engine_native::cwar_goal::mutations::SITES {
+    for site in engine_native::cwar_relation::goals::mutations::SITES {
         add("wargoal_changes", site.name, site.rva, FIVE);
     }
     for site in engine_occupation::cresistance::changes::SITES {

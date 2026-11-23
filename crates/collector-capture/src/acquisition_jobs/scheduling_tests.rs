@@ -1,6 +1,6 @@
 use super::*;
 use collector_observers::country_input_changes::{Changes, Table};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use std::sync::{Condvar, atomic::AtomicUsize, mpsc};
 
 #[test]

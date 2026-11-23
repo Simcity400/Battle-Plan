@@ -2,7 +2,8 @@ use collector_hooks::hook::Hook;
 type Clock = engine_native::cgame_state::Clock<u64>;
 use collector_primitives::spill_stack::{Reserved, SpillStack};
 use engine_events::equipment_destruction as native;
-use engine_native::{Memory, equipment_entry};
+use engine_native_memory::Memory;
+use engine_native_parts::equipment_entry;
 use native::SiteId;
 mod queue_index;
 mod transfers;
@@ -1960,7 +1961,7 @@ pub enum Drain {
 }
 
 pub fn drain_interval(output: &mut Vec<Entry>) -> Result<Drain, &'static str> {
-    drain_buffer(engine_native::walk::Buffer::Growing(output))
+    drain_buffer(engine_native_memory::walk::Buffer::Growing(output))
 }
 
 #[cfg(test)]
@@ -1971,7 +1972,7 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     }
 }
 
-fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drain, &'static str> {
+fn drain_buffer(mut output: engine_native_memory::walk::Buffer<'_, Entry>) -> Result<Drain, &'static str> {
     DRAINS.fetch_add(1, Ordering::Relaxed);
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("equipment destruction hooks unavailable (see status unhooked)");
@@ -2223,7 +2224,7 @@ fn skipped_credit_mutation(army: Option<usize>) {
     }
     let identity = army.and_then(|army| {
         native::army_identity(
-            &unsafe { engine_native::memory::LiveMemory::new() },
+            &unsafe { engine_native_memory::memory::LiveMemory::new() },
             BASE.load(Ordering::Relaxed),
             army,
         )
@@ -2237,7 +2238,7 @@ fn skipped_credit_mutation(army: Option<usize>) {
 }
 
 fn pool_rows(memory: &impl Memory, base: usize, pool: usize) -> Read<Vec<Row>> {
-    let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
+    let count = engine_native::cequipment_variant::pool::entries(memory, base, pool)?.count as usize;
     let mut rows = engine_allocation::advisory(|| engine_allocation::default_vec(count))
         .map_err(|_| EVENT_STORAGE_FAILED)?;
     let len = native::snapshot(memory, base, pool, &mut rows)?;
@@ -2250,7 +2251,7 @@ fn touched_rows(
     pool: usize,
     selected: impl Fn(usize) -> bool,
 ) -> Read<Vec<Row>> {
-    let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
+    let count = engine_native::cequipment_variant::pool::entries(memory, base, pool)?.count as usize;
     let mut rows = engine_allocation::advisory(|| engine_allocation::default_vec(count))
         .map_err(|_| EVENT_STORAGE_FAILED)?;
     let len = native::touched_reserves_if(memory, base, pool, selected, &mut rows)?;
@@ -2258,7 +2259,7 @@ fn touched_rows(
     Ok(rows)
 }
 fn variant_amount(memory: &impl Memory, base: usize, pool: usize, variant: usize) -> Read<i64> {
-    let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
+    let count = engine_native::cequipment_variant::pool::entries(memory, base, pool)?.count as usize;
     let bytes = count
         .checked_mul(equipment_entry::STRIDE)
         .ok_or("destruction variant snapshot size overflow")?;
@@ -2300,7 +2301,7 @@ fn nested_in_merge(site: SiteId, army: Option<usize>) -> bool {
         Ok(0)
     } else {
         native::army_identity(
-            &unsafe { engine_native::memory::LiveMemory::new() },
+            &unsafe { engine_native_memory::memory::LiveMemory::new() },
             BASE.load(Ordering::Relaxed),
             army,
         )
@@ -2330,7 +2331,7 @@ fn measure_pool(
     strike: bool,
     original: impl FnOnce(),
 ) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let army = match army_receiver(site, receiver) {
         Ok(army) => army,
@@ -2525,7 +2526,7 @@ unsafe extern "system-unwind" fn attrition(pool: usize, variant: usize, quantity
         run();
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let scope = army.and_then(|army| DELETION.get().filter(|scope| scope.army == army));
     observe_native(
@@ -2542,7 +2543,7 @@ unsafe extern "system-unwind" fn attrition(pool: usize, variant: usize, quantity
                 owner: army.map_or(Err("attrition army address underflow"), |army| {
                     native::army_owner(&memory, army)
                 }),
-                design: engine_native::cequipment_variant::identity(&memory, base, variant),
+                design: engine_native_parts::equipment_variant_identity::identity(&memory, base, variant),
                 amount: variant_amount(&memory, base, pool, variant),
             };
             (Pre::Variant(pre), ())
@@ -2619,7 +2620,7 @@ unsafe extern "system-unwind" fn delete(
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Delete as usize].load(Ordering::Acquire)) };
     let scope = if recording() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         match deletion_scope(&memory, BASE.load(Ordering::Relaxed), state, unit, caller) {
             Ok(Some((scope, expeditionary_owner, classified))) => {
                 log(Kind::Delete {
@@ -2670,7 +2671,7 @@ unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
         run();
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let reserve_pool = native::reserve_pool(reserves);
     observe_native(
@@ -2763,7 +2764,7 @@ unsafe extern "system-unwind" fn division_free(army: usize, flags: usize) -> usi
     let original: unsafe extern "system-unwind" fn(usize, usize) -> usize = unsafe {
         std::mem::transmute(ORIGINAL[SiteId::DivisionFree as usize].load(Ordering::Acquire))
     };
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let admitted = recording();
     let id = next_id();
@@ -2856,7 +2857,7 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
     let original: unsafe extern "system-unwind" fn(usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Queue as usize].load(Ordering::Acquire)) };
     if recording() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let result = (|| {
             let classified = native::queued_context(base, caller);
@@ -2956,7 +2957,7 @@ unsafe fn transfer_roster(
     let original: unsafe extern "system-unwind" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[site as usize].load(Ordering::Acquire)) };
     let pending = if recording() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         transfer_before(&memory, BASE.load(Ordering::Relaxed), army, disposition)
     } else {
         Ok(None)
@@ -3337,7 +3338,7 @@ unsafe extern "system-unwind" fn merge(argument: usize) {
         run();
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let _scope = WholeMergeScope::enter();
     observe_native(

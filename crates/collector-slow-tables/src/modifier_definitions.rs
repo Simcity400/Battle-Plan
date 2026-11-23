@@ -4,7 +4,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, modifier_definition as native, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native_parts::modifier_definition as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::ModifierDefinitionRow, rows::TableId,
     rows::tables,
@@ -142,7 +143,7 @@ mod tests {
 
     #[test]
     fn static_table_walks_on_full_hours_and_when_the_header_moved() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

@@ -5,14 +5,9 @@ use collector_primitives::{
 use collector_projection::table_conversion::table;
 use engine_allocation::{copy_vec, owned_vec};
 use engine_land_inputs::{cfront, cfront_section};
-use engine_native::{
-    Memory,
-    ccountry,
-    corder_instance,
-    corders_group,
-    modifier_definition::DefinitionMemo,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{ccountry, corder_instance, corders_group};
+use engine_native_parts::modifier_definition::DefinitionMemo;
 use engine_native_land::{invasion_preparations, order_execution};
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::FrontRow, rows::InvasionPreparationRow, rows::OrderChildFront,
@@ -31,7 +26,7 @@ pub const TABLES: [TableId; N] = [
 ];
 
 fn project_execution(
-    inputs: order_execution::OrderExecutionInputs,
+    inputs: engine_native::corder_instance::OrderExecutionInputs,
 ) -> replay_data::rows::OrderExecutionInputs {
     replay_data::rows::OrderExecutionInputs {
         route_is_ok: inputs.route_is_ok,
@@ -964,7 +959,10 @@ mod orders_parts_fixture;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
-    use engine_native::{creference_registry as registry, reference_bucket as bucket};
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
     use std::collections::BTreeMap;
 
     #[test]

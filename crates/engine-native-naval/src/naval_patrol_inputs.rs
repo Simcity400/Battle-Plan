@@ -177,7 +177,7 @@ fn read_with(
 pub struct Context {
     pub leader: u64,
     pub headquarters: Result<usize, &'static str>,
-    pub local_detection: Option<engine_native_parts::modifier_accumulator::Value>,
+    pub local_detection: Option<engine_native_memory::modifier_cache::Value>,
     pub region: Option<u32>,
 }
 
@@ -231,8 +231,8 @@ pub fn read_context_with_location(
                     .ok()
                     .flatten()
             })();
-            let mut value = [engine_native_parts::modifier_accumulator::Value::default(); 1];
-            result.local_detection = at(crate::naval_mission_inputs::LOCAL_MODIFIERS)
+            let mut value = [engine_native_memory::modifier_cache::Value::default(); 1];
+            result.local_detection = at(engine_native::ctask_force::mission_layout::LOCAL_MODIFIERS)
                 .and_then(|at| {
                     engine_native_parts::modifier_accumulator::lookup_many_at(
                         memory,
@@ -263,14 +263,14 @@ pub fn read_context_with_location(
                     return Err("patrol headquarters entry is null");
                 }
                 let commander = pointer
-                    .checked_add(crate::naval_mission_inputs::HEADQUARTERS_COMMANDER)
+                    .checked_add(engine_native::ctask_force::mission_layout::HEADQUARTERS_COMMANDER)
                     .and_then(|at| read::<u64>(memory, at))
                     .ok_or("patrol headquarters commander unreadable")?;
                 output[index as usize] = if commander == 0 {
                     0
                 } else {
                     (commander as usize)
-                        .checked_add(crate::naval_mission_inputs::COMMANDER_CHARACTER)
+                        .checked_add(engine_native::ctask_force::mission_layout::COMMANDER_CHARACTER)
                         .and_then(|at| read::<u64>(memory, at))
                         .ok_or("patrol headquarters character unreadable")?
                 };

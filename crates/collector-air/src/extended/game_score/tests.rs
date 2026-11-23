@@ -1,6 +1,6 @@
 use super::*;
 use engine_native_air::cair_wing;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use replay_data::rows::TableRows;
 
 fn put64(bytes: &mut [u8], at: usize, value: u64) {
@@ -255,7 +255,7 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     put64(
         &mut bytes,
         SITE,
-        engine_native_air::cair_base::VTABLE_RVA.0 as u64,
+        engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, SITE + 8, 65);
     put32(
@@ -405,7 +405,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     put64(
         &mut bytes,
         BASE,
-        engine_native_air::cair_base::VTABLE_RVA.0 as u64,
+        engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, BASE + 8, 65);
     put32(
@@ -594,7 +594,7 @@ fn game_score_fleet_header_grows_first_witness_and_the_air_sites_grow_with_it() 
     put64(
         &mut bytes,
         0x3f100,
-        engine_native_air::cair_base::VTABLE_RVA.0 as u64,
+        engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, 0x3f108, 65);
     put32(

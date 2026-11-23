@@ -1,8 +1,9 @@
 
-use crate::{
-    Memory, cair_wing, cair_wing_pool, ccountry, cloop_history, cpdx_array::Array, cstrategic_air,
-    csub_unit_definition, loop_history_record_fields, loop_history_window, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_air::cstrategic_air;
+use engine_native_parts::{cair_wing_pool, csub_unit_definition};
+use engine_native::ccountry;
+use crate::{cloop_history, loop_history_record_fields, loop_history_window};
 use engine_sites::Rva;
 
 pub const WRITER_RVA: Rva = Rva(0x00cb_96a0);
@@ -34,8 +35,8 @@ pub fn selected_family(
     if enemy > 1 {
         return Err("air loss writer enemy flag is not boolean");
     }
-    authenticate(memory, base, wing, cair_wing::VTABLE_RVA)?;
-    let pool = pointer(memory, wing, cair_wing::POOL)?;
+    authenticate(memory, base, wing, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
+    let pool = pointer(memory, wing, engine_native_parts::cair_wing_layout::POOL)?;
     authenticate(memory, base, pool, cair_wing_pool::VTABLE_RVA)?;
     let definition = pointer(memory, pool, cair_wing_pool::DEFINITION)?;
     let vtable = read::<u64>(memory, definition).ok_or("air loss definition vtable unreadable")?;
@@ -224,10 +225,10 @@ pub fn gather(
     let copied = memory.copy_scattered(
         [
             region,
-            region.checked_add(crate::cstrategic_region::ID)?,
+            region.checked_add(engine_native_parts::cstrategic_region::ID)?,
             singleton,
             wing,
-            wing.checked_add(cair_wing::POOL)?,
+            wing.checked_add(engine_native_parts::cair_wing_layout::POOL)?,
             receiver,
             receiver.checked_add(cstrategic_air::COUNTRY)?,
             receiver.checked_add(cstrategic_air::HISTORY_TABLE)?,
@@ -245,7 +246,7 @@ pub fn gather(
             &mut tag,
         ],
     );
-    if copied != 9 || word(&region_vtable) != vtable(crate::cstrategic_region::VTABLE_RVA)? {
+    if copied != 9 || word(&region_vtable) != vtable(engine_native_parts::cstrategic_region::VTABLE_RVA)? {
         return None;
     }
     let region_id = half(&region_id);
@@ -254,14 +255,14 @@ pub fn gather(
         .filter(|&game| game != 0)?;
     let pool = usize::try_from(word(&pool)).ok()?;
     let histories = Array::from_header(histories, 8)?;
-    if word(&wing_vtable) != vtable(cair_wing::VTABLE_RVA)? || pool == 0 {
+    if word(&wing_vtable) != vtable(engine_native_parts::cair_wing_layout::VTABLE_RVA)? || pool == 0 {
         return None;
     }
 
     let (mut hour, mut pool_vtable, mut definition, mut history) = ([0; 4], [0; 8], [0; 8], [0; 8]);
     let copied = memory.copy_scattered(
         [
-            game.checked_add(crate::cgame_state::CURRENT_HOUR)?,
+            game.checked_add(engine_native::cgame_state::CURRENT_HOUR)?,
             pool,
             pool.checked_add(cair_wing_pool::DEFINITION)?,
             histories.element(region_id, 8)?,
@@ -308,7 +309,7 @@ pub fn gather(
         return None;
     }
     let country = half(&country);
-    crate::ccountry::Reader::new(memory, base, game)
+    engine_native::ccountry::Reader::new(memory, base, game)
         .and_then(|countries| countries.resolve(country))
         .ok()?;
     if word(&history_vtable) != vtable(cloop_history::VTABLE_RVA)?
@@ -529,7 +530,7 @@ fn authenticate(
     Ok(())
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -556,7 +557,7 @@ pub fn wing_count(memory: &impl Memory, base: usize, game: usize) -> Result<usiz
     let mut total = 0_usize;
     cstrategic_air::visit(memory, base, game, |root| {
         let pools = array(memory, root.address, cstrategic_air::POOLS)?;
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             pools,
             "air loss wing pool pointer unreadable",
@@ -594,7 +595,7 @@ pub fn roster(
         .map_err(|_| "air daily roster allocation failed")?;
     let slots = countries.arrays()[0];
     let active = game
-        .checked_add(crate::cgame_state::DAILY_COUNTRY_ROSTER)
+        .checked_add(engine_native::cgame_state::DAILY_COUNTRY_ROSTER)
         .and_then(|a| Array::read(memory, a, 4))
         .ok_or("air daily roster header invalid")?;
     for ordinal in 0..active.count {

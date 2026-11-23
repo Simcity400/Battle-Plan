@@ -1,17 +1,18 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 
-use crate::{
+use engine_native_memory::{
     Memory,
-    autonomy_state_definition,
-    ccountry,
-     cpdx_array::Array,
-    crelation::{self, status as crelation_status},
-    cwar_relation::{MembershipReasons, OwnedSnapshotScratch, scan_occurrence},
+    cpdx_array::Array,
     memory::Raw,
     msvc_string,
     read,
     read_slice,
     walk::Outcome,
+};
+use engine_native_parts::autonomy_state_definition;
+use crate::{
+    ccountry,
+    crelation::{self, status as crelation_status},
+    cwar_relation::{MembershipReasons, OwnedSnapshotScratch, scan_occurrence},
 };
 use engine_sites::Rva;
 
@@ -51,7 +52,7 @@ pub struct NameWalk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -65,8 +66,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -74,8 +75,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let mut pass = Pass {
         resolver: &mut crelation_status::Resolver::default(),
@@ -96,8 +97,8 @@ pub fn walk_owned(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
         scratch,
     )
 }
@@ -106,8 +107,8 @@ pub fn walk_owned_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
     scratch: &mut OwnedSnapshotScratch,
 ) -> NameWalk {
     scratch.begin();
@@ -137,8 +138,8 @@ fn walk_matrix(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
         true,
         &mut pass,
     )
@@ -161,8 +162,8 @@ fn walk_from(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     matrix: bool,
     pass: &mut Pass<'_>,
 ) -> NameWalk {
@@ -197,9 +198,9 @@ fn walk_from(
             let source = reader.array(
                 diplomacy,
                 if matrix {
-                    cdiplomacy_status::RELATIONS
+                    engine_native_parts::cdiplomacy_status_layout::RELATIONS
                 } else {
-                    cdiplomacy_status::OWNED_RELATIONS
+                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
                 },
             )?;
             if matrix && source.count <= highest_slot {
@@ -350,7 +351,7 @@ impl OwnedBatch {
     }
 
     fn read<M: Memory>(&mut self, reader: &Reader<'_, M>, source: Array, first: u32) {
-        use crate::memory::{RecordField, RecordLayout, RecordSources};
+        use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
         const TYPE: [RecordField; 1] = [RecordField {
             source_offset: TYPE_ID,
             destination_offset: 0,
@@ -373,7 +374,7 @@ impl OwnedBatch {
             .element(first, 8)
             .is_some_and(|address| read_slice(reader.memory, address, &mut raw[..count * 8]));
         if !read {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::Subjects);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::Subjects);
             return;
         }
         for (entry, bytes) in self
@@ -421,7 +422,7 @@ impl OwnedBatch {
             }
         }
         if self.typed < live || heads < found {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::Subjects);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::Subjects);
         }
     }
 
@@ -544,17 +545,17 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("subject relation vector entry unreadable or outside array")
     }
 
-    pub fn diplomacy(&self, country: ccountry::Country) -> Result<usize, &'static str> {
+    pub fn diplomacy(&self, country: engine_native_memory::country_identity::Country) -> Result<usize, &'static str> {
         let pointer = self.pointer(country.pointer, ccountry::DIPLOMACY_STATUS)?;
         if pointer == 0 {
             return Err("country diplomacy is null");
         }
         self.vtable(
             pointer,
-            cdiplomacy_status::VTABLE_RVA,
+            engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
             "diplomacy vtable mismatch",
         )?;
-        if self.field::<u64>(pointer, cdiplomacy_status::COUNTRY)? != country.pointer as u64 {
+        if self.field::<u64>(pointer, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country.pointer as u64 {
             return Err("diplomacy country mismatch");
         }
         Ok(pointer)
@@ -645,7 +646,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Ok(false);
         };
         let diplomacy = pass.resolver.diplomacy(first, || self.diplomacy(first))?;
-        let matrix = self.array(diplomacy, cdiplomacy_status::RELATIONS)?;
+        let matrix = self.array(diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?;
         let status = self.element(matrix, second.canonical_slot)?;
         if status == 0 {
             return Ok(false);
@@ -658,7 +659,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         &self,
         raw: u32,
         pass: &mut Pass<'_>,
-    ) -> Result<Option<ccountry::Country>, &'static str> {
+    ) -> Result<Option<engine_native_memory::country_identity::Country>, &'static str> {
         if raw == 0 {
             return Ok(None);
         }
@@ -674,11 +675,11 @@ impl<'a, M: Memory> Reader<'a, M> {
     fn pair_status(
         &self,
         diplomacy: usize,
-        target: ccountry::Country,
+        target: engine_native_memory::country_identity::Country,
         relation: usize,
         pass: &mut Pass<'_>,
     ) -> Result<usize, &'static str> {
-        let matrix = self.array(diplomacy, cdiplomacy_status::RELATIONS)?;
+        let matrix = self.array(diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?;
         let status = self.element(matrix, target.canonical_slot)?;
         if status == 0 {
             return Err("null subject relation matrix entry");
@@ -707,7 +708,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         expected: u32,
         pass: &mut Pass<'_>,
     ) -> Result<(), &'static str> {
-        if offset == cdiplomacy_status::OWNED_RELATIONS
+        if offset == engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
             && expected == 1
             && let Some(scratch) = pass.ownership.as_deref_mut()
         {
@@ -727,7 +728,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     fn relation(
         &self,
         pointer: usize,
-        owner: ccountry::Country,
+        owner: engine_native_memory::country_identity::Country,
         matrix_index: Option<u32>,
         head: Option<Head>,
         pass: &mut Pass<'_>,
@@ -782,7 +783,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             for diplomacy in [first_diplomacy, second_diplomacy] {
                 self.occurrence(
                     diplomacy,
-                    cdiplomacy_status::OWNED_RELATIONS,
+                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                     pointer,
                     1,
                     pass,

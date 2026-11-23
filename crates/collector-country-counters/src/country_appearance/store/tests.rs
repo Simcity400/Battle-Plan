@@ -1,9 +1,8 @@
 use super::super::bench::{ARRAYS, World, rows as published};
 use super::*;
 use crate::country_input_changes::Domain;
-use engine_native::{
-    ccountry, cgame_state, csubject_relation::Name, memory::SliceMemory, msvc_string,
-};
+use engine_native::{ccountry, cgame_state, crelation::subject::Name};
+use engine_native_memory::{memory::SliceMemory, msvc_string};
 use replay_data::{rows::CountryAppearanceRow, rows::Recorded};
 use std::cell::RefCell;
 
@@ -14,7 +13,7 @@ struct Traced<'a> {
     reads: RefCell<Vec<usize>>,
 }
 
-impl engine_native::Memory for Traced<'_> {
+impl engine_native_memory::Memory for Traced<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.borrow_mut().push(address);
         self.memory.copy(address, destination)

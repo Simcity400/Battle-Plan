@@ -1,5 +1,6 @@
 use collector_observers::wargoal_changes as changes;
-use engine_native::{Memory, ccountry, cwar_goal::inventory::Inputs, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cwar_relation::goals::inventory::Inputs;
 use replay_data::rows::{self, tables};
 use replay_frame::frame::TableView;
 use std::sync::Mutex;
@@ -43,7 +44,7 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         force_full: bool,
-        walk: impl FnOnce(&mut dyn FnMut(ccountry::Country, usize)) -> R,
+        walk: impl FnOnce(&mut dyn FnMut(engine_native_memory::country_identity::Country, usize)) -> R,
     ) -> R {
         self.visit_certified(memory, base, force_full, changes::certificate, walk)
     }
@@ -53,7 +54,7 @@ impl Captured {
         base: usize,
         force_full: bool,
         certificate_for: impl Fn(u32) -> Option<changes::Certificate>,
-        walk: impl FnOnce(&mut dyn FnMut(ccountry::Country, usize)) -> R,
+        walk: impl FnOnce(&mut dyn FnMut(engine_native_memory::country_identity::Country, usize)) -> R,
     ) -> R {
         self.goals.clear();
         self.targets.clear();
@@ -217,10 +218,10 @@ impl Captured {
 
 #[cfg(test)]
 mod tests {
+    use engine_native::ccountry;
     use super::*;
     use engine_native::ccountry::synthetic::World;
-    use engine_native_politics::cpolitical_status;
-    static TESTS: Mutex<()> = Mutex::new(());
+        static TESTS: Mutex<()> = Mutex::new(());
     struct Unreadable;
     impl Memory for Unreadable {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -235,8 +236,8 @@ mod tests {
         let politics = w.alloc(0x120);
         let owner = w.object(1);
         w.u64(owner + ccountry::POLITICAL_STATUS, politics as u64);
-        w.u64(politics, cpolitical_status::VTABLE_RVA.0 as u64);
-        w.u64(politics + cpolitical_status::COUNTRY, owner as u64);
+        w.u64(politics, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64);
+        w.u64(politics + engine_native_parts::cpolitical_status_layout::COUNTRY, owner as u64);
         let memory = w.memory();
         let reader = ccountry::Reader::new(&memory, 0, w.game_state()).unwrap();
         let country = reader.at(1).unwrap().unwrap();

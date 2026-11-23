@@ -61,7 +61,7 @@ fn sunk_pool_u64(log: &RawLog<SUNK_N>, start: usize) -> u64 {
 
 fn kspan(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -71,7 +71,7 @@ fn kspan(
 
 fn copy_sunk_class(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: u64,
 ) -> bool {
@@ -114,7 +114,7 @@ fn copy_sunk_class(
 
 fn copy_sunk_string(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     address: usize,
     head: usize,
 ) -> bool {
@@ -171,7 +171,7 @@ fn copy_sunk_string(
 
 fn copy_sunk_record(
     log: &mut RawLog<SUNK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     current_hour: i32,
     pointer: usize,
@@ -263,7 +263,7 @@ fn copy_sunk_record(
 
 fn copy_sunk_pass(
     job: &mut SunkJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,
@@ -274,7 +274,7 @@ fn copy_sunk_pass(
 
 fn copy_sunk_pass_mode(
     job: &mut SunkJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,
@@ -292,7 +292,7 @@ fn copy_sunk_pass_mode(
 
 fn copy_sunk_tables(
     job: &mut SunkJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     current_hour: i32,

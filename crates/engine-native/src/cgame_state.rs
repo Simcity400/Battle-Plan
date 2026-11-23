@@ -1,7 +1,6 @@
-use engine_native_parts::chuman_layout as chuman;
 
 use engine_sites::Rva;
-use crate::{
+use engine_native_memory::{
     Memory,
     capture_text::{Owned, Value},
     msvc_string::Descriptor,
@@ -21,8 +20,6 @@ pub const EQUIPMENT_VARIANTS_COUNT: usize = 0x714;
 pub const CAMPAIGN_SEED: usize = 0x720;
 pub const CAMPAIGN_ID: usize = 0x728;
 pub const SPEED: usize = 0x4bc;
-pub use engine_native_memory::save_allocation_counters::NAVY_ID;
-pub use engine_native_memory::save_allocation_counters::LAND_COMBAT_ID;
 pub const TICK_BUSY: usize = 0x4c0;
 pub const COUNTRIES: usize = 0x310;
 pub const DAILY_COUNTRY_ROSTER: usize = 0x9a0;
@@ -66,8 +63,8 @@ const CONTROL_CHUNK: usize = 256;
 
 pub struct AiControl {
     state: usize,
-    counts: crate::cpdx_array::Array,
-    flags: Option<crate::cpdx_array::Array>,
+    counts: engine_native_memory::cpdx_array::Array,
+    flags: Option<engine_native_memory::cpdx_array::Array>,
     first: u32,
     counts_len: u32,
     flags_len: u32,
@@ -80,7 +77,7 @@ impl AiControl {
     pub fn read(memory: &impl Memory, state: usize) -> Result<Self, &'static str> {
         let counts = state
             .checked_add(HUMAN_STATUS)
-            .and_then(|p| crate::cpdx_array::Array::read(memory, p, 1))
+            .and_then(|p| engine_native_memory::cpdx_array::Array::read(memory, p, 1))
             .ok_or("human-controller counts invalid")?;
         Ok(Self {
             state,
@@ -103,7 +100,7 @@ impl AiControl {
         raw: u32,
         canonical: u32,
     ) -> Result<bool, &'static str> {
-        use crate::cpdx_array::Array;
+        use engine_native_memory::cpdx_array::Array;
         if canonical < self.counts.count {
             if let Some(reason) = self.failed {
                 return Err(reason);
@@ -117,18 +114,18 @@ impl AiControl {
         let players = self
             .state
             .checked_add(PLAYER_RECORDS)
-            .and_then(|p| Array::read(memory, p, chuman::STRIDE))
+            .and_then(|p| Array::read(memory, p, engine_native_parts::chuman_layout::STRIDE))
             .ok_or("live players invalid")?;
         let vtable =
-            engine_sites::at(base, chuman::VTABLE_RVA).ok_or("live player identity mismatch")?;
+            engine_sites::at(base, engine_native_parts::chuman_layout::VTABLE_RVA).ok_or("live player identity mismatch")?;
         for index in 0..players.count {
             let player = players
-                .element(index, chuman::STRIDE)
+                .element(index, engine_native_parts::chuman_layout::STRIDE)
                 .ok_or("live player overflow")?;
             if read::<u64>(memory, player) != Some(vtable as u64) {
                 return Err("live player identity mismatch");
             }
-            let tag = read::<u32>(memory, player + chuman::COUNTRY_TAG)
+            let tag = read::<u32>(memory, player + engine_native_parts::chuman_layout::COUNTRY_TAG)
                 .ok_or("live player tag unreadable")?;
             if tag == raw
                 || (tag != 0 && raw != 0 && reader.resolve(tag)?.canonical_slot == canonical)
@@ -150,7 +147,7 @@ impl AiControl {
                 let flags = self
                     .state
                     .checked_add(AUTONOMOUS_STATUS)
-                    .and_then(|p| crate::cpdx_array::Array::read(memory, p, 1))
+                    .and_then(|p| engine_native_memory::cpdx_array::Array::read(memory, p, 1))
                     .ok_or("autonomous flags invalid")?;
                 self.flags = Some(flags);
                 flags
@@ -178,7 +175,7 @@ impl AiControl {
     fn gather(
         &mut self,
         memory: &impl Memory,
-        flags: crate::cpdx_array::Array,
+        flags: engine_native_memory::cpdx_array::Array,
         first: u32,
     ) -> Result<(), &'static str> {
         self.first = first;
@@ -309,7 +306,7 @@ impl Clock {
         self.with_campaign_id(self.campaign_id.as_bytes())
     }
     pub fn copy_owned(&self) -> std::io::Result<Self> {
-        let bytes = crate::allocation::copy_vec(self.campaign_id.as_bytes())?;
+        let bytes = engine_allocation::copy_vec(self.campaign_id.as_bytes())?;
         Ok(self.with_campaign_id(Owned {
             len: bytes.len(),
             bytes,
@@ -415,7 +412,7 @@ fn array_count(memory: &impl Memory, state: usize, array: usize) -> Option<u32> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn local_player_keeps_both_words_and_refuses_short_reads() {
@@ -425,10 +422,10 @@ mod tests {
                 base: 0x1000 + LOCAL_PLAYER_COUNTRY,
                 bytes: &bytes,
             };
-            let counted = crate::memory::CountedMemory::new(SliceMemory { ..memory });
-            crate::memory::ReadCounts::take_current();
+            let counted = engine_native_memory::memory::CountedMemory::new(SliceMemory { ..memory });
+            engine_native_memory::memory::ReadCounts::take_current();
             assert_eq!(local_player(&counted, 0x1000), Ok(words));
-            let cost = crate::memory::ReadCounts::take_current();
+            let cost = engine_native_memory::memory::ReadCounts::take_current();
             assert_eq!((cost.copy_calls, cost.bytes), (1, 8));
             for len in 0..8 {
                 let short = SliceMemory {

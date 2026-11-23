@@ -1,7 +1,7 @@
 use crate::extended::characters::advisors::{Changes, Counts};
 use collector_hooks::hook::Hook;
 use engine_mutations::advisor_mutations::MUTATIONS;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -76,10 +76,10 @@ fn character_map(character: usize) -> usize {
         .unwrap_or(0)
 }
 fn role_map(role: usize) -> usize {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let owner = role
         .checked_add(engine_native::cadvisor::CHARACTER)
-        .and_then(|address| engine_native::read::<u64>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(&memory, address))
         .filter(|&owner| owner != 0);
     match owner {
         Some(owner) => character_map(owner as usize),
@@ -331,9 +331,9 @@ macro_rules! role_callback {
 }
 use engine_mutations::character_role_mutations as roles;
 role_callback!(country_leader_modifiers, roles::COUNTRY_LEADER_MODIFIERS, (leader: usize),
-    collector_observers::character_changes::role_character(leader, engine_native_politics::ccountry_leader::CHARACTER));
+    collector_observers::character_changes::role_character(leader, engine_native_parts::ccountry_leader_layout::CHARACTER));
 role_callback!(country_leader_destroy, roles::COUNTRY_LEADER_DESTROY, (leader: usize),
-    collector_observers::character_changes::role_character(leader, engine_native_politics::ccountry_leader::CHARACTER));
+    collector_observers::character_changes::role_character(leader, engine_native_parts::ccountry_leader_layout::CHARACTER));
 role_callback!(country_leader_map_insert, roles::COUNTRY_LEADER_MAP_INSERT,
     (map: usize, result: usize, key: usize, value: usize),
     Some(map.saturating_sub(engine_native::ccharacter::LEADER_MAP_HEAD)));

@@ -19,8 +19,8 @@ fn walk_counter_inputs_with_rosters(
         None,
     )
 }
-use crate::read;
-use crate::walk::Outcome;
+use engine_native_memory::read;
+use engine_native_memory::walk::Outcome;
 
 fn fixture(countries: u32) -> (World, Vec<usize>) {
     let mut world = World::new(0x4000_0000, countries, 0x1100);
@@ -133,7 +133,7 @@ fn effect_rosters_preserve_order_and_fail_independently() {
         required: Default::default(),
     };
     assert_eq!(
-        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
+        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), engine_native_memory::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
         Outcome::Rows { len: 4 }
     );
     for row in &rows {
@@ -155,7 +155,7 @@ fn effect_rosters_preserve_order_and_fail_independently() {
     rosters.state_len = 0;
     rosters.leader_len = 0;
     assert_eq!(
-        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
+        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), engine_native_memory::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
         Outcome::Rows { len: 4 }
     );
     assert_eq!(effects.required.neighbors, 12);
@@ -168,7 +168,7 @@ fn effect_rosters_preserve_order_and_fail_independently() {
     rosters.state_len = 0;
     rosters.leader_len = 0;
     assert_eq!(
-        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
+        crate::ccountry::walk_counter_inputs_inner(&world.memory(), world.module, world.game_state(), engine_native_memory::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None),
         Outcome::Rows { len: 4 }
     );
     assert_eq!(
@@ -390,7 +390,7 @@ fn observed_empty_and_null_character_rosters_are_present_empty_spans() {
 #[test]
 fn a_short_member_copy_cannot_publish_empty_rosters_and_demand_never_follows_members() {
     struct Fault<'a> {
-        memory: crate::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         address: usize,
     }
     impl Memory for Fault<'_> {
@@ -491,7 +491,7 @@ fn growing_civil_wars_capture_every_native_roster_and_same_hour_expansion() {
 }
 
 struct Hinted<'a> {
-    memory: crate::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     hints: std::cell::RefCell<Vec<usize>>,
 }
 
@@ -525,7 +525,7 @@ fn counter_walk(memory: &impl Memory, world: &World) -> (Outcome, Vec<CounterInp
         policy_len: 0,
         required: Default::default(),
     };
-    let outcome = crate::ccountry::walk_counter_inputs_inner(memory, world.module, world.game_state(), crate::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None);
+    let outcome = crate::ccountry::walk_counter_inputs_inner(memory, world.module, world.game_state(), engine_native_memory::walk::Buffer::Growing(&mut rows), Some(&mut rosters), Some(&mut effects), None, None);
     (outcome, rows)
 }
 
@@ -559,7 +559,7 @@ fn the_counter_walk_hints_each_countrys_fields_before_reading_them() {
 }
 
 struct Guarded<'a> {
-    memory: crate::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     guards: std::cell::Cell<usize>,
 }
 
@@ -712,7 +712,7 @@ fn manpower_unreadable_expeditionary_references_keep_state_and_leader_rosters() 
 fn manpower_without_a_certificate_reads_no_sent_reference_header() {
     let (world, _) = fixture(2);
     struct NoSent<'a> {
-        memory: crate::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         forbidden: [usize; 2],
     }
     impl Memory for NoSent<'_> {

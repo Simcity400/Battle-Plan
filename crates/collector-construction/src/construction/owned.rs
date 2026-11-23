@@ -21,7 +21,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.base_resources.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.base_resources.rows),
         );
         decode_ticks[0] += elapsed(started);
         let started = qpc();
@@ -30,9 +30,9 @@ impl Captured {
             base,
             game_state,
             cbuilding_production_line::BuffersBuffer {
-                buildings: engine_native::walk::Buffer::Growing(&mut self.building_construction.rows),
-                railways: engine_native::walk::Buffer::Growing(&mut self.railway_construction.rows),
-                route_provinces: engine_native::walk::Buffer::Growing(&mut self.routes.first),
+                buildings: engine_native_memory::walk::Buffer::Growing(&mut self.building_construction.rows),
+                railways: engine_native_memory::walk::Buffer::Growing(&mut self.railway_construction.rows),
+                route_provinces: engine_native_memory::walk::Buffer::Growing(&mut self.routes.first),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -96,16 +96,16 @@ impl Captured {
             base,
             game_state,
             ccountry_occupation_status::BuffersBuffer {
-                settings: engine_native::walk::Buffer::Growing(&mut self.settings.rows),
-                laws: engine_native::walk::Buffer::Growing(&mut self.laws.rows),
-                group_laws: engine_native::walk::Buffer::Growing(&mut self.group_laws.rows),
-                garrisons: engine_native::walk::Buffer::Growing(&mut self.garrisons.rows),
-                manpower: engine_native::walk::Buffer::Growing(&mut self.assigned_manpower.rows),
-                reserve_manpower: engine_native::walk::Buffer::Growing(&mut self.reserve_manpower.rows),
-                names: engine_native::walk::Buffer::Growing(&mut self.law_bytes.first),
-                equipment: engine_native::walk::Buffer::Growing(&mut self.equipment.first),
+                settings: engine_native_memory::walk::Buffer::Growing(&mut self.settings.rows),
+                laws: engine_native_memory::walk::Buffer::Growing(&mut self.laws.rows),
+                group_laws: engine_native_memory::walk::Buffer::Growing(&mut self.group_laws.rows),
+                garrisons: engine_native_memory::walk::Buffer::Growing(&mut self.garrisons.rows),
+                manpower: engine_native_memory::walk::Buffer::Growing(&mut self.assigned_manpower.rows),
+                reserve_manpower: engine_native_memory::walk::Buffer::Growing(&mut self.reserve_manpower.rows),
+                names: engine_native_memory::walk::Buffer::Growing(&mut self.law_bytes.first),
+                equipment: engine_native_memory::walk::Buffer::Growing(&mut self.equipment.first),
             },
-            engine_native::walk::Buffer::Growing(&mut self.occupied.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.occupied.first),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -149,7 +149,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.collaboration.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.collaboration.rows),
         );
         decode_ticks[9] += elapsed(started);
         self.rest_raw_mode = false;
@@ -1136,10 +1136,11 @@ fn copy_garrison_equipment(
     garrison: usize,
     required: &mut usize,
 ) {
-    use engine_native::{
-        allocation_equipment_row as allocation, cequipment_type as ty,
-        cequipment_variant_pool as pool,
+    use engine_native_parts::{
+        allocation_equipment_row as allocation,
+        cequipment_type as ty,
     };
+    use engine_native::cequipment_variant::pool as pool;
     use engine_occupation::garrison_equipment_pool;
     let Some(requirements) = garrison.checked_add(cstate_garrison_data::REQUIRED_EQUIPMENT) else {
         return;

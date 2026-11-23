@@ -1,10 +1,11 @@
 use super::*;
-use crate::{
-    carmy, ccountry, cfleet, corders_group,
+use engine_native::{carmy, ccountry, cfleet, corders_group, cunit};
+use engine_native_memory::{
     cpdx_array::{self, Array},
-    creference_registry, cunit, msvc_string,
+    msvc_string,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::creference_registry;
 
 pub struct Rows<'a, T> {
     pub rows: Buffer<'a, T>,
@@ -142,7 +143,7 @@ fn owners(memory: &impl Memory, address: usize) -> Option<[u32; 3]> {
 fn divisions(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
     let array = Array::read(memory, at(country.pointer, ccountry::DIVISIONS)?, 8)
@@ -170,7 +171,7 @@ fn divisions(
                     let table = field::<u64>(memory, group, 0)?;
                     let expected = if field::<u8>(memory, group, corders_group::IS_ARMY_GROUP)? != 0
                     {
-                        crate::carmy_group::VTABLE_RVA
+                        engine_native_parts::carmy_group::VTABLE_RVA
                     } else {
                         corders_group::VTABLE_RVA
                     };

@@ -8,10 +8,8 @@ use std::{
 
 use engine_dlc::{cdlc_manager, cdlc_manager::mounts_match};
 use engine_executable::build::hash_executable;
-use engine_native::{
-    capture_text::Owned as Descriptor, province_definition::MovementCensus,
-    province_definition::read_movement_census, walk::Outcome,
-};
+use engine_native_memory::{capture_text::Owned as Descriptor, walk::Outcome};
+use engine_native::cprovince::definition::{MovementCensus, read_movement_census};
 use content_reader_layers::content::{GatherOptions, gather};
 use content_reader_map::movement::MovementMap;
 use serde_json::{Value, json};
@@ -395,9 +393,15 @@ fn compare(census: &MovementCensus, map: &MovementMap) -> Report {
 mod tests {
     use super::*;
     use engine_native::{
-        cgame_state, cprovince, cterrain_type, province_definition as definition,
-        province_definition::MovementDefinition, province_neighbour as neighbour,
-        province_neighbour::Record,
+        cgame_state,
+        cprovince::{
+            self,
+            definition::{self as definition, MovementDefinition},
+        },
+    };
+    use engine_native_parts::{
+        cterrain_type,
+        province_neighbour::{self as neighbour, Record},
     };
     use content_reader_map::movement::{Neighbour, ProvinceTerrain};
 
@@ -773,7 +777,7 @@ mod tests {
         assert_eq!(read, expected);
         assert_eq!(compare(&read, &map()).total(), 0);
         let mut byte = [0];
-        assert!(!engine_native::Memory::copy(
+        assert!(!engine_native_memory::Memory::copy(
             &ProcessMemory(&process.handle),
             8,
             &mut byte

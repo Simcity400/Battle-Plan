@@ -5,9 +5,8 @@ use crate::{
 };
 use engine_allocation::{copy_vec, map_slice, owned_vec};
 use engine_deployment::{cdeployment_status, unit_bonuses};
-use engine_native::{
-    Memory, cproduction_status, creferenced_division_template::Span, walk::Outcome,
-};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{cproduction_status, creferenced_division_template::Span};
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AvailableEquipmentVariantRow,
     rows::CountryLocalSubunitRow, rows::CountryUnitBonusRow, rows::LocalSubunitRequirement,
@@ -378,7 +377,7 @@ mod tests {
 
     #[test]
     fn each_table_walks_on_its_own_cadence() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -440,9 +439,9 @@ mod tests {
 
     #[test]
     fn countries_use_live_roster_and_unit_bonus_demand_and_same_hour_growth() {
-        use engine_native::{
-            ccountry, cequipment_variant, cgame_state, csub_unit_definition, msvc_string,
-        };
+        use engine_native::{ccountry, cequipment_variant, cgame_state};
+        use engine_native_parts::csub_unit_definition;
+        use engine_native_memory::msvc_string;
         const COUNTRIES: usize = 5;
         const STATE: usize = 0x1000;
         const FIRST: usize = 0x20000;
@@ -480,7 +479,7 @@ mod tests {
             pointers,
             1,
         );
-        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        word(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             variant + cequipment_variant::TYPE,
@@ -577,7 +576,7 @@ mod tests {
                     output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
                     return true;
                 }
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: self.0,
                 }

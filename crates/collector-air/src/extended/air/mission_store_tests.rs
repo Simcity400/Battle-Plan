@@ -9,7 +9,8 @@ use engine_native_air::{
     },
     cstrategic_air,
 };
-use engine_native::{cgame_state as gs, cpdx_array, memory::SliceMemory};
+use engine_native::cgame_state as gs;
+use engine_native_memory::{cpdx_array, memory::SliceMemory};
 use std::cell::RefCell;
 
 const GS: usize = 0x1000;
@@ -218,7 +219,7 @@ fn walk_with(
         0,
         GS,
         census,
-        engine_native::walk::Buffer::Growing(&mut rows),
+        engine_native_memory::walk::Buffer::Growing(&mut rows),
         &mut failure,
         &mut reuse,
     );
@@ -354,7 +355,7 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
             0,
             GS,
             &census,
-            engine_native::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
             &mut Default::default(),
             &mut reuse,
         );

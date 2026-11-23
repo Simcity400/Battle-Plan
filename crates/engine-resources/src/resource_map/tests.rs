@@ -200,7 +200,7 @@ fn world() -> Fixture {
     let mut f = Fixture::new();
     f.u64(BAD_EFFICIENCY_THRESHOLD_RVA.0, THRESHOLD as u64);
     for (country, resources) in [(0x2000, 0x6000), (0x4000, 0x7000)] {
-        f.array(country + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
+        f.array(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0, 0);
         for list in [
             ccountry_resources::RESOURCE_ORIGINS,
             RIGHTS_ORIGINS,
@@ -416,20 +416,20 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
 fn resource_effective_keeps_an_existing_pass_memos_observation() {
     struct Memoized<'a> {
         source: &'a Copies,
-        definitions: modifier_definition::PassDefinitions,
+        definitions: engine_native_memory::modifier_cache::PassDefinitions,
     }
     impl Memory for Memoized<'_> {
         fn copy(&self, at: usize, output: &mut [u8]) -> bool {
             self.source.copy(at, output)
         }
-        fn modifier_definitions(&self) -> Option<&modifier_definition::PassDefinitions> {
+        fn modifier_definitions(&self) -> Option<&engine_native_memory::modifier_cache::PassDefinitions> {
             Some(&self.definitions)
         }
     }
     let mut source = Copies::new(None);
     let table = 0xc0000;
     let key = PRODUCTION_OIL_FACTOR;
-    let accumulator = 0x2000 + ccountry::MODIFIER_ACCUMULATOR;
+    let accumulator = 0x2000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     source.image.array(accumulator, 0xb0000, 1);
     source.image.put(0xb0000, &[0; 16]);
     source.image.u32(0xb0000, key);
@@ -481,7 +481,7 @@ fn resource_walk_shares_only_metadata_and_resets_it_for_each_walk() {
     for (country, entry, value) in [(0x2000, 0xb0000, 31_i64), (0x4000, 0xb1000, -9)] {
         memory
             .image
-            .array(country + ccountry::MODIFIER_ACCUMULATOR, entry, 1);
+            .array(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, entry, 1);
         memory.image.put(entry, &[0; 16]);
         memory.image.u32(entry, PRODUCTION_OIL_FACTOR);
         memory.image.u64(entry + 8, value as u64);
@@ -644,7 +644,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
         threshold: THRESHOLD,
         local_resources: Default::default(),
     };
-    let country = ccountry::Country {
+    let country = engine_native_memory::country_identity::Country {
         pointer: 0x2000,
         canonical_slot: 1,
         id: 7,
@@ -879,7 +879,7 @@ fn an_unreadable_origin_refuses_the_origins_and_rights_alone() {
 fn an_unreadable_oil_factor_refuses_the_oil_factors_alone() {
     let mut f = world();
     f.bytes.retain(|&address, _| {
-        !(0x2000 + ccountry::MODIFIER_ACCUMULATOR..0x2010 + ccountry::MODIFIER_ACCUMULATOR)
+        !(0x2000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR..0x2010 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
             .contains(&address)
     });
     let (outcomes, _) = walk(&f);
@@ -951,7 +951,7 @@ fn a_line_is_bad_only_below_the_threshold() {
 
 #[test]
 fn region_weights_skip_empty_roster_slots_and_refuse_a_foreign_object() {
-    use engine_native::cstrategic_region as region;
+    use engine_native_parts::cstrategic_region as region;
     let mut f = Fixture::new();
     f.array(GAME_STATE + cgame_state::STRATEGIC_REGIONS, 0x80000, 3);
     f.u64(0x80000, 0);
@@ -1225,14 +1225,14 @@ fn the_temporary_walk_holds_every_resource_the_database_has() {
 #[test]
 fn a_region_outside_the_records_is_full_and_one_inside_reads_its_efficiency() {
     let mut f = Fixture::new();
-    let stride = crate::cstrategic_navy::REGIONAL_CONVOYS_STRIDE;
-    let efficiency = crate::cstrategic_navy::REGIONAL_CONVOY_EFFICIENCY;
+    let stride = engine_native_naval::cstrategic_navy::REGIONAL_CONVOYS_STRIDE;
+    let efficiency = engine_native_naval::cstrategic_navy::REGIONAL_CONVOY_EFFICIENCY;
     f.u64(0x80000 + 2 * stride + efficiency, 45_000);
     let records = Array {
         data: 0x80000,
         count: 3,
     };
-    let read = |region| crate::cstrategic_navy::regional_convoy_efficiency(&f, records, region);
+    let read = |region| engine_native_naval::cstrategic_navy::regional_convoy_efficiency(&f, records, region);
     assert_eq!(read(2), Ok(45_000));
     assert_eq!(read(3), Ok(100_000));
     assert!(read(1).is_err());

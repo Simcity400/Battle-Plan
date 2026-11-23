@@ -1,7 +1,9 @@
 use crate::unit_scale_tests::fixture as unit_world;
 use collector_division_parts::division_land::Captured;
 use collector_divisions::division_census::Census;
-use engine_native::{carmy, carmy_manpower_values, walk::Outcome};
+use engine_native::carmy;
+use engine_native_parts::carmy_manpower_values;
+use engine_native_memory::walk::Outcome;
 
 fn run(countries: usize) {
     let count = countries * 10;
@@ -33,7 +35,7 @@ fn run(countries: usize) {
         bytes[0x788..0x78c].copy_from_slice(&0x8000_0001u32.to_le_bytes());
         bytes[0x78c..0x790].copy_from_slice(&(-7i32).to_le_bytes());
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut census = Census::new();
     for _ in 0..3 {
         census.capture_inputs(&memory, world.base, world.state);

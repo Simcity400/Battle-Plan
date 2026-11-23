@@ -666,9 +666,9 @@ impl Captured {
             &recorded,
             base,
             job.game_state,
-            engine_native::walk::Buffer::Growing(&mut self.candidates),
-            engine_native::walk::Buffer::Growing(&mut self.programs.rows),
-            engine_native::walk::Buffer::Growing(&mut self.names.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.candidates),
+            engine_native_memory::walk::Buffer::Growing(&mut self.programs.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.names.first),
         );
         self.programs.outcome = program_outcome(first, &self.programs.rows, &self.names.first);
         self.names.len = first.bytes_len;
@@ -679,7 +679,7 @@ impl Captured {
                 &recorded,
                 base,
                 job.game_state,
-                engine_native::walk::Buffer::Growing(&mut self.breakthroughs.rows),
+                engine_native_memory::walk::Buffer::Growing(&mut self.breakthroughs.rows),
             ),
             self.breakthroughs.rows.len(),
         );

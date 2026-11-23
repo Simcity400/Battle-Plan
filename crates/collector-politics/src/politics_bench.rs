@@ -1,7 +1,6 @@
 use super::*;
 use engine_land_inputs::{active_ability_record as active, cability};
 use engine_native::{ccountry, cgame_state, crelation, cunit_leader};
-use engine_native_politics::cpolitical_status;
 use engine_production::nindustrial_organisation_corganisation as mio;
 use std::{hint::black_box, time::Instant};
 const HEAP: usize = 0x350_0000;
@@ -80,11 +79,11 @@ impl World {
             put(
                 &mut bytes,
                 politics,
-                &((base + cpolitical_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+                &((base + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
-                politics + cpolitical_status::COUNTRY,
+                politics + engine_native_parts::cpolitical_status_layout::COUNTRY,
                 &((base + pointer) as u64).to_le_bytes(),
             );
             for record in 0..4 {
@@ -501,7 +500,7 @@ fn native_operand_rows_are_byte_identical_to_guarded_rows() {
             fast[index].identity = b;
         }
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let (_, a, akeys) = hooks::stage_fixture(&original, &memory);
     let (_, b, bkeys) = hooks::stage_fixture(&fast, &unsafe {
         engine_events::politics_sites::NativeOperands::new()

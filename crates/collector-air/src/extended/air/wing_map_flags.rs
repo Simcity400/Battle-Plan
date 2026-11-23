@@ -2,7 +2,7 @@ use engine_allocation as allocation;
 use engine_mutations::{
     air_wing_equipment_mutations::ATTACHMENT_COVERAGE, air_wing_equipment_mutations::TRAINING_STOP,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
@@ -119,7 +119,7 @@ impl Store {
             coverage,
             collector_observers::wing_changes::map_sequence,
             collector_observers::wing_changes::map_quiet,
-            |at| engine_native::read::<u8>(memory, at),
+            |at| engine_native_memory::read::<u8>(memory, at),
         );
         if let Some(value) = self.raid.capture(
             memory,

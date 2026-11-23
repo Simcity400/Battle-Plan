@@ -1,7 +1,6 @@
-use crate::{
-    Memory, cland_border_war_combat, cland_border_war_combatant, cland_combat,
-    msvc_tree_node as node, read,
-};
+use engine_native_memory::{Memory, msvc_tree_node as node, read};
+use engine_native_parts::{cland_border_war_combat, cland_border_war_combatant};
+use crate::cland_combat;
 
 pub(super) fn capture(
     memory: &impl Memory,
@@ -47,7 +46,7 @@ pub(super) fn capture(
             *country = read::<i32>(memory, at(side, cland_border_war_combatant::COUNTRY)?)
                 .ok_or("state border conflict country unreadable")?;
         }
-        crate::allocation::reserve(output, 1)
+        engine_allocation::reserve(output, 1)
             .map_err(|_| "state border conflict country allocation failed")?;
         output.push(countries);
         Ok(())

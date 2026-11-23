@@ -1,9 +1,20 @@
 use collector_primitives::clock::qpc;
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::{
-    Memory, corder_instance, corder_instance::AssignedSources, corder_instance::CensusPart,
-    corder_instance::PartWalk, corder_instance::PlanOrder, corder_instance::PlanPart,
-    corder_instance::PlanRow, corder_instance::PlanWalk, corder_instance::Row,
-    corder_instance::SuccessorLists, corder_instance::Visit, corders_group::Root, walk::Outcome,
+    corder_instance::{
+        self,
+        AssignedSources,
+        CensusPart,
+        PartWalk,
+        PlanOrder,
+        PlanPart,
+        PlanRow,
+        PlanWalk,
+        Row,
+        SuccessorLists,
+        Visit,
+    },
+    corders_group::Root,
 };
 use replay_data::rows::TableId;
 use std::{mem::size_of, ops::Range};

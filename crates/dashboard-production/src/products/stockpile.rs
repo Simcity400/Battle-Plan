@@ -28,7 +28,7 @@ use std::{
 use ts_rs::TS;
 
 pub const DECIMALS: u8 = 5;
-const _: () = assert!(engine_native::equipment_entry::FIXED_POINT_SCALE == 100_000);
+const _: () = assert!(engine_native_parts::equipment_entry::FIXED_POINT_SCALE == 100_000);
 
 pub const NEED_BOUND_RAW: i64 = 0x53e2_d620_fb40;
 

@@ -4,10 +4,8 @@ use collector_primitives::raw_memory;
 use collector_timing::hook_timing::{self, Family, Span};
 use engine_allocation as allocation;
 use engine_mutations::war_participation_sites::SITES;
-use engine_native::{
-    Memory,
-    cwar_relation::{overview::OwnedRow, participation as native},
-};
+use engine_native_memory::Memory;
+use engine_native::cwar_relation::{overview::OwnedRow, participation as native};
 use replay_data::rows::{
     TableRows, WarCapturedProvinceRow, WarLendLeaseHistoryRow, WarParticipationRow,
 };
@@ -244,10 +242,10 @@ fn history_changed(status: usize, field: usize) {
     if store.history_owners.is_empty() || LOST.load(Ordering::SeqCst) {
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let Some(diplomacy) = status
-        .checked_add(engine_native::crelation_status::DIPLOMACY_STATUS)
-        .and_then(|p| engine_native::read::<u64>(&memory, p))
+        .checked_add(engine_native::crelation::status::DIPLOMACY_STATUS)
+        .and_then(|p| engine_native_memory::read::<u64>(&memory, p))
     else {
         refuse();
         return;
@@ -256,8 +254,8 @@ fn history_changed(status: usize, field: usize) {
         return;
     };
     let target = status
-        .checked_add(engine_native::crelation_status::TARGET_COUNTRY)
-        .and_then(|p| engine_native::read::<u32>(&memory, p));
+        .checked_add(engine_native::crelation::status::TARGET_COUNTRY)
+        .and_then(|p| engine_native_memory::read::<u32>(&memory, p));
     let Some(target) = target else {
         refuse();
         return;
@@ -322,9 +320,9 @@ fn lifetime_changed(site: war_changes::Site, receiver: usize, diplomacy: usize) 
     ) && !store.held.is_empty()
     {
         let relation = receiver
-            .checked_add(engine_native::crelation_status::WAR_RELATION)
+            .checked_add(engine_native::crelation::status::WAR_RELATION)
             .and_then(|p| {
-                engine_native::read::<u64>(&unsafe { engine_native::memory::LiveMemory::new() }, p)
+                engine_native_memory::read::<u64>(&unsafe { engine_native_memory::memory::LiveMemory::new() }, p)
             });
         match relation {
             Some(relation) if relation != 0 => replace_held(store, relation as usize),
@@ -342,9 +340,9 @@ fn lifetime_changed(site: war_changes::Site, receiver: usize, diplomacy: usize) 
         Some(diplomacy)
     } else {
         receiver
-            .checked_add(engine_native::crelation_status::DIPLOMACY_STATUS)
+            .checked_add(engine_native::crelation::status::DIPLOMACY_STATUS)
             .and_then(|p| {
-                engine_native::read::<u64>(&unsafe { engine_native::memory::LiveMemory::new() }, p)
+                engine_native_memory::read::<u64>(&unsafe { engine_native_memory::memory::LiveMemory::new() }, p)
             })
             .map(|p| p as usize)
     };
@@ -933,7 +931,7 @@ fn read_history_columns(
         }
         let raw = status
             .checked_add(offset)
-            .and_then(|p| engine_native::read::<i64>(memory, p))
+            .and_then(|p| engine_native_memory::read::<i64>(memory, p))
             .ok_or("changed war lend-lease history unreadable")?;
         match field {
             0 => value.industry_sent = raw,
@@ -1189,7 +1187,7 @@ unsafe extern "system-unwind" fn province_capture(ledger: usize, province: usize
         province
             .checked_add(engine_native::cprovince::ID)
             .and_then(|p| {
-                engine_native::read::<i32>(&unsafe { engine_native::memory::LiveMemory::new() }, p)
+                engine_native_memory::read::<i32>(&unsafe { engine_native_memory::memory::LiveMemory::new() }, p)
             })
     } else {
         None
@@ -1424,7 +1422,7 @@ mod tests {
             self.check(owner);
             let mut bytes = [0u8; 52];
             bytes[..8].copy_from_slice(
-                &(engine_native::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native::crelation::status::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             bytes[8..12].copy_from_slice(&(target + 1).to_le_bytes());
             bytes[12..20].copy_from_slice(&(Self::root(owner) as u64).to_le_bytes());
@@ -1472,8 +1470,8 @@ mod tests {
                 let offset = (address - Self::STATUS) % Self::STATUS_STRIDE;
                 let bytes = self.record(address - offset);
                 let at = match offset {
-                    engine_native::crelation_status::TARGET_COUNTRY => 8,
-                    engine_native::crelation_status::DIPLOMACY_STATUS => 12,
+                    engine_native::crelation::status::TARGET_COUNTRY => 8,
+                    engine_native::crelation::status::DIPLOMACY_STATUS => 12,
                     0 => 0,
                     offset
                         if (native::DELIVERY_FIELDS[0]..native::DELIVERY_FIELDS[0] + 32)
@@ -1502,7 +1500,7 @@ mod tests {
             self.check(owner);
             assert_eq!(
                 address,
-                Self::root(owner) + engine_native_politics::cdiplomacy_status::RELATIONS
+                Self::root(owner) + engine_native_parts::cdiplomacy_status_layout::RELATIONS
             );
             assert_eq!(out.len(), 16);
             self.roots.set(self.roots.get() + 1);
@@ -1515,8 +1513,8 @@ mod tests {
         }
         fn copy_records(
             &self,
-            sources: engine_native::memory::RecordSources<'_>,
-            layout: &engine_native::memory::RecordLayout<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
+            layout: &engine_native_memory::memory::RecordLayout<'_>,
             out: &mut [u8],
         ) -> usize {
             assert_eq!(layout.stride(), 52);
@@ -1636,10 +1634,10 @@ mod tests {
             .insert(world.status(1, 2));
         store.held.insert(0x10000, held(1, 2));
         store.held.insert(0x20000, held(3, 4));
-        let mut status = vec![0u8; engine_native::crelation_status::WAR_RELATION + 8];
-        status[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        let mut status = vec![0u8; engine_native::crelation::status::WAR_RELATION + 8];
+        status[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&(SeedWorld::root(0) as u64).to_le_bytes());
-        status[engine_native::crelation_status::WAR_RELATION..][..8]
+        status[engine_native::crelation::status::WAR_RELATION..][..8]
             .copy_from_slice(&0x10000u64.to_le_bytes());
         *STORE.lock().unwrap() = Some(store);
         ENABLED.store(true, Ordering::SeqCst);
@@ -1745,7 +1743,7 @@ mod tests {
                     if out.len() == 0x60 {
                         self.scores.set(self.scores.get() + 1);
                     }
-                    return engine_native::memory::SliceMemory {
+                    return engine_native_memory::memory::SliceMemory {
                         base: WARS,
                         bytes: &self.bytes,
                     }
@@ -1755,8 +1753,8 @@ mod tests {
             }
             fn copy_records(
                 &self,
-                sources: engine_native::memory::RecordSources<'_>,
-                layout: &engine_native::memory::RecordLayout<'_>,
+                sources: engine_native_memory::memory::RecordSources<'_>,
+                layout: &engine_native_memory::memory::RecordLayout<'_>,
                 out: &mut [u8],
             ) -> usize {
                 self.histories.copy_records(sources, layout, out)
@@ -1809,8 +1807,8 @@ mod tests {
         for index in 0..3 {
             assert!(Arc::ptr_eq(&first[index], &carried[index]));
         }
-        let mut status = vec![0u8; engine_native::crelation_status::WAR_RELATION + 8];
-        status[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        let mut status = vec![0u8; engine_native::crelation::status::WAR_RELATION + 8];
+        status[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&(SeedWorld::root(0) as u64).to_le_bytes());
         let mutation = war_changes::forwarded(war_changes::Site::StatusReset);
         lifetime_changed(war_changes::Site::StatusReset, status.as_ptr() as usize, 0);
@@ -1840,9 +1838,9 @@ mod tests {
         let mut bytes = vec![0u8; 0x800];
         let status = bytes.as_ptr() as usize;
         let diplomacy = 0x12300usize;
-        bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        bytes[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&(diplomacy as u64).to_le_bytes());
-        bytes[engine_native::crelation_status::TARGET_COUNTRY..][..4]
+        bytes[engine_native::crelation::status::TARGET_COUNTRY..][..4]
             .copy_from_slice(&99u32.to_le_bytes());
         bytes[native::DELIVERY_FIELDS[0]..][..8].copy_from_slice(&7i64.to_le_bytes());
         let mut store = Store::default();
@@ -1855,7 +1853,7 @@ mod tests {
         let store = slot.as_mut().unwrap();
         assert_eq!(store.unseen_histories, [(status, 11, 99, 1)]);
         read_marked(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: status,
                 bytes: &bytes,
             },
@@ -1926,9 +1924,9 @@ mod tests {
         let mut bytes = vec![0u8; 0x800];
         let status = bytes.as_ptr() as usize;
         let diplomacy = 0x12300usize;
-        bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        bytes[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&(diplomacy as u64).to_le_bytes());
-        bytes[engine_native::crelation_status::TARGET_COUNTRY..][..4]
+        bytes[engine_native::crelation::status::TARGET_COUNTRY..][..4]
             .copy_from_slice(&22u32.to_le_bytes());
         bytes[native::DELIVERY_FIELDS[0]..][..8].copy_from_slice(&7i64.to_le_bytes());
         bytes[native::DELIVERY_FIELDS[1]..][..8].copy_from_slice(&11i64.to_le_bytes());
@@ -1939,14 +1937,14 @@ mod tests {
         let events = store.unseen_histories.as_ptr();
         *STORE.lock().unwrap() = Some(store);
         LOST.store(false, Ordering::SeqCst);
-        bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        bytes[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&((diplomacy + 8) as u64).to_le_bytes());
-        bytes[engine_native::crelation_status::TARGET_COUNTRY..][..4].fill(0);
+        bytes[engine_native::crelation::status::TARGET_COUNTRY..][..4].fill(0);
         collector_test_support::with_allocations_denied(|| history_changed(status, 0));
         assert!(!LOST.load(Ordering::SeqCst));
-        bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        bytes[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&(diplomacy as u64).to_le_bytes());
-        bytes[engine_native::crelation_status::TARGET_COUNTRY..][..4]
+        bytes[engine_native::crelation::status::TARGET_COUNTRY..][..4]
             .copy_from_slice(&22u32.to_le_bytes());
         collector_test_support::with_allocations_denied(|| {
             history_changed(status, 0);
@@ -1958,7 +1956,7 @@ mod tests {
         assert_eq!(store.unseen_histories.len(), 3);
         assert_eq!(store.unseen_histories.as_ptr(), events);
         read_marked(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: status,
                 bytes: &bytes,
             },
@@ -1981,7 +1979,7 @@ mod tests {
         let store = slot.as_mut().unwrap();
         assert_eq!(store.pending_histories, [status]);
         read_marked(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: status,
                 bytes: &bytes,
             },
@@ -2016,7 +2014,7 @@ mod tests {
         LOST.store(false, Ordering::SeqCst);
         let mut bytes = vec![0u8; 0x800];
         let status = bytes.as_ptr() as usize;
-        bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+        bytes[engine_native::crelation::status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&0x45600u64.to_le_bytes());
         collector_test_support::with_allocations_denied(|| history_changed(status, 0));
         assert!(!LOST.load(Ordering::SeqCst));
@@ -2102,7 +2100,7 @@ mod tests {
         impl Memory for Traced {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
                 self.reads.borrow_mut().push((address, destination.len()));
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &self.bytes,
                 }

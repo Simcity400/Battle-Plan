@@ -1,9 +1,6 @@
 use super::*;
-use engine_native::{
-    cequipment_variant_pool,
-    creference_registry as registry,
-    reference_bucket as bucket,
-};
+use engine_native::cequipment_variant::pool as cequipment_variant_pool;
+use engine_native_parts::{creference_registry as registry, reference_bucket as bucket};
 use engine_native_land::template_hq_context as hq;
 use replay_capture_spool::spool::{Record, encode_record};
 use replay_frame::{
@@ -32,7 +29,7 @@ impl Memory for World {
             output.copy_from_slice(&(TABLE as u64).to_le_bytes());
             return true;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &self.0,
         }

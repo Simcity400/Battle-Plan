@@ -1,8 +1,8 @@
 
-use crate::{
-    Memory, carmy_manpower_values, cequipment_variant_pool, cpdx_array::Array, equipment_entry,
-    manpower_value_entry, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_parts::{carmy_manpower_values, equipment_entry};
+use engine_native::cequipment_variant::pool as cequipment_variant_pool;
+use crate::manpower_value_entry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29da928);

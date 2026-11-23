@@ -1,12 +1,6 @@
 use super::*;
-use engine_native_politics::cdiplomacy_status as diplomacy;
-use engine_native::{
-    cgame_state,
-    crelation,
-    csubject_relation,
-    memory::SliceMemory,
-    walk::Outcome,
-};
+use engine_native::{cgame_state, crelation::{self, subject as csubject_relation}};
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 use std::cell::Cell as Counter;
 
 const STATE: usize = 0x1000;
@@ -50,9 +44,9 @@ fn world(slots: u32) -> Vec<u8> {
         put64(&mut bytes, country, ccountry::VTABLE_RVA.0);
         put32(&mut bytes, country + ccountry::ID, id);
         put64(&mut bytes, country + ccountry::DIPLOMACY_STATUS, root);
-        put64(&mut bytes, root, diplomacy::VTABLE_RVA.0);
-        put64(&mut bytes, root + diplomacy::COUNTRY, country);
-        header(&mut bytes, root + diplomacy::RELATIONS, matrix, slots);
+        put64(&mut bytes, root, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
+        put64(&mut bytes, root + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country);
+        header(&mut bytes, root + engine_native_parts::cdiplomacy_status_layout::RELATIONS, matrix, slots);
         for slot in 0..slots as usize {
             let cell = if id == 0 {
                 status(slot)
@@ -85,7 +79,7 @@ impl Memory for MemoryProbe<'_> {
         if address == POSITIVE + ccountry::PRODUCTION_STATUS {
             self.prefix_seen.set(true);
         }
-        if address == RESERVED_DIPLOMACY + diplomacy::RELATIONS && self.require_prefix {
+        if address == RESERVED_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS && self.require_prefix {
             assert!(
                 self.prefix_seen.get(),
                 "reverse header preceded an established positive prefix"
@@ -113,8 +107,8 @@ impl Memory for MemoryProbe<'_> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
-        (base == 0 && state == STATE).then_some(Ok(ccountry::Country {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
+        (base == 0 && state == STATE).then_some(Ok(engine_native_memory::country_identity::Country {
             pointer: RESERVED,
             canonical_slot: 0,
             id: 0,
@@ -132,7 +126,7 @@ fn memory(bytes: &[u8], fault: Option<usize>) -> MemoryProbe<'_> {
     }
 }
 fn observation(memory: &impl Memory) -> ccountry::ReservedVisibilityObservation {
-    let mut naming = ccountry::read_reserved_naming_observed_inner(memory, 0, STATE, engine_native::walk::Buffer::Count, None);
+    let mut naming = ccountry::read_reserved_naming_observed_inner(memory, 0, STATE, engine_native_memory::walk::Buffer::Count, None);
     let observed = naming
         .visibility
         .take()
@@ -193,7 +187,7 @@ fn same_pointer_forward_failure_is_not_retried() {
         0,
         &countries,
         country,
-        engine_native::walk::Buffer::Growing(&mut vec![0; 2]),
+        engine_native_memory::walk::Buffer::Growing(&mut vec![0; 2]),
         &mut forward,
     );
     assert!(inputs.zero_war.is_err());
@@ -397,7 +391,7 @@ fn early_scalar_fault_survives_naming_refusal() {
     let bytes = world(2);
     for (address, reason) in [
         (
-            RESERVED_DIPLOMACY + diplomacy::FACTION,
+            RESERVED_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION,
             "reserved faction pointer unreadable",
         ),
         (
@@ -444,7 +438,7 @@ fn original_reserved_matrix_grows_before_first_or_later_cell_publication() {
     for slots in [5_001, 20_001] {
         header(
             &mut bytes,
-            RESERVED_DIPLOMACY + diplomacy::RELATIONS,
+            RESERVED_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             RESERVED_MATRIX,
             slots,
         );

@@ -1,5 +1,5 @@
 use super::{AirStatsCopyContext, AirStatsCopyReport, AirStatsJob, Capacities, Captured};
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub const BASE: usize = 0x1400_0000;
 pub const GAME_STATE: usize = 0x10000;

@@ -896,7 +896,7 @@ pub(super) fn compare_scope(
         saved.building_location,
     );
     if scope.building_type != 0 {
-        let province = scope.building_flags & engine_native::cbuilding_status::PROVINCE_FLAG != 0;
+        let province = scope.building_flags & engine_native::cprovince::buildings::PROVINCE_FLAG != 0;
         let wrong = match saved.building_location {
             Some(-1) => province,
             Some(_) => !province && scope.building_country > 0,

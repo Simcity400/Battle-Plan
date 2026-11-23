@@ -1,7 +1,6 @@
-pub use engine_native_parts::ccurrent_autonomy_status_layout::{VTABLE_RVA, SUBJECT_COUNTRY, STATE};
+use engine_native_parts::ccurrent_autonomy_status_layout::{VTABLE_RVA, SUBJECT_COUNTRY, STATE};
 
 use engine_native_memory::{Memory, read_slice, walk::Outcome};
-use crate::cdiplomacy_status;
 use engine_native::crelation::subject::{
     self as csubject_relation,
     Name,
@@ -69,7 +68,7 @@ pub fn walk_buffer(
             };
             found_country = true;
             let diplomacy = reader.diplomacy(country)?;
-            let pointer = reader.pointer(diplomacy, cdiplomacy_status::CURRENT_AUTONOMY_STATUS)?;
+            let pointer = reader.pointer(diplomacy, engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS)?;
             if pointer == 0 {
                 continue;
             }
@@ -188,16 +187,16 @@ mod tests {
         p64(
             &mut bytes,
             DIPLOMACY,
-            cdiplomacy_status::VTABLE_RVA.0 as u64,
+            engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64,
         );
         p64(
             &mut bytes,
-            DIPLOMACY + cdiplomacy_status::COUNTRY,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             COUNTRY as u64,
         );
         p64(
             &mut bytes,
-            DIPLOMACY + cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS,
             STATUS as u64,
         );
         p64(&mut bytes, STATUS, VTABLE_RVA.0 as u64);
@@ -281,7 +280,7 @@ mod tests {
         let mut bytes = fixture();
         p64(
             &mut bytes,
-            DIPLOMACY + cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS,
             0,
         );
         assert_eq!(

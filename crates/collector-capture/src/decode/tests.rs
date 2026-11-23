@@ -62,7 +62,7 @@ fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMem
 }
 
 fn copy_divisions_worker_refresh(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     ctx: crate::sampling::DivisionsCopyContext,
     payload: &mut crate::sampling::DivisionsJob,
 ) -> crate::sampling::DivisionsCopyReport {
@@ -101,7 +101,7 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
         play_time: 0,
         play_session_started_at: 321,
         seed: 0,
-        campaign_id: engine_native::capture_text::Owned::default(),
+        campaign_id: engine_native_memory::capture_text::Owned::default(),
         speed: 0,
         tick_busy: 0,
     });
@@ -407,7 +407,7 @@ fn weather_jobs_are_pooled_once_their_log_holds_storage() {
     );
     let mut job = WeatherJob::new();
     let bytes = [0u8; 2];
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
@@ -594,7 +594,7 @@ fn a_retired_grown_job_is_reusable_only_after_it_is_reclaimed() {
     let mut job = AirStatsJob::new();
     job.log = collector_raw::raw::RawLog::new(1, 1);
     let bytes = [0u8; 2];
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
@@ -802,7 +802,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
 fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
     use collector_economy::economy;
     use collector_production::production;
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
 
     let _guard = TEST_LOCK
         .lock()
@@ -943,7 +943,7 @@ fn the_economy_rest_is_its_own_job_and_each_failure_refuses_only_its_tables() {
 
 #[test]
 fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
 
     let _guard = TEST_LOCK
         .lock()
@@ -1033,11 +1033,11 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
 
 #[test]
 fn missing_division_payload_publishes_hourly_census_reason_even_without_details() {
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     use replay_data::rows::TableId;
 
     struct NoReads;
-    impl engine_native::Memory for NoReads {
+    impl engine_native_memory::Memory for NoReads {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("missing division payload must not retry native reads");
         }
@@ -1327,7 +1327,7 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
 #[test]
 fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
     use collector_intel::intel::{self, RelationsCopyContext, RelationsJob};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     use intel::relations_test_kit as kit;
 
     let _guard = TEST_LOCK
@@ -1614,7 +1614,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
     let _globals = collector_characters::extended::characters::test_globals();
     use characters::characters_test_kit as kit;
     use collector_characters::extended::characters::{self, CharactersCopyContext, CharactersJob};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
 
     let _guard = TEST_LOCK
         .lock()
@@ -2145,7 +2145,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
 #[test]
 fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
     use crate::sampling::{DivisionsCopyContext, divisions_test_kit as kit};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
 
     let _guard = TEST_LOCK
         .lock()
@@ -2243,7 +2243,11 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
     use crate::sampling::copy_divisions_inputs_refresh;
     use crate::sampling::divisions_test_kit as kit;
     use collector_memory::read_accounting;
-    use engine_native::{Memory, memory::CountedMemory, memory::ReadCounts, walk::Outcome};
+    use engine_native_memory::{
+        Memory,
+        memory::{CountedMemory, ReadCounts},
+        walk::Outcome,
+    };
     use std::cell::{Cell, RefCell};
 
     struct NoRead;
@@ -2544,7 +2548,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
 #[test]
 fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_storage() {
     use collector_air::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2977,7 +2981,7 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -3078,7 +3082,7 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_test();
     let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -3354,7 +3358,7 @@ fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
 #[test]
 fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() {
     use collector_air::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3440,7 +3444,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
     use collector_air::extended::air::{
         AirBasesCopyContext, Capacities, Captured, air_bases_test_kit as kit,
     };
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3711,7 +3715,7 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     assert_eq!(
         direct.outcome,
-        engine_native::walk::Outcome::Rows { len: 2 }
+        engine_native_memory::walk::Outcome::Rows { len: 2 }
     );
     let naval = frame.extended.sunk_pilot().tables();
     let entries = match &naval[13] {
@@ -4191,7 +4195,7 @@ fn payload_pools_keep_a_payload_for_every_frame_a_backlog_holds_and_trim_back() 
 
 #[test]
 fn a_refused_raw_log_index_refuses_its_tables_by_name() {
-    use engine_native::{memory::SliceMemory, walk::Outcome};
+    use engine_native_memory::{memory::SliceMemory, walk::Outcome};
     let bytes = [7_u8; 64];
     let memory = SliceMemory {
         base: 0x1000,

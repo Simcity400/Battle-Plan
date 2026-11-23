@@ -1,7 +1,6 @@
 use super::*;
-use engine_native::{
-    carmy, cgame_state, cprovince, cradars_pool, cstate, cunit, modifier_definition,
-};
+use engine_native::{carmy, cgame_state, cprovince, cstate, cunit};
+use engine_native_parts::{cradars_pool, modifier_definition};
 use engine_visibility::visibility_inputs;
 use std::collections::BTreeMap;
 
@@ -192,8 +191,8 @@ impl Memory for World {
         &self,
         _at: usize,
         _key: u32,
-    ) -> Option<Result<engine_native::modifier_accumulator::Value, &'static str>> {
-        Some(Ok(engine_native::modifier_accumulator::Value {
+    ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
+        Some(Ok(engine_native_memory::modifier_cache::Value {
             raw: 2,
             present: true,
         }))

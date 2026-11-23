@@ -1,8 +1,12 @@
 
-use crate::{
-    Memory, cbuilding, cbuilding_status, ccountry, cgeneral_production_line, cpdx_array::Array,
-    cproduction_line, cproduction_status, crailway_production_line, read, walk::Outcome,
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_parts::{cbuilding, cproduction_line};
+use engine_native::{
+    cprovince::buildings as cbuilding_status,
+    ccountry,
+    cproduction_status,
 };
+use crate::{cgeneral_production_line, crailway_production_line};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_8268);
@@ -41,17 +45,17 @@ pub struct Buffers<'a> {
 }
 
 pub struct BuffersBuffer<'a> {
-    pub buildings: crate::walk::Buffer<'a, Row>,
-    pub railways: crate::walk::Buffer<'a, crailway_production_line::Row>,
-    pub route_provinces: crate::walk::Buffer<'a, u32>,
+    pub buildings: engine_native_memory::walk::Buffer<'a, Row>,
+    pub railways: engine_native_memory::walk::Buffer<'a, crailway_production_line::Row>,
+    pub route_provinces: engine_native_memory::walk::Buffer<'a, u32>,
 }
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
         Self {
-            buildings: crate::walk::Buffer::Growing(value.buildings),
-            railways: crate::walk::Buffer::Growing(value.railways),
-            route_provinces: crate::walk::Buffer::Growing(value.route_provinces),
+            buildings: engine_native_memory::walk::Buffer::Growing(value.buildings),
+            railways: engine_native_memory::walk::Buffer::Growing(value.railways),
+            route_provinces: engine_native_memory::walk::Buffer::Growing(value.route_provinces),
         }
     }
 }
@@ -108,9 +112,9 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
         base,
         game_state,
         BuffersBuffer {
-            buildings: crate::walk::Buffer::Count,
-            railways: crate::walk::Buffer::Count,
-            route_provinces: crate::walk::Buffer::Count,
+            buildings: engine_native_memory::walk::Buffer::Count,
+            railways: engine_native_memory::walk::Buffer::Count,
+            route_provinces: engine_native_memory::walk::Buffer::Count,
         },
     )
 }
@@ -443,7 +447,8 @@ pub(crate) fn target_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, cstate, memory::SliceMemory};
+    use engine_native::{cgame_state, cstate};
+    use engine_native_memory::memory::SliceMemory;
 
     fn put<T: AsRef<[u8]>>(bytes: &mut [u8], at: usize, value: T) {
         bytes[at..at + value.as_ref().len()].copy_from_slice(value.as_ref());

@@ -1,8 +1,17 @@
 
-use crate::{
-    Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_operative as strategic,
-    cstrategic_operative_manager as manager, memory::Raw, operation_token_map, read, read_slice,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    memory::Raw,
+    read,
+    read_slice,
     walk::Outcome,
+};
+use engine_native::{ccountry, cgame_state};
+use crate::{
+    cstrategic_operative as strategic,
+    cstrategic_operative_manager as manager,
+    operation_token_map,
 };
 
 pub const ENTRY_HASH: usize = 0x00;
@@ -47,7 +56,7 @@ pub struct Walk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -61,8 +70,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(entries),
     )
 }
 
@@ -70,8 +79,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut entries: crate::walk::Buffer<'_, Entry>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut entries: engine_native_memory::walk::Buffer<'_, Entry>,
 ) -> Walk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -162,7 +171,7 @@ pub fn walk_buffer(
                     }
                 })?;
             }
-            let mut resolver = engine_native::creference_registry::ScopedResolver::new(base);
+            let mut resolver = engine_native_parts::creference_registry::ScopedResolver::new(base);
             for (roster, (_, offset)) in rosters.into_iter().zip(MISSION_ROSTERS) {
                 for index in 0..roster.count {
                     let handle = roster
@@ -173,7 +182,7 @@ pub fn walk_buffer(
                         None => 0,
                         Some(pointer) => {
                             if field::<u64>(memory, pointer, 0)?
-                                != engine_sites::at(base, engine_native_intelligence::coperative_leader::VTABLE_RVA)
+                                != engine_sites::at(base, engine_native_parts::coperative_leader_layout::VTABLE_RVA)
                                     .ok_or("strategic operative mission vtable overflow")?
                                     as u64
                                 || field::<u64>(

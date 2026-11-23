@@ -1,7 +1,6 @@
 use engine_sites::Rva;
-use crate::{
-    Memory, climited_use_tech_bonus::Value, msvc_string::Descriptor, read, research_inputs::Text,
-};
+use engine_native_memory::{Memory, msvc_string::Descriptor, read};
+use crate::{climited_use_tech_bonus::Value, research_inputs::Text};
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_1968);
 pub const NAME: usize = 0x30;

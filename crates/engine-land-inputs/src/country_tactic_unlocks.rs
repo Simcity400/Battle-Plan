@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccombat_tactic, ccountry, cgame_state, cnull_combat_tactic, cpdx_array::Array, read,
-    read_slice, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use engine_native_parts::{ccombat_tactic, cnull_combat_tactic};
+use engine_native::{ccountry, cgame_state};
 use engine_sites::Rva;
 
 pub const DOCTRINE_SYSTEM: usize = 0x400;
@@ -45,7 +44,7 @@ pub struct Capture {
     pub required_list: usize,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -206,10 +205,10 @@ pub fn count(memory: &impl Memory, base: usize, game: usize) -> Capture {
         memory,
         base,
         game,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     )
 }
 
@@ -226,10 +225,10 @@ pub fn capture(
         memory,
         base,
         game,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(unlocks),
-        crate::walk::Buffer::Growing(registry),
-        crate::walk::Buffer::Growing(list),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(unlocks),
+        engine_native_memory::walk::Buffer::Growing(registry),
+        engine_native_memory::walk::Buffer::Growing(list),
     )
 }
 
@@ -237,10 +236,10 @@ fn capture_buffer(
     memory: &impl Memory,
     base: usize,
     game: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut unlocks: crate::walk::Buffer<'_, u32>,
-    mut table: crate::walk::Buffer<'_, RegistryEntry>,
-    mut list: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut unlocks: engine_native_memory::walk::Buffer<'_, u32>,
+    mut table: engine_native_memory::walk::Buffer<'_, RegistryEntry>,
+    mut list: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Capture {
     let mut capture = Capture {
         status_data: 0,

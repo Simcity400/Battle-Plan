@@ -1,8 +1,12 @@
 use crate::building_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, cbuilding, cbuilding_status, cbuilding_status::Carry, cbuilding_status::Location,
-    cbuilding_status::Walk, walk::Outcome,
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native_parts::cbuilding;
+use engine_native::cprovince::buildings::{
+    self as cbuilding_status,
+    Carry,
+    Location,
+    Walk,
 };
 use std::ops::Range;
 

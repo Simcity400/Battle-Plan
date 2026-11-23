@@ -78,19 +78,19 @@ pub fn wing(
         return Ok(None);
     };
     let Some(primary) = secondary
-        .checked_sub(engine_native_air::cair_wing::SECONDARY)
+        .checked_sub(engine_native_parts::cair_wing_layout::SECONDARY)
         .filter(|p| *p != 0)
     else {
         return Ok(None);
     };
-    auth(memory, base, primary, engine_native_air::cair_wing::VTABLE_RVA)?;
+    auth(memory, base, primary, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
     auth(
         memory,
         base,
         secondary,
-        engine_native_air::cair_wing::SECONDARY_VTABLE_RVA,
+        engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA,
     )?;
-    if field::<u64>(memory, primary, engine_native_air::cair_wing::REFERENCE_TYPE)? != reference {
+    if field::<u64>(memory, primary, engine_native_parts::cair_wing_layout::REFERENCE_TYPE)? != reference {
         return Err("naval air wing reference mismatch");
     }
     Ok(Some(primary))
@@ -134,12 +134,12 @@ pub fn read(
     let Some(air_base) = engine_native_parts::creference_registry::resolve(memory, base, base_reference)? else {
         return Ok(row);
     };
-    auth(memory, base, air_base, engine_native_air::cair_base::VTABLE_RVA)?;
-    if field::<u64>(memory, air_base, engine_native_air::cair_base::HANDLE)? != base_reference {
+    auth(memory, base, air_base, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
+    if field::<u64>(memory, air_base, engine_native_parts::cair_base_layout::HANDLE)? != base_reference {
         return Err("naval air base reference mismatch");
     }
     row.source = 2;
-    let carrier_reference = field(memory, air_base, engine_native_air::cair_base::HOST_REFERENCE)?;
+    let carrier_reference = field(memory, air_base, engine_native_parts::cair_base_layout::HOST_REFERENCE)?;
     let Some(carrier) = engine_native_parts::creference_registry::resolve(memory, base, carrier_reference)?
     else {
         return Ok(row);
@@ -161,7 +161,7 @@ pub fn read(
     for index in 0..wings.count {
         let reference = field(memory, element(wings, index, 8)?, 0)?;
         if let Some(primary) = wing(memory, base, reference)? {
-            let pool = ptr(memory, primary, engine_native_air::cair_wing::POOL)?;
+            let pool = ptr(memory, primary, engine_native_parts::cair_wing_layout::POOL)?;
             auth(memory, base, pool, engine_native_parts::cair_wing_pool::VTABLE_RVA)?;
             let definition = ptr(memory, pool, engine_native_parts::cair_wing_pool::DEFINITION)?;
             auth(
@@ -180,7 +180,7 @@ pub fn read(
     let country = countries.resolve(country_id)?;
     row.modifiers[0] = modifier(
         memory,
-        add(country.pointer, engine_native::ccountry::MODIFIER_ACCUMULATOR)?,
+        add(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
         engine_executable::modifier_keys::CARRIER_NIGHT_TRAFFIC,
     )?;
     let combat_weather = ptr(memory, combat, 0xb0)?;
@@ -296,7 +296,7 @@ fn capture_kills_buffer(
         .checked_add(required)
         .ok_or("naval air kill length overflow")?;
     if !output.ensure(end)? {
-        return Err(crate::naval_member_details::DETAIL_ARENA_CAPACITY);
+        return Err(engine_native::cfex_member::DETAIL_ARENA_CAPACITY);
     }
     let mut length = start;
     let mut bytes = [0u8; 64 * 16];
@@ -391,8 +391,8 @@ mod tests {
             result.bytes[0x3000 + slot * 24 + 4] = 1;
             result.q(0x3000 + slot * 24 + 8, HANDLE);
             result.q(0x3000 + slot * 24 + 16, (WING + 0x10) as u64);
-            result.q(WING, engine_native_air::cair_wing::VTABLE_RVA.0 as u64);
-            result.q(WING + 0x10, engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0 as u64);
+            result.q(WING, engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64);
+            result.q(WING + 0x10, engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0 as u64);
             result.q(WING + 0x18, HANDLE);
             result.array(WING + 0x9f8, 0x5000, 2);
             for (index, count) in [i32::MIN, i32::MAX].into_iter().enumerate() {
@@ -459,7 +459,7 @@ mod tests {
         let (mut used, mut required) = (0, 0);
         assert_eq!(
             capture_kills_buffer(&census, 0, PLANE, engine_native_memory::walk::Buffer::Count, &mut used, &mut required),
-            Err(crate::naval_member_details::DETAIL_ARENA_CAPACITY)
+            Err(engine_native::cfex_member::DETAIL_ARENA_CAPACITY)
         );
         assert_eq!((used, required), (0, 2));
         assert_eq!((census.calls(), census.bytes()), (11, 122));

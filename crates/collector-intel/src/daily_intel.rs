@@ -169,7 +169,7 @@ impl Drop for Loan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
 
     #[test]
     fn a_due_walk_never_waits_for_a_held_buffer_and_the_next_hour_walks_instead() {

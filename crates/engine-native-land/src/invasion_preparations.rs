@@ -13,7 +13,6 @@ use engine_native::{
     ctheatre,
     cunit,
 };
-use engine_native_politics::cdiplomacy_status;
 use engine_native_parts::{
     modifier_accumulator,
     modifier_definition::{DefinitionMemo, effective_memo},
@@ -188,8 +187,8 @@ fn relation(
     slot: u32,
 ) -> Result<usize, &'static str> {
     let diplomacy = pointer(memory, country, ccountry::DIPLOMACY_STATUS)?;
-    authenticate(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-    let rows = array(memory, diplomacy, cdiplomacy_status::RELATIONS, 8)?;
+    authenticate(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    let rows = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)?;
     let row = pointer(
         memory,
         rows.element(slot, 8)
@@ -231,7 +230,7 @@ fn read_invasion(
     let country = countries.resolve(field(memory, group, corders_group::COUNTRY)?)?;
     let accumulator = country
         .pointer
-        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .ok_or("invasion country address overflow")?;
     let mut row = Row {
         owner_group: field(memory, group, corders_group::HANDLE)?,

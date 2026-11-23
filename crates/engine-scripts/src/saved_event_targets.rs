@@ -1,9 +1,11 @@
-use crate::{
+use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    creference_registry, read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::creference_registry;
 use engine_sites::Rva;
 
 pub const REGISTRY: usize = 0x6c0;
@@ -432,7 +434,10 @@ mod tests {
     }
     #[test]
     fn live_character_leader_and_nonnull_zero_region_are_distinct_witnesses() {
-        use crate::creference_registry::{self as r, test_support::Fixture as Registry};
+        use engine_native_parts::creference_registry::{
+            self as r,
+            test_support::Fixture as Registry,
+        };
         let mut f = Fixture::new();
         let handle = (3u64 << 32) | 54;
         f.put(0xa00c, &0i32.to_le_bytes());

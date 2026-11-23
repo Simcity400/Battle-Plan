@@ -63,7 +63,7 @@ pub(super) struct OrganisationMemo {
 
 impl OrganisationMemo {
     pub(super) fn new(units: usize) -> std::io::Result<Self> {
-        crate::allocation::advisory(|| {
+        engine_allocation::advisory(|| {
             Ok(Self {
                 identities: crate::carmy_leader::PassTable::try_with_capacity(units)?,
                 flags: crate::carmy_leader::PassTable::try_with_capacity(units)?,

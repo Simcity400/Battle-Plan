@@ -98,7 +98,7 @@ fn naval_management_repair_queue_preserves_typed_handles_repeats_and_empty() {
     const OBJECT: usize = 0x1000;
     const DATA: usize = 0x2000;
     let mut memory = Fixture::default();
-    memory.word(OBJECT, crate::cnaval_base::VTABLE_RVA.0 as u64);
+    memory.word(OBJECT, engine_native_parts::cnaval_base_layout::VTABLE_RVA.0 as u64);
     memory.integer(OBJECT + BASE_REPAIR_PRIORITY, -9);
     memory.integer(OBJECT + BASE_REPAIR_DOCKYARDS, 17);
     memory.array(OBJECT + BASE_REPAIR_QUEUE, DATA, 3);
@@ -142,7 +142,7 @@ fn naval_management_task_controls_keep_independent_refit_designs_and_target() {
     memory.put(TASK + AUTO_REINFORCEMENT, &[0]);
     memory.word(TASK + REFIT_VARIANT, 0);
     memory.word(TASK + REFIT_AFTER_REPAIR, VARIANT as u64);
-    memory.word(VARIANT, engine_native::cequipment_variant::VTABLE_RVA.0 as u64);
+    memory.word(VARIANT, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     let design = u64::from(engine_native::cequipment_variant::REFERENCE_TYPE) | (u64::from(u32::MAX) << 32);
     memory.word(VARIANT + engine_native::cequipment_variant::TYPE, design);
     memory.put(TASK + COMPOSITION_TOKEN, &0xfedc_ba98_u32.to_le_bytes());

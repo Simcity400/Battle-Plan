@@ -6,7 +6,7 @@ use crate::{
 };
 use engine_decisions::cevent;
 use engine_events::script_event_sites as native;
-use engine_native::{Memory, msvc_string::Descriptor};
+use engine_native_memory::{Memory, msvc_string::Descriptor};
 use replay_data::event_feed_rows::{EventFeedScript, EventFeedSource};
 use std::sync::atomic::{AtomicUsize, Ordering};
 mod decisions;
@@ -68,7 +68,7 @@ fn decision_result(
     feed::record_script(|world, memory, base| {
         if definition == 0
             || engine_sites::at(base, engine_decisions::cdecision::VTABLE_RVA).is_none_or(
-                |vtable| engine_native::read::<u64>(memory, definition) != Some(vtable as u64),
+                |vtable| engine_native_memory::read::<u64>(memory, definition) != Some(vtable as u64),
             )
         {
             return Err("decision occurrence definition vtable unreadable or differs");
@@ -161,7 +161,7 @@ unsafe extern "system-unwind" fn targeted_execute(
 ) -> usize {
     let mut flight = Flight::enter();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match targeted_execution(&memory, BASE.load(Ordering::Acquire), selector, definition) {
         Ok(source) => decision(source, definition, country, Some(selector)),
         Err(reason) => feed::refuse(reason),
@@ -182,7 +182,7 @@ fn selected_instance(
     use engine_decisions::ctargeted_decision as targeted;
     let vtable = |key| engine_sites::at(base, key).ok_or("targeted decision vtable withheld");
     if let Some(instance) = selector.checked_sub(targeted::SELECTOR_VIEW)
-        && engine_native::read::<u64>(memory, instance)
+        && engine_native_memory::read::<u64>(memory, instance)
             == Some(vtable(targeted::VTABLE_RVA)? as u64)
     {
         return if field::<u64>(memory, instance, targeted::DEFINITION)? as usize == definition {
@@ -191,7 +191,7 @@ fn selected_instance(
             Err("targeted decision selector instance definition differs")
         };
     }
-    if engine_native::read::<u64>(memory, selector) == Some(vtable(targeted::TARGET_VTABLE_RVA)? as u64)
+    if engine_native_memory::read::<u64>(memory, selector) == Some(vtable(targeted::TARGET_VTABLE_RVA)? as u64)
     {
         Ok(None)
     } else {
@@ -226,7 +226,7 @@ fn last_instance(
     let address = status
         .checked_add(container)
         .ok_or("mission container address overflow")?;
-    let array = engine_native::cpdx_array::Array::read(memory, address, 8)
+    let array = engine_native_memory::cpdx_array::Array::read(memory, address, 8)
         .ok_or("mission append header unreadable")?;
     let last = array
         .count
@@ -236,7 +236,7 @@ fn last_instance(
     field::<u64>(memory, last, 0).map(|pointer| pointer as usize)
 }
 fn appended(status: usize, definition: usize, days: i32) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let result = last_instance(
         &memory,
         status,
@@ -248,7 +248,7 @@ fn appended(status: usize, definition: usize, days: i32) {
     }
 }
 pub(super) fn reactivated(status: usize, definition: usize, instance: usize) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let result = (|| {
         let days = field::<i32>(&memory, instance, engine_decisions::ctimed_decision::DAYS)?;
         let state = field::<i32>(&memory, instance, engine_decisions::ctimed_decision::STATE)?;
@@ -269,7 +269,7 @@ fn publish_activation(
     let base = BASE.load(Ordering::Acquire);
     if instance == 0
         || engine_sites::at(base, engine_decisions::ctimed_decision::VTABLE_RVA).is_none_or(
-            |vtable| engine_native::read::<u64>(memory, instance) != Some(vtable as u64),
+            |vtable| engine_native_memory::read::<u64>(memory, instance) != Some(vtable as u64),
         )
         || field::<u64>(
             memory,
@@ -309,7 +309,7 @@ unsafe extern "system-unwind" fn activate_targeted(
     let original: Original =
         unsafe { std::mem::transmute(ACTIVATION_ORIGINAL.load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(status, definition, selector) });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let observed = (|| {
         let container = if field::<u8>(
             &memory,
@@ -364,14 +364,14 @@ unsafe extern "system-unwind" fn activate_targeted(
     result
 }
 
-fn field<T: engine_native::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
 ) -> Result<T, &'static str> {
     object
         .checked_add(offset)
-        .and_then(|at| engine_native::read(memory, at))
+        .and_then(|at| engine_native_memory::read(memory, at))
         .ok_or("script event field unreadable or overflowed")
 }
 pub(crate) fn definition(
@@ -387,7 +387,7 @@ pub(crate) fn definition(
 > {
     if event == 0
         || engine_sites::at(base, cevent::VTABLE_RVA)
-            .is_none_or(|vtable| engine_native::read::<u64>(memory, event) != Some(vtable as u64))
+            .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, event) != Some(vtable as u64))
     {
         return Err("script event definition vtable unreadable or differs");
     }
@@ -438,7 +438,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             });
         }
         1 => {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             match field::<u32>(&memory, registers.rsi, cevent::OPTION_COUNT) {
                 Ok(0) => {}
                 Ok(_) => feed::script_instance(registers.rbp, registers.rdi as u32),
@@ -512,7 +512,7 @@ unsafe extern "system-unwind" fn register(
 unsafe extern "system-unwind" fn remove_pending(state: usize, instance: usize) -> usize {
     let mut flight = Flight::enter();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let before = field::<u32>(
         &memory,
         state,
@@ -553,8 +553,8 @@ unsafe extern "system-unwind" fn remove_pending(state: usize, instance: usize) -
 unsafe extern "system-unwind" fn retire_pending(array: usize, ordinal: usize) -> usize {
     let mut flight = Flight::enter();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let before = engine_native::cpdx_array::Array::read(
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    let before = engine_native_memory::cpdx_array::Array::read(
         &memory,
         array,
         engine_events::script_event_registry::PENDING_STRIDE,
@@ -589,7 +589,7 @@ unsafe extern "system-unwind" fn retire_pending(array: usize, ordinal: usize) ->
             return Err("pending retirement world differs");
         }
         let (count, instance) = before?;
-        let after = engine_native::cpdx_array::Array::read(
+        let after = engine_native_memory::cpdx_array::Array::read(
             memory,
             array,
             engine_events::script_event_registry::PENDING_STRIDE,
@@ -638,7 +638,7 @@ fn option(event: usize, scope: usize, ordinal: i32) {
             .checked_sub(native::OPTION_COMMAND_SCOPE)
             .ok_or("event option command address underflow")?;
         if engine_sites::at(base, native::OPTION_COMMAND_VTABLE_RVA)
-            .is_none_or(|vtable| engine_native::read::<u64>(memory, command) != Some(vtable as u64))
+            .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, command) != Some(vtable as u64))
         {
             return Err("event option command vtable unreadable or differs");
         }
@@ -866,7 +866,7 @@ mod tests {
             (-1, None),
         ] {
             bytes[0x28..0x2c].copy_from_slice(&state.to_le_bytes());
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             };
@@ -879,7 +879,7 @@ mod tests {
         let mut standalone = [0_u8; 0x28];
         standalone[0x18..0x20].copy_from_slice(&(TARGET_VTABLE_RVA.0 as u64).to_le_bytes());
         standalone[0x20..0x24].copy_from_slice(&7_i32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &standalone,
         };
@@ -889,7 +889,7 @@ mod tests {
         );
         assert_eq!(selected_instance(&memory, 0, 0x1018, 99), Ok(None));
         standalone[0x18..0x20].fill(0);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &standalone,
         };

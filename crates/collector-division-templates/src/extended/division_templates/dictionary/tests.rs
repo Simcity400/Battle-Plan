@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 const FIRST: usize = 0x1000;
 const SECOND: usize = 0x2000;
@@ -69,7 +69,7 @@ impl Hour {
     }
 }
 
-fn hour(memory: &impl engine_native::Memory, icons: &(Vec<native::IconRow>, Vec<u8>)) -> Hour {
+fn hour(memory: &impl engine_native_memory::Memory, icons: &(Vec<native::IconRow>, Vec<u8>)) -> Hour {
     let (mut rows, mut bytes) = (Vec::new(), Vec::new());
     let (outcome, rereads) = derive(
         memory,
@@ -90,7 +90,7 @@ fn hour(memory: &impl engine_native::Memory, icons: &(Vec<native::IconRow>, Vec<
 #[test]
 fn the_walks_names_are_published_without_a_read() {
     struct Unreadable;
-    impl engine_native::Memory for Unreadable {
+    impl engine_native_memory::Memory for Unreadable {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("the walk supplied every name")
         }

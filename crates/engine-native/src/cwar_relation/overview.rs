@@ -1,15 +1,11 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 #[cfg(test)]
 #[path = "overview_tests.rs"]
 mod tests;
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
 use crate::{
-    Memory,
     ccountry,
-     cpdx_array::Array,
     crelation::{self, status as crelation_status, subject as csubject_relation},
     cwar_relation::goals as cwar_goal,
-    read,
-    walk::{Buffer, Outcome},
 };
 use engine_sites::Rva;
 
@@ -51,7 +47,7 @@ pub struct Demand {
     pub relations: usize,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -90,11 +86,11 @@ fn element(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'st
 fn diplomacy(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let pointer = field::<u64>(memory, country.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
-    vtable(memory, base, pointer, cdiplomacy_status::VTABLE_RVA)?;
-    if field::<u64>(memory, pointer, cdiplomacy_status::COUNTRY)? != country.pointer as u64 {
+    vtable(memory, base, pointer, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    if field::<u64>(memory, pointer, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country.pointer as u64 {
         return Err("war overview diplomacy owner mismatch");
     }
     Ok(pointer)
@@ -110,7 +106,7 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand,
         let owned = array(
             memory,
             diplomacy(memory, base, country)?,
-            cdiplomacy_status::OWNED_RELATIONS,
+            engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             8,
         )?;
         demand.relations = demand
@@ -157,7 +153,7 @@ pub struct CountrySource {
 }
 #[derive(Clone, Copy, Debug)]
 struct Visit {
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     diplomacy: usize,
     has_war: bool,
 }
@@ -189,12 +185,12 @@ pub struct DiscoveryCache {
 impl DiscoveryCache {
     pub fn new(countries: usize, relations: usize) -> Self {
         Self::try_new(countries, relations).unwrap_or_else(|error| {
-            let _ = crate::allocation::owned_vec::<u8>(Err(error));
+            let _ = engine_allocation::owned_vec::<u8>(Err(error));
             Self::try_new(0, 0).unwrap()
         })
     }
     pub fn try_new(countries: usize, relations: usize) -> std::io::Result<Self> {
-        use crate::allocation;
+        use engine_allocation as allocation;
         let types = allocation::mul(relations, 4)?;
         Ok(Self {
             generation: 0,
@@ -243,7 +239,7 @@ impl DiscoveryCache {
         let _ = self.try_grow(countries, relations);
     }
     pub fn try_grow(&mut self, countries: usize, relations: usize) -> std::io::Result<()> {
-        use crate::allocation;
+        use engine_allocation as allocation;
         let countries = countries.max(self.headers.len());
         let relations = relations.max(self.required).max(self.pointers.len());
         let types = allocation::mul(relations, 4)?;
@@ -284,7 +280,12 @@ fn gather<const F: usize, const B: usize>(
     if pointers.is_empty() {
         return Ok(());
     }
-    use crate::memory::{RecordLayout, RecordSources, packed_fields, packed_stride};
+    use engine_native_memory::memory::{
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+        packed_stride,
+    };
     let fields = packed_fields(spans);
     let layout = RecordLayout::new(&fields, packed_stride(spans)).unwrap();
     if memory.copy_records(RecordSources::Pointers(pointers), &layout, bytes) != pointers.len() * F
@@ -548,7 +549,7 @@ pub fn walk_cached_with_owners(
     goals: &mut Vec<cwar_goal::relation::Row>,
     scores: &mut Vec<CountryRow>,
     cache: &mut DiscoveryCache,
-    owners: &mut dyn FnMut(ccountry::Country, usize),
+    owners: &mut dyn FnMut(engine_native_memory::country_identity::Country, usize),
     certify: &mut dyn FnMut() -> bool,
 ) -> [Outcome; 3] {
     walk_cached_buffer(
@@ -571,7 +572,7 @@ fn carry_held(
     goals: &mut Buffer<'_, cwar_goal::relation::Row>,
     scores: &mut Buffer<'_, CountryRow>,
     cache: &mut DiscoveryCache,
-    owners: &mut dyn FnMut(ccountry::Country, usize),
+    owners: &mut dyn FnMut(engine_native_memory::country_identity::Country, usize),
     certify: &mut dyn FnMut() -> bool,
     used: &mut [usize; 3],
     wanted: &mut [usize; 3],
@@ -640,7 +641,7 @@ fn walk_cached_buffer(
     mut goals: Buffer<'_, cwar_goal::relation::Row>,
     mut scores: Buffer<'_, CountryRow>,
     cache: &mut DiscoveryCache,
-    owners: &mut dyn FnMut(ccountry::Country, usize),
+    owners: &mut dyn FnMut(engine_native_memory::country_identity::Country, usize),
     certify: &mut dyn FnMut() -> bool,
 ) -> [Outcome; 3] {
     if cache.scope != Some((base, state)) {
@@ -729,8 +730,8 @@ fn walk_cached_buffer(
                     &roots[..n],
                     [
                         (0, 8),
-                        (cdiplomacy_status::OWNED_RELATIONS, 16),
-                        (cdiplomacy_status::COUNTRY, 8),
+                        (engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 16),
+                        (engine_native_parts::cdiplomacy_status_layout::COUNTRY, 8),
                     ],
                     &mut records,
                 )?;
@@ -769,7 +770,7 @@ fn walk_cached_buffer(
                     let root = roots[index];
                     let record = &records[index * 32..(index + 1) * 32];
                     if pointer(record)
-                        != engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+                        != engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
                             .ok_or("war diplomacy vtable withheld")?
                     {
                         return Err("war overview vtable mismatch");
@@ -779,8 +780,8 @@ fn walk_cached_buffer(
                     }
                     owners(country, root);
                     let owned = vectors[index];
-                    holdable &= crate::allocation::advisory(|| {
-                        crate::allocation::reserve(&mut cache.next.visits, 1)
+                    holdable &= engine_allocation::advisory(|| {
+                        engine_allocation::reserve(&mut cache.next.visits, 1)
                     })
                     .is_ok();
                     if holdable {
@@ -826,7 +827,7 @@ fn walk_cached_buffer(
                         let handles = if first_ordinal == 0 {
                             &owned_pages[index * 512..(index + 1) * 512]
                         } else {
-                            if !crate::read_slice(
+                            if !engine_native_memory::read_slice(
                                 memory,
                                 owned
                                     .element(first_ordinal, 8)
@@ -950,8 +951,8 @@ fn walk_cached_buffer(
             cache.required = entry_start;
             holdable &= used[1] == wanted[1]
                 && used[0] <= cache.next_rows.len()
-                && crate::allocation::advisory(|| {
-                    crate::allocation::reserve(&mut cache.next.goals, used[1])
+                && engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut cache.next.goals, used[1])
                 })
                 .is_ok();
             if holdable {
@@ -1102,14 +1103,14 @@ fn cached_subject(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    view: ccountry::Country,
-    target: ccountry::Country,
+    view: engine_native_memory::country_identity::Country,
+    target: engine_native_memory::country_identity::Country,
 ) -> Result<bool, &'static str> {
     if view.canonical_slot == target.canonical_slot {
         return Ok(false);
     }
     let root = diplomacy(memory, base, view)?;
-    let matrix = array(memory, root, cdiplomacy_status::RELATIONS, 8)?;
+    let matrix = array(memory, root, engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)?;
     let status = element(memory, matrix, target.canonical_slot)?;
     vtable(memory, base, status, crelation_status::VTABLE_RVA)?;
     if field::<u64>(memory, status, crelation_status::DIPLOMACY_STATUS)? != root as u64

@@ -13,6 +13,8 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-native-air.workspace = true
 engine-native-naval.workspace = true
 game-model.workspace = true
@@ -39,7 +41,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

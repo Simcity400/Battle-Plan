@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_c848);
 pub const COUNTRY: usize = 8;

@@ -456,7 +456,7 @@ pub(crate) struct Categories {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TransportEnemy {
     raw: u32,
-    enemy: ccountry::Country,
+    enemy: engine_native_memory::country_identity::Country,
     lanes: Result<(i64, i64), &'static str>,
 }
 
@@ -691,7 +691,7 @@ fn air(
         if field::<i32>(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)? != 0 {
             return Ok(true);
         }
-        let relations = array(memory, diplomacy, cdiplomacy_status::OWNED_RELATIONS, 8)?;
+        let relations = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 8)?;
         owned_war_relation(memory, relations)
     })?;
     let region =
@@ -738,7 +738,7 @@ fn transport_intel_lane(
     countries: &ccountry::Reader<'_, impl Memory>,
     source: usize,
     target: usize,
-    target_country: ccountry::Country,
+    target_country: engine_native_memory::country_identity::Country,
 ) -> Result<i64, &'static str> {
     use engine_native_intelligence::{ccountry_intel, country_intel_row};
     let raw = field::<i32>(memory, target, ccountry_intel::OWNER)?;
@@ -768,7 +768,7 @@ fn transport_owner(
     base: usize,
     game: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    owner: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
     arena: &mut Vec<TransportEnemy>,
 ) -> Result<TransportOwner, &'static str> {
     use engine_native_intelligence::ccountry_intel;
@@ -778,11 +778,11 @@ fn transport_owner(
     let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
     auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
     let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
-    auth(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-    if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
+    auth(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    if pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != owner.pointer {
         return Err("reinforcement transport diplomacy backlink mismatch");
     }
-    let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
+    let enemies = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 4)?;
     let start = arena.len();
     let mut failure = None;
     for index in 0..enemies.count {
@@ -793,8 +793,8 @@ fn transport_owner(
                 return Ok(None);
             }
             let enemy_diplomacy = pointer(memory, enemy.pointer, ccountry::DIPLOMACY_STATUS)?;
-            auth(memory, base, enemy_diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-            if pointer(memory, enemy_diplomacy, cdiplomacy_status::COUNTRY)? != enemy.pointer {
+            auth(memory, base, enemy_diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+            if pointer(memory, enemy_diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != enemy.pointer {
                 return Err("reinforcement transport enemy backlink mismatch");
             }
             if field::<u8>(memory, enemy_diplomacy, cdiplomacy_status::CAPITULATED)? != 0 {
@@ -994,7 +994,7 @@ fn transport_context(
                 memory,
                 base,
                 sources,
-                owner.pointer + ccountry::MODIFIER_ACCUMULATOR,
+                owner.pointer + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
                 9,
                 &[keys::NAVAL_MINES_EFFECT_REDUCTION],
                 modifiers,
@@ -1100,7 +1100,7 @@ pub fn capture_context_buffer(
     let leader = sources.leader_chain(memory, base, army, expected_handle)?;
     let country_accumulator = owner
         .pointer
-        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .ok_or("reinforcement country overflow")?;
     let actual_state =
         sources.field::<u64>(memory, location, cprovince::STATE, UNREADABLE)? as usize;

@@ -1,7 +1,8 @@
 
 use crate::table_capture::{Arena, grow_vec};
 use collector_observers::retreat_ban_changes;
-use engine_native::{Memory, carmy, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::carmy;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Default)]
@@ -185,7 +186,7 @@ mod tests {
 
     #[test]
     fn each_division_keeps_its_own_factor_or_refusal() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[],
         };
@@ -279,11 +280,11 @@ mod tests {
     impl Memory for Commanders {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.borrow_mut().push(address);
-            if address == engine_native::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
+            if address == engine_native_parts::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&(DEFINITIONS as u64).to_le_bytes());
                 return true;
             }
-            if address == engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 {
+            if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 {
                 output.fill(0);
                 return true;
             }
@@ -291,7 +292,7 @@ mod tests {
                 output.fill(0);
                 return true;
             }
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &self.bytes,
             }
@@ -360,7 +361,7 @@ mod tests {
                 assert_eq!(memory.count(modifiers), block);
             }
             assert_eq!(
-                memory.count(engine_native::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
+                memory.count(engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0),
                 1
             );
         }
@@ -521,7 +522,7 @@ mod tests {
 
     #[test]
     fn incomplete_census_publishes_no_factor() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &[],
         };

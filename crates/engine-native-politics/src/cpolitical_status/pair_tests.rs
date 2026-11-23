@@ -53,11 +53,11 @@ impl TraceMemory {
         }
         memory.put(
             PARTY,
-            &((BASE + cpolitical_party::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
-        memory.put(PARTY + cpolitical_party::ID, &33_u32.to_le_bytes());
+        memory.put(PARTY + engine_native_parts::cpolitical_party_layout::ID, &33_u32.to_le_bytes());
         memory.put(
-            PARTY + cpolitical_party::IDEOLOGY_GROUP,
+            PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP,
             &(IDEOLOGY as u64).to_le_bytes(),
         );
         memory.put(
@@ -285,7 +285,7 @@ fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
     let ruling_party = if pointer == 0 {
         None
     } else {
-        Some(cpolitical_party::identity(reader.memory, reader.base, pointer)?.0)
+        Some(engine_native_parts::cpolitical_party_layout::identity(reader.memory, reader.base, pointer)?.0)
     };
     Ok(Row {
         last_election,
@@ -348,7 +348,7 @@ fn ordinary_reads() -> [(usize, usize); 6] {
         (COUNTRY_POINTER + ccountry::CAPITAL, 8),
         (STATUS + RULING_PARTY, RULING_SPAN),
         (PARTY, 12),
-        (PARTY + cpolitical_party::IDEOLOGY_GROUP, 8),
+        (PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, 8),
         (IDEOLOGY, 12),
     ]
 }
@@ -442,7 +442,7 @@ fn politics_pairs_keep_null_and_identity_validation_stops() {
             4,
         ),
         (
-            PARTY + cpolitical_party::IDEOLOGY_GROUP,
+            PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP,
             0_u64.to_le_bytes().to_vec(),
             "political party ideology pointer unreadable or null",
             5,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{creference_registry as registry, reference_bucket as bucket};
+use engine_native_parts::{creference_registry as registry, reference_bucket as bucket};
 use std::collections::BTreeMap;
 
 mod batched_orders {
@@ -146,10 +146,10 @@ mod batched_orders {
         let (image, groups) = world(1, 32);
         let at = 0x3000_0000 + 20 * 0x1000 + PATH_DATA;
         let serial = capture(&image, &groups, true, Some(at), true);
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::OrderCensus);
         let batched = capture(&image, &groups, false, Some(at), true);
         assert_eq!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus),
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::OrderCensus),
             before + 1
         );
         assert!(batched.0.walk.visited >= serial.0.walk.visited);
@@ -195,10 +195,10 @@ mod batched_orders {
         let (mut image, groups) = world(1, 32);
         let at = 0x2000_0000 + 8;
         image.array(0x3000_0000 + SUCCESSOR_DATA, at, 1);
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::OrderCensus);
         let batch = capture(&image, &groups, false, Some(at), true);
         assert_eq!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::OrderCensus),
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::OrderCensus),
             before + 1
         );
         let serial = capture(&image, &groups, true, Some(at), true);
@@ -706,7 +706,7 @@ fn plan_walks_hint_every_direct_read_ahead_and_change_no_read_or_row() {
         let order = MORE + index * 0x1000;
         image.order(order, 100 + index as u32, TYPE_MOVE);
         for offset in NAME_STRINGS {
-            image.u64(order + offset + crate::msvc_string::CAPACITY, 15);
+            image.u64(order + offset + engine_native_memory::msvc_string::CAPACITY, 15);
         }
         image.u64(LIST + (index + 1) * 8, order as u64);
         orders.push(order);
@@ -837,14 +837,14 @@ fn plan_dependents_are_hinted_one_batch_before_their_reads() {
         let order = MORE + index * 0x1000;
         image.order(order, 100 + index as u32, TYPE_MOVE);
         for offset in NAME_STRINGS {
-            image.u64(order + offset + crate::msvc_string::CAPACITY, 15);
+            image.u64(order + offset + engine_native_memory::msvc_string::CAPACITY, 15);
         }
         let text = TEXTS + index * 0x100;
         let unique = order + NAME_STRINGS[4];
         image.bytes(text, b"Synthetic Plan Alpha\0");
         image.u64(unique, text as u64);
-        image.u64(unique + crate::msvc_string::LENGTH, 20);
-        image.u64(unique + crate::msvc_string::CAPACITY, 31);
+        image.u64(unique + engine_native_memory::msvc_string::LENGTH, 20);
+        image.u64(unique + engine_native_memory::msvc_string::CAPACITY, 31);
         let predecessors = PREDECESSORS + index * 0x100;
         image.array(order + PREDECESSOR_DATA, predecessors, 1);
         image.u64(predecessors, FIRST as u64);
@@ -1226,7 +1226,7 @@ fn census_successor_lists_give_the_rows_of_rereading_them() {
     image.u64(VIRTUAL_SUCCESSORS + 8, FIRST as u64);
     image.order(FALLBACK, 19, TYPE_MOVE);
     for offset in NAME_STRINGS {
-        image.u64(FALLBACK + offset + crate::msvc_string::CAPACITY, 15);
+        image.u64(FALLBACK + offset + engine_native_memory::msvc_string::CAPACITY, 15);
     }
     image.array(
         GROUP + corders_group::SECONDARY_ORDER_DATA,
@@ -1965,7 +1965,7 @@ impl Memory for Holed<'_> {
 
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
@@ -2027,24 +2027,24 @@ fn plan_fixture() -> (MemoryImage, [usize; 2]) {
     image.u64(FIRST + OWNER_OVERRIDE, GROUP as u64);
     image.u32(SECOND + TYPE, TYPE_MOVE as u32);
     for offset in NAME_STRINGS {
-        image.u64(SECOND + offset + crate::msvc_string::CAPACITY, 15);
+        image.u64(SECOND + offset + engine_native_memory::msvc_string::CAPACITY, 15);
     }
     image.bytes(SECOND + NAME_STRINGS[0], b"fixture_key\0");
-    image.u64(SECOND + NAME_STRINGS[0] + crate::msvc_string::LENGTH, 11);
+    image.u64(SECOND + NAME_STRINGS[0] + engine_native_memory::msvc_string::LENGTH, 11);
     let unique = b"Synthetic Heights";
     image.bytes(UNIQUE, b"Synthetic Heights\0");
     image.u64(SECOND + NAME_STRINGS[4], UNIQUE as u64);
-    image.u64(SECOND + NAME_STRINGS[4] + crate::msvc_string::LENGTH, 17);
-    image.u64(SECOND + NAME_STRINGS[4] + crate::msvc_string::CAPACITY, 31);
+    image.u64(SECOND + NAME_STRINGS[4] + engine_native_memory::msvc_string::LENGTH, 17);
+    image.u64(SECOND + NAME_STRINGS[4] + engine_native_memory::msvc_string::CAPACITY, 31);
     let group_name = b"Synthetic Army Group Epsilon";
     image.bytes(GROUP_NAME, b"Synthetic Army Group Epsilon\0");
     image.u64(GROUP + corders_group::NAME, GROUP_NAME as u64);
     image.u64(
-        GROUP + corders_group::NAME + crate::msvc_string::LENGTH,
+        GROUP + corders_group::NAME + engine_native_memory::msvc_string::LENGTH,
         group_name.len() as u64,
     );
     image.u64(
-        GROUP + corders_group::NAME + crate::msvc_string::CAPACITY,
+        GROUP + corders_group::NAME + engine_native_memory::msvc_string::CAPACITY,
         31,
     );
     image.u32(GROUP + corders_group::COLOUR, 0x7fc0_1234);
@@ -2579,7 +2579,7 @@ fn a_census_over_walked_roots_is_the_census_that_walks_them() {
 
 #[test]
 fn type_driven_name_records_match_per_field_reads_for_every_order_type() {
-    use crate::msvc_string::{CAPACITY, LENGTH};
+    use engine_native_memory::msvc_string::{CAPACITY, LENGTH};
     const UNIQUE: usize = 0x70000;
     let orders = [FIRST, SECOND, CHILD];
     let payloads = [20];
@@ -3209,14 +3209,14 @@ fn groups_fixture(groups: usize, orders: usize) -> (MemoryImage, Vec<Vec<usize>>
             if index == 0 {
                 image.u32(order + TYPE, TYPE_MOVE as u32);
                 for offset in NAME_STRINGS {
-                    image.u64(order + offset + crate::msvc_string::CAPACITY, 15);
+                    image.u64(order + offset + engine_native_memory::msvc_string::CAPACITY, 15);
                 }
                 let text = 0xc0000 + group * 0x100;
                 image.bytes(text, b"Operation Bagration\0");
                 let unique = order + NAME_STRINGS[4];
                 image.u64(unique, text as u64);
-                image.u64(unique + crate::msvc_string::LENGTH, 19);
-                image.u64(unique + crate::msvc_string::CAPACITY, 31);
+                image.u64(unique + engine_native_memory::msvc_string::LENGTH, 19);
+                image.u64(unique + engine_native_memory::msvc_string::CAPACITY, 31);
                 let path = 0xb0000 + group * 0x100;
                 image.bytes(path, &[0; 8]);
                 image.u32(path, group as u32 + 10);
@@ -3913,7 +3913,7 @@ fn assigned_hosts_of_a_member_chunk_are_gathered_in_one_record_copy() {
         }
         fn copy_records(
             &self,
-            sources: crate::memory::RecordSources<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
             layout: &RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {

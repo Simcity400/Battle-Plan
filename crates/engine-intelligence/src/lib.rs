@@ -1,20 +1,5 @@
 
-#[cfg(test)]
-use engine_native_intelligence::coperation;
-use engine_native::{
-    Memory,
-    ccharacter,
-    ccountry,
-    cgame_state,
-    cpdx_array,
-    csubject_relation,
-    memory,
-    read,
-    read_slice,
-    slot_set,
-    walk,
-};
-use engine_native_intelligence::{coperation_instance, operation_assigned_operative};
+use engine_native::crelation::subject as csubject_relation;
 
 pub mod agency_operation_buffers;
 pub mod ccountry_collaboration_data;

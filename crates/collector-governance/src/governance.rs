@@ -8,7 +8,9 @@ use crate::{
 use engine_allocation::{copy_vec, default_vec, owned_vec, reserve, reserve_push_batch};
 use engine_decisions::cdecision_status;
 use engine_focus::cnational_focus_progress;
-use engine_native::{Memory, ccombat_tactic, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native_parts::ccombat_tactic;
+use engine_native::ccountry;
 use engine_native_politics::{cpolitical_party, cpolitical_status};
 use engine_power_balance::{
     power_balance_gfx_override, power_balance_manager, power_balance_range, power_balance_record,
@@ -393,11 +395,11 @@ impl ResearchPart {
                                 context.base,
                                 country.id,
                                 country.pointer,
-                                engine_native::walk::Buffer::Growing(&mut self.inputs.rows)
+                                engine_native_memory::walk::Buffer::Growing(&mut self.inputs.rows)
                                     .suffix(input_start),
-                                engine_native::walk::Buffer::Growing(&mut self.bonuses.rows)
+                                engine_native_memory::walk::Buffer::Growing(&mut self.bonuses.rows)
                                     .suffix(bonus_start),
-                                engine_native::walk::Buffer::Growing(&mut self.modifiers.rows)
+                                engine_native_memory::walk::Buffer::Growing(&mut self.modifiers.rows)
                                     .suffix(modifier_start),
                             )
                         } else {
@@ -433,9 +435,9 @@ impl ResearchPart {
                                 country.pointer,
                                 country.id,
                                 research_context,
-                                engine_native::walk::Buffer::Growing(&mut self.inputs.rows)
+                                engine_native_memory::walk::Buffer::Growing(&mut self.inputs.rows)
                                     .suffix(outcomes[0].len()),
-                                engine_native::walk::Buffer::Growing(&mut self.bonuses.rows)
+                                engine_native_memory::walk::Buffer::Growing(&mut self.bonuses.rows)
                                     .suffix(outcomes[1].len()),
                             );
                         let mut modifiers = Outcome::Rows { len: 0 };
@@ -452,7 +454,7 @@ impl ResearchPart {
                                         status_pointer,
                                         &self.bonuses.rows
                                             [outcomes[1].len()..outcomes[1].len() + bonuses.len()],
-                                        engine_native::walk::Buffer::Growing(&mut self.modifiers.rows)
+                                        engine_native_memory::walk::Buffer::Growing(&mut self.modifiers.rows)
                                             .suffix(outcomes[2].len()),
                                         take_available,
                                     )
@@ -465,7 +467,7 @@ impl ResearchPart {
                                         country,
                                         modifier_context,
                                         &self.inputs.rows[input_start..input_start + len],
-                                        engine_native::walk::Buffer::Growing(&mut self.modifiers.rows)
+                                        engine_native_memory::walk::Buffer::Growing(&mut self.modifiers.rows)
                                             .suffix(outcomes[2].len()),
                                         take_available,
                                     )
@@ -1329,14 +1331,14 @@ impl Captured {
             }
             let manager = state
                 .checked_add(engine_native::cgame_state::POWER_BALANCE_MANAGER)
-                .and_then(|p| engine_native::read::<u64>(memory, p))
+                .and_then(|p| engine_native_memory::read::<u64>(memory, p))
                 .filter(|&p| p != 0)
                 .ok_or("power balance modifier breakdown manager unreadable or null")?
                 as usize;
             let roster = manager
                 .checked_add(power_balance_manager::RECORDS)
                 .and_then(|p| {
-                    engine_native::cpdx_array::Array::read(memory, p, power_balance_record::STRIDE)
+                    engine_native_memory::cpdx_array::Array::read(memory, p, power_balance_record::STRIDE)
                 })
                 .ok_or("power balance modifier breakdown roster unreadable or invalid")?;
             if roster.count as usize != self.balances.outcome.len() {
@@ -1842,9 +1844,9 @@ fn acquire_partitioned(
                             base,
                             country.pointer,
                             country.id,
-                            engine_native::walk::Buffer::Growing(b.focus).suffix(first),
-                            engine_native::walk::Buffer::Growing(b.completed).suffix(completed),
-                            engine_native::walk::Buffer::Growing(b.focus_text).suffix(text),
+                            engine_native_memory::walk::Buffer::Growing(b.focus).suffix(first),
+                            engine_native_memory::walk::Buffer::Growing(b.completed).suffix(completed),
+                            engine_native_memory::walk::Buffer::Growing(b.focus_text).suffix(text),
                         );
                         for row in &mut b.focus[first..first + result.outcome.len()] {
                             for span in [&mut row.tree, &mut row.current, &mut row.continuous]
@@ -1951,7 +1953,7 @@ fn acquire_partitioned(
                             base,
                             country.pointer,
                             country.id,
-                            engine_native::walk::Buffer::Growing(b.slots).suffix(first),
+                            engine_native_memory::walk::Buffer::Growing(b.slots).suffix(first),
                         );
                         if let Some((rows, len)) = technology_hold.take() {
                             let slots = match result {
@@ -2006,7 +2008,7 @@ fn acquire_partitioned(
                                     let leaders = qpc();
                                     let first = o.outcomes[21].len();
                                     let mut rows =
-                                        engine_native::walk::Buffer::Growing(b.party_leaders);
+                                        engine_native_memory::walk::Buffer::Growing(b.party_leaders);
                                     let output = rows.suffix(first);
                                     let result = match leader_reuse.as_mut() {
                                         Some(carry) => {
@@ -2034,8 +2036,8 @@ fn acquire_partitioned(
                                 let first = o.outcomes[6].len();
                                 let text = o.lens[2];
                                 let (rows, bytes) = (
-                                    engine_native::walk::Buffer::Growing(&mut *b.parties),
-                                    engine_native::walk::Buffer::Growing(&mut *b.party_text),
+                                    engine_native_memory::walk::Buffer::Growing(&mut *b.parties),
+                                    engine_native_memory::walk::Buffer::Growing(&mut *b.party_text),
                                 );
                                 let mut result = match politics_reuse.as_mut() {
                                     Some(carry) => reader.parties_carried(
@@ -2069,9 +2071,9 @@ fn acquire_partitioned(
                                     let first = o.outcomes[7].len();
                                     let text = o.lens[3];
                                     let mut rows =
-                                        engine_native::walk::Buffer::Growing(&mut *b.ideas);
+                                        engine_native_memory::walk::Buffer::Growing(&mut *b.ideas);
                                     let mut bytes =
-                                        engine_native::walk::Buffer::Growing(&mut *b.idea_text);
+                                        engine_native_memory::walk::Buffer::Growing(&mut *b.idea_text);
                                     let (rows, bytes) = (rows.suffix(first), bytes.suffix(text));
                                     let mut result = match politics_reuse.as_mut() {
                                         Some(carry) => {
@@ -2084,7 +2086,7 @@ fn acquire_partitioned(
                                             &mut cpolitical_status::FreshIdeas,
                                         ),
                                     };
-                                    if engine_native::walk::Buffer::Growing(b.idea_countries)
+                                    if engine_native_memory::walk::Buffer::Growing(b.idea_countries)
                                         .ensure(first + result.outcome.len())
                                         .is_err()
                                     {
@@ -2134,8 +2136,8 @@ fn acquire_partitioned(
                                 base,
                                 game_state,
                                 country.pointer,
-                                engine_native::walk::Buffer::Growing(b.decisions).suffix(first),
-                                engine_native::walk::Buffer::Growing(b.decision_text).suffix(text),
+                                engine_native_memory::walk::Buffer::Growing(b.decisions).suffix(first),
+                                engine_native_memory::walk::Buffer::Growing(b.decision_text).suffix(text),
                                 engine_decisions::border_effect_demand::Demand {
                                     names: &b.effect_names.first[..b.effect_names.len],
                                     bytes: &b.effect_bytes.first[..b.effect_bytes.len],
@@ -2145,8 +2147,8 @@ fn acquire_partitioned(
                                 memory,
                                 base,
                                 country.pointer,
-                                engine_native::walk::Buffer::Growing(b.decisions).suffix(first),
-                                engine_native::walk::Buffer::Growing(b.decision_text).suffix(text),
+                                engine_native_memory::walk::Buffer::Growing(b.decisions).suffix(first),
+                                engine_native_memory::walk::Buffer::Growing(b.decision_text).suffix(text),
                             ),
                         };
                         let owners_ready =
@@ -2249,7 +2251,7 @@ fn acquire_partitioned(
                             base,
                             country.pointer,
                             country.id,
-                            engine_native::walk::Buffer::Growing(b.tactic_text).suffix(text),
+                            engine_native_memory::walk::Buffer::Growing(b.tactic_text).suffix(text),
                         );
                         let result = match selected.outcome {
                             Outcome::Rows { .. } => {
@@ -2374,11 +2376,11 @@ fn acquire_partitioned(
             base,
             game_state,
             power_balance_manager::Buffers {
-                records: engine_native::walk::Buffer::Growing(b.balances),
-                members: engine_native::walk::Buffer::Growing(b.balance_members),
-                ranges: engine_native::walk::Buffer::Growing(b.ranges),
-                overrides: engine_native::walk::Buffer::Growing(b.overrides),
-                text: engine_native::walk::Buffer::Growing(b.balance_text),
+                records: engine_native_memory::walk::Buffer::Growing(b.balances),
+                members: engine_native_memory::walk::Buffer::Growing(b.balance_members),
+                ranges: engine_native_memory::walk::Buffer::Growing(b.ranges),
+                overrides: engine_native_memory::walk::Buffer::Growing(b.overrides),
+                text: engine_native_memory::walk::Buffer::Growing(b.balance_text),
             },
         );
         o.outcomes[14] = result.records;

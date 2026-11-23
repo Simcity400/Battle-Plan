@@ -620,7 +620,7 @@ fn worker_width_and_context_accumulator_accept_mod_sized_native_vectors() {
         memory.image.resize(0x40_0000, 0);
         memory.array(0xb0c0, 0x20_0000, count as u32);
         memory.array(
-            0x9000 + engine_native::ccountry::MODIFIER_ACCUMULATOR,
+            0x9000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             0x10_0000,
             count as u32,
         );
@@ -722,7 +722,7 @@ fn context_fixture() -> ContextMemory {
     memory.put(0x6104, &1_u32.to_le_bytes());
     memory.u64(0x9000, engine_native::ccountry::VTABLE_RVA.0 as u64);
     memory.put(0x9008, &1_u32.to_le_bytes());
-    memory.array(0x9000 + engine_native::ccountry::MODIFIER_ACCUMULATOR, 0xa000, 3);
+    memory.array(0x9000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0xa000, 3);
     for (index, key) in CONTEXT_MODIFIER_KEYS.into_iter().enumerate() {
         memory.put(0xa000 + index * 16, &key.to_le_bytes());
         memory.u64(0xa008 + index * 16, (-111_i64 - index as i64) as u64);
@@ -857,7 +857,7 @@ fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
 #[test]
 fn context_modifier_census_fails_at_its_read_and_on_a_malformed_suffix() {
     let mut source = context_fixture();
-    let address = 0x9000 + engine_native::ccountry::MODIFIER_ACCUMULATOR;
+    let address = 0x9000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     for ordinal in [0, 1] {
         let mut observed = Observed::new(&source);
         observed.fault = Some(ordinal);
@@ -1031,7 +1031,7 @@ fn exile_country_faults_fail_the_division_with_their_reason() {
 #[test]
 fn width_context_reports_a_malformed_accumulator() {
     let mut memory = context_fixture();
-    memory.array(0x9000 + engine_native::ccountry::MODIFIER_ACCUMULATOR, 0xa000, 4097);
+    memory.array(0x9000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0xa000, 4097);
     assert_eq!(
         capture_context_at(
             &memory,

@@ -1,4 +1,4 @@
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use engine_peace::{
     peace_action, peace_conference as c, peace_settlement as p, peace_settlement::Action,
     peace_settlement::Subject, peace_settlement::Transfer,
@@ -6,7 +6,7 @@ use engine_peace::{
 
 use crate::support::peace_world::Fixture;
 
-use engine_native::walk::Buffer;
+use engine_native_memory::walk::Buffer;
 
 #[test]
 fn peace_owned_native_order_mod_tokens_and_statuses() {
@@ -152,12 +152,12 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
         0,
         0x100,
         p::Output {
-            winners: engine_native::walk::Buffer::Count,
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Count,
-            transfers: engine_native::walk::Buffer::Count,
-            subjects: engine_native::walk::Buffer::Count,
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Count,
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Count,
+            transfers: engine_native_memory::walk::Buffer::Count,
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(bids.failure, None);
@@ -171,7 +171,7 @@ fn peace_tree_cycle_budget_follows_the_live_header_size() {
         memory: SliceMemory<'a>,
         calls: Cell<usize>,
     }
-    impl engine_native::Memory for Count<'_> {
+    impl engine_native_memory::Memory for Count<'_> {
         fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
             self.calls.set(self.calls.get() + 1);
             self.memory.copy(at, bytes)
@@ -192,12 +192,12 @@ fn peace_tree_cycle_budget_follows_the_live_header_size() {
         0,
         0x100,
         p::Output {
-            winners: engine_native::walk::Buffer::Count,
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Count,
-            transfers: engine_native::walk::Buffer::Count,
-            subjects: engine_native::walk::Buffer::Count,
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Count,
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Count,
+            transfers: engine_native_memory::walk::Buffer::Count,
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(result.failure, Some("peace history cycle"));
@@ -215,7 +215,7 @@ fn peace_action_operands_use_one_scattered_span_after_authentication() {
         spans: Cell<usize>,
         scalars: Cell<usize>,
     }
-    impl engine_native::Memory for Span<'_> {
+    impl engine_native_memory::Memory for Span<'_> {
         fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
             self.scalars.set(self.scalars.get() + 1);
             self.memory.copy(at, bytes)
@@ -256,19 +256,19 @@ fn peace_guarded_fixture_copies_populated_transfer_arrays() {
     let mut f = Fixture::new(2, 3);
     f.populate_transfers(3);
     let (base, pointer) = f.rebase_image(91);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut transfers = vec![Transfer::default(); 3];
     let result = p::copy(
         &memory,
         base,
         pointer,
         p::Output {
-            winners: engine_native::walk::Buffer::Growing(&mut vec![0; 2]),
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Growing(&mut vec![Action::default(); 3]),
-            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
-            subjects: engine_native::walk::Buffer::Count,
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 2]),
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Growing(&mut vec![Action::default(); 3]),
+            transfers: engine_native_memory::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(result.failure, None);
@@ -291,12 +291,12 @@ fn peace_resident_bids_keep_rejected_actions_and_navy_references_are_owned() {
         0,
         0x100,
         p::Output {
-            winners: engine_native::walk::Buffer::Count,
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Growing(&mut actions),
-            transfers: engine_native::walk::Buffer::Count,
-            subjects: engine_native::walk::Buffer::Count,
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Count,
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Growing(&mut actions),
+            transfers: engine_native_memory::walk::Buffer::Count,
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(row.failure, None);
@@ -371,12 +371,12 @@ fn peace_automatic_transfers_are_separate_and_owned() {
         0,
         0x100,
         p::Output {
-            winners: engine_native::walk::Buffer::Count,
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Count,
-            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
-            subjects: engine_native::walk::Buffer::Growing(&mut vec![Subject::default()]),
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Count,
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Count,
+            transfers: engine_native_memory::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native_memory::walk::Buffer::Growing(&mut vec![Subject::default()]),
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(result.failure, None);
@@ -408,12 +408,12 @@ fn peace_native_headers_and_full_capture_exceed_former_limits() {
         0,
         0x100,
         p::Output {
-            winners: engine_native::walk::Buffer::Growing(&mut winners),
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Growing(&mut actions),
-            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
-            subjects: engine_native::walk::Buffer::Count,
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Growing(&mut winners),
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Growing(&mut actions),
+            transfers: engine_native_memory::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(copied, demand);
@@ -516,12 +516,12 @@ fn peace_beneficiaries_and_automatic_transfers_have_no_chosen_limit() {
         0,
         0x100,
         p::Output {
-            winners: engine_native::walk::Buffer::Count,
-            losers: engine_native::walk::Buffer::Count,
-            actions: engine_native::walk::Buffer::Count,
-            transfers: engine_native::walk::Buffer::Growing(&mut transfers),
-            subjects: engine_native::walk::Buffer::Count,
-            name_bytes: engine_native::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Count,
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Count,
+            transfers: engine_native_memory::walk::Buffer::Growing(&mut transfers),
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
     );
     assert_eq!(copied.failure, None);
@@ -600,7 +600,7 @@ fn peace_demand_stops_revisited_history_links_before_the_size_budget() {
         memory: M,
         calls: Cell<usize>,
     }
-    impl<M: engine_native::Memory> engine_native::Memory for Count<M> {
+    impl<M: engine_native_memory::Memory> engine_native_memory::Memory for Count<M> {
         fn copy(&self, at: usize, output: &mut [u8]) -> bool {
             self.calls.set(self.calls.get() + 1);
             self.memory.copy(at, output)

@@ -14,7 +14,7 @@ mod main_combat;
 #[cfg(test)]
 mod main_reinforcement;
 
-pub use engine_native_parts::keyed_map::{KeyHasher, Map};
+use engine_native_parts::keyed_map::Map;
 pub(crate) type Shared<K, V> = Map<K, Result<V, &'static str>>;
 type LeaderChain = Result<Option<usize>, &'static str>;
 
@@ -377,7 +377,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, game_state)
     }
 
@@ -385,7 +385,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.inner.authenticated_reserved_country(base, game_state)
     }
 
@@ -393,7 +393,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.inner
             .authenticated_reserved_country_observation(base, game_state)
     }
@@ -401,7 +401,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         &self,
         address: usize,
         key: u32,
-    ) -> Option<Result<engine_native_parts::modifier_accumulator::Value, &'static str>> {
+    ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
         self.inner.modifier_accumulator_value(address, key)
     }
     fn core_supply_access(

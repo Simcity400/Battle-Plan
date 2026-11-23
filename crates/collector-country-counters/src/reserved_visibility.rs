@@ -1,5 +1,6 @@
 use crate::{clock::qpc, table_capture::Arena};
-use engine_native::{Memory, ccountry, crelation_status};
+use engine_native_memory::Memory;
+use engine_native::{ccountry, crelation::status as crelation_status};
 
 #[derive(Default, Clone, Copy)]
 struct Cell {
@@ -72,7 +73,7 @@ impl Captured {
         match source {
             Ok(source) => {
                 self.cells.required = source.required_slots();
-                if let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.cells.first)
+                if let Err(reason) = engine_native_memory::walk::Buffer::Growing(&mut self.cells.first)
                     .ensure(self.cells.required)
                 {
                     self.source_reason = Some(reason);

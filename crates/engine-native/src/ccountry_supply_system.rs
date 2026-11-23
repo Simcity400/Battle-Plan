@@ -1,16 +1,9 @@
 pub mod train_entry;
 pub mod world;
 
-use crate::{
-    Memory,
-    cpdx_array::Array,
-    ccountry_supply_system::world as csupply_system,
-    hub_motorization_entry,
-    memory::Raw,
-    read,
-    supply_node_record,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
+use crate::ccountry_supply_system::world as csupply_system;
+use engine_native_parts::{hub_motorization_entry, supply_node_record};
 use engine_sites::Rva;
 
 pub const SIZE: usize = 0x290;
@@ -45,7 +38,7 @@ pub struct FloatingHarborDeployment {
 }
 
 pub fn count_floating_harbor_deployments(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_floating_harbor_deployments_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_floating_harbor_deployments_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_floating_harbor_deployments(
@@ -58,7 +51,7 @@ pub fn walk_floating_harbor_deployments(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -66,7 +59,7 @@ pub fn walk_floating_harbor_deployments_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, FloatingHarborDeployment>,
+    mut output: engine_native_memory::walk::Buffer<'_, FloatingHarborDeployment>,
 ) -> Outcome {
     let result = (|| {
         let systems = csupply_system::Reader::new(memory, base, game_state)?;
@@ -131,7 +124,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -144,7 +137,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -152,7 +145,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let systems = csupply_system::Reader::new(memory, base, game_state)?;
@@ -339,7 +332,7 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
     fn load_context(&self) -> Result<TruckWitnessContext, &'static str> {
         let define_at = engine_sites::resolve(
             self.base,
-            crate::supply_companion::SUPPLY_HUB_FULL_MOTORIZATION_TRUCK_COST_RVA,
+            engine_native_parts::supply_companion::SUPPLY_HUB_FULL_MOTORIZATION_TRUCK_COST_RVA,
         )
         .ok()
         .ok_or("supply truck cost define site unlocated")?;
@@ -410,7 +403,7 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
             .ok_or("supply truck witness province controller unreadable")?;
         if index >= self.province_controllers.len() {
             let grow = index + 1 - self.province_controllers.len();
-            if crate::allocation::reserve(&mut self.province_controllers, grow).is_ok() {
+            if engine_allocation::reserve(&mut self.province_controllers, grow).is_ok() {
                 self.province_controllers.resize(index + 1, None);
                 self.province_controllers[index] = Some(controller);
             }
@@ -532,11 +525,11 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
         allocated_trucks: Option<i32>,
     ) -> Result<i64, &'static str> {
         let stored_required = companion
-            .checked_add(crate::supply_companion::REQUIRED_TRUCKS_RAW)
+            .checked_add(engine_native_parts::supply_companion::REQUIRED_TRUCKS_RAW)
             .and_then(|address| read::<i64>(self.memory, address))
             .ok_or("supply required trucks unreadable")?;
         let stored_ratio = companion
-            .checked_add(crate::supply_companion::TRUCK_FULFILLMENT_RATIO)
+            .checked_add(engine_native_parts::supply_companion::TRUCK_FULFILLMENT_RATIO)
             .and_then(|address| read::<i64>(self.memory, address))
             .ok_or("supply truck fulfillment ratio unreadable")?;
         let (truck_cost_raw, foreign_sources) = {
@@ -574,7 +567,7 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
             let rel_nodes = array(
                 self.memory,
                 rel_system.companion,
-                crate::supply_companion::NODES,
+                engine_native_parts::supply_companion::NODES,
                 engine_native_parts::supply_node_layout::STRIDE,
             )
             .map_err(|_| "supply truck witness related nodes unreadable")?;
@@ -652,8 +645,8 @@ struct SparseAccess {
 fn sparse_access(
     memory: &impl Memory,
     source: Array,
-    mut values: crate::walk::Buffer<'_, u8>,
-    mut runs: crate::walk::Buffer<'_, [u32; 2]>,
+    mut values: engine_native_memory::walk::Buffer<'_, u8>,
+    mut runs: engine_native_memory::walk::Buffer<'_, [u32; 2]>,
 ) -> Result<SparseAccess, &'static str> {
     let mut demand = SparseAccess {
         values: 0,
@@ -683,7 +676,7 @@ fn sparse_access(
             .data
             .checked_add(first as usize)
             .ok_or("supply controller access address overflow")?;
-        if !crate::read_slice(memory, address, &mut chunk[..n]) {
+        if !engine_native_memory::read_slice(memory, address, &mut chunk[..n]) {
             return Err("supply controller access unreadable");
         }
         let bytes = &chunk[..n];
@@ -739,10 +732,10 @@ pub fn walk_trains(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(entries),
-        crate::walk::Buffer::Growing(access),
-        crate::walk::Buffer::Growing(runs),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(access),
+        engine_native_memory::walk::Buffer::Growing(runs),
         None,
     )
 }
@@ -762,10 +755,10 @@ pub fn walk_trains_selected(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(entries),
-        crate::walk::Buffer::Growing(access),
-        crate::walk::Buffer::Growing(runs),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(access),
+        engine_native_memory::walk::Buffer::Growing(runs),
         Some(select),
     )
 }
@@ -775,10 +768,10 @@ pub fn walk_trains_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, TrainRow>,
-    mut entries: crate::walk::Buffer<'_, crate::ccountry_supply_system::train_entry::Row>,
-    mut access: crate::walk::Buffer<'_, u8>,
-    mut runs: crate::walk::Buffer<'_, [u32; 2]>,
+    mut output: engine_native_memory::walk::Buffer<'_, TrainRow>,
+    mut entries: engine_native_memory::walk::Buffer<'_, crate::ccountry_supply_system::train_entry::Row>,
+    mut access: engine_native_memory::walk::Buffer<'_, u8>,
+    mut runs: engine_native_memory::walk::Buffer<'_, [u32; 2]>,
     select: Option<&dyn Fn(u32) -> bool>,
 ) -> TrainReport {
     let mut used_entries = 0;
@@ -790,11 +783,9 @@ pub fn walk_trains_buffer(
     let mut vehicle_failures = [0_u32; 3];
     let mut required_trucks_withheld = None;
     let result = (|| {
-        use crate::{
-            memory::{RecordField, RecordLayout, RecordSources},
-            supply_companion,
-            ccountry_supply_system::train_entry as supply_train_entry,
-        };
+        use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
+        use engine_native_parts::supply_companion;
+        use crate::ccountry_supply_system::train_entry as supply_train_entry;
         const FIELDS: [RecordField; 1] = [RecordField {
             source_offset: 0,
             destination_offset: 0,
@@ -873,8 +864,8 @@ pub fn walk_trains_buffer(
                 (access.suffix(used_access), runs.suffix(used_runs))
             } else {
                 (
-                    crate::walk::Buffer::Count,
-                    crate::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
                 )
             };
             let sparse = sparse_access(memory, controllers, values, spans)?;
@@ -982,7 +973,7 @@ pub fn train_storage_demand(
         let access = array(
             memory,
             system.companion,
-            crate::supply_companion::RELATED_CONTROLLERS,
+            engine_native_parts::supply_companion::RELATED_CONTROLLERS,
             1,
         )?;
         demand.entries = demand

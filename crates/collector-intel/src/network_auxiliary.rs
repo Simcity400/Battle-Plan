@@ -3,7 +3,7 @@ use crate::{hook::Hook, hook_errors};
 use collector_primitives::shared_lane::SharedLane;
 use engine_allocation as allocation;
 use engine_intelligence::{ccountry_intel_network as network, network_auxiliary as native};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::rows::IntelNetworkAuxiliaryRow;
 use std::{
     cell::Cell,

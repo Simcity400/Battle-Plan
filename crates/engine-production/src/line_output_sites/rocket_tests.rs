@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0x140000000;
 const ROCKET: usize = 0x100;
@@ -62,12 +62,12 @@ impl World {
             (COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64),
             (COUNTRY + ccountry::ID, 5001),
             (COUNTRY + ccountry::PRODUCTION_STATUS, STATUS as u64),
-            (VARIANT, (BASE + cequipment_variant::VTABLE_RVA.0) as u64),
+            (VARIANT, (BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64),
             (VARIANT + VARIANT_HANDLE, DESIGN),
             (VARIANT + cequipment_variant::DEFINITION, DEFINITION as u64),
             (
                 DEFINITION,
-                (BASE + engine_native::cequipment_type::VTABLE_RVA.0) as u64,
+                (BASE + engine_native_parts::cequipment_type::VTABLE_RVA.0) as u64,
             ),
         ] {
             world.word(address, value);
@@ -75,8 +75,8 @@ impl World {
         world.bytes[VARIANT + cequipment_variant::EQUIPMENT_TOKEN
             ..VARIANT + cequipment_variant::EQUIPMENT_TOKEN + 4]
             .copy_from_slice(&EQUIP_TOKEN.to_le_bytes());
-        world.bytes[DEFINITION + engine_native::cequipment_type::TOKEN
-            ..DEFINITION + engine_native::cequipment_type::TOKEN + 4]
+        world.bytes[DEFINITION + engine_native_parts::cequipment_type::TOKEN
+            ..DEFINITION + engine_native_parts::cequipment_type::TOKEN + 4]
             .copy_from_slice(&EQUIP_TOKEN.to_le_bytes());
         world
     }
@@ -119,7 +119,7 @@ fn rocket_instant_input_is_the_native_signed_maximum() {
         world.word(ROCKET + ROCKET_SPEED, speed as u64);
         for cost in [i64::MIN, -950_009, 0, 950_009, i64::MAX] {
             world.word(
-                DEFINITION + engine_native::cequipment_type::BUILD_COST_IC,
+                DEFINITION + engine_native_parts::cequipment_type::BUILD_COST_IC,
                 cost as u64,
             );
             world.word(VARIANT + cequipment_variant::BUILD_COST, cost as u64);
@@ -183,7 +183,7 @@ fn rocket_short_reads_keep_independent_scope_and_never_zero_the_input() {
     assert_eq!(world.tick().failure, RocketFailure::Instant);
     world.instant = Some(1);
     world.word(
-        DEFINITION + engine_native::cequipment_type::BUILD_COST_IC,
+        DEFINITION + engine_native_parts::cequipment_type::BUILD_COST_IC,
         500_000,
     );
     world.word(VARIANT + cequipment_variant::BUILD_COST, 500_000);
@@ -281,7 +281,7 @@ fn rocket_instant_refuses_variant_replaced_between_identity_and_cost_read() {
     let mut world = World::new();
     world.instant = Some(1);
     world.word(
-        DEFINITION + engine_native::cequipment_type::BUILD_COST_IC,
+        DEFINITION + engine_native_parts::cequipment_type::BUILD_COST_IC,
         777_000,
     );
     world.word(VARIANT + cequipment_variant::BUILD_COST, 777_000);

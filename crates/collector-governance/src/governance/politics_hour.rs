@@ -5,12 +5,12 @@ use crate::{
     table_capture::grow_vec,
 };
 use engine_allocation as allocation;
-use engine_native::{
+use engine_native_memory::{
     Memory,
-    ccountry,
     memory::{RecordField, RecordLayout, RecordSources},
     walk::{Buffer, Outcome},
 };
+use engine_native::ccountry;
 use engine_native_politics::{
     cpolitical_party::{self, LeaderRow, Row as PartyRow},
     cpolitical_status::{self, IdeaRow},

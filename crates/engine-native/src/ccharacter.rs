@@ -1,14 +1,9 @@
 pub mod template;
 pub mod manager;
-pub use engine_native_memory::msvc_string::{Literal};
+use engine_native_memory::msvc_string::{Literal};
 
-use crate::{
-    Memory,
-    ccharacter::{manager as ccharacter_manager, template as ccharacter_template},
-    read,
-    read_slice,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, read, read_slice, walk::Outcome};
+use crate::ccharacter::{manager as ccharacter_manager, template as ccharacter_template};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_b0d0);
@@ -259,12 +254,12 @@ impl<'a, M: Memory> View<'a, M> {
 
 impl<M: Memory> Memory for View<'_, M> {
     #[inline]
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         if size_of::<T>() == 0 {
             return Some(T::ZERO);
         }
         match self.copied(address, size_of::<T>()) {
-            Ok(Some(source)) => crate::memory::scalar_from_bytes(source),
+            Ok(Some(source)) => engine_native_memory::memory::scalar_from_bytes(source),
             Ok(None) => self.memory.read_scalar(address),
             Err(()) => None,
         }
@@ -320,8 +315,8 @@ pub fn walk_entry<'k>(
     base: usize,
     entry: ccharacter_manager::Entry,
     known: impl FnOnce(usize) -> Option<ccharacter_template::Known<'k>>,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
         if !output.ensure(1)? {

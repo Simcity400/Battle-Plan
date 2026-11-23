@@ -45,46 +45,46 @@ pub struct Instance {
 pub const BATCH: usize = 64;
 pub const INSTANCE_BYTES: usize = 56;
 pub(crate) const BATCH_BYTES: usize = BATCH * INSTANCE_BYTES;
-pub const FIELDS: [crate::memory::RecordField; 6] = [
-    crate::memory::RecordField {
+pub const FIELDS: [engine_native_memory::memory::RecordField; 6] = [
+    engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 12,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: STATUS,
         destination_offset: 12,
         len: 16,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: CLASSIFIER,
         destination_offset: 28,
         len: 8,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: LIVE_PROGRESS,
         destination_offset: 36,
         len: 8,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: AHEAD_REDUCTION_YEARS,
         destination_offset: 44,
         len: 8,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: APPLIED_BONUS_IDS + 12,
         destination_offset: 52,
         len: 4,
     },
 ];
 
-const LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&FIELDS, INSTANCE_BYTES).expect("valid record layout");
+const LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&FIELDS, INSTANCE_BYTES).expect("valid record layout");
 
 pub(crate) const IDENTITY_BYTES: usize = 28;
-pub(crate) const IDENTITY_FIELDS: [crate::memory::RecordField; 2] = [FIELDS[0], FIELDS[1]];
-const IDENTITY_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&IDENTITY_FIELDS, IDENTITY_BYTES)
+pub(crate) const IDENTITY_FIELDS: [engine_native_memory::memory::RecordField; 2] = [FIELDS[0], FIELDS[1]];
+const IDENTITY_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&IDENTITY_FIELDS, IDENTITY_BYTES)
         .expect("valid identity layout");
 
 pub(crate) struct Identity {
@@ -95,12 +95,12 @@ pub(crate) struct Identity {
 #[inline]
 pub fn hint(pointer: usize) {
     for field in &FIELDS {
-        crate::prefetch::span(pointer.wrapping_add(field.source_offset), 1);
+        engine_native_memory::prefetch::span(pointer.wrapping_add(field.source_offset), 1);
     }
 }
 
 pub fn copy_batch(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointers: &[usize],
     scratch: &mut [u8; BATCH_BYTES],
 ) -> usize {
@@ -109,14 +109,14 @@ pub fn copy_batch(
     }
     let bytes = &mut scratch[..pointers.len() * INSTANCE_BYTES];
     memory.copy_records(
-        crate::memory::RecordSources::Pointers(pointers),
+        engine_native_memory::memory::RecordSources::Pointers(pointers),
         &LAYOUT,
         bytes,
     )
 }
 
 pub(crate) fn copy_identities(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointers: &[usize],
     scratch: &mut [u8; BATCH_BYTES],
 ) -> usize {
@@ -124,19 +124,19 @@ pub(crate) fn copy_identities(
         return 0;
     }
     memory.copy_records(
-        crate::memory::RecordSources::Pointers(pointers),
+        engine_native_memory::memory::RecordSources::Pointers(pointers),
         &IDENTITY_LAYOUT,
         &mut scratch[..pointers.len() * IDENTITY_BYTES],
     )
 }
 
 pub(crate) fn copy_identity_one(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     out: &mut [u8; IDENTITY_BYTES],
 ) -> usize {
     memory.copy_records(
-        crate::memory::RecordSources::Pointers(&[pointer]),
+        engine_native_memory::memory::RecordSources::Pointers(&[pointer]),
         &IDENTITY_LAYOUT,
         out,
     )
@@ -157,12 +157,12 @@ pub fn decode_batch(
 }
 
 pub fn copy_one(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     out: &mut [u8; INSTANCE_BYTES],
 ) -> usize {
     memory.copy_records(
-        crate::memory::RecordSources::Pointers(&[pointer]),
+        engine_native_memory::memory::RecordSources::Pointers(&[pointer]),
         &LAYOUT,
         out,
     )

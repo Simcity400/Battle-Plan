@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 const BASE: usize = 0x1_4000_0000;
@@ -134,7 +134,7 @@ fn air_world() -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            &((BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, at + 8, &(0x1000 + variant as u64).to_le_bytes());
     }
@@ -200,7 +200,7 @@ fn append<T: Clone + Default>(
     memory: &World<'_>,
     batched: bool,
     stride: usize,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
     read: ReadFn<T>,
     read_entry: EntryReadFn<T>,
 ) -> Appended<T> {
@@ -259,7 +259,7 @@ fn append<T: Clone + Default>(
 fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
     read: ReadFn<T>,
     read_entry: EntryReadFn<T>,
 ) {
@@ -297,7 +297,7 @@ fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
 fn check_once<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
     read: ReadFn<T>,
     read_entry: EntryReadFn<T>,
 ) {

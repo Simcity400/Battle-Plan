@@ -1,4 +1,4 @@
-pub use engine_native_parts::cpolitical_status_layout::{COUNTRY, POLITICAL_POWER, RULING_PARTY, VTABLE_RVA};
+use engine_native_parts::cpolitical_status_layout::{COUNTRY, RULING_PARTY, VTABLE_RVA};
 
 use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read, walk::Outcome};
 use engine_native::{ccharacter, ccountry};
@@ -276,7 +276,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let ruling_party = if pointer == 0 {
             None
         } else {
-            Some(cpolitical_party::identity(self.memory, self.base, pointer)?.0)
+            Some(engine_native_parts::cpolitical_party_layout::identity(self.memory, self.base, pointer)?.0)
         };
         let next_election_cache =
             (capture_cache && has_elections && needs_election_cache(last_election))
@@ -395,7 +395,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .ok_or("political party pointer unreadable or null")?;
                 found_ruling |= pointer == ruling;
                 carry.party(token, pointer);
-                let (id, ideology) = cpolitical_party::identity(self.memory, self.base, pointer)?;
+                let (id, ideology) = engine_native_parts::cpolitical_party_layout::identity(self.memory, self.base, pointer)?;
                 let token = ideology
                     .checked_add(cideology_group::TOKEN)
                     .ok_or("ideology token overflow")?;
@@ -537,7 +537,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 carry.carry(token, &mut output[..rows]);
                 return Ok(Outcome::Rows { len: rows });
             }
-            let leader_vtable = engine_sites::at(self.base, ccountry_leader::VTABLE_RVA)
+            let leader_vtable = engine_sites::at(self.base, engine_native_parts::ccountry_leader_layout::VTABLE_RVA)
                 .ok_or("module address overflow")? as u64;
             let mut len = 0_usize;
             let mut unread_rows = 0_u32;
@@ -549,9 +549,9 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .filter(|&p| p != 0)
                     .ok_or("political party pointer unreadable or null")?;
                 carry.party(token, pointer);
-                let (party, _) = cpolitical_party::identity(self.memory, self.base, pointer)?;
+                let (party, _) = engine_native_parts::cpolitical_party_layout::identity(self.memory, self.base, pointer)?;
                 let leaders = pointer
-                    .checked_add(cpolitical_party::COUNTRY_LEADERS)
+                    .checked_add(engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS)
                     .and_then(|address| Array::read(self.memory, address, 8))
                     .ok_or("country leader vector header invalid")?;
                 output.ensure(
@@ -577,7 +577,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                         return Err("country leader vtable mismatch");
                     }
                     let parent = usize::try_from(u64::from_le_bytes(
-                        header[ccountry_leader::CHARACTER..ccountry_leader::CHARACTER + 8]
+                        header[engine_native_parts::ccountry_leader_layout::CHARACTER..engine_native_parts::ccountry_leader_layout::CHARACTER + 8]
                             .try_into()
                             .unwrap(),
                     ))

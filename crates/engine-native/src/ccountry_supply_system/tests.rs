@@ -1,5 +1,7 @@
 use super::*;
-use crate::{ccountry, cgame_state, memory::SliceMemory, supply_companion};
+use crate::{ccountry, cgame_state};
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::supply_companion;
 
 const GAME: usize = 0x1000;
 const ROOT: usize = 0x2000;
@@ -380,9 +382,9 @@ fn train_fixture() -> Vec<u8> {
         3,
     );
     for i in 0..3_u32 {
-        let at = 0xa000 + i as usize * node::STRIDE;
+        let at = 0xa000 + i as usize * engine_native_parts::supply_node_layout::STRIDE;
         put(&mut bytes, at, &i.to_le_bytes());
-        put(&mut bytes, at + node::PROVINCE, &(i + 1).to_le_bytes());
+        put(&mut bytes, at + engine_native_parts::supply_node_layout::PROVINCE, &(i + 1).to_le_bytes());
         put(&mut bytes, at + node::KIND, &(i + 2).to_le_bytes());
         put(&mut bytes, at + node::FLAG, &[if i == 1 { 255 } else { 0 }]);
         put(
@@ -500,7 +502,7 @@ impl Memory for TrainMemory<'_> {
             destination.fill(0);
             return true;
         }
-        if address == crate::creference_registry::LOW_ROOTS_RVA.0 + 70 * 8 {
+        if address == engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 70 * 8 {
             destination.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
@@ -581,7 +583,7 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
         let mut bytes = train_fixture();
         put(
             &mut bytes,
-            0xa000 + 2 * node::STRIDE + node::PROVINCE,
+            0xa000 + 2 * engine_native_parts::supply_node_layout::STRIDE + engine_native_parts::supply_node_layout::PROVINCE,
             &province.to_le_bytes(),
         );
         let (report, rows) = walk(&bytes, 3);
@@ -948,7 +950,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
             memo,
             parent,
             province,
-            crate::walk::Buffer::Growing(&mut path),
+            engine_native_memory::walk::Buffer::Growing(&mut path),
         );
         (result, path)
     };
@@ -1009,7 +1011,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
         &mut retained,
         2,
         3,
-        crate::walk::Buffer::Growing(&mut path),
+        engine_native_memory::walk::Buffer::Growing(&mut path),
     )
     .unwrap();
     assert_eq!((row.from, row.to, row.len, need), (2, 3, 2, 2));
@@ -1036,7 +1038,7 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
         0x1a000 + crate::cprovince::CONTROLLER,
         &1_u32.to_le_bytes(),
     );
-    put(&mut bytes, 0xa000 + node::PROVINCE, &4_u32.to_le_bytes());
+    put(&mut bytes, 0xa000 + engine_native_parts::supply_node_layout::PROVINCE, &4_u32.to_le_bytes());
     let companion = 0x6000 + supply_companion::STRIDE;
     let parents = map(
         &mut bytes,
@@ -1104,7 +1106,7 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_and_country_scope() {
                     &1_u32.to_le_bytes(),
                 );
             }
-            put(&mut bytes, 0xa000 + node::PROVINCE, &4_u32.to_le_bytes());
+            put(&mut bytes, 0xa000 + engine_native_parts::supply_node_layout::PROVINCE, &4_u32.to_le_bytes());
             for slot in [1, 2] {
                 let companion = 0x6000 + slot * supply_companion::STRIDE;
                 header(
@@ -1460,7 +1462,8 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
 
 #[test]
 fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() {
-    use crate::{cequipment_variant as variant, creference_registry as registry};
+    use crate::cequipment_variant as variant;
+    use engine_native_parts::creference_registry as registry;
     let mut bytes = train_fixture();
     let handle = (1234_u64 << 32) | 70;
     for entry in [0xf000, 0xf018] {
@@ -1482,7 +1485,7 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
     put(
         &mut bytes,
         0x14000,
-        &(variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x14008, &handle.to_le_bytes());
     put(
@@ -1550,7 +1553,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
         let systems = links + slots * 4;
         let companions = systems + slots * 8;
         let node_list = GAME + bytes.len();
-        let province_table = node_list + NODES * engine_native_land::supply_node::STRIDE;
+        let province_table = node_list + NODES * engine_native_parts::supply_node_layout::STRIDE;
         let province = province_table + 16;
         let empty_parents = province + 0x100;
         bytes.resize(empty_parents + 24 - GAME, 0);
@@ -1578,11 +1581,11 @@ fn selected_supply_walks_partition_a_census_by_country() {
         );
         put(&mut bytes, empty_parents + 12, &[255]);
         for index in 0..NODES {
-            let node = node_list + index * engine_native_land::supply_node::STRIDE;
+            let node = node_list + index * engine_native_parts::supply_node_layout::STRIDE;
             put(&mut bytes, node, &(index as u32).to_le_bytes());
             put(
                 &mut bytes,
-                node + engine_native_land::supply_node::PROVINCE,
+                node + engine_native_parts::supply_node_layout::PROVINCE,
                 &1_u32.to_le_bytes(),
             );
         }
@@ -1725,7 +1728,7 @@ fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_wal
     );
     put(
         &mut bytes,
-        0xa000 + engine_native_land::supply_node::PROVINCE,
+        0xa000 + engine_native_parts::supply_node_layout::PROVINCE,
         &3_u32.to_le_bytes(),
     );
     let memory = TrainMemory::new(&bytes);
@@ -1772,34 +1775,34 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
 
     header(&mut bytes, 0x5000 + HUB_SETTINGS_DATA, 0x7000, 2, 2);
     put(&mut bytes, 0x7000 + supply_node_record::PROVINCE, &1_u32.to_le_bytes());
-    put(&mut bytes, 0x7000 + supply_node_record::NODE_TYPE, &node::KIND_SUPPLY_HUB.to_le_bytes());
+    put(&mut bytes, 0x7000 + supply_node_record::NODE_TYPE, &engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB.to_le_bytes());
     header(&mut bytes, 0x7000 + supply_node_record::MOTORIZATION_DATA, 0x8000, 1, 1);
     put(&mut bytes, 0x8000, &1_u32.to_le_bytes());
     put(&mut bytes, 0x8004, &[1_u8]);
 
     put(&mut bytes, 0x7028 + supply_node_record::PROVINCE, &2_u32.to_le_bytes());
-    put(&mut bytes, 0x7028 + supply_node_record::NODE_TYPE, &node::KIND_NAVAL_BASE.to_le_bytes());
+    put(&mut bytes, 0x7028 + supply_node_record::NODE_TYPE, &engine_native_parts::supply_node_layout::KIND_NAVAL_BASE.to_le_bytes());
     header(&mut bytes, 0x7028 + supply_node_record::MOTORIZATION_DATA, 0x8020, 1, 1);
     put(&mut bytes, 0x8020, &1_u32.to_le_bytes());
     put(&mut bytes, 0x8024, &[0_u8]);
 
-    header(&mut bytes, 0xa000 + node::STRIDE + node::MOTORIZATION_OVERRIDES, 0x16000, 1, 1);
+    header(&mut bytes, 0xa000 + engine_native_parts::supply_node_layout::STRIDE + engine_native_parts::supply_node_layout::MOTORIZATION_OVERRIDES, 0x16000, 1, 1);
     put(&mut bytes, 0x16000, &1_i32.to_le_bytes());
     put(&mut bytes, 0x16004, &2_i32.to_le_bytes());
 
     header(&mut bytes, companion_two + supply_companion::NODES, 0x16200, 2, 2);
-    for (idx, (prov, kind)) in [(4_u32, node::KIND_SUPPLY_HUB), (5, node::KIND_SUPPLY_HUB)]
+    for (idx, (prov, kind)) in [(4_u32, engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB), (5, engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB)]
         .into_iter()
         .enumerate()
     {
-        let at = 0x16200 + idx * node::STRIDE;
+        let at = 0x16200 + idx * engine_native_parts::supply_node_layout::STRIDE;
         put(&mut bytes, at, &(idx as u32).to_le_bytes());
-        put(&mut bytes, at + node::PROVINCE, &prov.to_le_bytes());
+        put(&mut bytes, at + engine_native_parts::supply_node_layout::PROVINCE, &prov.to_le_bytes());
         put(&mut bytes, at + node::KIND, &kind.to_le_bytes());
     }
     header(&mut bytes, 0x5300 + HUB_SETTINGS_DATA, 0x16500, 1, 1);
     put(&mut bytes, 0x16500 + supply_node_record::PROVINCE, &4_u32.to_le_bytes());
-    put(&mut bytes, 0x16500 + supply_node_record::NODE_TYPE, &node::KIND_SUPPLY_HUB.to_le_bytes());
+    put(&mut bytes, 0x16500 + supply_node_record::NODE_TYPE, &engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB.to_le_bytes());
     header(&mut bytes, 0x16500 + supply_node_record::MOTORIZATION_DATA, 0x16600, 1, 1);
     put(&mut bytes, 0x16600, &1_u32.to_le_bytes());
     put(&mut bytes, 0x16604, &[2_u8]);

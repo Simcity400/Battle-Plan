@@ -552,7 +552,7 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     world.u64(0xaa08, 0xab00);
     world.u64(
         0xab00,
-        (IMAGE + engine_native::cequipment_variant::VTABLE_RVA.0) as u64,
+        (IMAGE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
     );
     world.u64(0xab08, u64::MAX);
     world.array(MEMBER_A + 0x180, 0xa848, 1, 1);

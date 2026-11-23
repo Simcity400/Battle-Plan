@@ -1,10 +1,19 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cevent, cgame_state, cland_border_war_combat as combat,
-    cland_border_war_combatant as side, cland_combat, cland_combatant, cnaval_combat,
-    cpdx_array::Array, creference_registry, event_namespace as namespace, msvc_string, read,
-    read_slice, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
+};
+use crate::{cevent, event_namespace as namespace};
+use engine_native::{cgame_state, cland_combat, cland_combatant, cnaval_combat};
+use engine_native_parts::{
+    cland_border_war_combat as combat,
+    cland_border_war_combatant as side,
+    creference_registry,
 };
 
 const EVENT_VTABLE: Rva = Rva(0x02a1_6008);
@@ -166,9 +175,9 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(stack),
-        crate::walk::Buffer::Growing(events),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(stack),
+        engine_native_memory::walk::Buffer::Growing(events),
     )
 }
 
@@ -176,9 +185,9 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Token>,
-    stack: crate::walk::Buffer<'_, Frame>,
-    events: crate::walk::Buffer<'_, u32>,
+    output: engine_native_memory::walk::Buffer<'_, Token>,
+    stack: engine_native_memory::walk::Buffer<'_, Frame>,
+    events: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Walk {
     let mut reader = Reader {
         memory,
@@ -287,9 +296,9 @@ pub fn matches(memory: &impl Memory, token: Token, bytes: &[u8]) -> Result<bool,
 struct Reader<'a, M> {
     memory: &'a M,
     base: usize,
-    output: crate::walk::Buffer<'a, Token>,
-    stack: crate::walk::Buffer<'a, Frame>,
-    events: crate::walk::Buffer<'a, u32>,
+    output: engine_native_memory::walk::Buffer<'a, Token>,
+    stack: engine_native_memory::walk::Buffer<'a, Frame>,
+    events: engine_native_memory::walk::Buffer<'a, u32>,
     events_len: usize,
     result: Walk,
 }
@@ -453,7 +462,7 @@ fn at(address: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("border demand address overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,

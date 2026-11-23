@@ -1,15 +1,27 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, carmy, carmy_group, corders_group_member,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    creference_registry as registry, ctheater_group, ctheatre, cunit, cunit_leader,
     memory::{
-        Gathered, RecordField, RecordLayout, gather_records, packed_fields, packed_map,
+        Gathered,
+        RecordField,
+        RecordLayout,
+        gather_records,
+        packed_fields,
+        packed_map,
         packed_stride,
     },
-    read, read_slice, reference_bucket as bucket,
+    read,
+    read_slice,
     walk::Outcome,
+};
+use crate::{carmy, corders_group_member, ctheatre, cunit, cunit_leader};
+use engine_native_parts::{
+    carmy_group,
+    creference_registry as registry,
+    ctheater_group,
+    reference_bucket as bucket,
 };
 
 pub const VTABLE_RVA: Rva = Rva(0x029c_edc0);
@@ -138,13 +150,13 @@ const PLAN_SPANS: [(usize, usize); 5] = [
     (PRIMARY_ORDER_DATA, 16),
     (SECONDARY_ORDER_DATA, 16),
     (COLOUR, 16),
-    (NAME, crate::msvc_string::STRIDE),
+    (NAME, engine_native_memory::msvc_string::STRIDE),
 ];
 const PLAN_FIELDS: [RecordField; 5] = packed_fields(PLAN_SPANS);
 const PLAN_STRIDE: usize = packed_stride(PLAN_SPANS);
 const PLAN_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PLAN_FIELDS, PLAN_STRIDE).expect("valid group plan layout");
-const PLAN_MAP: [u16; NAME + crate::msvc_string::STRIDE] = packed_map(PLAN_SPANS);
+const PLAN_MAP: [u16; NAME + engine_native_memory::msvc_string::STRIDE] = packed_map(PLAN_SPANS);
 
 fn prefetch_plan(memory: &impl Memory, root: &Root) {
     for (offset, len) in PLAN_SPANS {
@@ -155,8 +167,8 @@ fn prefetch_plan(memory: &impl Memory, root: &Root) {
 }
 
 fn prefetch_dependents(memory: &impl Memory, record: Gathered<'_>) {
-    if let Some(header) = record.get::<[u8; crate::msvc_string::STRIDE]>(NAME)
-        && let Some((address, len)) = crate::msvc_string::heap_span(&header)
+    if let Some(header) = record.get::<[u8; engine_native_memory::msvc_string::STRIDE]>(NAME)
+        && let Some((address, len)) = engine_native_memory::msvc_string::heap_span(&header)
     {
         memory.prefetch(address, len);
     }
@@ -256,16 +268,16 @@ pub fn walk_plans(
                     .checked_add(NAME)
                     .ok_or("group plan name address overflow")?;
                 (row.name_start, row.name_len) = match record
-                    .get::<[u8; crate::msvc_string::STRIDE]>(NAME)
+                    .get::<[u8; engine_native_memory::msvc_string::STRIDE]>(NAME)
                 {
-                    Some(header) => crate::msvc_string::append_with_header(
+                    Some(header) => engine_native_memory::msvc_string::append_with_header(
                         memory,
                         &header,
                         names,
                         &mut names_used,
                     )?,
                     None => {
-                        crate::msvc_string::append(memory, name, names, &mut names_used)?
+                        engine_native_memory::msvc_string::append(memory, name, names, &mut names_used)?
                     }
                 };
                 for (offset, start, list_len) in [
@@ -549,11 +561,11 @@ fn counter_inputs(
 }
 
 pub fn count_roots(memory: &impl Memory, base: usize) -> Outcome {
-    walk_roots_buffer(memory, base, crate::walk::Buffer::Count)
+    walk_roots_buffer(memory, base, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_roots(memory: &impl Memory, base: usize, output: &mut Vec<Root>) -> Outcome {
-    walk_roots_buffer(memory, base, crate::walk::Buffer::Growing(output))
+    walk_roots_buffer(memory, base, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 #[cfg(test)]
@@ -562,7 +574,7 @@ mod root_growth_tests;
 pub fn walk_roots_buffer(
     memory: &impl Memory,
     base: usize,
-    mut output: crate::walk::Buffer<'_, Root>,
+    mut output: engine_native_memory::walk::Buffer<'_, Root>,
 ) -> Outcome {
     let result = (|| {
         let table = engine_sites::at(base, registry::LOW_ROOTS_RVA)
@@ -615,7 +627,7 @@ pub fn walk_roots_buffer(
         output.ensure(count as usize)?;
         let normal_vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let group_vtable = engine_sites::at(base, crate::carmy_group::VTABLE_RVA)
+        let group_vtable = engine_sites::at(base, engine_native_parts::carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let mut copied = 0_usize;
         let mut occupied = 0_u32;
@@ -670,13 +682,13 @@ pub fn walk_roots_buffer(
                 0
             } else {
                 memory.copy_records(
-                    crate::memory::RecordSources::Pointers(&pointers[..gathered]),
+                    engine_native_memory::memory::RecordSources::Pointers(&pointers[..gathered]),
                     &ROOT_LAYOUT,
                     &mut records[..gathered * ROOT_STRIDE],
                 )
             };
             if completed < gathered * ROOT_FIELDS.len() {
-                crate::batch_fallback::record(crate::batch_fallback::Batch::OrderRoots);
+                engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::OrderRoots);
             }
             for index in 0..gathered {
                 let (pointer, handle) = (pointers[index], handles[index]);
@@ -686,7 +698,7 @@ pub fn walk_roots_buffer(
                     ROOT_FIELDS.len()
                 } else {
                     memory.copy_records(
-                        crate::memory::RecordSources::Pointers(&[pointer]),
+                        engine_native_memory::memory::RecordSources::Pointers(&[pointer]),
                         &ROOT_LAYOUT,
                         &mut record,
                     )
@@ -760,14 +772,14 @@ pub struct GroupRow {
 pub fn copy_name_buffer(
     memory: &impl Memory,
     pointer: usize,
-    mut arena: crate::walk::Buffer<'_, u8>,
+    mut arena: engine_native_memory::walk::Buffer<'_, u8>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<(usize, usize), &'static str> {
     let address = pointer
         .checked_add(NAME)
         .ok_or("orders group name address overflow")?;
-    let name = crate::msvc_string::Descriptor::read(memory, address)?;
+    let name = engine_native_memory::msvc_string::Descriptor::read(memory, address)?;
     *required = required
         .checked_add(name.len)
         .ok_or("orders group name demand overflow")?;
@@ -799,14 +811,14 @@ mod command_name_tests {
         bytes[NAME..NAME + 8].copy_from_slice(&(heap as u64).to_le_bytes());
         bytes[NAME + 16..NAME + 24].copy_from_slice(&(payload.len() as u64).to_le_bytes());
         bytes[NAME + 24..NAME + 32].copy_from_slice(&(payload.len() as u64).to_le_bytes());
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         let (mut used, mut required) = (0, 0);
         let mut arena = vec![0; 1];
         assert_eq!(
-            copy_name_buffer(&memory, 0, crate::walk::Buffer::Growing(&mut arena), &mut used, &mut required),
+            copy_name_buffer(&memory, 0, engine_native_memory::walk::Buffer::Growing(&mut arena), &mut used, &mut required),
             Ok((0, 5000))
         );
         assert_eq!(&arena[..5000], payload);
@@ -836,10 +848,10 @@ pub struct OrderOfBattle<'a> {
 }
 
 pub struct OrderOfBattleStorage<'a> {
-    pub groups: crate::walk::Buffer<'a, GroupRow>,
-    pub members: crate::walk::Buffer<'a, MemberRow>,
-    pub children: crate::walk::Buffer<'a, ChildRow>,
-    pub roster_scratch: crate::walk::Buffer<'a, RosterEntry>,
+    pub groups: engine_native_memory::walk::Buffer<'a, GroupRow>,
+    pub members: engine_native_memory::walk::Buffer<'a, MemberRow>,
+    pub children: engine_native_memory::walk::Buffer<'a, ChildRow>,
+    pub roster_scratch: engine_native_memory::walk::Buffer<'a, RosterEntry>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -947,10 +959,10 @@ pub fn walk_order_of_battle(
         base,
         roots,
         &mut OrderOfBattleStorage {
-            groups: crate::walk::Buffer::Growing(&mut *output.groups),
-            members: crate::walk::Buffer::Growing(&mut *output.members),
-            children: crate::walk::Buffer::Growing(&mut *output.children),
-            roster_scratch: crate::walk::Buffer::Growing(&mut *output.roster_scratch),
+            groups: engine_native_memory::walk::Buffer::Growing(&mut *output.groups),
+            members: engine_native_memory::walk::Buffer::Growing(&mut *output.members),
+            children: engine_native_memory::walk::Buffer::Growing(&mut *output.children),
+            roster_scratch: engine_native_memory::walk::Buffer::Growing(&mut *output.roster_scratch),
         },
     )
 }
@@ -1226,7 +1238,7 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("orders group address overflow")
     }
 
-    fn field<T: crate::memory::Raw>(
+    fn field<T: engine_native_memory::memory::Raw>(
         &self,
         pointer: usize,
         offset: usize,

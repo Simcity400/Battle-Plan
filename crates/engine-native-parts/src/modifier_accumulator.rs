@@ -6,7 +6,7 @@ pub const DATA: usize = 0x00;
 pub const CAPACITY: usize = 0x08;
 pub const COUNT: usize = 0x0c;
 
-pub use engine_native_memory::modifier_cache::Value;
+use engine_native_memory::modifier_cache::Value;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveValue {

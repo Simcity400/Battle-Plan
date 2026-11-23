@@ -15,6 +15,8 @@ default = ["building_changes"]
 building_changes = []
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-deployment.workspace = true
@@ -61,6 +63,7 @@ workspace = true
 collector-construction = { workspace = true, features = ["building_changes", "default", "test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

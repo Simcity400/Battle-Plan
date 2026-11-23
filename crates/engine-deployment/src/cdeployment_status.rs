@@ -1,12 +1,18 @@
 
-use crate::{
-    Memory, ccountry, cequipment_type, cmilitary_deployment, cmilitary_deployment_conveyor,
-    cmilitary_deployment_line,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    csub_unit_definition, equipment_entry,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
     walk::Outcome,
+};
+use engine_native::ccountry;
+use engine_native_parts::{cequipment_type, csub_unit_definition, equipment_entry};
+use crate::{
+    cmilitary_deployment,
+    cmilitary_deployment_conveyor,
+    cmilitary_deployment_line,
 };
 use engine_sites::Rva;
 
@@ -31,7 +37,7 @@ pub struct TemplateState {
 pub fn template_state(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<TemplateState, &'static str> {
     let at = manager(memory, base, country)?;
     let selected_staff = at
@@ -106,7 +112,7 @@ impl Outcomes {
 pub(crate) fn manager(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let pointer = country
         .pointer
@@ -151,12 +157,12 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(conveyors),
-        crate::walk::Buffer::Growing(lines),
-        crate::walk::Buffer::Growing(manpower),
-        crate::walk::Buffer::Growing(equipment),
-        crate::walk::Buffer::Growing(names),
-        crate::walk::Buffer::Growing(custom_names),
+        engine_native_memory::walk::Buffer::Growing(conveyors),
+        engine_native_memory::walk::Buffer::Growing(lines),
+        engine_native_memory::walk::Buffer::Growing(manpower),
+        engine_native_memory::walk::Buffer::Growing(equipment),
+        engine_native_memory::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(custom_names),
     )
 }
 
@@ -168,12 +174,12 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    conveyors: crate::walk::Buffer<'_, ConveyorRow>,
-    lines: crate::walk::Buffer<'_, LineRow>,
-    manpower: crate::walk::Buffer<'_, ManpowerRow>,
-    equipment: crate::walk::Buffer<'_, EquipmentRow>,
-    mut names: crate::walk::Buffer<'_, u8>,
-    mut custom_names: crate::walk::Buffer<'_, u8>,
+    conveyors: engine_native_memory::walk::Buffer<'_, ConveyorRow>,
+    lines: engine_native_memory::walk::Buffer<'_, LineRow>,
+    manpower: engine_native_memory::walk::Buffer<'_, ManpowerRow>,
+    equipment: engine_native_memory::walk::Buffer<'_, EquipmentRow>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
+    mut custom_names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Outcomes {
     let mut conveyors = Sink::new(conveyors);
     let mut lines = Sink::new(lines);
@@ -301,14 +307,14 @@ pub fn walk_buffer(
 }
 
 struct Sink<'a, R> {
-    rows: crate::walk::Buffer<'a, R>,
+    rows: engine_native_memory::walk::Buffer<'a, R>,
     len: usize,
     unread_rows: u32,
     overflowed: bool,
 }
 
 impl<'a, R: Default> Sink<'a, R> {
-    fn new(rows: crate::walk::Buffer<'a, R>) -> Self {
+    fn new(rows: engine_native_memory::walk::Buffer<'a, R>) -> Self {
         Self {
             rows,
             len: 0,
@@ -357,7 +363,7 @@ pub const LOCAL_SUBUNITS: usize = 0x20;
 pub struct LocalSubunitRow {
     pub country: u32,
     pub token: u32,
-    pub requirements: crate::creferenced_division_template::Span,
+    pub requirements: engine_native::creferenced_division_template::Span,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -443,7 +449,7 @@ fn archetype_token(
 }
 
 pub fn count_local_subunits(memory: &impl Memory, base: usize, game_state: usize) -> LocalSubunitWalk {
-    walk_local_subunits_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_| LocalSelection::Read, |_| {})
+    walk_local_subunits_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, |_| LocalSelection::Read, |_| {})
 }
 
 pub fn walk_local_subunits(
@@ -488,7 +494,7 @@ pub struct Deployment {
 
 #[derive(Clone, Debug)]
 pub struct LocalVisit {
-    pub country: ccountry::Country,
+    pub country: engine_native_memory::country_identity::Country,
     pub deployment: Option<Deployment>,
     pub rows: std::ops::Range<usize>,
     pub read: bool,
@@ -500,15 +506,15 @@ pub fn walk_local_subunits_selected<'a>(
     game_state: usize,
     rows: &mut Vec<LocalSubunitRow>,
     requirements: &mut Vec<LocalRequirement>,
-    select: impl FnMut(ccountry::Country) -> LocalSelection<'a>,
+    select: impl FnMut(engine_native_memory::country_identity::Country) -> LocalSelection<'a>,
     visit: impl FnMut(LocalVisit),
 ) -> LocalSubunitWalk {
     walk_local_subunits_buffer(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(requirements),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(requirements),
         select,
         visit,
     )
@@ -517,7 +523,7 @@ pub fn walk_local_subunits_selected<'a>(
 pub fn deployment(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Deployment, &'static str> {
     let status = manager(memory, base, country)?;
     let clones = status
@@ -528,8 +534,8 @@ pub fn deployment(
 }
 
 struct LocalOutput<'r> {
-    rows: crate::walk::Buffer<'r, LocalSubunitRow>,
-    requirements: crate::walk::Buffer<'r, LocalRequirement>,
+    rows: engine_native_memory::walk::Buffer<'r, LocalSubunitRow>,
+    requirements: engine_native_memory::walk::Buffer<'r, LocalRequirement>,
     len: usize,
     missing: u32,
 }
@@ -572,7 +578,7 @@ impl LocalOutput<'_> {
             self.requirements[start + index] = entry(index)?;
         }
         result.requirements_len += count;
-        row.requirements = crate::creferenced_division_template::Span { start, len: count };
+        row.requirements = engine_native::creferenced_division_template::Span { start, len: count };
         self.rows[self.len] = row;
         self.len += 1;
         Ok(())
@@ -583,9 +589,9 @@ fn walk_local_subunits_buffer<'a>(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: crate::walk::Buffer<'_, LocalSubunitRow>,
-    requirements: crate::walk::Buffer<'_, LocalRequirement>,
-    mut select: impl FnMut(ccountry::Country) -> LocalSelection<'a>,
+    rows: engine_native_memory::walk::Buffer<'_, LocalSubunitRow>,
+    requirements: engine_native_memory::walk::Buffer<'_, LocalRequirement>,
+    mut select: impl FnMut(engine_native_memory::country_identity::Country) -> LocalSelection<'a>,
     mut visit: impl FnMut(LocalVisit),
 ) -> LocalSubunitWalk {
     let mut result = LocalSubunitWalk {
@@ -676,7 +682,7 @@ fn read_country(
     memory: &impl Memory,
     base: usize,
     database: csub_unit_definition::Database,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     clones: Array,
     output: &mut LocalOutput<'_>,
     result: &mut LocalSubunitWalk,

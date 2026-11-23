@@ -1,15 +1,14 @@
 use super::*;
 use crate::{country_input_changes::Domain, reserved_visibility};
-use engine_native_politics::{ccountry_characters, cdiplomacy_status as diplomacy};
+use engine_native_politics::cdiplomacy_status as diplomacy;
 use engine_native::{
     cgame_state,
     cname_group_member,
-    creference_registry,
-    crelation_status,
+    crelation::status as crelation_status,
     cship,
-    memory::SliceMemory,
-    reference_bucket as bucket,
 };
+use engine_native_parts::{creference_registry, reference_bucket as bucket};
+use engine_native_memory::memory::SliceMemory;
 use replay_data::rows::Recorded;
 use replay_frame::frame::TableView;
 use std::cell::RefCell;
@@ -55,14 +54,14 @@ impl World {
             world.put64(country, ccountry::VTABLE_RVA.0 as u64);
             world.put32(country + ccountry::ID, slot as u32);
             world.put64(country + ccountry::DIPLOMACY_STATUS, root as u64);
-            world.put64(root, diplomacy::VTABLE_RVA.0 as u64);
-            world.put64(root + diplomacy::COUNTRY, country as u64);
+            world.put64(root, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+            world.put64(root + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
             let (matrix, cells) = if slot == 0 {
                 (reverse_matrix, countries + 1)
             } else {
                 (country + MATRIX, 1)
             };
-            world.header(root + diplomacy::RELATIONS, matrix, cells as u32);
+            world.header(root + engine_native_parts::cdiplomacy_status_layout::RELATIONS, matrix, cells as u32);
             for target in 0..cells {
                 let status = if slot == 0 {
                     block(target) + REVERSE
@@ -109,8 +108,8 @@ impl World {
     fn characters(&mut self, slot: usize) {
         let object = block(slot) + CHARACTERS;
         self.put64(block(slot) + ccountry::CHARACTERS, object as u64);
-        self.put64(object, ccountry_characters::VTABLE_RVA.0 as u64);
-        self.put64(object + ccountry_characters::OWNER, block(slot) as u64);
+        self.put64(object, engine_native::ccountry::rosters::VTABLE_RVA.0 as u64);
+        self.put64(object + engine_native::ccountry::rosters::OWNER, block(slot) as u64);
     }
 
     fn pride(&mut self, slot: usize, text: &[u8]) {
@@ -191,8 +190,8 @@ impl Memory for Probe<'_> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
-        (base == 0 && state == STATE).then_some(Ok(ccountry::Country {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
+        (base == 0 && state == STATE).then_some(Ok(engine_native_memory::country_identity::Country {
             pointer: block(0),
             canonical_slot: 0,
             id: 0,
@@ -212,7 +211,7 @@ struct Hour {
 
 fn hour(world: &World, store: Option<&mut CounterStore>, at: i32, fault: Option<usize>) -> Hour {
     let memory = world.memory(fault);
-    let mut naming = ccountry::read_reserved_naming_observed_inner(&memory, 0, STATE, engine_native::walk::Buffer::Count, None);
+    let mut naming = ccountry::read_reserved_naming_observed_inner(&memory, 0, STATE, engine_native_memory::walk::Buffer::Count, None);
     let observed = naming
         .visibility
         .take()
@@ -490,11 +489,11 @@ fn manpower_refused_sent_roster_carries_without_an_hourly_retry() {
 
 #[test]
 fn air_modifier_packet_is_carried_under_the_existing_country_certificate() {
-    use engine_native::{modifier_accumulator, modifier_entry};
+    use engine_native_parts::{modifier_accumulator, modifier_entry};
     use replay_data::rows::Recorded;
     let mut world = World::new(2);
     let data = world.pride + 0x100;
-    world.header(block(1) + ccountry::MODIFIER_ACCUMULATOR, data, 1);
+    world.header(block(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, data, 1);
     world.put32(data + modifier_entry::KEY, ccountry::AIR_MODIFIER_KEYS[0]);
     world.put64(data + modifier_entry::VALUE, (-12_345_i64) as u64);
     let domain = domain(64);
@@ -519,7 +518,7 @@ fn air_modifier_packet_is_carried_under_the_existing_country_certificate() {
         carried
             .reads
             .iter()
-            .all(|&(at, _)| at != block(1) + ccountry::MODIFIER_ACCUMULATOR && at != data)
+            .all(|&(at, _)| at != block(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR && at != data)
     );
     world.put64(data + modifier_entry::VALUE, 23_456);
     domain.write(Table::Counters, 1);
@@ -532,17 +531,17 @@ fn air_modifier_packet_is_carried_under_the_existing_country_certificate() {
         &world,
         None,
         14,
-        Some(block(1) + ccountry::MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT),
+        Some(block(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT),
     );
     assert_eq!(packet(&failed.captured), Recorded::Value(None));
 }
 
 #[test]
 fn combat_numeric_projection_carries_and_refreshes_its_marked_owner() {
-    use engine_native::{modifier_accumulator, modifier_entry};
+    use engine_native_parts::{modifier_accumulator, modifier_entry};
     let mut world = World::new(2);
     let data = world.pride + 0x100;
-    world.header(block(1) + ccountry::MODIFIER_ACCUMULATOR, data, 1);
+    world.header(block(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, data, 1);
     world.put32(
         data + modifier_entry::KEY,
         engine_executable::modifier_keys::AIR_ATTACK_FACTOR,
@@ -573,7 +572,7 @@ fn combat_numeric_projection_carries_and_refreshes_its_marked_owner() {
         carried
             .reads
             .iter()
-            .all(|&(at, _)| at != block(1) + ccountry::MODIFIER_ACCUMULATOR && at != data)
+            .all(|&(at, _)| at != block(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR && at != data)
     );
     world.put64(data + modifier_entry::VALUE, 23_456);
     domain.write(Table::Counters, 1);
@@ -586,7 +585,7 @@ fn combat_numeric_projection_carries_and_refreshes_its_marked_owner() {
         &world,
         None,
         14,
-        Some(block(1) + ccountry::MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT),
+        Some(block(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT),
     );
     assert_eq!(packet(&failed.captured), (false, None));
 }

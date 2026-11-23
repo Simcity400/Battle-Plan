@@ -1,4 +1,3 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::*;
 use crate::ccountry::synthetic::World;
 
@@ -18,10 +17,10 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
         world.u64(owner + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         world.u64(
             diplomacy,
-            (world.module + cdiplomacy_status::VTABLE_RVA.0) as u64,
+            (world.module + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
         );
-        world.u64(diplomacy + cdiplomacy_status::COUNTRY, owner as u64);
-        world.array(diplomacy + cdiplomacy_status::OWNED_WARGOALS, list, 1);
+        world.u64(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, owner as u64);
+        world.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS, list, 1);
         world.u64(list, goal as u64);
         world.u64(goal, (world.module + VTABLE_RVA.0) as u64);
         world.u32(goal + RECIPIENT, 0x8000_0000 | country);
@@ -77,8 +76,8 @@ fn owned_rosters_preserve_order_raw_targets_tokens_nulls_and_demand() {
         &world.memory(),
         world.module,
         world.game_state(),
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     );
     assert_eq!(demand.required, captured.required);
     assert_eq!(
@@ -96,7 +95,7 @@ fn an_observed_empty_roster_is_complete_and_missing_or_null_inputs_are_unavailab
     let owner = world.object(1);
     let diplomacy =
         read::<u64>(&world.memory(), owner + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
-    world.array(diplomacy + cdiplomacy_status::OWNED_WARGOALS, 0, 0);
+    world.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS, 0, 0);
     assert_eq!(
         capture(&world, &mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
@@ -110,7 +109,7 @@ fn an_observed_empty_roster_is_complete_and_missing_or_null_inputs_are_unavailab
     );
     world.u64(owner + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
     let list = world.alloc(8);
-    world.array(diplomacy + cdiplomacy_status::OWNED_WARGOALS, list, 1);
+    world.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS, list, 1);
     world.u64(list, goals[0] as u64);
     world.u64(goals[0] + GOAL_TYPE, 0);
     assert_eq!(
@@ -131,7 +130,7 @@ fn an_observed_empty_roster_is_complete_and_missing_or_null_inputs_are_unavailab
 #[test]
 fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
     struct Fault<'a> {
-        memory: crate::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         address: usize,
     }
     impl Memory for Fault<'_> {
@@ -151,8 +150,8 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
     let first = diplomacy(&world, 1);
     let second = diplomacy(&world, 2);
     let list = world.alloc(16);
-    world.array(first + cdiplomacy_status::OWNED_WARGOALS, list, 2);
-    world.array(second + cdiplomacy_status::OWNED_WARGOALS, 0, 0);
+    world.array(first + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS, list, 2);
+    world.array(second + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS, 0, 0);
     world.u64(list, goals[1] as u64);
     world.u64(list + 8, goals[0] as u64);
     let mut rows = vec![Row::default(); 2];
@@ -195,8 +194,8 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
             &memory,
             world.module,
             world.game_state(),
-            crate::walk::Buffer::Count,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
         )
         .required,
         Demand { rows: 2, states: 8 }

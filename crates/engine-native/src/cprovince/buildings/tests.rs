@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cbuilding_template, memory::SliceMemory};
+use engine_native_parts::cbuilding_template;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 struct TracedMemory<'a> {
@@ -751,7 +752,7 @@ fn a_map_scale_building_census_batches_authentication_and_dependent_stages() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let census = crate::read_census::ReadCensus::new(&source);
+    let census = engine_native_memory::read_census::ReadCensus::new(&source);
     let mut states = Vec::new();
     let mut provinces = Vec::new();
     assert_eq!(

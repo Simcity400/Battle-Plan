@@ -65,7 +65,6 @@ impl DefinitionMemo {
     }
 }
 
-pub use engine_native_memory::modifier_cache::PassDefinitions;
 
 pub fn effective(
     memory: &impl Memory,

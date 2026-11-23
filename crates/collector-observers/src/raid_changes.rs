@@ -4,7 +4,7 @@ use crate::{
     hook_timing::CallCounters,
 };
 use engine_mutations::raid_mutations::{DAILY_CAPACITIES, MUTATIONS, ORIGIN_ROUTE_SITE, Receiver};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     cell::Cell,
     ops::Range,
@@ -169,7 +169,7 @@ impl Watches {
     }
 
     fn building(&self, flags: u32, location: u32) -> Option<Dirty<'_>> {
-        if flags & engine_native::cbuilding_status::STATE_FLAG == 0 {
+        if flags & engine_native::cprovince::buildings::STATE_FLAG == 0 {
             return None;
         }
         self.buildings[0].fetch_add(1, Ordering::Relaxed);
@@ -268,7 +268,7 @@ impl Changes for Observer {
 }
 
 fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Target {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match receiver {
         Receiver::CountryResources => Target::Country(
             engine_mutations::raid_mutations::country(&memory, first).map(|raw| raw as usize),
@@ -629,7 +629,7 @@ unsafe extern "system" fn refresh_origin_trade_route(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[ORIGIN_ROUTE_SITE].load(Ordering::Acquire)) };
     WATCHES.refresh_origin(
@@ -652,7 +652,7 @@ unsafe extern "system" fn set_country_pool_capacity(
         return unsafe { original(first, second, third, fourth) };
     }
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let held = engine_mutations::raid_mutations::pool_capacity(
         &memory,
         BASE.load(Ordering::Relaxed),
@@ -675,7 +675,7 @@ unsafe extern "system" fn daily_refresh_base_capacities(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
     DAILY_FLIGHTS.fetch_add(1, Ordering::SeqCst);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let unchanged = collector_extended_support::hourly::ticking()
         .then(|| {
             engine_mutations::raid_mutations::daily_unchanged(
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn forwarded_building_writes_mark_state_statuses() {
-        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
+        use engine_native::cprovince::buildings::{PROVINCE_FLAG, STATE_FLAG};
         let watches = Watches::enabled(64, 64);
         let (Some(epoch), _) = take(&watches, Family::States) else {
             unreachable!("observing")

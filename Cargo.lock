@@ -125,18 +125,24 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app-update"
 version = "0.1.0"
 dependencies = [
+ "adler2",
  "base64 0.22.1",
  "bitflags 1.3.2",
+ "fdeflate",
+ "flate2",
  "hashbrown 0.17.1",
  "lock_api",
  "log",
  "minisign-verify",
+ "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
  "parking_lot",
  "reqwest",
  "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
+ "simd-adler32",
  "smallvec",
  "tauri",
  "test-unify",
@@ -639,10 +645,12 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
+ "engine-native-land",
  "recorder-derive-framework",
  "replay",
  "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
  "windows-sys 0.52.0",
  "windows-sys 0.61.2",
@@ -668,6 +676,8 @@ dependencies = [
  "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-politics",
  "replay-data",
  "replay-frame",
@@ -709,7 +719,10 @@ dependencies = [
  "engine-native",
  "engine-native-air",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-raid-inputs",
  "engine-sites",
@@ -741,6 +754,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -769,7 +784,8 @@ dependencies = [
  "engine-air-history",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-derive",
@@ -802,6 +818,8 @@ dependencies = [
  "engine-events",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -826,6 +844,9 @@ dependencies = [
  "engine-map-air",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -853,6 +874,8 @@ dependencies = [
  "collector-timing",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -957,7 +980,9 @@ dependencies = [
  "engine-native-air",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-occupation",
@@ -992,6 +1017,9 @@ dependencies = [
  "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
  "engine-research",
  "replay-data",
  "replay-identity",
@@ -1026,6 +1054,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "replay-data",
@@ -1058,7 +1089,9 @@ dependencies = [
  "engine-native",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "replay-data",
  "replay-frame",
@@ -1089,6 +1122,9 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-resources",
  "engine-sites",
  "replay-data",
@@ -1124,6 +1160,9 @@ dependencies = [
  "engine-intelligence",
  "engine-mutations",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-occupation",
  "engine-production",
  "engine-resources",
@@ -1157,7 +1196,10 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-occupation",
@@ -1194,6 +1236,8 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-sites",
@@ -1232,6 +1276,8 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-occupation",
  "replay-capture-spool",
  "replay-data",
@@ -1270,8 +1316,11 @@ dependencies = [
  "engine-land-inputs",
  "engine-mutations",
  "engine-native",
+ "engine-native-air",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-sites",
@@ -1308,6 +1357,9 @@ dependencies = [
  "engine-map-air",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-production",
  "engine-railways",
  "engine-resources",
@@ -1338,6 +1390,9 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -1368,6 +1423,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -1392,6 +1449,9 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-identity",
@@ -1421,6 +1481,9 @@ dependencies = [
  "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-resources",
  "engine-scripts",
@@ -1452,6 +1515,8 @@ dependencies = [
  "engine-executable",
  "engine-fuel",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -1486,6 +1551,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-power-balance",
  "engine-research",
@@ -1517,7 +1585,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -1537,7 +1605,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "retour",
  "serde",
@@ -1572,6 +1640,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-resources",
  "engine-scripts",
@@ -1605,6 +1676,9 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -1627,6 +1701,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1653,6 +1729,9 @@ dependencies = [
  "engine-events",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-production",
  "engine-scripts",
  "replay-capture-spool",
@@ -1679,7 +1758,8 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1702,7 +1782,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-mutations",
- "engine-native",
+ "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
  "engine-sites",
  "replay-data",
  "replay-identity",
@@ -1726,6 +1808,8 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-identity",
@@ -1766,6 +1850,9 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "replay-data",
@@ -1792,6 +1879,9 @@ dependencies = [
  "engine-events",
  "engine-executable",
  "engine-native",
+ "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
  "engine-sites",
  "replay-data",
  "replay-identity",
@@ -1818,7 +1908,9 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-projects",
  "engine-scripts",
  "replay-data",
@@ -1839,7 +1931,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-identity",
@@ -1859,7 +1951,8 @@ dependencies = [
  "engine-dlc",
  "engine-executable",
  "engine-fixed-layout",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-research",
  "replay-data",
  "replay-derive",
@@ -1888,8 +1981,10 @@ dependencies = [
  "engine-executable",
  "engine-map-air",
  "engine-mutations",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-naval-history",
  "engine-sites",
  "replay-data",
@@ -1919,6 +2014,9 @@ dependencies = [
  "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -1947,6 +2045,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -1978,8 +2079,10 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
- "engine-native-politics",
+ "engine-native-parts",
  "engine-naval-history",
  "replay-data",
  "replay-frame",
@@ -2020,6 +2123,9 @@ dependencies = [
  "engine-native",
  "engine-native-air",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-naval-history",
  "engine-railways",
  "engine-sites",
@@ -2047,7 +2153,10 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-intelligence",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -2079,7 +2188,10 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-naval-history",
  "replay-data",
  "replay-frame",
@@ -2101,7 +2213,10 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-naval-history",
  "replay-data",
  "replay-identity",
@@ -2125,6 +2240,10 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
+ "engine-native-parts",
  "engine-naval-history",
  "engine-sites",
  "replay-data",
@@ -2147,6 +2266,8 @@ dependencies = [
  "collector-test-support",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -2179,6 +2300,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-occupation",
@@ -2216,6 +2340,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -2242,6 +2368,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-production",
  "engine-sites",
  "replay-data",
@@ -2269,6 +2398,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-peace",
  "engine-sites",
  "replay-data",
@@ -2314,8 +2445,11 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-air",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-visibility",
  "replay-data",
@@ -2343,6 +2477,9 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "replay-capture-spool",
@@ -2379,6 +2516,9 @@ dependencies = [
  "engine-land-inputs",
  "engine-mutations",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-production",
  "engine-sites",
@@ -2401,7 +2541,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "serde",
  "test-unify",
@@ -2429,6 +2569,9 @@ dependencies = [
  "engine-events",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-production",
  "engine-sites",
@@ -2461,6 +2604,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-production",
  "replay-data",
  "replay-derive",
@@ -2481,7 +2626,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -2512,6 +2657,9 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-peace",
  "engine-projects",
@@ -2549,6 +2697,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-raid-inputs",
  "engine-resources",
  "replay-data",
@@ -2578,6 +2729,9 @@ dependencies = [
  "engine-executable",
  "engine-fixed-layout",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-naval-history",
  "engine-railways",
  "replay-data",
@@ -2602,6 +2756,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "replay-data",
  "replay-identity",
@@ -2613,6 +2768,8 @@ dependencies = [
 name = "collector-runtime"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "collector-advisors",
  "collector-air",
  "collector-air-histories",
@@ -2710,7 +2867,9 @@ dependencies = [
  "engine-native-air",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-occupation",
@@ -2724,6 +2883,7 @@ dependencies = [
  "engine-sites",
  "engine-stability",
  "engine-visibility",
+ "num-traits",
  "proc-macro2",
  "recorder-derive",
  "recorder-replay",
@@ -2738,6 +2898,7 @@ dependencies = [
  "replay-settings",
  "serde",
  "serde_json",
+ "smallvec",
  "syn 2.0.119",
  "synthetic-game",
  "test-unify",
@@ -2764,6 +2925,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-stability",
  "replay-data",
  "replay-frame",
@@ -2796,6 +2959,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "replay-data",
  "replay-frame",
@@ -2826,6 +2992,9 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -2842,7 +3011,7 @@ dependencies = [
  "collector-test-support",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "test-unify",
 ]
 
@@ -2850,6 +3019,8 @@ dependencies = [
 name = "collector-spool"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "collector-advisors",
  "collector-air",
  "collector-air-histories",
@@ -2910,9 +3081,13 @@ dependencies = [
  "engine-fixed-layout",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "engine-stability",
+ "num-traits",
  "recorder-derive",
  "recorder-replay",
  "replay",
@@ -2928,6 +3103,7 @@ dependencies = [
  "replay-settings",
  "serde",
  "serde_json",
+ "smallvec",
  "synthetic-game",
  "test-unify",
  "windows-sys 0.52.0",
@@ -2953,6 +3129,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-stability",
  "replay-data",
@@ -2985,6 +3164,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-occupation",
  "engine-railways",
@@ -3025,6 +3207,7 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-land",
+ "engine-native-memory",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -3048,7 +3231,7 @@ dependencies = [
  "collector-timing",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "replay-data",
  "replay-identity",
  "serde",
@@ -3078,7 +3261,10 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-stability",
  "engine-visibility",
  "replay-data",
@@ -3108,6 +3294,9 @@ dependencies = [
  "engine-executable",
  "engine-mutations",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "replay-data",
@@ -3138,6 +3327,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "replay-data",
@@ -3162,7 +3354,8 @@ dependencies = [
  "collector-workers",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "replay-data",
  "replay-identity",
  "serde",
@@ -3209,6 +3402,8 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "content-reader"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-abilities",
  "content-reader-country-names",
  "content-reader-defines",
@@ -3241,8 +3436,10 @@ dependencies = [
  "content-reader-wargoals",
  "content-reader-weather",
  "engine-allocation",
+ "num-traits",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3250,13 +3447,17 @@ dependencies = [
 name = "content-reader-abilities"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-abilities",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3264,10 +3465,13 @@ dependencies = [
 name = "content-reader-country-names"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -3279,13 +3483,17 @@ dependencies = [
 name = "content-reader-defines"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-layers",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
  "mlua",
+ "num-traits",
  "replay-identity",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3293,13 +3501,17 @@ dependencies = [
 name = "content-reader-division-names"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-division-names",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3307,6 +3519,8 @@ dependencies = [
 name = "content-reader-equipment-graphics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-key-names",
@@ -3318,10 +3532,12 @@ dependencies = [
  "content-reader-states",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-spool",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3329,13 +3545,17 @@ dependencies = [
 name = "content-reader-events"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-events",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3343,6 +3563,8 @@ dependencies = [
 name = "content-reader-focus"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-focus",
  "content-reader-key-names",
@@ -3351,7 +3573,9 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "job-priority",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3359,12 +3583,16 @@ dependencies = [
 name = "content-reader-gfx"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-gfx",
  "content-reader-gui",
  "content-reader-layers",
  "content-reader-script",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3372,6 +3600,8 @@ dependencies = [
 name = "content-reader-gui"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
  "content-reader-image",
@@ -3381,9 +3611,11 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
+ "num-traits",
  "replay-identity",
  "serde",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3391,8 +3623,11 @@ dependencies = [
 name = "content-reader-image"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-image",
  "image",
+ "num-traits",
  "png 0.18.1",
  "sha2",
  "test-unify",
@@ -3402,6 +3637,8 @@ dependencies = [
 name = "content-reader-key-names"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -3410,9 +3647,11 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
+ "num-traits",
  "replay-identity",
  "replay-spool",
  "serde",
+ "smallvec",
  "synthetic-game",
  "test-unify",
  "zstd",
@@ -3422,6 +3661,8 @@ dependencies = [
 name = "content-reader-layers"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-image",
  "content-reader-layers",
  "content-reader-parser",
@@ -3430,6 +3671,7 @@ dependencies = [
  "engine-heap",
  "job-priority",
  "miniz_oxide 0.8.9",
+ "num-traits",
  "replay-identity",
  "replay-spool",
  "serde",
@@ -3445,12 +3687,15 @@ dependencies = [
 name = "content-reader-localisation"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
+ "bytemuck",
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-parser",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
  "test-unify",
 ]
@@ -3459,6 +3704,8 @@ dependencies = [
 name = "content-reader-map"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-image",
  "content-reader-key-names",
@@ -3469,7 +3716,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "synthetic-game",
  "test-unify",
 ]
@@ -3478,6 +3727,8 @@ dependencies = [
 name = "content-reader-mesh"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-layers",
  "content-reader-mesh",
@@ -3485,8 +3736,10 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "engine-heap",
+ "num-traits",
  "replay-identity",
  "sha2",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3494,6 +3747,8 @@ dependencies = [
 name = "content-reader-military"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
@@ -3501,7 +3756,9 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "engine-heap",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3509,12 +3766,16 @@ dependencies = [
 name = "content-reader-naval-combat-defines"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-layers",
  "content-reader-naval-combat-defines",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3522,12 +3783,16 @@ dependencies = [
 name = "content-reader-naval-path"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-naval-path",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3546,6 +3811,8 @@ dependencies = [
 name = "content-reader-politics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -3555,7 +3822,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3563,6 +3832,8 @@ dependencies = [
 name = "content-reader-province-area"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3570,7 +3841,9 @@ dependencies = [
  "content-reader-province-area",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3578,6 +3851,8 @@ dependencies = [
 name = "content-reader-raids"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-division-names",
@@ -3588,9 +3863,11 @@ dependencies = [
  "content-reader-raids",
  "content-reader-script",
  "engine-allocation",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3598,12 +3875,15 @@ dependencies = [
 name = "content-reader-regions"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-regions",
  "content-reader-script",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
  "test-unify",
  "weather-period",
@@ -3613,6 +3893,8 @@ dependencies = [
 name = "content-reader-save"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -3621,8 +3903,10 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "engine-allocation",
+ "num-traits",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3644,13 +3928,17 @@ dependencies = [
 name = "content-reader-scripted-localisation"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
  "content-reader-scripted-localisation",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3658,6 +3946,8 @@ dependencies = [
 name = "content-reader-settings"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-gui",
  "content-reader-image",
  "content-reader-layers",
@@ -3666,9 +3956,11 @@ dependencies = [
  "content-reader-settings",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -3677,6 +3969,8 @@ dependencies = [
 name = "content-reader-sound"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -3685,7 +3979,9 @@ dependencies = [
  "content-reader-sound",
  "engine-allocation",
  "log",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "symphonia",
  "test-unify",
 ]
@@ -3694,13 +3990,17 @@ dependencies = [
 name = "content-reader-state-categories"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
  "content-reader-state-categories",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3708,6 +4008,8 @@ dependencies = [
 name = "content-reader-states"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -3716,7 +4018,9 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3724,13 +4028,17 @@ dependencies = [
 name = "content-reader-unit-path"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
  "content-reader-unit-path",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3738,13 +4046,17 @@ dependencies = [
 name = "content-reader-wargoals"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
  "content-reader-wargoals",
  "engine-allocation",
+ "num-traits",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3752,6 +4064,8 @@ dependencies = [
 name = "content-reader-weather"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3762,8 +4076,10 @@ dependencies = [
  "content-reader-script",
  "content-reader-weather",
  "engine-allocation",
+ "num-traits",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3771,9 +4087,12 @@ dependencies = [
 name = "content-witness"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-layers",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "product-codec",
  "replay-data",
  "replay-identity",
@@ -3804,7 +4123,7 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "recorder-derive-framework",
  "replay",
  "replay-capture-spool",
@@ -3812,6 +4131,7 @@ dependencies = [
  "replay-data",
  "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -3909,12 +4229,13 @@ dependencies = [
  "content-reader-regions",
  "core-events",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "recorder-derive-framework",
  "replay",
  "replay-capture-spool",
  "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -4148,6 +4469,7 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.13.1",
  "blake3",
  "content-reader-country-names",
  "content-reader-equipment-graphics",
@@ -4183,10 +4505,11 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4203,6 +4526,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4218,6 +4542,7 @@ dependencies = [
 name = "dashboard-air"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-gui",
@@ -4241,9 +4566,10 @@ dependencies = [
  "engine-air-history",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4263,6 +4589,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4276,6 +4603,7 @@ dependencies = [
 name = "dashboard-base"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
  "content-reader-abilities",
  "content-reader-country-names",
@@ -4310,13 +4638,15 @@ dependencies = [
  "engine-events",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
+ "engine-native-parts",
  "engine-production",
  "engine-projects",
  "engine-research",
  "indexmap 2.14.2",
  "job-priority",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "png 0.18.1",
@@ -4339,6 +4669,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "syn 2.0.119",
  "test-unify",
  "ts-rs",
@@ -4355,6 +4686,8 @@ dependencies = [
 name = "dashboard-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-gui",
  "content-reader-key-names",
@@ -4369,8 +4702,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "job-priority",
+ "num-traits",
  "recorder-derive",
  "replay",
  "replay-capture-spool",
@@ -4382,6 +4716,7 @@ dependencies = [
  "replay-spool",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4393,7 +4728,7 @@ name = "dashboard-declare"
 version = "0.1.0"
 dependencies = [
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "replay-columnar",
  "replay-data",
  "replay-derive",
@@ -4406,6 +4741,7 @@ dependencies = [
 name = "dashboard-economy"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-gui",
  "content-reader-localisation",
  "content-reader-map",
@@ -4421,9 +4757,10 @@ dependencies = [
  "dashboard-world",
  "engine-fuel",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4440,6 +4777,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4453,6 +4791,7 @@ dependencies = [
 name = "dashboard-effects"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-abilities",
  "content-reader-country-names",
  "content-reader-defines",
@@ -4481,9 +4820,12 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-parts",
  "game-model",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -4493,6 +4835,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4505,6 +4848,8 @@ dependencies = [
 name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -4514,7 +4859,8 @@ dependencies = [
  "dashboard-declare",
  "dashboard-query",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "playhead",
  "recorder-derive",
  "recorder-derive-framework",
@@ -4531,6 +4877,7 @@ dependencies = [
  "replay-tools",
  "rmp-serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "winapi-util",
 ]
@@ -4539,6 +4886,7 @@ dependencies = [
 name = "dashboard-intelligence"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-gui",
@@ -4560,12 +4908,14 @@ dependencies = [
  "dashboard-text",
  "engine-heap",
  "engine-intelligence",
- "engine-native",
  "engine-native-air",
  "engine-native-intelligence",
+ "engine-native-land",
+ "engine-native-memory",
  "game-model",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4582,6 +4932,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4595,6 +4946,7 @@ dependencies = [
 name = "dashboard-land"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-division-names",
  "content-reader-gui",
@@ -4621,8 +4973,11 @@ dependencies = [
  "engine-heap",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4642,6 +4997,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4655,6 +5011,7 @@ dependencies = [
 name = "dashboard-naval"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-division-names",
  "content-reader-gui",
  "content-reader-key-names",
@@ -4675,11 +5032,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "engine-native-naval",
  "game-model",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4696,6 +5054,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4709,6 +5068,7 @@ dependencies = [
 name = "dashboard-players"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-gui",
  "content-reader-map",
  "content-reader-mesh",
@@ -4721,9 +5081,10 @@ dependencies = [
  "dashboard-text",
  "engine-allocation",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4737,6 +5098,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4750,6 +5112,7 @@ dependencies = [
 name = "dashboard-politics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
  "content-reader-country-names",
  "content-reader-defines",
@@ -4776,12 +5139,14 @@ dependencies = [
  "dashboard-world",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-politics",
  "engine-power-balance",
  "game-model",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4800,6 +5165,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4813,6 +5179,7 @@ dependencies = [
 name = "dashboard-production"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-gfx",
  "content-reader-gui",
@@ -4835,10 +5202,13 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "engine-native",
+ "engine-native-land",
+ "engine-native-parts",
  "engine-resources",
  "game-model",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4858,6 +5228,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4871,6 +5242,8 @@ dependencies = [
 name = "dashboard-query"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -4879,7 +5252,8 @@ dependencies = [
  "content-reader-regions",
  "dashboard-declare",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-derive-framework",
  "replay",
@@ -4896,6 +5270,7 @@ dependencies = [
  "replay-tools",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "winapi-util",
@@ -4905,6 +5280,7 @@ dependencies = [
 name = "dashboard-research"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-gui",
  "content-reader-key-names",
@@ -4926,10 +5302,11 @@ dependencies = [
  "dashboard-world",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "engine-projects",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4946,6 +5323,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4960,6 +5338,7 @@ name = "dashboard-text"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.13.1",
  "blake3",
  "content-reader-abilities",
  "content-reader-country-names",
@@ -4996,6 +5375,8 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-parts",
  "engine-power-balance",
  "engine-projects",
  "engine-research",
@@ -5003,6 +5384,7 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
+ "num-traits",
  "once_cell",
  "png 0.18.1",
  "recorder-derive",
@@ -5017,6 +5399,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -5030,6 +5413,7 @@ dependencies = [
 name = "dashboard-wars"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-gui",
@@ -5054,10 +5438,11 @@ dependencies = [
  "dashboard-world",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "engine-projects",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -5076,6 +5461,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -5089,6 +5475,7 @@ dependencies = [
 name = "dashboard-world"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
  "content-reader-country-names",
  "content-reader-defines",
@@ -5113,11 +5500,12 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
- "engine-native",
  "engine-native-air",
+ "engine-native-land",
  "engine-stability",
  "indexmap 2.14.2",
  "log",
+ "num-traits",
  "once_cell",
  "playhead",
  "png 0.18.1",
@@ -5137,6 +5525,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -5554,10 +5943,9 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-native-air",
- "engine-native-intelligence",
  "engine-native-land",
- "engine-native-naval",
- "engine-native-politics",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-naval-history",
  "engine-occupation",
  "engine-peace",
@@ -5582,6 +5970,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "game-model",
@@ -5605,6 +5995,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "test-unify",
@@ -5617,6 +6009,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "test-unify",
 ]
@@ -5628,6 +6022,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "test-unify",
 ]
@@ -5638,7 +6034,7 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "test-unify",
  "windows-sys 0.61.2",
@@ -5651,6 +6047,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "test-unify",
@@ -5666,6 +6064,8 @@ dependencies = [
  "engine-native",
  "engine-native-air",
  "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-peace",
  "engine-production",
@@ -5693,8 +6093,9 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-executable",
- "engine-native",
  "engine-native-air",
+ "engine-native-memory",
+ "engine-native-parts",
  "synthetic-game",
  "test-unify",
 ]
@@ -5707,6 +6108,8 @@ dependencies = [
  "engine-executable",
  "engine-governance-tests",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-politics",
  "engine-research",
  "engine-sites",
  "test-unify",
@@ -5720,6 +6123,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "game-model",
  "replay-spool",
@@ -5735,6 +6140,9 @@ dependencies = [
  "engine-focus",
  "engine-governance-tests",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
+ "engine-native-politics",
  "engine-research",
  "engine-sites",
  "test-unify",
@@ -5758,6 +6166,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "test-unify",
 ]
@@ -5773,6 +6183,8 @@ dependencies = [
  "engine-native",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "test-unify",
@@ -5786,6 +6198,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "test-unify",
@@ -5802,6 +6216,10 @@ dependencies = [
  "engine-focus",
  "engine-native",
  "engine-native-air",
+ "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-projects",
  "engine-railways",
@@ -5818,7 +6236,6 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-executable",
- "engine-native",
  "engine-native-air",
  "engine-native-intelligence",
  "engine-native-land",
@@ -5839,11 +6256,13 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-air",
  "engine-native-memory",
  "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "game-model",
+ "test-unify",
 ]
 
 [[package]]
@@ -5851,11 +6270,14 @@ name = "engine-native-intelligence"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
+ "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-intelligence",
  "engine-native-memory",
  "engine-native-parts",
  "engine-sites",
+ "test-unify",
 ]
 
 [[package]]
@@ -5866,11 +6288,13 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
  "engine-native-memory",
  "engine-native-naval",
  "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
+ "test-unify",
 ]
 
 [[package]]
@@ -5879,8 +6303,11 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "engine-allocation",
+ "engine-executable",
+ "engine-native-memory",
  "engine-sites",
  "game-model",
+ "test-unify",
 ]
 
 [[package]]
@@ -5892,9 +6319,11 @@ dependencies = [
  "engine-native",
  "engine-native-air",
  "engine-native-memory",
+ "engine-native-naval",
  "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
+ "test-unify",
 ]
 
 [[package]]
@@ -5907,6 +6336,7 @@ dependencies = [
  "engine-native-memory",
  "engine-sites",
  "game-model",
+ "test-unify",
 ]
 
 [[package]]
@@ -5918,8 +6348,10 @@ dependencies = [
  "engine-native",
  "engine-native-memory",
  "engine-native-parts",
+ "engine-native-politics",
  "engine-sites",
  "game-model",
+ "test-unify",
 ]
 
 [[package]]
@@ -5931,7 +6363,9 @@ dependencies = [
  "engine-native",
  "engine-native-air",
  "engine-native-intelligence",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "engine-stability",
@@ -5947,6 +6381,8 @@ dependencies = [
  "engine-deployment",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "game-model",
@@ -5961,6 +6397,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "test-unify",
 ]
@@ -5972,6 +6409,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "test-unify",
 ]
@@ -5985,6 +6424,9 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-scripts",
  "engine-sites",
  "game-model",
@@ -6000,6 +6442,9 @@ dependencies = [
  "engine-characters",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
+ "engine-native-politics",
  "engine-sites",
  "test-unify",
 ]
@@ -6015,6 +6460,8 @@ dependencies = [
  "engine-native-air",
  "engine-native-intelligence",
  "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-projects",
  "engine-resources",
  "engine-sites",
@@ -6033,6 +6480,10 @@ dependencies = [
  "engine-fixed-layout",
  "engine-native",
  "engine-native-air",
+ "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-sites",
@@ -6052,6 +6503,8 @@ dependencies = [
  "engine-executable",
  "engine-governance-tests",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-projects",
  "engine-sites",
@@ -6065,7 +6518,9 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "test-unify",
@@ -6078,6 +6533,8 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "game-model",
  "replay-spool",
@@ -6100,6 +6557,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-intelligence",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-sites",
  "test-unify",
@@ -6114,6 +6573,8 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "test-unify",
 ]
@@ -7692,6 +8153,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 name = "map-content"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-equipment-graphics",
@@ -7715,6 +8177,7 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-content",
  "once_cell",
@@ -7753,6 +8216,7 @@ dependencies = [
 name = "map-products"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-gui",
@@ -7776,6 +8240,7 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-executable",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-content",
  "map-display-data",
@@ -7818,6 +8283,8 @@ dependencies = [
 name = "map-snow"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-image",
  "content-reader-key-names",
@@ -7828,10 +8295,12 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "map-display-data",
+ "num-traits",
  "product-codec",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -8868,6 +9337,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "playhead"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -8875,7 +9346,8 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "playhead",
  "recorder-derive",
  "replay",
@@ -8888,6 +9360,7 @@ dependencies = [
  "replay-journal",
  "replay-recording",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9196,6 +9669,8 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-division-names",
  "content-reader-gui",
@@ -9220,9 +9695,12 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-politics",
  "engine-sites",
  "job-priority",
+ "num-traits",
  "recorder-derive",
  "recorder-derived",
  "recorder-metrics",
@@ -9245,6 +9723,7 @@ dependencies = [
  "replay-settings",
  "serde",
  "serde_json",
+ "smallvec",
  "synthetic-game",
  "test-unify",
  "uuid",
@@ -9259,6 +9738,7 @@ version = "0.1.0"
 dependencies = [
  "app-update",
  "bitflags 1.3.2",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-division-names",
@@ -9278,9 +9758,10 @@ dependencies = [
  "content-reader-weather",
  "dashboard-core",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "hashbrown 0.17.1",
  "log",
+ "num-traits",
  "recorder",
  "recorder-derive",
  "recorder-oracle-support",
@@ -9295,6 +9776,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "smallvec",
  "tauri",
  "tauri-build",
  "test-unify",
@@ -9306,6 +9788,8 @@ dependencies = [
 name = "recorder-derive"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9313,7 +9797,8 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-derive-air",
  "recorder-derive-economy",
@@ -9328,6 +9813,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9335,6 +9821,8 @@ dependencies = [
 name = "recorder-derive-air"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9342,8 +9830,9 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-derive-world",
  "replay-columnar",
@@ -9351,6 +9840,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9358,6 +9848,8 @@ dependencies = [
 name = "recorder-derive-economy"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9367,12 +9859,16 @@ dependencies = [
  "engine-executable",
  "engine-fuel",
  "engine-native",
+ "engine-native-air",
+ "engine-native-parts",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-derive-world",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9380,6 +9876,8 @@ dependencies = [
 name = "recorder-derive-equipment"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
@@ -9389,11 +9887,14 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9401,6 +9902,8 @@ dependencies = [
 name = "recorder-derive-framework"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -9409,11 +9912,13 @@ dependencies = [
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9421,17 +9926,21 @@ dependencies = [
 name = "recorder-derive-land"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9439,19 +9948,23 @@ dependencies = [
 name = "recorder-derive-naval"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "game-model",
+ "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9459,19 +9972,23 @@ dependencies = [
 name = "recorder-derive-politics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-localisation",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9479,6 +9996,8 @@ dependencies = [
 name = "recorder-derive-world"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9487,13 +10006,15 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-parts",
+ "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-looks",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9501,6 +10022,8 @@ dependencies = [
 name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -9513,7 +10036,8 @@ dependencies = [
  "content-reader-script",
  "content-reader-weather",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-platform",
  "replay",
@@ -9522,6 +10046,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9529,6 +10054,8 @@ dependencies = [
 name = "recorder-metrics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9537,7 +10064,8 @@ dependencies = [
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-test-support",
  "replay",
@@ -9548,6 +10076,7 @@ dependencies = [
  "replay-identity",
  "replay-recording",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9555,6 +10084,8 @@ dependencies = [
 name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-layers",
@@ -9563,11 +10094,15 @@ dependencies = [
  "engine-dlc",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
+ "num-traits",
  "recorder-platform",
  "replay-data",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9575,6 +10110,8 @@ dependencies = [
 name = "recorder-oracle"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-division-names",
@@ -9594,8 +10131,10 @@ dependencies = [
  "content-reader-states",
  "content-reader-weather",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "engine-native-naval",
+ "engine-native-parts",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-air",
  "recorder-oracle-air-ledger",
@@ -9650,6 +10189,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9657,6 +10197,8 @@ dependencies = [
 name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9666,7 +10208,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -9676,6 +10219,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9683,6 +10227,8 @@ dependencies = [
 name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9693,7 +10239,8 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-air-history",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -9703,6 +10250,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9710,13 +10258,16 @@ dependencies = [
 name = "recorder-oracle-air-missions"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-relations",
  "recorder-oracle-support",
@@ -9726,6 +10277,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9733,6 +10285,8 @@ dependencies = [
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -9744,6 +10298,9 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-intel",
  "recorder-oracle-support",
@@ -9753,6 +10310,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9760,6 +10318,8 @@ dependencies = [
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -9767,7 +10327,9 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9776,6 +10338,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9783,6 +10346,8 @@ dependencies = [
 name = "recorder-oracle-combat-log"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
@@ -9791,7 +10356,9 @@ dependencies = [
  "content-reader-states",
  "engine-land-inputs",
  "engine-native",
+ "engine-native-land",
  "engine-resources",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-naval-history",
  "recorder-oracle-support",
@@ -9801,6 +10368,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9808,6 +10376,8 @@ dependencies = [
 name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9819,9 +10389,11 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-resources",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9830,6 +10402,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9837,6 +10410,8 @@ dependencies = [
 name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-defines",
  "content-reader-key-names",
  "content-reader-map",
@@ -9844,7 +10419,9 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "engine-native-parts",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9853,6 +10430,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9860,6 +10438,8 @@ dependencies = [
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -9867,7 +10447,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9876,6 +10457,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9883,6 +10465,8 @@ dependencies = [
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -9891,7 +10475,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-characters",
  "recorder-oracle-support",
@@ -9900,6 +10485,7 @@ dependencies = [
  "replay-data",
  "replay-derive",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9907,6 +10493,8 @@ dependencies = [
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -9915,8 +10503,9 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-air-history",
- "engine-native",
+ "engine-native-land",
  "engine-production",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-fuel-demand",
  "recorder-oracle-support",
@@ -9926,6 +10515,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9933,6 +10523,8 @@ dependencies = [
 name = "recorder-oracle-equipment-destruction"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -9942,6 +10534,8 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9950,6 +10544,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9957,13 +10552,16 @@ dependencies = [
 name = "recorder-oracle-event-feed"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9972,6 +10570,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -9979,13 +10578,16 @@ dependencies = [
 name = "recorder-oracle-faction-theatres"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9994,6 +10596,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10001,6 +10604,8 @@ dependencies = [
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
@@ -10009,7 +10614,8 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10018,6 +10624,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10025,6 +10632,8 @@ dependencies = [
 name = "recorder-oracle-fog"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10033,7 +10642,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -10043,6 +10653,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10050,6 +10661,8 @@ dependencies = [
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10057,7 +10670,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10066,6 +10680,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10073,13 +10688,16 @@ dependencies = [
 name = "recorder-oracle-game-score"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10088,6 +10706,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10095,6 +10714,8 @@ dependencies = [
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -10107,8 +10728,10 @@ dependencies = [
  "content-reader-states",
  "engine-executable",
  "engine-land-inputs",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-research",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10117,6 +10740,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10124,6 +10748,8 @@ dependencies = [
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -10135,8 +10761,9 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-intelligence",
- "engine-native",
  "engine-native-intelligence",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10145,6 +10772,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10152,6 +10780,8 @@ dependencies = [
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10160,7 +10790,8 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-land-inputs",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10170,6 +10801,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10177,6 +10809,8 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10185,6 +10819,8 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10193,6 +10829,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10200,6 +10837,8 @@ dependencies = [
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10209,8 +10848,10 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "game-model",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-combat-details",
  "recorder-oracle-naval-history",
@@ -10221,6 +10862,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10228,6 +10870,8 @@ dependencies = [
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10235,7 +10879,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10244,6 +10889,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10251,6 +10897,8 @@ dependencies = [
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10258,7 +10906,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10267,6 +10916,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10274,6 +10924,8 @@ dependencies = [
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10282,7 +10934,11 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10291,6 +10947,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10298,6 +10955,8 @@ dependencies = [
 name = "recorder-oracle-naval-missions"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
@@ -10305,8 +10964,9 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "engine-native-naval",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10315,6 +10975,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10322,6 +10983,8 @@ dependencies = [
 name = "recorder-oracle-naval-result-sources"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10329,7 +10992,8 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -10338,6 +11002,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10345,6 +11010,8 @@ dependencies = [
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10352,7 +11019,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-counters",
  "recorder-oracle-country-rosters",
@@ -10365,6 +11033,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10372,6 +11041,8 @@ dependencies = [
 name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10381,7 +11052,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -10391,6 +11063,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-recording",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10398,6 +11071,8 @@ dependencies = [
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10406,6 +11081,8 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10414,6 +11091,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10421,6 +11099,8 @@ dependencies = [
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10432,6 +11112,8 @@ dependencies = [
  "content-reader-states",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-characters",
  "recorder-oracle-support",
@@ -10441,6 +11123,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10448,6 +11131,8 @@ dependencies = [
 name = "recorder-oracle-power-ledger"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10456,7 +11141,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -10465,6 +11151,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10472,6 +11159,8 @@ dependencies = [
 name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10484,8 +11173,12 @@ dependencies = [
  "content-reader-states",
  "engine-executable",
  "engine-native",
+ "engine-native-land",
+ "engine-native-memory",
+ "engine-native-parts",
  "engine-scripts",
  "game-model",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -10494,6 +11187,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10501,6 +11195,8 @@ dependencies = [
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10510,7 +11206,10 @@ dependencies = [
  "content-reader-states",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-projects",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10519,6 +11218,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10526,6 +11226,8 @@ dependencies = [
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10533,7 +11235,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10542,6 +11245,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10549,6 +11253,8 @@ dependencies = [
 name = "recorder-oracle-relations"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10556,7 +11262,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10565,6 +11272,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10572,6 +11280,8 @@ dependencies = [
 name = "recorder-oracle-rocket-output"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10579,7 +11289,8 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -10589,6 +11300,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10596,13 +11308,16 @@ dependencies = [
 name = "recorder-oracle-saved-event-targets"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-counters",
  "recorder-oracle-support",
@@ -10612,6 +11327,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10619,13 +11335,16 @@ dependencies = [
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10634,6 +11353,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10641,13 +11361,16 @@ dependencies = [
 name = "recorder-oracle-session"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10656,6 +11379,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10663,13 +11387,16 @@ dependencies = [
 name = "recorder-oracle-stability"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10678,6 +11405,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10685,6 +11413,8 @@ dependencies = [
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
@@ -10692,7 +11422,8 @@ dependencies = [
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10701,6 +11432,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10708,6 +11440,8 @@ dependencies = [
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -10718,7 +11452,8 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10727,6 +11462,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10734,12 +11470,15 @@ dependencies = [
 name = "recorder-oracle-unit-combat-references"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10748,6 +11487,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10755,13 +11495,17 @@ dependencies = [
 name = "recorder-oracle-visibility"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "engine-native-parts",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10770,6 +11514,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10777,13 +11522,16 @@ dependencies = [
 name = "recorder-oracle-wars"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10792,6 +11540,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10799,6 +11548,8 @@ dependencies = [
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -10810,7 +11561,8 @@ dependencies = [
  "content-reader-script",
  "content-reader-states",
  "content-reader-weather",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10819,6 +11571,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10828,7 +11581,7 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-memory",
  "replay-data",
  "replay-identity",
  "replay-settings",
@@ -10840,7 +11593,9 @@ dependencies = [
 name = "recorder-replay"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10849,7 +11604,8 @@ dependencies = [
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "rayon",
  "recorder-derive",
  "recorder-metrics",
@@ -10867,6 +11623,7 @@ dependencies = [
  "replay-recording",
  "replay-settings",
  "serde_json",
+ "smallvec",
  "test-unify",
  "weather-period",
  "windows-sys 0.61.2",
@@ -10881,7 +11638,7 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "recorder-derive-framework",
  "replay",
  "replay-capture-spool",
@@ -10890,6 +11647,7 @@ dependencies = [
  "replay-derive",
  "replay-identity",
  "serde_json",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10897,6 +11655,8 @@ dependencies = [
 name = "recorder-test-support"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10904,7 +11664,8 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "replay",
  "replay-capture-spool",
@@ -10913,6 +11674,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-recording",
+ "smallvec",
  "test-unify",
 ]
 
@@ -10920,6 +11682,8 @@ dependencies = [
 name = "recording-upgrade"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-layers",
@@ -10928,7 +11692,8 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "replay",
  "replay-capture-spool",
@@ -10938,6 +11703,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-settings",
+ "smallvec",
  "test-unify",
  "zstd",
 ]
@@ -11056,7 +11822,9 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "replay"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -11065,7 +11833,8 @@ dependencies = [
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-derive-framework",
  "replay",
@@ -11079,6 +11848,7 @@ dependencies = [
  "replay-recording",
  "replay-settings",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -11090,7 +11860,7 @@ dependencies = [
  "crc32fast",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "engine-occupation",
  "replay-capture-spool",
  "replay-data",
@@ -11125,6 +11895,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-politics",
  "engine-occupation",
  "engine-reference-values",
  "game-model",
@@ -11171,7 +11942,10 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-memory",
  "engine-native-naval",
+ "engine-native-parts",
  "engine-native-politics",
  "engine-naval-history",
  "engine-production",
@@ -11212,6 +11986,7 @@ dependencies = [
  "dashboard-wars",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "gilrs",
  "recorder-derive",
  "replay",
@@ -11242,6 +12017,8 @@ dependencies = [
 name = "replay-files"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -11250,7 +12027,8 @@ dependencies = [
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "replay",
  "replay-capture-spool",
@@ -11261,6 +12039,7 @@ dependencies = [
  "replay-journal",
  "replay-recording",
  "replay-settings",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -11296,6 +12075,8 @@ dependencies = [
 name = "replay-journal"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -11305,7 +12086,8 @@ dependencies = [
  "crc32fast",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "recorder-derive",
  "recorder-derive-framework",
  "replay-columnar",
@@ -11316,6 +12098,7 @@ dependencies = [
  "replay-journal",
  "replay-recording",
  "replay-settings",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
@@ -11325,6 +12108,8 @@ dependencies = [
 name = "replay-lanes"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -11332,8 +12117,9 @@ dependencies = [
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "foldhash 0.2.0",
+ "num-traits",
  "rayon",
  "recorder-derive",
  "replay-columnar",
@@ -11343,6 +12129,7 @@ dependencies = [
  "replay-identity",
  "replay-journal",
  "replay-recording",
+ "smallvec",
  "test-unify",
 ]
 
@@ -11350,10 +12137,13 @@ dependencies = [
 name = "replay-looks"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "engine-allocation",
  "engine-executable",
+ "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -11364,6 +12154,8 @@ dependencies = [
 name = "replay-recording"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -11373,8 +12165,9 @@ dependencies = [
  "dashboard-declare",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
  "foldhash 0.2.0",
+ "num-traits",
  "rayon",
  "recorder-derive",
  "replay-columnar",
@@ -11386,6 +12179,7 @@ dependencies = [
  "replay-recording",
  "replay-spool",
  "serde",
+ "smallvec",
  "test-unify",
  "zstd",
 ]
@@ -11709,7 +12503,9 @@ dependencies = [
 name = "replay-tools"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "blake3",
+ "bytemuck",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -11718,7 +12514,8 @@ dependencies = [
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "engine-native",
+ "engine-native-land",
+ "num-traits",
  "rayon",
  "recorder-derive",
  "replay",
@@ -11733,6 +12530,7 @@ dependencies = [
  "replay-recording",
  "serde",
  "serde_json",
+ "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -12212,6 +13010,7 @@ dependencies = [
 name = "shader-pipeline"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-gui",
  "content-reader-image",
@@ -12225,6 +13024,7 @@ dependencies = [
  "job-priority",
  "log",
  "naga",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "replay-identity",
@@ -12232,6 +13032,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
+ "smallvec",
  "test-unify",
  "thiserror 2.0.20",
  "uuid",
@@ -12974,7 +13775,6 @@ dependencies = [
 name = "test-unify"
 version = "0.1.0"
 dependencies = [
- "adler2",
  "aho-corasick",
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -13003,8 +13803,6 @@ dependencies = [
  "either",
  "equivalent",
  "erased-serde",
- "fdeflate",
- "flate2",
  "fnv",
  "foldhash 0.2.0",
  "form_urlencoded",
@@ -13030,8 +13828,6 @@ dependencies = [
  "libc",
  "litemap",
  "memchr",
- "miniz_oxide 0.8.9",
- "miniz_oxide 0.9.1",
  "num-conv",
  "num-traits",
  "option-ext",
@@ -13057,7 +13853,6 @@ dependencies = [
  "serde_spanned 1.1.1",
  "serde_with",
  "sha2",
- "simd-adler32",
  "siphasher",
  "smallvec",
  "syn 2.0.119",
@@ -13655,6 +14450,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viewer"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-abilities",
  "content-reader-country-names",
@@ -13697,7 +14493,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "foldhash 0.2.0",
  "indexmap 2.14.2",
  "job-priority",
@@ -13771,6 +14567,7 @@ dependencies = [
 name = "viewer-aircraft"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-equipment-graphics",
@@ -13792,7 +14589,9 @@ dependencies = [
  "eframe",
  "engine-air-history",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13826,6 +14625,8 @@ dependencies = [
 name = "viewer-audio"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-sound",
@@ -13836,8 +14637,10 @@ dependencies = [
  "job-priority",
  "log",
  "map-display-data",
+ "num-traits",
  "replay-data",
  "replay-identity",
+ "smallvec",
  "test-unify",
  "windows 0.62.2",
 ]
@@ -13846,6 +14649,7 @@ dependencies = [
 name = "viewer-borders"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -13860,8 +14664,10 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13890,6 +14696,7 @@ dependencies = [
 name = "viewer-buildings"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -13907,8 +14714,10 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "product-codec",
  "recorder-derive",
@@ -13937,6 +14746,7 @@ dependencies = [
 name = "viewer-combat"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-division-names",
@@ -13966,6 +14776,7 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "engine-native-land",
+ "engine-native-parts",
  "game-model",
  "indexmap 2.14.2",
  "map-content",
@@ -14000,6 +14811,7 @@ dependencies = [
 name = "viewer-counter-kit"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-abilities",
  "content-reader-country-names",
  "content-reader-defines",
@@ -14019,7 +14831,9 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14051,6 +14865,7 @@ dependencies = [
 name = "viewer-counter-products"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-abilities",
  "content-reader-country-names",
  "content-reader-defines",
@@ -14078,11 +14893,13 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "engine-native",
+ "engine-native-land",
  "engine-occupation",
  "engine-railways",
  "game-model",
  "indexmap 2.14.2",
  "job-priority",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14113,6 +14930,7 @@ dependencies = [
 name = "viewer-counters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-abilities",
  "content-reader-country-names",
  "content-reader-defines",
@@ -14135,6 +14953,7 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "map-content",
@@ -14170,6 +14989,7 @@ dependencies = [
 name = "viewer-counters-land"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-gfx",
  "content-reader-gui",
  "content-reader-layers",
@@ -14182,7 +15002,9 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14213,6 +15035,7 @@ dependencies = [
 name = "viewer-counters-naval"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-gui",
  "content-reader-key-names",
@@ -14231,10 +15054,12 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "engine-native-naval",
+ "engine-native-parts",
  "game-model",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14266,6 +15091,7 @@ dependencies = [
 name = "viewer-engagements"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-gui",
  "content-reader-map",
@@ -14275,7 +15101,9 @@ dependencies = [
  "content-reader-unit-path",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14301,6 +15129,7 @@ dependencies = [
 name = "viewer-foundation"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-gfx",
@@ -14325,7 +15154,9 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14351,6 +15182,7 @@ dependencies = [
 name = "viewer-gpu"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -14368,12 +15200,14 @@ dependencies = [
  "dashboard-core",
  "dpi",
  "eframe",
+ "engine-allocation",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
  "map-snow",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -14399,6 +15233,7 @@ dependencies = [
 name = "viewer-layer-core"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-gui",
  "content-reader-map",
  "content-reader-mesh",
@@ -14415,6 +15250,7 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "foldhash 0.2.0",
  "indexmap 2.14.2",
  "map-content",
@@ -14469,6 +15305,7 @@ dependencies = [
 name = "viewer-layers-counters"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-gui",
  "content-reader-map",
  "content-reader-mesh",
@@ -14483,6 +15320,7 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-content",
  "once_cell",
@@ -14527,6 +15365,7 @@ dependencies = [
 name = "viewer-layers-forces"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-gui",
  "content-reader-map",
  "content-reader-mesh",
@@ -14539,6 +15378,7 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "foldhash 0.2.0",
  "indexmap 2.14.2",
  "map-content",
@@ -14584,6 +15424,7 @@ dependencies = [
 name = "viewer-layers-infrastructure"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-gui",
@@ -14600,6 +15441,7 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-content",
  "map-display-data",
@@ -14646,6 +15488,7 @@ dependencies = [
 name = "viewer-layers-political"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-gui",
  "content-reader-key-names",
@@ -14664,6 +15507,7 @@ dependencies = [
  "dpi",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-content",
  "map-display-data",
@@ -14709,6 +15553,7 @@ dependencies = [
 name = "viewer-map-icons"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-gui",
@@ -14721,9 +15566,11 @@ dependencies = [
  "content-reader-script",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -14753,6 +15600,7 @@ dependencies = [
 name = "viewer-map-modes"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -14771,8 +15619,10 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "product-codec",
@@ -14804,6 +15654,7 @@ dependencies = [
 name = "viewer-map-text"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-defines",
@@ -14824,8 +15675,10 @@ dependencies = [
  "eframe",
  "engine-allocation",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "product-codec",
  "recorder-derive",
@@ -14858,6 +15711,7 @@ dependencies = [
 name = "viewer-models"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-gui",
  "content-reader-image",
@@ -14873,9 +15727,11 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "product-codec",
@@ -14905,6 +15761,7 @@ dependencies = [
 name = "viewer-native-gui"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gfx",
@@ -14922,8 +15779,10 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -14953,6 +15812,7 @@ dependencies = [
 name = "viewer-playback"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-gfx",
@@ -14981,6 +15841,7 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "map-content",
@@ -15053,6 +15914,7 @@ dependencies = [
 name = "viewer-raids"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-equipment-graphics",
@@ -15081,6 +15943,8 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "engine-native-air",
+ "engine-native-land",
+ "engine-native-parts",
  "engine-research",
  "game-model",
  "indexmap 2.14.2",
@@ -15113,6 +15977,7 @@ dependencies = [
 name = "viewer-rail"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-defines",
@@ -15132,8 +15997,10 @@ dependencies = [
  "eframe",
  "engine-allocation",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -15163,6 +16030,7 @@ dependencies = [
 name = "viewer-runtime"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-defines",
  "content-reader-gui",
  "content-reader-key-names",
@@ -15180,10 +16048,12 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
- "engine-native",
+ "engine-native-land",
+ "engine-native-parts",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "rayon",
  "recorder-derive",
@@ -15210,6 +16080,7 @@ dependencies = [
 name = "viewer-scene-base"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -15226,10 +16097,12 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
  "map-snow",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -15259,6 +16132,7 @@ dependencies = [
 name = "viewer-terrain"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -15273,9 +16147,11 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -15301,6 +16177,7 @@ dependencies = [
 name = "viewer-unit-history"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -15311,7 +16188,9 @@ dependencies = [
  "content-reader-script",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -15339,6 +16218,7 @@ dependencies = [
 name = "viewer-unit-models"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-equipment-graphics",
@@ -15358,8 +16238,10 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-heap",
+ "engine-native-land",
  "game-model",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -15390,6 +16272,7 @@ dependencies = [
 name = "viewer-unit-reads"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-gui",
@@ -15409,7 +16292,10 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "engine-native",
+ "engine-native-land",
+ "engine-native-parts",
  "indexmap 2.14.2",
+ "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -15436,6 +16322,7 @@ dependencies = [
 name = "viewer-weather-effects"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -15452,9 +16339,11 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
+ "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -15485,6 +16374,7 @@ dependencies = [
 name = "viewer-world"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.1",
  "bytemuck",
  "content-reader-defines",
  "content-reader-gui",
@@ -15504,6 +16394,7 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
+ "engine-native-land",
  "indexmap 2.14.2",
  "map-content",
  "map-display-data",

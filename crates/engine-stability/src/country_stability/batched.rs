@@ -9,9 +9,9 @@ fn entry_span(header: [u8; 16]) -> Option<(usize, usize)> {
 
 fn display_spans(header: [u8; 32]) -> [Option<(usize, usize)>; 2] {
     let word = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-    let length = word(crate::msvc_string::LENGTH);
-    let capacity = word(crate::msvc_string::CAPACITY);
-    if length > capacity || capacity <= crate::msvc_string::INLINE_CAPACITY {
+    let length = word(engine_native_memory::msvc_string::LENGTH);
+    let capacity = word(engine_native_memory::msvc_string::CAPACITY);
+    if length > capacity || capacity <= engine_native_memory::msvc_string::INLINE_CAPACITY {
         return [None; 2];
     }
     let Some(source) = usize::try_from(word(0)).ok().filter(|&p| p != 0) else {

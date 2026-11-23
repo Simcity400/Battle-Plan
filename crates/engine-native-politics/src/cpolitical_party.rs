@@ -1,4 +1,3 @@
-pub use engine_native_parts::cpolitical_party_layout::{COUNTRY_LEADERS, COUNTRY_LEADER_COUNT, ID, IDEOLOGY_GROUP, VTABLE_RVA, identity};
 
 use engine_native_memory::Memory;
 

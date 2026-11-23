@@ -117,7 +117,7 @@ fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
 
 #[test]
 fn breakdown_capture_reads_sources_without_the_cached_trees() {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     const STATE: usize = 0x100;
     const MANAGER: usize = 0x800;
     const RECORDS: usize = 0x1000;
@@ -213,30 +213,32 @@ fn incomplete_breakdown_tree_cannot_publish_a_default_row() {
 
 #[test]
 fn party_leader_role_identity_survives_capture_at_country_scale() {
-    use engine_native::{ccharacter, ccountry, cideology_group, memory::SliceMemory};
+    use engine_native::{ccharacter, ccountry};
+    use engine_native_parts::cideology_group;
+    use engine_native_memory::memory::SliceMemory;
     use engine_native_politics::ccountry_leader;
     let mut bytes = vec![0_u8; 0x3000];
     let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     word(0x100, ccountry::VTABLE_RVA.0 as u64);
     word(0x100 + ccountry::POLITICAL_STATUS, 0x1200);
-    word(0x1200, cpolitical_status::VTABLE_RVA.0 as u64);
-    word(0x1200 + cpolitical_status::COUNTRY, 0x100);
+    word(0x1200, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64);
+    word(0x1200 + engine_native_parts::cpolitical_status_layout::COUNTRY, 0x100);
     word(0x1200 + cpolitical_status::PARTIES, 0x1400);
     word(0x1200 + cpolitical_status::PARTIES + 8, (1 << 32) | 1);
     word(0x1400, 0x1500);
-    word(0x1500, cpolitical_party::VTABLE_RVA.0 as u64);
-    word(0x1500 + cpolitical_party::ID, 7);
-    word(0x1500 + cpolitical_party::IDEOLOGY_GROUP, 0x1600);
+    word(0x1500, engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0 as u64);
+    word(0x1500 + engine_native_parts::cpolitical_party_layout::ID, 7);
+    word(0x1500 + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, 0x1600);
     word(0x1600, cideology_group::VTABLE_RVA.0 as u64);
     word(0x1600 + cideology_group::ID, 7);
-    word(0x1500 + cpolitical_party::COUNTRY_LEADERS, 0x1700);
+    word(0x1500 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS, 0x1700);
     word(
-        0x1500 + cpolitical_party::COUNTRY_LEADERS + 8,
+        0x1500 + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS + 8,
         (1 << 32) | 1,
     );
     word(0x1700, 0x1800);
-    word(0x1800, ccountry_leader::VTABLE_RVA.0 as u64);
-    word(0x1800 + ccountry_leader::CHARACTER, 0x1a00);
+    word(0x1800, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0 as u64);
+    word(0x1800 + engine_native_parts::ccountry_leader_layout::CHARACTER, 0x1a00);
     word(0x1800 + ccountry_leader::LEADER_ID, 12);
     word(0x1800 + 0x140, 0x2500);
     word(0x1a00, ccharacter::VTABLE_RVA.0 as u64);
@@ -292,7 +294,7 @@ fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
     input.slot.technology_handle = 77;
     input.template_index = 3;
     input.slot.database_index = 3;
-    let mut token = engine_native::msvc_string::Text::default();
+    let mut token = engine_native_memory::msvc_string::Text::default();
     token.bytes[..3].copy_from_slice(b"abc");
     token.len = 3;
     input.token = engine_research::research_inputs::Text::Inline(token);
@@ -341,7 +343,7 @@ fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text
         source_id: 91,
         ..Default::default()
     };
-    let mut name = engine_native::msvc_string::Text::default();
+    let mut name = engine_native_memory::msvc_string::Text::default();
     name.bytes[..4].copy_from_slice(b"idea");
     name.len = 4;
     row.name = engine_research::research_inputs::Text::Inline(name);
@@ -516,7 +518,7 @@ pub mod focus_test_kit {
     use engine_focus::{
         ccontinuous_national_focus, cnational_focus, cnational_focus_progress, cnational_focus_tree,
     };
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use engine_native::{ccountry, cgame_state};
 
     pub const BASE: usize = 0x1400_0000;
@@ -671,7 +673,7 @@ pub mod focus_test_kit {
 fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
     use focus_test_kit::{BASE, Fixture};
     struct Sources<'a> {
-        memory: engine_native::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         ideas: std::cell::Cell<usize>,
         fail_ideas: bool,
     }
@@ -696,12 +698,12 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
     let mut fixture = Fixture::world();
     for (country, politics) in [(0x1_2000, 0x1_9000), (0x1_4000, 0x1_a000)] {
         fixture.w64(country + ccountry::POLITICAL_STATUS, politics as u64);
-        fixture.w64(politics, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
-        fixture.w64(politics + cpolitical_status::COUNTRY, country as u64);
+        fixture.w64(politics, (BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64);
+        fixture.w64(politics + engine_native_parts::cpolitical_status_layout::COUNTRY, country as u64);
     }
     for fail_ideas in [false, true] {
         for hour in 0..24 {
-            let memory = engine_native::memory::CountedMemory::new(Sources {
+            let memory = engine_native_memory::memory::CountedMemory::new(Sources {
                 memory: fixture.memory(),
                 ideas: Default::default(),
                 fail_ideas,
@@ -776,7 +778,7 @@ fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
     fixture.w64(TEMPLATE + ctechnology_template::ID + 24, LENGTH as u64);
     fixture.w32(TEMPLATE + ctechnology_template::DATABASE_INDEX, 1);
     fixture.w32(TEMPLATE + ctechnology_template::TECHNOLOGY_HANDLE, 3);
-    struct Fault<'a>(engine_native::memory::SliceMemory<'a>);
+    struct Fault<'a>(engine_native_memory::memory::SliceMemory<'a>);
     impl Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == HEAP + LENGTH && output.len() == 1 {
@@ -878,7 +880,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     use focus_test_kit::BASE;
     let fixture = technology_fixture();
     struct Reads<'a> {
-        memory: engine_native::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         spans: std::cell::RefCell<Vec<(usize, usize)>>,
     }
     impl Memory for Reads<'_> {
@@ -1201,7 +1203,7 @@ fn an_unmarked_technology_slice_reads_only_progress() {
     enabled[4] = true;
     let mut store = SliceFingerprints::new();
     struct Reads<'a> {
-        memory: engine_native::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         addresses: std::cell::RefCell<Vec<usize>>,
     }
     impl Memory for Reads<'_> {
@@ -1258,7 +1260,7 @@ fn an_unmarked_technology_slice_reads_only_progress() {
 }
 
 struct Faulty<'a> {
-    memory: engine_native::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     address: usize,
     remaining: std::cell::Cell<u32>,
     progress: std::cell::RefCell<Vec<usize>>,
@@ -1403,7 +1405,7 @@ fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
 }
 
 struct NthFault<'a> {
-    memory: engine_native::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     address: usize,
     nth: u32,
     persistent: bool,

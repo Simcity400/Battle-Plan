@@ -17,8 +17,8 @@ impl Memory for Image {
         &self,
         _: usize,
         _: usize,
-    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
-        Some(Ok(crate::ccountry::Country {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
+        Some(Ok(engine_native_memory::country_identity::Country {
             pointer: ROOT,
             canonical_slot: 0,
             id: 0,
@@ -89,10 +89,10 @@ fn image() -> Image {
 #[test]
 fn naming_failure_preserves_one_count_and_ordered_repeated_state_bodies() {
     let image = image();
-    let mut walk = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, crate::walk::Buffer::Count, None);
+    let mut walk = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, engine_native_memory::walk::Buffer::Count, None);
     assert!(matches!(
         walk.outcome,
-        crate::walk::Outcome::Unavailable { .. }
+        engine_native_memory::walk::Outcome::Unavailable { .. }
     ));
     let mut scratch = vec![Occurrence::default(); 3];
     let mut output = vec![0; 3];
@@ -380,8 +380,8 @@ fn launch_naval_scratch_and_output_grow_for_mod_sized_original_rosters() {
             &image,
             0,
             NAVY,
-            crate::walk::Buffer::Growing(&mut scratch),
-            crate::walk::Buffer::Growing(&mut output),
+            engine_native_memory::walk::Buffer::Growing(&mut scratch),
+            engine_native_memory::walk::Buffer::Growing(&mut output),
         );
         assert_eq!(
             captured,
@@ -431,7 +431,7 @@ fn launch_state_scratch_and_output_grow_from_the_original_owned_count() {
                 if index % 2 == 0 { 0x4000 } else { 0x4200 },
             );
         }
-        let mut naming = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, crate::walk::Buffer::Count, None);
+        let mut naming = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, engine_native_memory::walk::Buffer::Count, None);
         let original = naming.launch_states.take().unwrap();
         let captured = original.capture(&image, 0, STATE, &mut scratch, &mut output);
         assert_eq!(captured.len, Ok(count));

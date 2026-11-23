@@ -1,9 +1,8 @@
 use super::*;
-use crate::{
-    ccountry, ccountry_occupation_data, ccountry_occupation_status, msvc_string,
-    pdx_robin_hood_table, read,
-};
-use engine_native::allocation;
+use engine_native::ccountry;
+use crate::{ccountry_occupation_data, ccountry_occupation_status, pdx_robin_hood_table};
+use engine_native_memory::{msvc_string, read};
+use engine_allocation as allocation;
 use engine_sites::Rva;
 
 pub const STORED_TARGET: usize = 0x28;
@@ -168,7 +167,7 @@ pub fn read_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn occupation_map_captures_inactive_lists_and_core_scope_without_hover_active_gate() {

@@ -9,12 +9,22 @@ pub const TARGET_PROVINCE: usize = 0x50;
 pub const SOURCE_PROVINCE: usize = 0x54;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00e9_3e70);
 
-use crate::{
-    Memory, ccountry, ccountry_intel, cdiplomacy_status, cgame_state, country_intel_row,
-    cpdx_array::Array, cprovince, cstatic_modifier, cstrategic_navy, cstrategic_navy_manager,
-    cstrategic_region, cweather_manager, modifier_accumulator, modifier_definition, read,
-    sweather_per_region,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
+    ccountry,
+    cgame_state,
+    cprovince,
+    cweather_manager::{self, region_weather as sweather_per_region},
 };
+use engine_native_intelligence::{ccountry_intel, country_intel_row};
+use engine_native_politics::cdiplomacy_status;
+use engine_native_parts::{
+    cstatic_modifier,
+    cstrategic_region,
+    modifier_accumulator,
+    modifier_definition,
+};
+use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
@@ -75,7 +85,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("transport address overflow")
 }
-fn value<T: crate::memory::Raw>(
+fn value<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -91,7 +101,7 @@ fn pointer(memory: &impl Memory, parent: usize, offset: usize) -> Result<usize, 
 fn key(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("transport address overflow")
 }
-fn global<T: crate::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -119,11 +129,11 @@ fn fraction(numerator: i64, denominator: i64) -> Result<i64, &'static str> {
 fn diplomacy(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let p = pointer(memory, country.pointer, ccountry::DIPLOMACY_STATUS)?;
-    if value::<u64>(memory, p, 0)? != key(base, cdiplomacy_status::VTABLE_RVA)? as u64
-        || value::<u64>(memory, p, cdiplomacy_status::COUNTRY)? != country.pointer as u64
+    if value::<u64>(memory, p, 0)? != key(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)? as u64
+        || value::<u64>(memory, p, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country.pointer as u64
     {
         return Err("transport diplomacy identity mismatch");
     }
@@ -133,7 +143,7 @@ fn diplomacy(
 fn intel(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let p = pointer(memory, country.pointer, ccountry::INTEL_TABLE)?;
     if value::<u64>(memory, p, 0)? != key(base, ccountry_intel::VTABLE_RVA)? as u64 {
@@ -147,7 +157,7 @@ fn intel_lane(
     countries: &ccountry::Reader<'_, impl Memory>,
     source: usize,
     target: usize,
-    target_country: ccountry::Country,
+    target_country: engine_native_memory::country_identity::Country,
 ) -> Result<i64, &'static str> {
     let raw = value::<i32>(memory, target, ccountry_intel::OWNER)?;
     if raw <= 0 {
@@ -172,12 +182,12 @@ fn totals<M: Memory>(
     base: usize,
     state: usize,
     countries: &ccountry::Reader<'_, M>,
-    owner: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
     region: u32,
 ) -> Result<(i64, i64), &'static str> {
     let owner_intel = intel(memory, base, owner)?;
     let relations = diplomacy(memory, base, owner)?;
-    let root = at(relations, cdiplomacy_status::ENEMY_COUNTRIES)?;
+    let root = at(relations, engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES)?;
     let array = Array::read(memory, root, 4).ok_or("transport enemy roster invalid")?;
     let mut total = 0_i64;
     let mut weighted = 0_i64;
@@ -261,7 +271,7 @@ fn composed_inputs<M: Memory>(
     memory: &M,
     base: usize,
     state: usize,
-    owner: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
     countries: &ccountry::Reader<'_, M>,
     region: u32,
 ) -> Result<ComposedInputs, &'static str> {
@@ -294,7 +304,7 @@ fn composed_inputs<M: Memory>(
         modifier_accumulator::lookup_effective_at(
             memory,
             base,
-            at(owner.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+            at(owner.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
             REDUCTION_TOKEN,
         )?
         .effective

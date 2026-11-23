@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry_raid_status::TypeTokens, cgame_state, cpdx_array::Array, craid_system,
-    raid_database, read, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_air::{ccountry_raid_status::TypeTokens, craid_system, raid_database};
+use engine_native::cgame_state;
 use engine_sites::Rva;
 
 pub const CACHE: usize = 0xf0;
@@ -34,8 +33,8 @@ pub fn required_tokens(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
         &mut TypeTokens::empty(),
     );
     match walk.outcome {
@@ -56,8 +55,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(tokens),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(tokens),
         known,
     )
 }
@@ -66,8 +65,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut rows: crate::walk::Buffer<'_, Row>,
-    mut tokens: crate::walk::Buffer<'_, u32>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
+    mut tokens: engine_native_memory::walk::Buffer<'_, u32>,
     known: &mut TypeTokens,
 ) -> Walk {
     let mut walk = Walk {
@@ -133,7 +132,7 @@ pub fn walk_buffer(
             let bytes = &mut bytes[..slot.len() * INDEX_STRIDE];
             let copied = allowed
                 .element((chunk * BATCH) as u32, INDEX_STRIDE)
-                .is_some_and(|at| crate::memory::read_slice(memory, at, bytes));
+                .is_some_and(|at| engine_native_memory::memory::read_slice(memory, at, bytes));
             if !copied {
                 return Err("player raid cache allowed list unreadable");
             }
@@ -170,7 +169,7 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const ROOT: usize = 0x2000;

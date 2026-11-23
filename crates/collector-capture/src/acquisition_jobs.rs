@@ -30,8 +30,8 @@ mod presentation;
 pub(crate) mod ship_details;
 pub(crate) mod variant_workers;
 #[cfg(feature = "acquisition_profile")]
-use engine_native::memory::CountedMemory;
-use engine_native::memory::LiveMemory;
+use engine_native_memory::memory::CountedMemory;
+use engine_native_memory::memory::LiveMemory;
 pub(crate) use presentation::{
     FinalInputsDispatch, PresentationDispatch, PresentationFanIn, PresentationInputs,
 };
@@ -98,7 +98,7 @@ pub(crate) struct BuildingsPart {
     ticks: u64,
 }
 impl BuildingsPart {
-    fn capture(&mut self, memory: &impl engine_native::Memory) {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory) {
         let cached = self.countries.roster_view(memory);
         self.ticks = self.buildings.capture_carried(
             &cached,
@@ -201,7 +201,7 @@ pub(crate) struct CharacterPortraitsRequest {
     pub(crate) part: usize,
     pub captured: character_portraits::Part,
     pub census:
-        Option<engine_allocation::SharedBox<engine_native::ccharacter_manager::PortraitCensus>>,
+        Option<engine_allocation::SharedBox<engine_native::ccharacter::manager::PortraitCensus>>,
 }
 pub(crate) struct OrdinaryRequest {
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -263,7 +263,7 @@ pub(crate) struct AirMissionsRequest {
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
-    pub parent: engine_native::walk::Outcome,
+    pub parent: engine_native_memory::walk::Outcome,
     pub pack: Box<collector_air::extended::air::Captured>,
     pub(crate) histories: Vec<collector_air_histories::air_histories::Staging>,
     pub(crate) mission_store: Option<Box<collector_air::extended::air::MissionStore>>,
@@ -464,13 +464,13 @@ pub(crate) struct OrdersRequest {
     pub(crate) group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
-    fn stitch(&mut self, memory: &impl engine_native::Memory) {
+    fn stitch(&mut self, memory: &impl engine_native_memory::Memory) {
         if self.orders.failed() {
             return;
         }
         let part_ticks = self.orders.stitch();
         if self.orders.failed() {
-            if let engine_native::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
+            if let engine_native_memory::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
                 self.plans.fail(reason);
             }
             return;
@@ -572,8 +572,8 @@ impl GatedRequest {
 impl GatedProjectsRequest {
     fn capture(
         &mut self,
-        memory: &impl engine_native::Memory,
-        roster: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
+        roster: &impl engine_native_memory::Memory,
         changes: &dyn collector_observers::country_input_changes::Changes,
     ) {
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
@@ -1177,8 +1177,8 @@ impl Default for SharedCalibration {
 }
 pub(crate) fn run_world(
     request: &mut WorldRequest,
-    memory: &impl engine_native::Memory,
-    production_memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
+    production_memory: &impl engine_native_memory::Memory,
 ) -> WorldReport {
     let started = collector_primitives::clock::qpc();
     let production = request
@@ -1208,7 +1208,7 @@ pub(crate) fn run_world(
 
 fn run_world_shared(
     request: &mut WorldRequest,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
 ) -> WorldReport {
     let started = collector_primitives::clock::qpc();
     let snapshot = engine_allocation::SharedBox::clone(&request.countries);
@@ -1222,7 +1222,7 @@ fn run_world_shared(
 
 fn run_economy_shared(
     request: &mut EconomyRequest,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
 ) -> economy::EconomyRestCopyReport {
     let cached = request.countries.view(memory);
     // SAFETY: Admitted economy acquisition runs while market observer storage lives.
@@ -1230,7 +1230,7 @@ fn run_economy_shared(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -> Report {
+pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native_memory::Memory) -> Report {
     if let Job::ObserverBoundary(request) = job {
         return Report::ObserverBoundary(request.capture());
     }
@@ -1239,7 +1239,7 @@ pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -
 
 fn run_with_memory(
     job: &mut Job,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     calibration: &SharedCalibration,
 ) -> Report {
     let started = collector_primitives::clock::qpc();
@@ -1956,7 +1956,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine_native::walk::Outcome::Unavailable {
+                        engine_native_memory::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2000,7 +2000,7 @@ fn run_with_memory(
         Job::Presentation(request) => {
             let cached = request.countries.roster_view(memory);
             let inputs = request.inputs.as_deref();
-            let missing = engine_native::walk::Outcome::Unavailable {
+            let missing = engine_native_memory::walk::Outcome::Unavailable {
                 reason: "acquisition source not supplied",
             };
             let sources = || production::Sources {
@@ -2032,7 +2032,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine_native::walk::Outcome::Unavailable {
+                        engine_native_memory::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2051,7 +2051,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine_native::walk::Outcome::Unavailable {
+                        engine_native_memory::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2065,7 +2065,7 @@ fn run_with_memory(
             let divisions = Some(if let Some(reason) = request.input_failure {
                 engine_visibility::unit_viewer_entry::DivisionSources {
                     entries: &[],
-                    outcome: engine_native::walk::Outcome::Unavailable { reason },
+                    outcome: engine_native_memory::walk::Outcome::Unavailable { reason },
                 }
             } else {
                 request
@@ -2074,7 +2074,7 @@ fn run_with_memory(
                     .map(|inputs| inputs.intel_sources())
                     .unwrap_or(engine_visibility::unit_viewer_entry::DivisionSources {
                         entries: &[],
-                        outcome: engine_native::walk::Outcome::Unavailable {
+                        outcome: engine_native_memory::walk::Outcome::Unavailable {
                             reason: "division input acquisition not supplied",
                         },
                     })
@@ -2642,7 +2642,7 @@ mod tests {
         self, Capture,
         fixtures::{ReadTrace, copies},
     };
-    use engine_native::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     use replay_data::rows::TableId;
 
     #[test]
@@ -2661,7 +2661,7 @@ mod tests {
     }
 
     fn country_snapshot(
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         cells: usize,
     ) -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache> {
         let mut storage = engine_allocation::shared(
@@ -2675,7 +2675,7 @@ mod tests {
     fn empty_country_snapshot() -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>
     {
         country_snapshot(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &empty_memory(),
             },
@@ -2867,14 +2867,14 @@ mod tests {
             let mut batch = Batch::new(&pool);
             request.captured = division_presentation::Captured::vacant();
             request.captured.prepare_status_holding(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
                 },
                 context,
                 production::Sources {
                     rows: &[],
-                    outcome: engine_native::walk::Outcome::Rows { len: 0 },
+                    outcome: engine_native_memory::walk::Outcome::Rows { len: 0 },
                 },
                 None,
             );
@@ -2980,7 +2980,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3041,7 +3041,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3098,7 +3098,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3123,7 +3123,7 @@ mod tests {
 
     fn run_counted(
         job: &mut Job,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
     ) -> (Report, read_accounting::TableCounts) {
         let reads = Capture::new();
         let report = run_for_test(job, memory);
@@ -3131,7 +3131,7 @@ mod tests {
     }
 
     fn snapshot_at(
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         cells: usize,
         base: usize,
         game_state: usize,
@@ -3187,12 +3187,9 @@ mod tests {
 
     #[test]
     fn the_score_walk_resolves_countries_through_the_hours_snapshot() {
-        use engine_native::{
-            ccountry,
-            cgame_state,
-            cstrategic_region,
-            memory::SliceMemory,
-        };
+        use engine_native::{ccountry, cgame_state};
+        use engine_native_parts::cstrategic_region;
+        use engine_native_memory::memory::SliceMemory;
         use engine_native_air::{cstrategic_air, cstrategic_air_manager};
         use engine_raid_inputs::raid_air_scores::COMBAT_DELAY_RVA;
         const MEMORY: usize = 0x1000_0000;
@@ -3283,7 +3280,7 @@ mod tests {
             };
             let (native, native_reads) = run(0);
             let (loaned, loaned_reads) = run(1 << 12);
-            assert_eq!(native, engine_native::walk::Outcome::Unavailable { reason });
+            assert_eq!(native, engine_native_memory::walk::Outcome::Unavailable { reason });
             assert_eq!(loaned, native, "alias {alias}");
             assert!(
                 loaned_reads.copy_calls < native_reads.copy_calls,
@@ -3301,7 +3298,7 @@ mod tests {
         assert_eq!(Role::Economy.read_anchor(), TableId::ProvinceSupply);
         assert_eq!(Role::World.read_anchor(), TableId::ProvinceSupply);
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3330,13 +3327,14 @@ mod tests {
 
     #[test]
     fn intel_roster_view_preserves_aliases_native_reads_and_first_faults() {
-        use engine_native::{Memory, ccountry, cgame_state, cunit, walk::Outcome};
+        use engine_native_memory::{Memory, walk::Outcome};
+        use engine_native::{ccountry, cgame_state, cunit};
         use engine_visibility::unit_viewer_entry;
         use fog::intel_test_kit as kit;
         use std::cell::RefCell;
 
         struct Traced<'a> {
-            source: engine_native::memory::SliceMemory<'a>,
+            source: engine_native_memory::memory::SliceMemory<'a>,
             reads: &'a RefCell<Vec<(usize, usize)>>,
             faults: &'a [usize],
         }
@@ -3367,7 +3365,7 @@ mod tests {
         let mut bytes = kit::fixture();
         bytes[kit::C0 + ccountry::ID..kit::C0 + ccountry::ID + 4]
             .copy_from_slice(&2_u32.to_le_bytes());
-        let links = engine_native::read::<u64>(
+        let links = engine_native_memory::read::<u64>(
             &kit::memory(&bytes),
             kit::GAME_STATE + cgame_state::COUNTRY_LINKS,
         )
@@ -3544,7 +3542,7 @@ mod tests {
     #[test]
     fn world_single_payload_matches_direct_copy_and_returns_storage() {
         let bytes = empty_memory();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -3555,7 +3553,7 @@ mod tests {
             collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
                 run_world_shared(
                     request,
-                    &engine_native::memory::SliceMemory {
+                    &engine_native_memory::memory::SliceMemory {
                         base: 0,
                         bytes: &bytes,
                     },
@@ -3608,7 +3606,7 @@ mod tests {
         for workers in [0, 1] {
             let bytes = empty_memory();
             let mut direct = economy_request();
-            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+            let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             });
@@ -3633,7 +3631,7 @@ mod tests {
                         runner_trace.record((), || {
                             run_economy_shared(
                                 request,
-                                &CountedMemory::new(engine_native::memory::SliceMemory {
+                                &CountedMemory::new(engine_native_memory::memory::SliceMemory {
                                     base: 0,
                                     bytes: &bytes,
                                 }),
@@ -3679,7 +3677,7 @@ mod tests {
                         runner_trace.record((), || {
                             run_world_shared(
                                 request,
-                                &CountedMemory::new(engine_native::memory::SliceMemory {
+                                &CountedMemory::new(engine_native_memory::memory::SliceMemory {
                                     base: 0,
                                     bytes: &bytes,
                                 }),
@@ -3818,7 +3816,7 @@ mod tests {
                         };
                         let key = request.payload.rows.as_ptr() as usize;
                         runner_trace.record(key, || {
-                            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+                            let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
                                 base: memory_base,
                                 bytes: &bytes,
                             });
@@ -3878,7 +3876,7 @@ mod tests {
                     };
                     assert_eq!(
                         report.result,
-                        engine_native::walk::Outcome::Unavailable { reason }
+                        engine_native_memory::walk::Outcome::Unavailable { reason }
                     );
                     expected[TableId::Provinces.index()] += reads;
                 }
@@ -3983,7 +3981,7 @@ mod tests {
             for index in [13, 14] {
                 assert_eq!(
                     pack.outcomes()[index],
-                    engine_native::walk::Outcome::Unavailable { reason }
+                    engine_native_memory::walk::Outcome::Unavailable { reason }
                 );
             }
             assert_eq!(read_accounting::snapshot(), read_accounting::ZERO);
@@ -4072,8 +4070,8 @@ mod tests {
 
     #[test]
     fn the_model_witness_job_reads_the_census_under_its_own_role() {
-        use engine_native::walk::Outcome;
-        let memory = engine_native::memory::SliceMemory {
+        use engine_native_memory::walk::Outcome;
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

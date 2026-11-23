@@ -1,6 +1,7 @@
 
-use crate::memory::{RecordField, RecordLayout, RecordSources};
-use crate::{Memory, allocation, read};
+use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
+use engine_native_memory::{Memory, read};
+use engine_allocation as allocation;
 use engine_sites::Rva;
 
 pub const DIRECTIONAL_LEDGERS: [usize; 2] = [0x70, 0xe0];
@@ -258,7 +259,7 @@ pub fn walk_delivery_histories(
 ) -> Result<DeliverySeedWork, &'static str> {
     let matrix = diplomacy
         .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
-        .and_then(|p| crate::cpdx_array::Array::read(memory, p, 8))
+        .and_then(|p| engine_native_memory::cpdx_array::Array::read(memory, p, 8))
         .ok_or("war lend-lease relation matrix unreadable")?;
     let expected_vtable = engine_sites::at(base, crate::crelation::status::VTABLE_RVA)
         .ok_or("war lend-lease vtable withheld")? as u64;
@@ -350,7 +351,7 @@ pub fn walk_delivery_histories(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn participation_delivery_seed_walks_native_entries_once_and_zero_histories_allocate_nothing() {

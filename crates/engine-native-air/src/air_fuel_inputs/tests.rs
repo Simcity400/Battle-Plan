@@ -144,7 +144,7 @@ fn fixture() -> Synthetic {
     for (country, id) in [(COUNTRY, 1), (ACE_OWNER, 2)] {
         memory.object(country, ccountry::VTABLE_RVA.0);
         memory.u32(country + ccountry::ID, id);
-        memory.array(country + ccountry::MODIFIER_ACCUMULATOR, 0, 0);
+        memory.array(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0, 0);
     }
     memory.u32(AIR + cstrategic_air::COUNTRY, 1);
     memory.object(WING + cair_wing::MISSION, air_mission::VTABLE_RVA.0);
@@ -320,14 +320,14 @@ fn training(memory: &mut Synthetic) {
     memory.u64(WING + cair_wing::MISSION + air_mission::WING, WING as u64);
     memory.i32(WING + cair_wing::MISSION + air_mission::CAPACITY_CLASS, 0);
     memory.reference(input(1).base_reference, BASE);
-    memory.object(BASE, cair_base::VTABLE_RVA.0);
-    memory.u64(BASE + cair_base::HANDLE, input(1).base_reference);
+    memory.object(BASE, engine_native_parts::cair_base_layout::VTABLE_RVA.0);
+    memory.u64(BASE + engine_native_parts::cair_base_layout::HANDLE, input(1).base_reference);
     memory.u64(BASE + cair_base::STATE, 0);
     let host_reference = (17_u64 << 32) | 51;
     memory.reference(host_reference, HOST);
     memory.object(HOST, cship::VTABLE_RVA.0);
     memory.u64(HOST + cship::HANDLE, host_reference);
-    memory.u64(BASE + cair_base::HOST_REFERENCE, host_reference);
+    memory.u64(BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE, host_reference);
     memory.put(HOST + cship::FORMATION_FLAGS, &[0x80]);
     memory.u64(SUBTYPE + csub_unit_definition::AIR_FLAGS, 1 << 10);
     memory.i32(SUBTYPE + SUBTYPE_CAPACITIES + 12, 6);
@@ -475,7 +475,7 @@ fn dirty_host(memory: &mut Synthetic) {
     for index in 0..2 {
         let variant = 0x650000 + index * 0x1000;
         memory.u64(0x640000 + index * 16, variant as u64);
-        memory.object(variant, cequipment_variant::VTABLE_RVA.0);
+        memory.object(variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0);
         memory.u64(
             variant + cequipment_variant::TYPE,
             (21 + index as u64) << 32 | 70,
@@ -523,23 +523,23 @@ fn effective_ace_uses_fresh_assigned_count_and_ace_owner_effectiveness() {
     let reference = (19_u64 << 32) | 7;
     let wing_reference = (23_u64 << 32) | 69;
     memory.reference(reference, ACE);
-    memory.reference(wing_reference, ASSIGNED + cair_wing::SECONDARY);
+    memory.reference(wing_reference, ASSIGNED + engine_native_parts::cair_wing_layout::SECONDARY);
     memory.object(ACE, cace::VTABLE_RVA.0);
     memory.u64(ACE + cace::REFERENCE, reference);
     memory.put(ACE + cace::ALIVE, &[1]);
     memory.u64(ACE + cace::ASSIGNED_WING_REFERENCE, wing_reference);
     memory.u64(ACE + cace::OWNER_COUNTRY, ACE_OWNER as u64);
-    memory.object(ASSIGNED, cair_wing::VTABLE_RVA.0);
+    memory.object(ASSIGNED, engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
     memory.object(
-        ASSIGNED + cair_wing::SECONDARY,
-        cair_wing::SECONDARY_VTABLE_RVA.0,
+        ASSIGNED + engine_native_parts::cair_wing_layout::SECONDARY,
+        engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0,
     );
-    memory.u64(ASSIGNED + cair_wing::REFERENCE_TYPE, wing_reference);
+    memory.u64(ASSIGNED + engine_native_parts::cair_wing_layout::REFERENCE_TYPE, wing_reference);
     memory.i32(ASSIGNED + cair_wing::PLANE_COUNT, 5);
     memory.i64(MODULE + defines::ACE_COUNT_RVA.0, 2000000);
     memory.i64(MODULE + defines::ACE_CAP_RVA.0, 1000000);
     memory.modifier(ACE, cace::MODIFIERS, FUEL_KEY, 10000);
-    memory.modifier(ACE_OWNER, ccountry::MODIFIER_ACCUMULATOR, ACE_KEY, 50000);
+    memory.modifier(ACE_OWNER, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, ACE_KEY, 50000);
     memory.u64(WING + cair_wing::ACE_REFERENCE, reference);
     assert_eq!(
         capture(&memory, &[WING, WING]),
@@ -553,9 +553,9 @@ fn effective_ace_uses_fresh_assigned_count_and_ace_owner_effectiveness() {
     memory.i32(ASSIGNED + cair_wing::PLANE_COUNT, 0);
     memory.bytes.remove(&(MODULE + defines::ACE_COUNT_RVA.0));
     assert_eq!(capture(&memory, &[WING]).maximum, Some(690000));
-    memory.u64(ASSIGNED + cair_wing::SECONDARY, 0);
+    memory.u64(ASSIGNED + engine_native_parts::cair_wing_layout::SECONDARY, 0);
     assert_eq!(capture(&memory, &[WING]).maximum, None);
-    memory.bytes.remove(&(ASSIGNED + cair_wing::SECONDARY));
+    memory.bytes.remove(&(ASSIGNED + engine_native_parts::cair_wing_layout::SECONDARY));
     assert_eq!(capture(&memory, &[WING]).current, None);
 }
 

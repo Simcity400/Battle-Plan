@@ -235,7 +235,7 @@ pub fn capture_context(
     terms: &mut [WidthTerm],
     modifiers: &mut ContextModifiers,
 ) -> Result<ContextRow, &'static str> {
-    use engine_native::{ccountry, creferenced_division_template as template};
+    use engine_native::creferenced_division_template as template;
     use engine_native_parts::modifier_definition as metadata;
     let identity = bytes::<8>(memory, pointer, 0)?;
     let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
@@ -255,7 +255,7 @@ pub fn capture_context(
     let country = countries.resolve(owner)?;
     let country_accumulator = country
         .pointer
-        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .ok_or("land combat context country address overflow")?;
     let country_modifiers = context_modifiers(memory, country_accumulator, &mut modifiers.country)?;
     let leader = engine_native::carmy_leader::movement_accumulator(memory, base, pointer)?;

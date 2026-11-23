@@ -1,4 +1,5 @@
-use crate::{Memory, capture_text::{Owned, Value}, cnaval_combatant::field, cpdx_array::Array};
+use engine_native_memory::{Memory, capture_text::{Owned, Value}, cpdx_array::Array};
+use crate::cnaval_combatant::field;
 use engine_sites::Rva;
 
 pub fn ptr(memory: &impl Memory, p: usize, o: usize) -> Result<usize, &'static str> {
@@ -151,7 +152,7 @@ fn template_terrain(
 ) -> Result<Option<usize>, &'static str> {
     let terrain = ptr(memory, template, 0x130)?;
     if terrain != 0 && field::<u8>(memory, terrain, 0x10)? != 0 {
-        auth(memory, base, terrain, crate::cterrain_type::VTABLE_RVA)?;
+        auth(memory, base, terrain, engine_native_parts::cterrain_type::VTABLE_RVA)?;
         return Ok(Some(terrain));
     }
     Ok(None)
@@ -164,7 +165,7 @@ fn ocean_terrain<const TERMINAL: bool>(
     let key: [u8; 5] = field(memory, site(base, Rva(0x029f_5b58))?, 0)?;
     let root = ptr(
         memory,
-        site(base, crate::cterrain_database::SINGLETON_RVA)?,
+        site(base, engine_native_parts::cterrain_database::SINGLETON_RVA)?,
         0,
     )?;
     let types = array(memory, root, 0x40, 8)?;
@@ -174,7 +175,7 @@ fn ocean_terrain<const TERMINAL: bool>(
         if field::<u8>(memory, p, 0x10)? == 0 {
             continue;
         }
-        auth(memory, base, p, crate::cterrain_type::VTABLE_RVA)?;
+        auth(memory, base, p, engine_native_parts::cterrain_type::VTABLE_RVA)?;
         let name = text::<TERMINAL>(memory, add(p, 0x18)?, "naval terrain name invalid")?;
         if name.as_bytes() == key && found.replace(p).is_some() {
             return Err("naval terrain duplicate fallback");
@@ -211,7 +212,7 @@ pub fn selected_class(
     Ok(found.unwrap_or(add(leader, fallback)?))
 }
 
-pub type DoctrineKeys = crate::recent::Recent<u32, [u32; 2], 64>;
+pub type DoctrineKeys = engine_native_memory::recent::Recent<u32, [u32; 2], 64>;
 
 pub fn doctrine_keys_kept<const TERMINAL: bool>(
     memory: &impl Memory,
@@ -232,7 +233,7 @@ pub fn doctrine_keys<const TERMINAL: bool>(
     base: usize,
     selector: u32,
 ) -> Result<[u32; 2], &'static str> {
-    use crate::cpdx_lexer as lexer;
+    use engine_native_memory::cpdx_lexer as lexer;
     if field::<u32>(memory, site(base, lexer::WRITER_FLAG_RVA)?, 0)? != 0 {
         return Err("naval doctrine lexer writer active");
     }

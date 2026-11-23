@@ -386,20 +386,20 @@ fn copy_production_lines(
 
 fn line_kind(base: usize, vtable: usize) -> Option<u8> {
     let kinds = [
-        engine_native::cmilitary_production_line::VTABLE_RVA,
-        engine_native::cnaval_production_line::VTABLE_RVA,
-        engine_native::cship_refit_production_line::VTABLE_RVA,
-        engine_native::crailway_gun_production_line::VTABLE_RVA,
+        engine_native_parts::cmilitary_production_line::VTABLE_RVA,
+        engine_native_parts::cnaval_production_line::VTABLE_RVA,
+        engine_native_parts::cship_refit_production_line::VTABLE_RVA,
+        engine_native_parts::crailway_gun_production_line::VTABLE_RVA,
     ];
     Some(match engine_sites::which(base, vtable, &kinds)? {
-        engine_native::cmilitary_production_line::VTABLE_RVA => {
+        engine_native_parts::cmilitary_production_line::VTABLE_RVA => {
             cequipment_production_line::KIND_MILITARY
         }
-        engine_native::cnaval_production_line::VTABLE_RVA => cequipment_production_line::KIND_NAVAL,
-        engine_native::cship_refit_production_line::VTABLE_RVA => {
+        engine_native_parts::cnaval_production_line::VTABLE_RVA => cequipment_production_line::KIND_NAVAL,
+        engine_native_parts::cship_refit_production_line::VTABLE_RVA => {
             cequipment_production_line::KIND_SHIP_REFIT
         }
-        engine_native::crailway_gun_production_line::VTABLE_RVA => {
+        engine_native_parts::crailway_gun_production_line::VTABLE_RVA => {
             cequipment_production_line::KIND_RAILWAY_GUN
         }
         _ => return None,
@@ -444,7 +444,7 @@ fn copy_max_factories(
     variant: usize,
     defines: &mut Option<[i32; 6]>,
 ) -> Option<i32> {
-    use engine_native::cequipment_type;
+    use engine_native_parts::cequipment_type;
     let optional = match kind {
         cequipment_production_line::KIND_RAILWAY_GUN => {
             return copy_factory_define(log, memory, base, defines, 5);

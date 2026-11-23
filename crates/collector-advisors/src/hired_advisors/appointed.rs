@@ -1,6 +1,7 @@
 use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{Memory, ccharacter::NameWalk, cpdx_array::Array, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
+use engine_native::ccharacter::NameWalk;
 use engine_native_politics::ccountry_characters::{self as native, Row};
 
 pub const CARRY: bool = cfg!(feature = "appointment_changes");
@@ -182,7 +183,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_census_holds_nothing_and_walks_every_hour() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -213,7 +214,7 @@ mod tests {
     #[test]
     fn a_quiet_hour_publishes_the_held_walk_and_a_moved_token_walks() {
         let world = empty_world();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &world,
         };

@@ -1,16 +1,30 @@
 
-use crate::{
-    Memory, cair_group, cair_theatre,  carmy, carmy_group, ccontroller_area, ccountry,
-    corders_group,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, ctask_force, ctheater_group, cunit,
     memory::{
-        Gathered, RecordField, RecordLayout, RecordSources, gather_records, packed_fields,
-        packed_map, packed_stride,
+        Gathered,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        gather_records,
+        packed_fields,
+        packed_map,
+        packed_stride,
     },
-    msvc_string, read, read_slice,
+    msvc_string,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::{
+    cair_group,
+    cair_theatre,
+    carmy_group,
+    ccontroller_area,
+    ctheater_group,
+};
+use crate::{carmy, ccountry, corders_group, cprovince, ctask_force, cunit};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_22b8);
@@ -52,7 +66,7 @@ pub struct ReservedLandWalk {
 pub(crate) fn walk_reserved_land_headers(
     memory: &impl Memory,
     base: usize,
-    root: Result<ccountry::Country, &'static str>,
+    root: Result<engine_native_memory::country_identity::Country, &'static str>,
     output: &mut Vec<Row>,
     validate_rosters: impl FnMut(usize, u64) -> Result<(), &'static str>,
 ) -> ReservedLandWalk {
@@ -63,7 +77,7 @@ pub(crate) fn walk_reserved_land_headers(
 pub fn walk_reserved_land_headers_buffer(
     memory: &impl Memory,
     base: usize,
-    root: Result<ccountry::Country, &'static str>,
+    root: Result<engine_native_memory::country_identity::Country, &'static str>,
     mut output: Buffer<'_, Row>,
     mut validate_rosters: impl FnMut(usize, u64) -> Result<(), &'static str>,
 ) -> ReservedLandWalk {
@@ -379,7 +393,7 @@ struct Reader<'a, M> {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn field<T: crate::memory::Raw>(
+    fn field<T: engine_native_memory::memory::Raw>(
         &self,
         pointer: usize,
         offset: usize,
@@ -439,7 +453,7 @@ impl<M: Memory> Reader<'_, M> {
 
     fn land(
         &self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         countries: &ccountry::Reader<'_, M>,
         details: &mut LandDetails,
         buffers: &mut Storage<'_>,
@@ -581,7 +595,7 @@ impl<M: Memory> Reader<'_, M> {
 
     fn air(
         &self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         countries: &ccountry::Reader<'_, M>,
         buffers: &mut Storage<'_>,
         names: &mut Names<'_>,
@@ -1019,7 +1033,7 @@ impl<M: Memory> Reader<'_, M> {
         let bytes = bytes
             .get_mut(..output.len() * 8)
             .ok_or("theatre vector window exceeds its batch buffer")?;
-        if !crate::read_slice(self.memory, window.data, bytes) {
+        if !engine_native_memory::read_slice(self.memory, window.data, bytes) {
             return Err("controller area province pointer unreadable or null");
         }
         for (destination, source) in output.iter_mut().zip(bytes.chunks_exact(8)) {

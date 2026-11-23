@@ -1,7 +1,8 @@
 use super::*;
-use crate::{ccountry, msvc_string, read};
-use engine_native::{allocation, modifier_accumulator};
-use engine_native_politics::cdiplomacy_status;
+use engine_native::ccountry;
+use engine_native_memory::{msvc_string, read};
+use engine_allocation as allocation;
+use engine_native_parts::modifier_accumulator;
 
 pub const TARGET: u32 = 0x1de;
 pub const OCCUPIED_TARGET: u32 = 0x1df;
@@ -70,7 +71,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .filter(|_| pointer != 0)
         .ok_or("occupation hover pointer invalid or overflow")
 }
-fn field<T: engine_native::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -109,14 +110,14 @@ pub fn read_inputs(
     let diplomacy = field::<u64>(memory, controller.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
     let occupied_diplomacy =
         field::<u64>(memory, occupied.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
-    let diplomacy_vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+    let diplomacy_vtable = engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
         .ok_or("occupation hover diplomacy identity mismatch")? as u64;
     for (diplomacy, country) in [
         (diplomacy, controller.pointer),
         (occupied_diplomacy, occupied.pointer),
     ] {
         if read::<u64>(memory, diplomacy) != Some(diplomacy_vtable)
-            || field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)? != country as u64
+            || field::<u64>(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country as u64
         {
             return Err("occupation hover diplomacy identity mismatch");
         }
@@ -127,7 +128,7 @@ pub fn read_inputs(
         let host = resolve(result.exile_host as u32)?;
         let diplomacy = field::<u64>(memory, host.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
         if read::<u64>(memory, diplomacy) != Some(diplomacy_vtable)
-            || field::<u64>(memory, diplomacy, cdiplomacy_status::COUNTRY)? != host.pointer as u64
+            || field::<u64>(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != host.pointer as u64
         {
             return Err("occupation exile host diplomacy identity mismatch");
         }
@@ -172,7 +173,7 @@ pub fn read_inputs(
         value.localisation.truncate(len);
         result.added.push(value);
     }
-    let relations = Array::read(memory, at(diplomacy, cdiplomacy_status::RELATIONS)?, 8)
+    let relations = Array::read(memory, at(diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?, 8)
         .ok_or("occupation hover relation matrix unreadable")?;
     let slot = countries.link(resistance.country)?.unwrap_or(0);
     let relation = relations
@@ -180,13 +181,13 @@ pub fn read_inputs(
         .and_then(|p| read::<u64>(memory, p))
         .ok_or("occupation hover relation slot unreadable")? as usize;
     if relation != 0 {
-        let expected = engine_sites::at(base, engine_native::crelation_status::VTABLE_RVA)
+        let expected = engine_sites::at(base, engine_native::crelation::status::VTABLE_RVA)
             .ok_or("occupation relation identity mismatch")?;
         if read::<u64>(memory, relation) != Some(expected as u64)
             || field::<u64>(
                 memory,
                 relation,
-                engine_native::crelation_status::DIPLOMACY_STATUS,
+                engine_native::crelation::status::DIPLOMACY_STATUS,
             )? != diplomacy as u64
         {
             return Err("occupation relation identity mismatch");
@@ -194,7 +195,7 @@ pub fn read_inputs(
         let target = field::<u32>(
             memory,
             relation,
-            engine_native::crelation_status::TARGET_COUNTRY,
+            engine_native::crelation::status::TARGET_COUNTRY,
         )?;
         if countries.link(target)?.unwrap_or(0) != slot {
             return Err("occupation relation target mismatch");
@@ -210,14 +211,14 @@ pub fn read_inputs(
         host_diplomacy,
     ];
     result.sources = [
-        at(controller.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+        at(controller.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
         cstate::country_modifier_accumulator(memory, game_state, source.pointer, controller_raw)?,
         if relation == 0 {
             0
         } else {
             at(relation, RELATION_MODIFIERS)?
         },
-        at(occupied.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+        at(occupied.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
     ];
     for ((entries, extra), offset) in result
         .effects
@@ -242,11 +243,11 @@ pub fn read_inputs(
         if failed {
             return Err("occupation effect allocation failed");
         }
-        let definitions = engine_native::modifier_definition::DefinitionMemo::default();
+        let definitions = engine_native_parts::modifier_definition::DefinitionMemo::default();
         let mut used = 0;
         for index in 0..entries.len() {
             let (key, raw) = entries[index];
-            let (value, flags) = engine_native::modifier_definition::effective_observed_memo(
+            let (value, flags) = engine_native_parts::modifier_definition::effective_observed_memo(
                 memory,
                 base,
                 key,
@@ -266,7 +267,7 @@ pub fn read_inputs(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     fn put<const N: usize>(bytes: &mut [u8], at: usize, value: [u8; N]) {
         bytes[at..at + N].copy_from_slice(&value);
     }
@@ -300,11 +301,11 @@ pub(super) mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                (cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+                (engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::COUNTRY,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 (country as u64).to_le_bytes(),
             );
         }
@@ -336,7 +337,7 @@ pub(super) mod tests {
         put(&mut bytes, 0xa000 + LEGITIMACY, 7_654_321_i64.to_le_bytes());
         array(
             &mut bytes,
-            0x9000 + cdiplomacy_status::RELATIONS,
+            0x9000 + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             0x11200,
             3,
         );
@@ -344,16 +345,16 @@ pub(super) mod tests {
         put(
             &mut bytes,
             0xb000,
-            (engine_native::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            (engine_native::crelation::status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            0xb000 + engine_native::crelation_status::DIPLOMACY_STATUS,
+            0xb000 + engine_native::crelation::status::DIPLOMACY_STATUS,
             0x9000_u64.to_le_bytes(),
         );
         put(
             &mut bytes,
-            0xb000 + engine_native::crelation_status::TARGET_COUNTRY,
+            0xb000 + engine_native::crelation::status::TARGET_COUNTRY,
             2_u32.to_le_bytes(),
         );
         array(&mut bytes, object + ADDED_TARGETS, 0x13000, 1);
@@ -402,10 +403,10 @@ pub(super) mod tests {
         assert_eq!(
             row.sources,
             [
-                0x2000 + ccountry::MODIFIER_ACCUMULATOR,
+                0x2000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
                 0x6000 + cstate::BASE_MODIFIERS,
                 0xb000 + RELATION_MODIFIERS,
-                0x4000 + ccountry::MODIFIER_ACCUMULATOR
+                0x4000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR
             ]
         );
         assert_eq!(
@@ -491,19 +492,19 @@ pub(super) mod tests {
         struct EffectMemory<'a>(&'a [u8], Cell<usize>, bool);
         impl Memory for EffectMemory<'_> {
             fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-                if address == engine_native::modifier_definition::TABLE_RVA.0 {
+                if address == engine_native_parts::modifier_definition::TABLE_RVA.0 {
                     out.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                     return true;
                 }
-                if address == engine_native::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0 {
+                if address == engine_native_parts::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0 {
                     out.copy_from_slice(&0_u64.to_le_bytes());
                     return true;
                 }
                 if (0x3000_0000..0x3004_0000).contains(&address) {
                     out.fill(0);
                     if self.2
-                        && (address - 0x3000_0000) % engine_native::modifier_definition::STRIDE
-                            == engine_native::modifier_definition::FEATURE_SELECTOR
+                        && (address - 0x3000_0000) % engine_native_parts::modifier_definition::STRIDE
+                            == engine_native_parts::modifier_definition::FEATURE_SELECTOR
                     {
                         out.copy_from_slice(&1_u32.to_le_bytes());
                     }
@@ -580,7 +581,7 @@ pub(super) mod tests {
         );
         put(
             &mut bytes,
-            0xa000 + cdiplomacy_status::COUNTRY,
+            0xa000 + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             0x2000_u64.to_le_bytes(),
         );
         assert_eq!(

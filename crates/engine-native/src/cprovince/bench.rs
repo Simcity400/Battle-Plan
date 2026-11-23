@@ -1,16 +1,18 @@
 use super::*;
-use crate::{
+use engine_native_parts::{
     cland_border_war_combat,
     cland_border_war_combatant,
-    cland_combat,
-    corders_group,
     creference_registry as registry,
-    crelation::status::bench::{Arena, Counting, report},
     cterrain_type,
-    msvc_tree_node as node,
-    cprovince::definition as definition,
     reference_bucket as bucket,
 };
+use crate::{
+    cland_combat,
+    corders_group,
+    crelation::status::bench::{Arena, Counting, report},
+    cprovince::definition as definition,
+};
+use engine_native_memory::msvc_tree_node as node;
 
 #[test]
 #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
@@ -133,10 +135,10 @@ fn bench_province_gates_and_border_conflicts() {
             "Provinces (no conflict)"
         };
         report(label, n, &memory, || {
-            let (outcome, walk) = walk_with_conflicts_buffer(&memory, base, game_state, crate::walk::Buffer::Growing(&mut rows), ConflictBuffers {
-            rows: crate::walk::Buffer::Growing(&mut conflict_rows),
-            groups: crate::walk::Buffer::Growing(&mut groups),
-        }, crate::walk::Buffer::Count, None);
+            let (outcome, walk) = walk_with_conflicts_buffer(&memory, base, game_state, engine_native_memory::walk::Buffer::Growing(&mut rows), ConflictBuffers {
+            rows: engine_native_memory::walk::Buffer::Growing(&mut conflict_rows),
+            groups: engine_native_memory::walk::Buffer::Growing(&mut groups),
+        }, engine_native_memory::walk::Buffer::Count, None);
             assert_eq!(outcome, Outcome::Rows { len: provinces });
             assert_eq!(walk.outcome, Outcome::Rows { len: conflicts });
             format!(

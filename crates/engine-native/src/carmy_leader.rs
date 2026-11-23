@@ -18,12 +18,12 @@ pub const MOVEMENT_MODIFIER: usize = 0x408;
 pub const SEPARATE_HQ_MOVEMENT_MODIFIER: usize = 0x4c8;
 pub const MODIFIER_ACCUMULATOR: usize = 0x10;
 pub const MOVEMENT_MODIFIER_KEYS: [u32; 6] = [
-    crate::modifier_keys::ARMY_SPEED_FACTOR,
-    crate::modifier_keys::ARMY_ARMOR_SPEED_FACTOR,
-    crate::modifier_keys::OUT_OF_SUPPLY_FACTOR,
-    crate::modifier_keys::COMBAT_WIDTH_FACTOR,
-    crate::modifier_keys::RIVER_CROSSING_FACTOR,
-    crate::modifier_keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
+    engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
+    engine_executable::modifier_keys::ARMY_ARMOR_SPEED_FACTOR,
+    engine_executable::modifier_keys::OUT_OF_SUPPLY_FACTOR,
+    engine_executable::modifier_keys::COMBAT_WIDTH_FACTOR,
+    engine_executable::modifier_keys::RIVER_CROSSING_FACTOR,
+    engine_executable::modifier_keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
 ];
 const PRIMARY_ROOT_CACHE: usize = 0x20;
 const PRIMARY_ROOT_DIRTY: usize = 0x28;
@@ -53,14 +53,14 @@ pub struct PrimaryRootCache {
 impl PrimaryRootCache {
     pub fn try_new(roots: usize, chunks: usize) -> std::io::Result<Self> {
         if chunks > (u32::MAX as usize - 1) / 64 {
-            return Err(crate::allocation::oom());
+            return Err(engine_allocation::oom());
         }
         Ok(Self {
             metadata: crate::carmy::PresentationInputs::new(if chunks == 0 { 0 } else { roots })?,
-            prefixes: crate::allocation::filled(roots, None)?,
-            chunks: crate::allocation::vec(chunks)?,
-            index: crate::allocation::filled(
-                chunks.checked_mul(128).ok_or_else(crate::allocation::oom)?,
+            prefixes: engine_allocation::filled(roots, None)?,
+            chunks: engine_allocation::vec(chunks)?,
+            index: engine_allocation::filled(
+                chunks.checked_mul(128).ok_or_else(engine_allocation::oom)?,
                 0,
             )?,
             chunk_limit: chunks,
@@ -107,7 +107,7 @@ impl PrimaryRootCache {
 
     pub fn resolve(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         member: usize,
     ) -> Result<usize, &'static str> {
@@ -148,11 +148,11 @@ impl PrimaryRootCache {
     #[allow(clippy::too_many_arguments)]
     fn contains(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         root: usize,
         address: usize,
         header: [u8; 16],
-        members: crate::cpdx_array::Array,
+        members: engine_native_memory::cpdx_array::Array,
         member: usize,
     ) -> Result<bool, &'static str> {
         if self.prefixes.is_empty() || self.chunk_limit == 0 {
@@ -198,7 +198,7 @@ impl PrimaryRootCache {
                 len: count * 8,
                 slot,
             };
-            if !crate::read_slice(memory, address, &mut chunk.bytes[..chunk.len]) {
+            if !engine_native_memory::read_slice(memory, address, &mut chunk.bytes[..chunk.len]) {
                 return Err("movement assigned members unreadable");
             }
             let found = chunk.bytes[..chunk.len]
@@ -225,8 +225,8 @@ impl PrimaryRootCache {
 }
 
 fn primary_contains_from(
-    memory: &impl crate::Memory,
-    members: crate::cpdx_array::Array,
+    memory: &impl engine_native_memory::Memory,
+    members: engine_native_memory::cpdx_array::Array,
     member: usize,
     mut first: u32,
 ) -> Result<bool, &'static str> {
@@ -236,7 +236,7 @@ fn primary_contains_from(
         let address = members
             .element(first, 8)
             .ok_or("movement assigned members overflow")?;
-        if !crate::read_slice(memory, address, &mut bytes[..count * 8]) {
+        if !engine_native_memory::read_slice(memory, address, &mut bytes[..count * 8]) {
             return Err("movement assigned members unreadable");
         }
         if bytes[..count * 8]
@@ -252,8 +252,8 @@ fn primary_contains_from(
 
 const MEMO_ALLOCATION: &str = "movement leader memo allocation failed";
 
-fn primary_shared<T: crate::memory::Raw>(
-    memory: &impl crate::Memory,
+fn primary_shared<T: engine_native_memory::memory::Raw>(
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     offset: usize,
     cache: &mut Option<&mut PrimaryRootCache>,
@@ -261,7 +261,7 @@ fn primary_shared<T: crate::memory::Raw>(
     let address = movement_at(pointer, offset)?;
     match cache.as_deref_mut() {
         Some(cache) => cache.metadata.read(memory, address).map_err(|_| MEMO_ALLOCATION)?,
-        None => crate::read(memory, address),
+        None => engine_native_memory::read(memory, address),
     }
     .ok_or("movement leader field unreadable")
 }
@@ -272,26 +272,26 @@ fn movement_at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("movement leader address overflow")
 }
 
-fn movement_field<T: crate::memory::Raw>(
-    memory: &impl crate::Memory,
+fn movement_field<T: engine_native_memory::memory::Raw>(
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     offset: usize,
 ) -> Result<T, &'static str> {
-    crate::read(memory, movement_at(pointer, offset)?).ok_or("movement leader field unreadable")
+    engine_native_memory::read(memory, movement_at(pointer, offset)?).ok_or("movement leader field unreadable")
 }
 
-fn movement_global<T: crate::memory::Raw>(
-    memory: &impl crate::Memory,
+fn movement_global<T: engine_native_memory::memory::Raw>(
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     key: Rva,
 ) -> Result<T, &'static str> {
     let at = engine_sites::at(base, key).ok_or("movement leader address overflow")?;
-    crate::read(memory, at).ok_or("movement leader field unreadable")
+    engine_native_memory::read(memory, at).ok_or("movement leader field unreadable")
 }
 
-fn movement_batched<T: crate::memory::Raw, const N: usize>(
-    memory: &impl crate::Memory,
-    batch: &crate::memory::FieldBatch<N>,
+fn movement_batched<T: engine_native_memory::memory::Raw, const N: usize>(
+    memory: &impl engine_native_memory::Memory,
+    batch: &engine_native_memory::memory::FieldBatch<N>,
     index: usize,
     pointer: usize,
     offset: usize,
@@ -310,12 +310,12 @@ fn movement_fields<const N: usize>(
 }
 
 fn movement_group_leader(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     group: usize,
 ) -> Result<usize, &'static str> {
     use crate::corders_group::{HANDLE, LEADER, REFERENCE_TYPE};
-    let batch = crate::memory::FieldBatch::gather(
+    let batch = engine_native_memory::memory::FieldBatch::gather(
         memory,
         movement_fields(group, [(0, 8), (HANDLE, 4), (LEADER, 8)]),
     );
@@ -325,7 +325,7 @@ fn movement_group_leader(
         vtable as usize,
         &[
             crate::corders_group::VTABLE_RVA,
-            crate::carmy_group::VTABLE_RVA,
+            engine_native_parts::carmy_group::VTABLE_RVA,
         ],
     )
     .is_none()
@@ -337,10 +337,10 @@ fn movement_group_leader(
 }
 
 fn movement_leader_identity<const N: usize>(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     leader: usize,
-    batch: &crate::memory::FieldBatch<N>,
+    batch: &engine_native_memory::memory::FieldBatch<N>,
 ) -> Result<(), &'static str> {
     if movement_batched::<u64, N>(memory, batch, 0, leader, 0)?
         != engine_sites::at(base, VTABLE_RVA).ok_or("movement leader address overflow")? as u64
@@ -353,7 +353,7 @@ fn movement_leader_identity<const N: usize>(
 }
 
 fn movement_primary_root(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     member: usize,
 ) -> Result<usize, &'static str> {
@@ -364,14 +364,13 @@ fn movement_primary_root(
 }
 
 fn movement_primary_root_internal(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     member: usize,
     mut cache: Option<&mut PrimaryRootCache>,
 ) -> Result<usize, &'static str> {
-    use crate::{
-        corder_instance as order, corders_group as group, corders_group_member, cpdx_array::Array,
-    };
+    use crate::{corder_instance as order, corders_group as group, corders_group_member};
+    use engine_native_memory::cpdx_array::Array;
     let own = movement_field::<u64>(memory, member, corders_group_member::GROUP)? as usize;
     let dirty = movement_field::<u8>(memory, member, PRIMARY_ROOT_DIRTY)?;
     let cached = movement_field::<u64>(memory, member, PRIMARY_ROOT_CACHE)? as usize;
@@ -382,7 +381,7 @@ fn movement_primary_root_internal(
             if engine_sites::which(
                 base,
                 vtable as usize,
-                &[group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA],
+                &[group::VTABLE_RVA, engine_native_parts::carmy_group::VTABLE_RVA],
             )
             .is_none()
                 || primary_shared::<u32>(memory, pointer, group::HANDLE, cache)?
@@ -430,7 +429,7 @@ fn movement_primary_root_internal(
                     return Err("movement primary root identity mismatch");
                 }
                 let members_at = movement_at(root, order::ASSIGNED_MEMBER_DATA)?;
-                let header = crate::read::<[u8; 16]>(memory, members_at)
+                let header = engine_native_memory::read::<[u8; 16]>(memory, members_at)
                     .ok_or("movement assigned members invalid")?;
                 let members =
                     Array::from_header(header, 8).ok_or("movement assigned members invalid")?;
@@ -459,7 +458,7 @@ fn movement_primary_root_internal(
 }
 
 pub fn movement_accumulator(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     army: usize,
 ) -> Result<Option<usize>, &'static str> {
@@ -470,7 +469,7 @@ pub fn movement_accumulator(
 }
 
 pub fn movement_accumulator_seeded(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     seed: &crate::carmy::DivisionSeed,
 ) -> Result<Option<usize>, &'static str> {
@@ -485,7 +484,7 @@ pub fn movement_accumulator_seeded(
 }
 
 fn movement_accumulator_internal(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     army: usize,
     own: usize,
@@ -503,7 +502,7 @@ fn movement_accumulator_internal(
         && movement_global::<u32>(
             memory,
             base,
-            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
         )? & (1 << 17)
             != 0
         && let Some(hq) = movement_hq_root(memory, base, own)?
@@ -514,7 +513,7 @@ fn movement_accumulator_internal(
 }
 
 pub fn separate_hq_order(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     unit: usize,
 ) -> Result<bool, &'static str> {
@@ -522,7 +521,7 @@ pub fn separate_hq_order(
         || movement_global::<u32>(
             memory,
             base,
-            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
         )? & (1 << 17)
             == 0
     {
@@ -539,7 +538,7 @@ pub fn separate_hq_order(
 }
 
 fn movement_leader(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     group: usize,
 ) -> Result<usize, &'static str> {
@@ -547,7 +546,7 @@ fn movement_leader(
     if leader == 0 {
         return Ok(0);
     }
-    let batch = crate::memory::FieldBatch::gather(
+    let batch = engine_native_memory::memory::FieldBatch::gather(
         memory,
         [
             (leader, 8),
@@ -562,7 +561,7 @@ fn movement_leader(
 }
 
 fn movement_hq_root(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     own: usize,
 ) -> Result<Option<usize>, &'static str> {
@@ -571,7 +570,7 @@ fn movement_hq_root(
 }
 
 fn movement_hq_provider_root(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     own: usize,
     hq: usize,
@@ -598,7 +597,7 @@ fn movement_hq_provider_root(
 }
 
 fn movement_own_root(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     army: usize,
 ) -> Result<usize, &'static str> {
@@ -638,10 +637,10 @@ impl<V: Copy> PassTable<V> {
         } else {
             keys.checked_mul(2)
                 .and_then(usize::checked_next_power_of_two)
-                .ok_or_else(crate::allocation::oom)?
+                .ok_or_else(engine_allocation::oom)?
         };
         Ok(Self {
-            slots: crate::allocation::filled(slots, None)?,
+            slots: engine_allocation::filled(slots, None)?,
             generation: 1,
             used: 0,
         })
@@ -764,7 +763,7 @@ pub struct MovementPreparation {
 }
 impl MovementPreparation {
     pub fn capture(
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         seed: &crate::carmy::DivisionSeed,
         memo: &mut LeaderMemo,
@@ -791,7 +790,7 @@ impl MovementPreparation {
                     movement_global::<u32>(
                         memory,
                         base,
-                        crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                        engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
                     )
                 });
                 prepared.flags = Some(flags);
@@ -822,7 +821,7 @@ impl MovementPreparation {
 }
 
 pub fn movement_accumulator_memoized(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     seed: &crate::carmy::DivisionSeed,
     memo: &mut LeaderMemo,
@@ -831,7 +830,7 @@ pub fn movement_accumulator_memoized(
 }
 
 pub fn movement_block_memoized(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     seed: &crate::carmy::DivisionSeed,
     memo: &mut LeaderMemo,
@@ -840,7 +839,7 @@ pub fn movement_block_memoized(
 }
 
 pub fn movement_block_prepared(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     seed: &crate::carmy::DivisionSeed,
     memo: &mut LeaderMemo,
@@ -870,7 +869,7 @@ pub fn movement_block_prepared(
                 movement_global::<u32>(
                     memory,
                     base,
-                    crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                    engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
                 )
             })
         });
@@ -947,16 +946,16 @@ const SELECTION_GROUP_SPANS: [(usize, usize); 5] = [
     (crate::corders_group::LEADER, 8),
     (crate::corders_group::TRAINING, 1),
 ];
-const SELECTION_GROUP_FIELDS: [crate::memory::RecordField; 5] =
-    crate::memory::packed_fields(SELECTION_GROUP_SPANS);
-const SELECTION_GROUP_STRIDE: usize = crate::memory::packed_stride(SELECTION_GROUP_SPANS);
-const SELECTION_GROUP_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&SELECTION_GROUP_FIELDS, SELECTION_GROUP_STRIDE)
+const SELECTION_GROUP_FIELDS: [engine_native_memory::memory::RecordField; 5] =
+    engine_native_memory::memory::packed_fields(SELECTION_GROUP_SPANS);
+const SELECTION_GROUP_STRIDE: usize = engine_native_memory::memory::packed_stride(SELECTION_GROUP_SPANS);
+const SELECTION_GROUP_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&SELECTION_GROUP_FIELDS, SELECTION_GROUP_STRIDE)
         .expect("valid selection group layout");
-const SELECTION_LEADER_FIELDS: [crate::memory::RecordField; 2] =
-    crate::memory::packed_fields([(0, 8), (crate::cunit_leader::TYPE, 8)]);
-const SELECTION_LEADER_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&SELECTION_LEADER_FIELDS, 16)
+const SELECTION_LEADER_FIELDS: [engine_native_memory::memory::RecordField; 2] =
+    engine_native_memory::memory::packed_fields([(0, 8), (crate::cunit_leader::TYPE, 8)]);
+const SELECTION_LEADER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&SELECTION_LEADER_FIELDS, 16)
         .expect("valid selection leader layout");
 
 #[derive(Clone, Copy)]
@@ -970,11 +969,11 @@ struct GroupSelection {
 }
 
 fn leader_handle(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     leader: usize,
 ) -> Result<Option<u64>, &'static str> {
-    let batch = crate::memory::FieldBatch::gather(
+    let batch = engine_native_memory::memory::FieldBatch::gather(
         memory,
         movement_fields(leader, [(0, 8), (crate::cunit_leader::TYPE, 4)]),
     );
@@ -983,7 +982,7 @@ fn leader_handle(
 }
 
 pub fn capture_selections(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     seeds: &mut [crate::carmy::DivisionSeed],
     carry: &mut dyn SelectionCarry,
@@ -991,7 +990,7 @@ pub fn capture_selections(
     const ALLOCATION: &str = "division selection allocation failed";
     let mut counts = SelectionCounts::default();
     let mut groups: Vec<GroupSelection> = Vec::new();
-    crate::allocation::advisory(|| crate::allocation::reserve(&mut groups, seeds.len()))
+    engine_allocation::advisory(|| engine_allocation::reserve(&mut groups, seeds.len()))
         .map_err(|_| ALLOCATION)?;
     groups.extend(
         seeds
@@ -1010,7 +1009,7 @@ pub fn capture_selections(
     groups.dedup_by_key(|entry| entry.group);
     let group_vtables = [
         crate::corders_group::VTABLE_RVA,
-        crate::carmy_group::VTABLE_RVA,
+        engine_native_parts::carmy_group::VTABLE_RVA,
     ]
     .map(|rva| engine_sites::at(base, rva).map(|vtable| vtable as u64));
     let mut pointers = [0_usize; SELECTION_BATCH];
@@ -1039,7 +1038,7 @@ pub fn capture_selections(
         if count == 0 {
             continue;
         }
-        crate::memory::gather_records(
+        engine_native_memory::memory::gather_records(
             memory,
             &pointers[..count],
             &SELECTION_GROUP_LAYOUT,
@@ -1055,7 +1054,7 @@ pub fn capture_selections(
                 entry.training = entry
                     .group
                     .checked_add(crate::corders_group::TRAINING)
-                    .and_then(|at| crate::read::<u8>(memory, at))
+                    .and_then(|at| engine_native_memory::read::<u8>(memory, at))
                     .ok_or("division presentation field unreadable");
                 continue;
             }
@@ -1080,7 +1079,7 @@ pub fn capture_selections(
         }
     }
     let mut leaders: Vec<(usize, Result<Option<u64>, &'static str>)> = Vec::new();
-    crate::allocation::advisory(|| crate::allocation::reserve(&mut leaders, groups.len()))
+    engine_allocation::advisory(|| engine_allocation::reserve(&mut leaders, groups.len()))
         .map_err(|_| ALLOCATION)?;
     leaders.extend(
         groups
@@ -1116,7 +1115,7 @@ pub fn capture_selections(
         if count == 0 {
             continue;
         }
-        crate::memory::gather_records(
+        engine_native_memory::memory::gather_records(
             memory,
             &pending[..count],
             &SELECTION_LEADER_LAYOUT,
@@ -1155,9 +1154,9 @@ pub fn capture_selections(
             }
         }
     }
-    let mut memo = crate::allocation::advisory(|| LeaderMemo::try_with_capacity(groups.len()))
+    let mut memo = engine_allocation::advisory(|| LeaderMemo::try_with_capacity(groups.len()))
         .map_err(|_| ALLOCATION)?;
-    crate::allocation::advisory(|| {
+    engine_allocation::advisory(|| {
         for seed in seeds.iter_mut() {
             let group = seed
                 .orders_group
@@ -1192,9 +1191,9 @@ pub fn capture_selections(
 }
 
 pub const CANNOT_RETREAT_WHILE_DEFENDING: u32 =
-    crate::modifier_keys::CANNOT_RETREAT_WHILE_DEFENDING;
+    engine_executable::modifier_keys::CANNOT_RETREAT_WHILE_DEFENDING;
 pub const CANNOT_RETREAT_WHILE_ATTACKING: u32 =
-    crate::modifier_keys::CANNOT_RETREAT_WHILE_ATTACKING;
+    engine_executable::modifier_keys::CANNOT_RETREAT_WHILE_ATTACKING;
 pub const RETREAT_BANNED_DEFENDING: u8 = 4;
 pub const RETREAT_BANNED_ATTACKING: u8 = 8;
 
@@ -1226,7 +1225,7 @@ impl RetreatBans {
 }
 
 pub fn retreat_bans(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     group: usize,
 ) -> Result<Option<RetreatBans>, &'static str> {
@@ -1237,7 +1236,7 @@ pub fn retreat_bans(
     if leader == 0 {
         return Ok(None);
     }
-    let batch = crate::memory::FieldBatch::gather(
+    let batch = engine_native_memory::memory::FieldBatch::gather(
         memory,
         movement_fields(leader, [(0, 8), (crate::cunit_leader::TYPE, 4)]),
     );
@@ -1249,7 +1248,7 @@ pub fn retreat_bans(
             (CANNOT_RETREAT_WHILE_DEFENDING, RETREAT_BANNED_DEFENDING),
             (CANNOT_RETREAT_WHILE_ATTACKING, RETREAT_BANNED_ATTACKING),
         ] {
-            if crate::modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)?
+            if engine_native_parts::modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)?
                 .effective
                 > 0
             {
@@ -1274,11 +1273,11 @@ pub fn retreat_bans(
 }
 
 fn movement_entries(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     accumulator: usize,
 ) -> Result<MovementEntries, &'static str> {
-    let mut values = [crate::modifier_accumulator::Value::default(); MOVEMENT_MODIFIER_KEYS.len()];
-    crate::modifier_accumulator::lookup_many_at(
+    let mut values = [engine_native_memory::modifier_cache::Value::default(); MOVEMENT_MODIFIER_KEYS.len()];
+    engine_native_parts::modifier_accumulator::lookup_many_at(
         memory,
         accumulator,
         &MOVEMENT_MODIFIER_KEYS,
@@ -1289,72 +1288,72 @@ fn movement_entries(
 
 const BANS_BATCH: usize = 64;
 const BANS_SPANS: usize = 16;
-const BANS_GROUP_FIELDS: [crate::memory::RecordField; 3] = [
-    crate::memory::RecordField {
+const BANS_GROUP_FIELDS: [engine_native_memory::memory::RecordField; 3] = [
+    engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 8,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: crate::corders_group::HANDLE,
         destination_offset: 8,
         len: 4,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: crate::corders_group::LEADER,
         destination_offset: 12,
         len: 8,
     },
 ];
-const BANS_GROUP_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&BANS_GROUP_FIELDS, 20).expect("valid group layout");
-const BANS_LEADER_FIELDS: [crate::memory::RecordField; 4] = [
-    crate::memory::RecordField {
+const BANS_GROUP_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&BANS_GROUP_FIELDS, 20).expect("valid group layout");
+const BANS_LEADER_FIELDS: [engine_native_memory::memory::RecordField; 4] = [
+    engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 8,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: crate::cunit_leader::TYPE,
         destination_offset: 8,
         len: 4,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: MOVEMENT_MODIFIER + MODIFIER_ACCUMULATOR,
         destination_offset: 12,
         len: 16,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: SEPARATE_HQ_MOVEMENT_MODIFIER + MODIFIER_ACCUMULATOR,
         destination_offset: 28,
         len: 16,
     },
 ];
 const BANS_LEADER_BYTES: usize = 44;
-const BANS_LEADER_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&BANS_LEADER_FIELDS, BANS_LEADER_BYTES)
+const BANS_LEADER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&BANS_LEADER_FIELDS, BANS_LEADER_BYTES)
         .expect("valid leader layout");
 
 #[derive(Clone, Copy)]
 struct BansLeader {
     group: usize,
     leader: usize,
-    blocks: [crate::cpdx_array::Array; 2],
+    blocks: [engine_native_memory::cpdx_array::Array; 2],
     bits: [u8; 2],
     movement: [MovementEntries; 2],
     failure: Option<&'static str>,
 }
 
 fn bans_from_entries(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     entries: &[u8],
-    memo: &crate::modifier_definition::DefinitionMemo,
+    memo: &engine_native_parts::modifier_definition::DefinitionMemo,
 ) -> Result<(u8, MovementEntries), &'static str> {
     let mut previous = 0;
     let mut bits = 0;
     let mut movement = [None; MOVEMENT_MODIFIER_KEYS.len()];
-    for entry in entries.chunks_exact(crate::modifier_entry::STRIDE) {
+    for entry in entries.chunks_exact(engine_native_parts::modifier_entry::STRIDE) {
         let key = u32::from_le_bytes(entry[..4].try_into().unwrap());
         if key <= previous {
             return Err("modifier accumulator keys not positive and increasing");
@@ -1372,7 +1371,7 @@ fn bans_from_entries(
             CANNOT_RETREAT_WHILE_ATTACKING => RETREAT_BANNED_ATTACKING,
             _ => continue,
         };
-        if crate::modifier_definition::effective_memo(memory, base, key, raw, memo)? > 0 {
+        if engine_native_parts::modifier_definition::effective_memo(memory, base, key, raw, memo)? > 0 {
             bits |= bit;
         }
     }
@@ -1380,19 +1379,20 @@ fn bans_from_entries(
 }
 
 pub fn retreat_bans_many(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     groups: &[usize],
     known: &[Option<Result<usize, &'static str>>],
     output: &mut [Result<Option<RetreatBans>, &'static str>],
-    memo: &crate::modifier_definition::DefinitionMemo,
+    memo: &engine_native_parts::modifier_definition::DefinitionMemo,
     held: &mut dyn FnMut(usize) -> Option<RetreatBans>,
 ) {
-    use crate::{cpdx_array::Array, memory::RecordSources, modifier_entry::STRIDE};
+    use engine_native_memory::{cpdx_array::Array, memory::RecordSources};
+    use engine_native_parts::modifier_entry::STRIDE;
     let expected = |rva: Rva| engine_sites::at(base, rva).map(|value| value as u64);
     let group_vtables = [
         expected(crate::corders_group::VTABLE_RVA),
-        expected(crate::carmy_group::VTABLE_RVA),
+        expected(engine_native_parts::carmy_group::VTABLE_RVA),
     ];
     let leader_vtable = expected(VTABLE_RVA);
     let mut group_bytes = [0_u8; BANS_BATCH * 20];
@@ -1590,7 +1590,7 @@ pub fn retreat_bans_many(
                     continue;
                 }
                 if array.count as usize > BANS_BATCH {
-                    let mut values = [crate::modifier_accumulator::Value::default(); 2];
+                    let mut values = [engine_native_memory::modifier_cache::Value::default(); 2];
                     let key = [
                         CANNOT_RETREAT_WHILE_DEFENDING,
                         CANNOT_RETREAT_WHILE_ATTACKING,
@@ -1598,7 +1598,7 @@ pub fn retreat_bans_many(
                     let offset = [MOVEMENT_MODIFIER, SEPARATE_HQ_MOVEMENT_MODIFIER][block];
                     let result = movement_at(leader.leader, offset + MODIFIER_ACCUMULATOR)
                         .and_then(|at| {
-                            crate::modifier_accumulator::lookup_many_at(
+                            engine_native_parts::modifier_accumulator::lookup_many_at(
                                 memory,
                                 at,
                                 &key,
@@ -1613,7 +1613,7 @@ pub fn retreat_bans_many(
                                 .zip([RETREAT_BANNED_DEFENDING, RETREAT_BANNED_ATTACKING])
                             {
                                 if value.present
-                                    && crate::modifier_definition::effective_memo(
+                                    && engine_native_parts::modifier_definition::effective_memo(
                                         memory, base, key, value.raw, memo,
                                     )? > 0
                                 {
@@ -1659,12 +1659,12 @@ pub fn retreat_bans_many(
 }
 
 pub fn movement_terrain(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     leader: usize,
     terrain_index: i32,
 ) -> Result<i64, &'static str> {
-    let batch = crate::memory::FieldBatch::gather(
+    let batch = engine_native_memory::memory::FieldBatch::gather(
         memory,
         movement_fields(
             leader,
@@ -1679,7 +1679,7 @@ pub fn movement_terrain(
     movement_at(leader, MOVEMENT_TERRAIN_DATA)?;
     let array = batch
         .get::<[u8; 16]>(memory, 2)
-        .and_then(|header| crate::cpdx_array::Array::from_header(header, MOVEMENT_TERRAIN_STRIDE))
+        .and_then(|header| engine_native_memory::cpdx_array::Array::from_header(header, MOVEMENT_TERRAIN_STRIDE))
         .ok_or("movement leader terrain header invalid")?;
     if array.data == 0 {
         return Err("movement leader terrain data null");
@@ -1719,7 +1719,7 @@ pub struct AttackStats {
 }
 
 pub fn attack_stats(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     leader: usize,
 ) -> Result<AttackStats, &'static str> {
@@ -1727,11 +1727,11 @@ pub fn attack_stats(
     let word = |offset: usize| -> Result<i64, &'static str> {
         leader
             .checked_add(offset)
-            .and_then(|address| crate::read::<i64>(memory, address))
+            .and_then(|address| engine_native_memory::read::<i64>(memory, address))
             .ok_or("commander attack operand unreadable")
     };
     let mut scalars = [0_u8; ATTACK_SNOW + 8 - ATTACK_FORT];
-    if !crate::read_slice(
+    if !engine_native_memory::read_slice(
         memory,
         leader
             .checked_add(ATTACK_FORT)
@@ -1744,7 +1744,7 @@ pub fn attack_stats(
         let at = offset - ATTACK_FORT;
         i64::from_le_bytes(scalars[at..at + 8].try_into().unwrap())
     };
-    let header = crate::read::<[u8; 16]>(
+    let header = engine_native_memory::read::<[u8; 16]>(
         memory,
         leader
             .checked_add(MOVEMENT_TERRAIN_DATA)
@@ -1759,10 +1759,10 @@ pub fn attack_stats(
         usize::try_from(count).unwrap_or(0).max(1)
     };
     let mut terrain = Vec::new();
-    crate::allocation::reserve_exact(&mut terrain, records)
+    engine_allocation::reserve_exact(&mut terrain, records)
         .map_err(|_| "commander terrain allocation failed")?;
     let mut movement_terrain = Vec::new();
-    crate::allocation::reserve_exact(&mut movement_terrain, records)
+    engine_allocation::reserve_exact(&mut movement_terrain, records)
         .map_err(|_| "commander terrain allocation failed")?;
     const BATCH: usize = 32;
     let mut entries = [0_u8; BATCH * MOVEMENT_TERRAIN_STRIDE];
@@ -1773,7 +1773,7 @@ pub fn attack_stats(
             .checked_mul(MOVEMENT_TERRAIN_STRIDE)
             .and_then(|offset| data.checked_add(offset))
             .ok_or("commander terrain adjuster address overflow")?;
-        if !crate::read_slice(
+        if !engine_native_memory::read_slice(
             memory,
             address,
             &mut entries[..len * MOVEMENT_TERRAIN_STRIDE],
@@ -1783,12 +1783,12 @@ pub fn attack_stats(
         for entry in entries[..len * MOVEMENT_TERRAIN_STRIDE].chunks_exact(MOVEMENT_TERRAIN_STRIDE)
         {
             terrain.push(i64::from_le_bytes(
-                entry[crate::csub_unit_definition::UNIT_ADJUSTER_ATTACK..][..8]
+                entry[engine_native_parts::csub_unit_definition::UNIT_ADJUSTER_ATTACK..][..8]
                     .try_into()
                     .unwrap(),
             ));
             movement_terrain.push(i64::from_le_bytes(
-                entry[crate::csub_unit_definition::UNIT_ADJUSTER_MOVEMENT..][..8]
+                entry[engine_native_parts::csub_unit_definition::UNIT_ADJUSTER_MOVEMENT..][..8]
                     .try_into()
                     .unwrap(),
             ));

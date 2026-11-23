@@ -5,7 +5,9 @@ use collector_primitives::{
 };
 use engine_allocation::{copy_vec, owned_vec, reserve, resize};
 use engine_map_air::radar_group;
-use engine_native::{Memory, ccontroller_area, ccountry, ctheatre, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native_parts::ccontroller_area;
+use engine_native::{ccountry, ctheatre};
 use engine_native_air::cair_base;
 use engine_visibility::unit_viewer_entry;
 use replay_data::{rows, rows::TableId, rows::tables};
@@ -285,7 +287,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::Growing(&mut self.volunteers.rows),
+                engine_native_memory::walk::Buffer::Growing(&mut self.volunteers.rows),
                 true,
             ),
             self.volunteers.rows.len(),
@@ -300,7 +302,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::Growing(rows),
+                engine_native_memory::walk::Buffer::Growing(rows),
             ),
             self.sent_volunteers.rows.len(),
         );
@@ -326,11 +328,11 @@ impl Captured {
                 game_state,
                 ctheatre::StationedStorage {
                     areas_active: self.active[2],
-                    areas: engine_native::walk::Buffer::Growing(&mut self.areas.rows),
-                    area_provinces: engine_native::walk::Buffer::Growing(
+                    areas: engine_native_memory::walk::Buffer::Growing(&mut self.areas.rows),
+                    area_provinces: engine_native_memory::walk::Buffer::Growing(
                         &mut self.area_provinces.first,
                     ),
-                    units: engine_native::walk::Buffer::Growing(&mut self.units.rows),
+                    units: engine_native_memory::walk::Buffer::Growing(&mut self.units.rows),
                 },
             )
         });
@@ -361,7 +363,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::Growing(&mut self.intel.rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.intel.rows),
                     None,
                 ),
                 self.intel.rows.len(),

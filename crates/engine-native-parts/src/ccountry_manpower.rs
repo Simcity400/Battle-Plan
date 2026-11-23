@@ -1,4 +1,3 @@
-pub use crate::ccountry_manpower_layout::{RESIDUAL};
 
 use engine_sites::Rva;
 pub const COUNTRY: usize = 8;

@@ -1,7 +1,7 @@
-use engine_native_parts::cpolitical_status_layout as cpolitical_status;
-use crate::{
-    Memory, allocation, ccountry, cpdx_array::Array,  cwar_goal_type, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_allocation as allocation;
+use crate::ccountry;
+use engine_native_parts::cwar_goal_type;
 use engine_sites::Rva;
 
 pub const SERIALIZABLE_GOALS: usize = 0x80;
@@ -66,7 +66,7 @@ pub struct Inputs {
     pub targets: Vec<Target>,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     m: &impl Memory,
     p: usize,
     offset: usize,
@@ -101,7 +101,7 @@ impl Inputs {
         &mut self,
         m: &impl Memory,
         base: usize,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         diplomacy: usize,
     ) -> Result<(), &'static str> {
         self.read_parts(m, base, country, diplomacy, [true, true])
@@ -110,7 +110,7 @@ impl Inputs {
         &mut self,
         m: &impl Memory,
         base: usize,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         diplomacy: usize,
         changed: [bool; 2],
     ) -> Result<(), &'static str> {
@@ -172,9 +172,9 @@ impl Inputs {
             let politics = field::<u64>(m, country.pointer, ccountry::POLITICAL_STATUS)? as usize;
             if politics == 0
                 || field::<u64>(m, politics, 0)?
-                    != engine_sites::at(base, cpolitical_status::VTABLE_RVA)
+                    != engine_sites::at(base, engine_native_parts::cpolitical_status_layout::VTABLE_RVA)
                         .ok_or("political-status vtable withheld")? as u64
-                || field::<u64>(m, politics, cpolitical_status::COUNTRY)? != country.pointer as u64
+                || field::<u64>(m, politics, engine_native_parts::cpolitical_status_layout::COUNTRY)? != country.pointer as u64
             {
                 return Err("war-goal justification political-status identity mismatch");
             }
@@ -271,8 +271,8 @@ mod tests {
         let diplomacy = w.alloc(0x300);
         let politics = w.alloc(0x120);
         w.u64(country + ccountry::POLITICAL_STATUS, politics as u64);
-        w.u64(politics, cpolitical_status::VTABLE_RVA.0 as u64);
-        w.u64(politics + cpolitical_status::COUNTRY, country as u64);
+        w.u64(politics, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64);
+        w.u64(politics + engine_native_parts::cpolitical_status_layout::COUNTRY, country as u64);
         let goal = w.alloc(0x90);
         let used = w.alloc(0x90);
         let definition = w.alloc(0x10);

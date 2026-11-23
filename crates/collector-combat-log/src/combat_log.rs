@@ -5,7 +5,7 @@ use engine_allocation as allocation;
 use engine_land_inputs::{
     ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager as native,
 };
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_resources::clend_lease_exchange as lend_lease;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::STAGGER_PERIOD, cadence::should_walk,
@@ -456,7 +456,7 @@ impl Captured {
             };
         };
         if let Err(reason) =
-            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(required)
+            engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(required)
         {
             return Outcome::Unavailable { reason };
         }
@@ -587,7 +587,7 @@ mod tests {
         crate::combat_log_prune::observe_for_test(true);
         drain_prune_log_for_test();
         let bytes = game_state(4);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -631,7 +631,7 @@ mod tests {
         crate::combat_log_prune::observe_for_test(false);
         drain_prune_log_for_test();
         let bytes = game_state(-1);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -654,7 +654,7 @@ mod tests {
                 prune_observed: 0
             }]
         );
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x10_0000,
             bytes: &bytes,
         };
@@ -707,7 +707,7 @@ mod tests {
         let reference = (7_u64 << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE);
         bytes[0x4000 + groups::GROUP..0x4000 + groups::GROUP + 8]
             .copy_from_slice(&reference.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -758,7 +758,7 @@ mod tests {
         hour: i32,
         force_full: bool,
     ) -> Vec<native::Row> {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes,
         };

@@ -6,9 +6,11 @@ use crate::{
     table_conversion::{table, table_iter},
 };
 use engine_allocation::{filled, owned_vec, resize};
-use engine_native::{
-    Memory, cweather_manager, memory::RecordLayout, memory::RecordSources, sweather_per_province,
-    sweather_per_region, walk::Outcome,
+use engine_native_memory::{Memory, memory::{RecordLayout, RecordSources}, walk::Outcome};
+use engine_native::cweather_manager::{
+    self,
+    province_weather as sweather_per_province,
+    region_weather as sweather_per_region,
 };
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
@@ -661,7 +663,7 @@ impl WeatherJob {
 
 #[derive(Debug, Default)]
 struct DensePayload {
-    array: Option<engine_native::cpdx_array::Array>,
+    array: Option<engine_native_memory::cpdx_array::Array>,
     bytes: Vec<u8>,
     required: usize,
     copied_fields: usize,
@@ -681,7 +683,7 @@ impl DensePayload {
         self.copied_fields = 0;
         self.copied_bytes = 0;
     }
-    fn prepare(&mut self, array: Option<engine_native::cpdx_array::Array>, record_bytes: usize) {
+    fn prepare(&mut self, array: Option<engine_native_memory::cpdx_array::Array>, record_bytes: usize) {
         self.array = array;
         self.required = array.map_or(0, |array| {
             (array.count as usize).saturating_mul(record_bytes)
@@ -744,7 +746,7 @@ impl DensePayload {
             };
         };
         let count = array.count as usize;
-        if let Err(reason) = engine_native::walk::Buffer::Growing(output).ensure(count) {
+        if let Err(reason) = engine_native_memory::walk::Buffer::Growing(output).ensure(count) {
             return Outcome::Unavailable { reason };
         }
         for (index, row) in output[..count].iter_mut().enumerate() {
@@ -817,9 +819,9 @@ fn header(
     address: Option<usize>,
     stride: usize,
     mask: u32,
-) -> Option<engine_native::cpdx_array::Array> {
+) -> Option<engine_native_memory::cpdx_array::Array> {
     let start = log.take(memory, address?, 16, mask)?;
-    engine_native::cpdx_array::Array::from_header(
+    engine_native_memory::cpdx_array::Array::from_header(
         log.bytes[start..start + 16].try_into().unwrap(),
         stride,
     )
@@ -830,7 +832,7 @@ fn prepare_weather_pass(
     game_state: usize,
     base: usize,
     job: &mut WeatherJob,
-) -> Option<[engine_native::cpdx_array::Array; 2]> {
+) -> Option<[engine_native_memory::cpdx_array::Array; 2]> {
     use engine_native::cgame_state;
     let mut reads = read_accounting::table(TableId::WeatherRegions);
     let log = &mut job.log;
@@ -871,8 +873,8 @@ fn prepare_weather_pass(
         {
             let _ = log.take(memory, direction, 24, 0);
             for offset in [
-                engine_native::air_fuel_defines::CONTEXT_SUBTRACT_RVA,
-                engine_native::air_fuel_defines::CONTEXT_SCALE_RVA,
+                engine_native_parts::air_fuel_defines::CONTEXT_SUBTRACT_RVA,
+                engine_native_parts::air_fuel_defines::CONTEXT_SCALE_RVA,
             ] {
                 if let Some(address) = engine_sites::at(base, offset) {
                     let _ = log.take(memory, address, 8, 0);
@@ -942,7 +944,7 @@ fn prepare_weather_pass(
 fn copy_weather_dense(
     memory: &impl Memory,
     job: &mut WeatherJob,
-    display: Option<[engine_native::cpdx_array::Array; 2]>,
+    display: Option<[engine_native_memory::cpdx_array::Array; 2]>,
 ) {
     const REGIONS_LAYOUT: RecordLayout<'static> = RecordLayout::new(
         &sweather_per_region::FIELDS,
@@ -1051,7 +1053,7 @@ pub fn copy_weather_refresh(
         {
             let _reads = read_accounting::table(TableId::WeatherProvinces);
             job.static_vtable =
-                engine_sites::at(ctx.base, engine_native::cstatic_modifier::VTABLE_RVA);
+                engine_sites::at(ctx.base, engine_native_parts::cstatic_modifier::VTABLE_RVA);
             carry::capture_province_modifiers(memory, job);
             carry::capture_province_statics(memory, job);
         }

@@ -9,7 +9,8 @@ use collector_primitives::clock::qpc;
 use collector_primitives::table_capture::grow_capacity;
 use collector_primitives::table_capture::grow_vec;
 use engine_allocation::{filled, owned_vec};
-use engine_native::{Memory, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cequipment_variant::pool::DivisionSource;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use replay_data::scope::CaptureMode;
@@ -2643,7 +2644,7 @@ impl Captured {
             army_upgrade_request_row, carmy_upgrades_requests, cupgrade_delivery,
         };
         self.production.division_equipment.rows =
-            vec![engine_native::cequipment_variant_pool::DivisionRow::default(); lens[1]];
+            vec![engine_native::cequipment_variant::pool::DivisionRow::default(); lens[1]];
         self.production.groups.rows = vec![carmy_upgrades_requests::Row::default(); lens[2]];
         self.production.requests.rows = vec![army_upgrade_request_row::Row::default(); lens[3]];
         self.production.deliveries.rows = vec![cupgrade_delivery::Row::default(); lens[4]];

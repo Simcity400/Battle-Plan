@@ -2,9 +2,11 @@ use super::*;
 use crate::{
     carmy_leader,
     crelation::status::bench::{Arena, Counting, RUNS, report},
-    csub_unit_definition as stats,
     cunit,
     cunit_leader,
+};
+use engine_native_parts::{
+    csub_unit_definition as stats,
     modifier_definition,
     modifier_entry,
 };
@@ -98,7 +100,7 @@ fn bench_division_move_flags() {
                 capture_division_seeds(&memory, &mut seeds);
                 let mut flags = 0;
                 for seed in &seeds {
-                    let maxima = crate::csub_unit_definition::capture_division_maxima(
+                    let maxima = engine_native_parts::csub_unit_definition::capture_division_maxima(
                         &memory,
                         base,
                         seed.stat_block.unwrap(),
@@ -244,8 +246,8 @@ fn bench_army_icon_inputs_from_seeds() {
             }
             median(times)
         };
-        const BEFORE: crate::memory::RecordLayout<'static> =
-            crate::memory::RecordLayout::new(&OLD_SEED_FIELDS, OLD_SEED_STRIDE)
+        const BEFORE: engine_native_memory::memory::RecordLayout<'static> =
+            engine_native_memory::memory::RecordLayout::new(&OLD_SEED_FIELDS, OLD_SEED_STRIDE)
                 .expect("valid layout");
         let pointers: Vec<usize> = armies.clone();
         let mut bytes = vec![0_u8; 64 * OLD_SEED_STRIDE];
@@ -253,7 +255,7 @@ fn bench_army_icon_inputs_from_seeds() {
             &mut || {
                 for chunk in pointers.chunks(64) {
                     memory.copy_records(
-                        crate::memory::RecordSources::Pointers(chunk),
+                        engine_native_memory::memory::RecordSources::Pointers(chunk),
                         &BEFORE,
                         &mut bytes[..chunk.len() * OLD_SEED_STRIDE],
                     );
@@ -261,15 +263,15 @@ fn bench_army_icon_inputs_from_seeds() {
             },
             &mut scratch,
         );
-        const NOW: crate::memory::RecordLayout<'static> =
-            crate::memory::RecordLayout::new(&DIVISION_SEED_FIELDS, DIVISION_SEED_STRIDE)
+        const NOW: engine_native_memory::memory::RecordLayout<'static> =
+            engine_native_memory::memory::RecordLayout::new(&DIVISION_SEED_FIELDS, DIVISION_SEED_STRIDE)
                 .expect("valid layout");
         let mut now_bytes = vec![0_u8; 64 * DIVISION_SEED_STRIDE];
         let gather_now = timed(
             &mut || {
                 for chunk in pointers.chunks(64) {
                     memory.copy_records(
-                        crate::memory::RecordSources::Pointers(chunk),
+                        engine_native_memory::memory::RecordSources::Pointers(chunk),
                         &NOW,
                         &mut now_bytes[..chunk.len() * DIVISION_SEED_STRIDE],
                     );
@@ -301,8 +303,8 @@ fn bench_army_icon_inputs_from_seeds() {
     }
 }
 
-const OLD_SEED_FIELDS: [crate::memory::RecordField; 38] = {
-    let mut fields = [crate::memory::RecordField {
+const OLD_SEED_FIELDS: [engine_native_memory::memory::RecordField; 38] = {
+    let mut fields = [engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 0,

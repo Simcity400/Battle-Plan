@@ -7,7 +7,7 @@ pub struct TechnologyDispatch<'a> {
 }
 pub struct TechnologyPart {
     ordinal: usize,
-    countries: Vec<ccountry::Country>,
+    countries: Vec<engine_native_memory::country_identity::Country>,
     rows: Vec<ctechnology::Row>,
     pointers: Vec<usize>,
     ranges: Vec<std::ops::Range<usize>>,
@@ -99,7 +99,7 @@ impl Prepared {
 }
 pub(super) struct Preparation {
     pub(super) definition_ticks: u64,
-    pub(super) roster: Vec<Result<Option<ccountry::Country>, &'static str>>,
+    pub(super) roster: Vec<Result<Option<engine_native_memory::country_identity::Country>, &'static str>>,
     pub(super) prepared: Option<Prepared>,
 }
 pub(super) fn prepare(
@@ -132,7 +132,7 @@ pub(super) fn prepare(
 }
 fn prepare_roster(
     memory: &impl Memory,
-    roster: &[Result<Option<ccountry::Country>, &'static str>],
+    roster: &[Result<Option<engine_native_memory::country_identity::Country>, &'static str>],
     dispatch: TechnologyDispatch<'_>,
     dictionary: &mut ctechnology_template::Dictionary<'_>,
     definition_ticks: &mut u64,
@@ -203,7 +203,8 @@ fn prepare_roster(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
     const BASE: usize = 0x1400_0000;
     const MEM: usize = 0x10000;
     struct World {
@@ -505,7 +506,7 @@ mod tests {
         let world = World::new(1);
         let mut part = TechnologyPart {
             ordinal: 0,
-            countries: vec![ccountry::Country {
+            countries: vec![engine_native_memory::country_identity::Country {
                 id: 1,
                 canonical_slot: 1,
                 pointer: world.country(1),

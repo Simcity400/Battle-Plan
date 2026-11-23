@@ -1,6 +1,8 @@
 use super::*;
 use crate::party_leader_changes::{Counts, Pair, Watches};
-use engine_native::{ccharacter, ccountry, cideology_group, memory::SliceMemory};
+use engine_native::{ccharacter, ccountry};
+use engine_native_parts::cideology_group;
+use engine_native_memory::memory::SliceMemory;
 use engine_native_politics::{ccountry_leader, cpolitical_party::LeaderRow};
 use std::cell::RefCell;
 
@@ -27,10 +29,10 @@ fn world() -> Vec<u8> {
             at + 0x100 + ccountry::POLITICAL_STATUS,
             (at + 0x1200) as u64,
         );
-        word(b, at + 0x1200, cpolitical_status::VTABLE_RVA.0 as u64);
+        word(b, at + 0x1200, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64);
         word(
             b,
-            at + 0x1200 + cpolitical_status::COUNTRY,
+            at + 0x1200 + engine_native_parts::cpolitical_status_layout::COUNTRY,
             (at + 0x100) as u64,
         );
         word(
@@ -45,28 +47,28 @@ fn world() -> Vec<u8> {
         );
         let (party, leader, character) = objects(index);
         word(b, at + 0x1400, party as u64);
-        word(b, party, cpolitical_party::VTABLE_RVA.0 as u64);
-        word(b, party + cpolitical_party::ID, 7);
+        word(b, party, engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0 as u64);
+        word(b, party + engine_native_parts::cpolitical_party_layout::ID, 7);
         word(
             b,
-            party + cpolitical_party::IDEOLOGY_GROUP,
+            party + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP,
             (at + 0x1600) as u64,
         );
         word(b, at + 0x1600, cideology_group::VTABLE_RVA.0 as u64);
         word(b, at + 0x1600 + cideology_group::ID, 7);
         word(
             b,
-            party + cpolitical_party::COUNTRY_LEADERS,
+            party + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS,
             (at + 0x1700) as u64,
         );
         word(
             b,
-            party + cpolitical_party::COUNTRY_LEADERS + 8,
+            party + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS + 8,
             (1 << 32) | 1,
         );
         word(b, at + 0x1700, leader as u64);
-        word(b, leader, ccountry_leader::VTABLE_RVA.0 as u64);
-        word(b, leader + ccountry_leader::CHARACTER, character as u64);
+        word(b, leader, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0 as u64);
+        word(b, leader + engine_native_parts::ccountry_leader_layout::CHARACTER, character as u64);
         word(b, leader + ccountry_leader::LEADER_ID, 12);
         word(b, character, ccharacter::VTABLE_RVA.0 as u64);
         word(
@@ -144,7 +146,7 @@ fn hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains) -> Hour {
         let first = rows.len();
         let outcome = reader.party_leaders_carried(
             index as u32 + 1,
-            engine_native::walk::Buffer::Growing(&mut rows).suffix(first),
+            engine_native_memory::walk::Buffer::Growing(&mut rows).suffix(first),
             &mut reuse,
         );
         complete &= matches!(outcome, Outcome::Rows { len: 1 });

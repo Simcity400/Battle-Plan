@@ -1,13 +1,13 @@
 
 use engine_sites::Rva;
-use crate::{
+use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    cweather_manager::walk_dense_records,
     memory::{RecordField, RecordLayout, RecordSources},
     read_slice,
     walk::Outcome,
 };
+use crate::cweather_manager::walk_dense_records;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_4098);
 pub const STRIDE: usize = 0x180;
@@ -119,18 +119,18 @@ pub fn read_static_modifiers(
             let definition = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
                 .map_err(|_| "static modifier definition invalid")?;
             let days = &entry[STATIC_MODIFIER_DAYS..STATIC_MODIFIER_DAYS + 4];
-            if crate::read::<u64>(memory, definition) != Some(definition_vtable as u64) {
+            if engine_native_memory::read::<u64>(memory, definition) != Some(definition_vtable as u64) {
                 return Err("static modifier definition vtable mismatch");
             }
             let header = out.len();
-            crate::allocation::reserve(out, 8).map_err(|_| "static modifier allocation failed")?;
+            engine_allocation::reserve(out, 8).map_err(|_| "static modifier allocation failed")?;
             out.extend_from_slice(days);
             out.extend_from_slice(&[0; 4]);
             let mut used = out.len();
             let name = definition
-                .checked_add(crate::cstatic_modifier::NAME)
+                .checked_add(engine_native_parts::cstatic_modifier::NAME)
                 .ok_or("static modifier name address overflow")?;
-            let (_, len) = crate::msvc_string::append(memory, name, out, &mut used)?;
+            let (_, len) = engine_native_memory::msvc_string::append(memory, name, out, &mut used)?;
             out.truncate(used);
             let len = u32::try_from(len).map_err(|_| "static modifier name too long")?;
             out[header + 4..header + 8].copy_from_slice(&len.to_le_bytes());

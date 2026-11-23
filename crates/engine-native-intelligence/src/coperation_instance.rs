@@ -1,8 +1,8 @@
 
 use engine_sites::Rva;
 use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_memory::msvc_string::Literal;
 use engine_native::{
-    ccharacter::Literal,
     cequipment_variant::pool as cequipment_variant_pool,
     cprovince,
     crelation::subject::Name,

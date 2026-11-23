@@ -1,7 +1,7 @@
 
 use engine_sites::Rva;
-use crate::{Memory, cpdx_array::Array, memory::Raw, read, read_slice};
-use engine_native::allocation;
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, read_slice};
+use engine_allocation as allocation;
 
 pub const ALLIED: usize = 0x28;
 pub const STATIC_CONTRIBUTIONS: usize = 0x40;

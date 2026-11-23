@@ -3,7 +3,7 @@ use super::{
     Array, Counters, MARK_BYTES, MARK_FIELDS, MARK_LAYOUT, OpinionRow, POINTER_LAYOUT, Resolver,
     ccountry,
 };
-use crate::{Memory, memory::RecordSources};
+use engine_native_memory::{Memory, memory::RecordSources};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
@@ -125,7 +125,7 @@ impl Baseline {
         fn fit<T: Default>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.len() {
                 let len = required;
-                crate::allocation::reserve_exact(vector, len - vector.len())?;
+                engine_allocation::reserve_exact(vector, len - vector.len())?;
                 vector.resize_with(len, T::default);
             }
             Ok(())
@@ -133,22 +133,22 @@ impl Baseline {
         fn reserve<T>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.capacity() {
                 let len = required;
-                crate::allocation::reserve_exact(vector, len - vector.len())?;
+                engine_allocation::reserve_exact(vector, len - vector.len())?;
             }
             Ok(())
         }
         let [slots, scratch, take] = self.required;
         if slots > self.owners.len() {
             let additional = slots - self.owners.len();
-            crate::allocation::reserve_exact(&mut self.owners, additional)?;
+            engine_allocation::reserve_exact(&mut self.owners, additional)?;
             let additional = slots - self.rows.len();
-            crate::allocation::reserve_exact(&mut self.rows, additional)?;
+            engine_allocation::reserve_exact(&mut self.rows, additional)?;
             let additional = slots - self.pending.len();
-            crate::allocation::reserve_exact(&mut self.pending, additional)?;
+            engine_allocation::reserve_exact(&mut self.pending, additional)?;
             let additional = slots - self.demand.len();
-            crate::allocation::reserve_exact(&mut self.demand, additional)?;
+            engine_allocation::reserve_exact(&mut self.demand, additional)?;
             let additional = slots - self.by_diplomacy.len();
-            crate::allocation::reserve_exact(&mut self.by_diplomacy, additional)?;
+            engine_allocation::reserve_exact(&mut self.by_diplomacy, additional)?;
             self.owners.resize(slots, Identity::default());
             self.rows.resize_with(slots, Vec::new);
             self.pending.resize_with(slots, Vec::new);
@@ -475,7 +475,7 @@ impl Baseline {
         slot: u32,
         owner_country: u32,
         counters: &mut Counters,
-        opinions: &mut crate::walk::Buffer<'_, OpinionRow>,
+        opinions: &mut engine_native_memory::walk::Buffer<'_, OpinionRow>,
     ) -> Result<(), &'static str> {
         self.counts.reused_owners += 1;
         while self.cursor < self.updates_len && self.updates[self.cursor].owner < slot {
@@ -602,7 +602,7 @@ mod tests {
                 1,
                 100,
                 &mut counters,
-                &mut crate::walk::Buffer::Growing(&mut output),
+                &mut engine_native_memory::walk::Buffer::Growing(&mut output),
             )
             .unwrap();
         baseline
@@ -610,7 +610,7 @@ mod tests {
                 2,
                 200,
                 &mut counters,
-                &mut crate::walk::Buffer::Growing(&mut output),
+                &mut engine_native_memory::walk::Buffer::Growing(&mut output),
             )
             .unwrap();
         let emitted = |owner_country, target_country, opinion| OpinionRow {

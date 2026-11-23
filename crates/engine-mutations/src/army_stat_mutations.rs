@@ -111,6 +111,6 @@ mod tests {
 
     #[test]
     fn the_first_site_is_the_function_the_carmy_layout_names() {
-        assert_eq!(MUTATIONS[0].rva, crate::carmy::UPDATE_ACTIVE_STATS_RVA);
+        assert_eq!(MUTATIONS[0].rva, engine_native::carmy::UPDATE_ACTIVE_STATS_RVA);
     }
 }

@@ -6,7 +6,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
 use engine_stability::country_stability as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryStabilityInputRow,
@@ -501,12 +502,10 @@ mod tests {
 
     #[test]
     fn stability_capture_counts_refused_fallbacks_and_resets_before_inputs() {
-        use engine_native_politics::{
-            cdiplomacy_status,
-            cpolitical_party,
-            cpolitical_status,
-        };
-        use engine_native::{cgame_state, cidea, cideology_group, cpdx_array::Array};
+        use engine_native_politics::cpolitical_status;
+        use engine_native::cgame_state;
+        use engine_native_parts::{cidea, cideology_group};
+        use engine_native_memory::cpdx_array::Array;
         use engine_stability::{cmodifier, cworld_threat};
         use std::{cell::Cell, collections::BTreeMap};
 
@@ -566,19 +565,19 @@ mod tests {
         memory.word(COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
         memory.word(COUNTRY + ccountry::ID, 1);
         memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64);
-        memory.word(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
+        memory.word(DIPLOMACY, (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64);
+        memory.word(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY, COUNTRY as u64);
         memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
-        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
-        memory.word(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
-        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
-        memory.word(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
+        memory.word(STATUS, (BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64);
+        memory.word(STATUS + engine_native_parts::cpolitical_status_layout::RULING_PARTY, PARTY as u64);
+        memory.word(PARTY, (BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64);
+        memory.word(PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, GROUP as u64);
         memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA.0) as u64);
         memory.word(
             GROUP
                 + native::IDEOLOGY_GROUP_MODIFIER
                 + cmodifier::DISPLAY_NAME
-                + engine_native::msvc_string::CAPACITY,
+                + engine_native_memory::msvc_string::CAPACITY,
             15,
         );
         memory.array(STATUS + cpolitical_status::IDEAS, 0x5000, 1);
@@ -645,20 +644,15 @@ mod tests {
 
     #[test]
     fn failed_static_witness_read_keeps_both_stability_tables_available() {
-        use engine_native_politics::{
-            cdiplomacy_status,
-            cpolitical_party,
-            cpolitical_status,
-        };
-        use engine_native::{
-            cgame_state,
+        use engine_native_politics::{cdiplomacy_status, cpolitical_status};
+        use engine_native::cgame_state;
+        use engine_native_parts::{
             cidea,
             cideology_group,
-            cpdx_array::Array,
             cstatic_modifier,
             modifier_definition,
-            msvc_string,
         };
+        use engine_native_memory::{cpdx_array::Array, msvc_string};
         use engine_stability::{cmodifier, cworld_threat};
         use std::{cell::Cell, collections::BTreeMap};
 
@@ -737,13 +731,13 @@ mod tests {
         memory.word(COUNTRY + ccountry::STABILITY, 50_000);
         memory.put(COUNTRY + native::PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
         memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64);
-        memory.word(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
+        memory.word(DIPLOMACY, (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64);
+        memory.word(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY, COUNTRY as u64);
         memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
-        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
-        memory.word(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
-        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
-        memory.word(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
+        memory.word(STATUS, (BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64);
+        memory.word(STATUS + engine_native_parts::cpolitical_status_layout::RULING_PARTY, PARTY as u64);
+        memory.word(PARTY, (BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64);
+        memory.word(PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, GROUP as u64);
         memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA.0) as u64);
         memory.string(
             GROUP + native::IDEOLOGY_GROUP_MODIFIER + cmodifier::DISPLAY_NAME,
@@ -837,7 +831,7 @@ mod tests {
 
     #[test]
     fn a_walk_without_readable_memory_is_unavailable_not_empty() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

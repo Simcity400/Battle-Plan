@@ -28,7 +28,7 @@ pub fn held_variants(
         let amount_raw = i64::from_le_bytes(raw[8..].try_into().unwrap());
         if amount_raw != 0 {
             let variant_pointer = u64::from_le_bytes(raw[..8].try_into().unwrap()) as usize;
-            let variant_handle = cequipment_variant::identity(memory, base, variant_pointer)?;
+            let variant_handle = engine_native_parts::equipment_variant_identity::identity(memory, base, variant_pointer)?;
             visit(equipment_entry::Row {
                 source_ordinal: ordinal,
                 variant_handle,
@@ -46,7 +46,7 @@ pub fn terrain(
     handle: u64,
     mut visit: impl FnMut(u32, i64) -> Result<(), &'static str>,
 ) -> Result<u32, &'static str> {
-    if cequipment_variant::identity(memory, base, pointer)? != handle {
+    if engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)? != handle {
         return Err("attrition variant identity changed");
     }
     let array = Array::read(
@@ -190,7 +190,7 @@ mod tests {
         put(&mut bytes, entries, u64::MAX);
         put(&mut bytes, entries + 16, variant as u64);
         put(&mut bytes, entries + 24, (-2i64) as u64);
-        put(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        put(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             variant + 8,

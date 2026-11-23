@@ -24,7 +24,7 @@ const NAME: usize = 0x22000;
 const HEAP: usize = 0x23000;
 const NULL_DEFINITION: usize = 0x24000;
 const SECOND_GLOBAL: usize = 0x25000;
-const BASE_HANDLE: u64 = (7 << 32) | crate::cair_base::TYPE as u64;
+const BASE_HANDLE: u64 = (7 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
 const HOST_HANDLE: u64 = (19 << 32) | cship::HANDLE_TYPE as u64;
 
 struct Fixture {

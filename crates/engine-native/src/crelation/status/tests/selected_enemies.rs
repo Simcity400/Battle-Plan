@@ -1,4 +1,3 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::*;
 use std::cell::RefCell;
 
@@ -20,7 +19,7 @@ impl Memory for Trace<'_> {
     }
 }
 fn current(source: &impl Memory, rows: &mut Vec<WarRow>, words: &mut Vec<u32>) -> LinkWalk {
-    links_observed_inner(source, BASE, GS, crate::walk::Buffer::Growing(&mut vec![LinkRow::default(); 4]), WarOutput {
+    links_observed_inner(source, BASE, GS, engine_native_memory::walk::Buffer::Growing(&mut vec![LinkRow::default(); 4]), WarOutput {
             rows,
             countries: words,
         }.into(), &mut Resolver::default(), Some(77), None)
@@ -40,11 +39,11 @@ fn reserved(bytes: &mut [u8]) {
     p32(bytes, ROOT + ccountry::ID, 0);
     p64(bytes, ROOT + ccountry::DIPLOMACY_STATUS, DIP as u64);
     bytes[ROOT + ccountry::CAN_OCCUPY_NON_WAR] = 0x80;
-    p64(bytes, DIP, cdiplomacy_status::VTABLE_RVA.0 as u64);
-    p64(bytes, DIP + cdiplomacy_status::COUNTRY, ROOT as u64);
+    p64(bytes, DIP, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+    p64(bytes, DIP + engine_native_parts::cdiplomacy_status_layout::COUNTRY, ROOT as u64);
     links_vector(
         bytes,
-        DIP + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIP + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x3800,
         &[3, 0, 3],
     );
@@ -54,7 +53,7 @@ fn required_enemy_fixture(retired: bool) -> Vec<u8> {
     let mut bytes = war_fixture();
     links_vector(
         &mut bytes,
-        DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x36c0,
         &[3],
     );
@@ -102,7 +101,7 @@ fn current_keeps_ordinary_zero_rule_receivers_repeats_zero_and_one_original_read
     let mut bytes = war_fixture();
     links_vector(
         &mut bytes,
-        DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x36c0,
         &[3, 0, 3, 1],
     );
@@ -119,7 +118,7 @@ fn current_keeps_ordinary_zero_rule_receivers_repeats_zero_and_one_original_read
     assert_eq!((rows[1].enemies_start, rows[1].enemies_len), (1, 4));
     assert_eq!(words[..7], [3, 3, 0, 3, 1, 1, 2]);
     assert_eq!(rows[1].ordered_hour, Some(77));
-    for at in [DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES, 0x36c0] {
+    for at in [DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 0x36c0] {
         assert_eq!(
             source
                 .reads
@@ -160,7 +159,7 @@ fn current_reserved_receiver_is_actual_zero_and_reuses_its_authentication() {
             .reads
             .borrow()
             .iter()
-            .filter(|(at, _)| *at == 0xc000 + cdiplomacy_status::ENEMY_COUNTRIES)
+            .filter(|(at, _)| *at == 0xc000 + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES)
             .count(),
         1
     );
@@ -170,7 +169,7 @@ fn current_payload_faults_refuse_locally_without_retry_or_invented_empty() {
     let mut bytes = war_fixture();
     links_vector(
         &mut bytes,
-        DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x36c0,
         &[3, 0, 3],
     );
@@ -202,7 +201,7 @@ fn current_payload_faults_refuse_locally_without_retry_or_invented_empty() {
     }
     links_vector(
         &mut bytes,
-        DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x36c0,
         &[],
     );
@@ -213,7 +212,7 @@ fn current_payload_faults_refuse_locally_without_retry_or_invented_empty() {
 }
 #[test]
 fn current_required_enemy_faults_keep_named_failure_and_later_links() {
-    let header = DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES;
+    let header = DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES;
     for retired in [false, true] {
         let bytes = required_enemy_fixture(retired);
         for (fault, reason, required) in [
@@ -224,7 +223,7 @@ fn current_required_enemy_faults_keep_named_failure_and_later_links() {
             let mut links = vec![LinkRow::default(); 4];
             let mut rows = vec![WarRow::default(); 4];
             let mut words = vec![99; 8];
-            let walk = links_observed_inner(&source, BASE, GS, crate::walk::Buffer::Growing(&mut links), WarOutput {
+            let walk = links_observed_inner(&source, BASE, GS, engine_native_memory::walk::Buffer::Growing(&mut links), WarOutput {
                     rows: &mut rows,
                     countries: &mut words,
                 }.into(), &mut Resolver::default(), Some(77), None);
@@ -259,7 +258,7 @@ fn current_required_enemy_faults_keep_named_failure_and_later_links() {
 
 #[test]
 fn legacy_required_enemy_faults_keep_named_failure_and_later_links() {
-    let header = DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES;
+    let header = DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES;
     for retired in [false, true] {
         let bytes = required_enemy_fixture(retired);
         for (fault, reason) in [
@@ -268,7 +267,7 @@ fn legacy_required_enemy_faults_keep_named_failure_and_later_links() {
         ] {
             let source = trace(&bytes, Some(fault));
             let mut link_rows = vec![LinkRow::default(); 4];
-            let walk = links_observed_inner(&source, BASE, GS, crate::walk::Buffer::Growing(&mut link_rows), WarOutput {
+            let walk = links_observed_inner(&source, BASE, GS, engine_native_memory::walk::Buffer::Growing(&mut link_rows), WarOutput {
                     rows: &mut vec![WarRow::default(); 4],
                     countries: &mut vec![0; 8],
                 }.into(), &mut Resolver::default(), None, None);
@@ -300,8 +299,8 @@ fn legacy_required_enemy_faults_keep_named_failure_and_later_links() {
 fn current_required_enemy_fault_keeps_first_reason_before_later_fault() {
     let mut bytes = required_enemy_fixture(false);
     p32(&mut bytes, COUNTRIES[2] + ccountry::CIVIL_WAR_LINK, 1);
-    let later_header = DIPLOMACY[2] + cdiplomacy_status::ENEMY_COUNTRIES;
-    p32(&mut bytes, later_header + crate::cpdx_array::CAPACITY, 0);
+    let later_header = DIPLOMACY[2] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES;
+    p32(&mut bytes, later_header + engine_native_memory::cpdx_array::CAPACITY, 0);
     let source = trace(&bytes, Some(0x36c0));
     let walk = current(&source, &mut Vec::new(), &mut Vec::new());
     assert_eq!(

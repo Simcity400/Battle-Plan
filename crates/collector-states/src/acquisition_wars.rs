@@ -3,7 +3,8 @@ use collector_primitives::clock::qpc;
 use crate::acquisition_gather;
 use collector_observers::war_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{Memory, ccountry, cwar_relation, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{ccountry, cwar_relation};
 use engine_native_intelligence::country_memory::Cache;
 
 pub struct Request {

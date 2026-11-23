@@ -4,7 +4,8 @@ use crate::extended;
 use crate::sampling;
 use collector_map_capture::map_capture::MapCapacities;
 use collector_primitives::country_slots::{raise, rows};
-use engine_native::{Memory, cgame_state};
+use engine_native_memory::Memory;
+use engine_native::cgame_state;
 use engine_native_intelligence::country_memory::Cache;
 mod navies;
 pub mod source_demand;
@@ -77,7 +78,7 @@ impl MapDemand {
 fn province_slots(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
     let root = state
         .checked_add(cgame_state::PROVINCES)
-        .and_then(|address| engine_native::cpdx_array::Array::read(memory, address, 8))
+        .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
         .ok_or("map sizing province census unreadable or invalid")?;
     if root.count < 2 {
         return Err("map sizing province census empty");
@@ -91,7 +92,7 @@ pub fn observe_map(memory: &impl Memory, base: usize) -> Result<Option<MapDemand
     };
     let states = state
         .checked_add(cgame_state::STATES)
-        .and_then(|address| engine_native::cpdx_array::Array::read(memory, address, 8))
+        .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
         .map(|array| array.count as usize)
         .ok_or("map sizing state census unreadable or invalid");
     Ok(Some(MapDemand {
@@ -171,15 +172,15 @@ pub fn observe_raid_arenas(
     let reservation_words =
         engine_native_air::raid_launch_inputs::required_reservations(memory, base, state)?;
     let facility_rows = match engine_raid_inputs::raid_facilities::count(memory, base, state) {
-        engine_native::walk::Outcome::Rows { len } => Ok(len),
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native_memory::walk::Outcome::Rows { len } => Ok(len),
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("raid facility sizing count overflow"),
-        engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     let air_regions = state
         .checked_add(cgame_state::STRATEGIC_REGIONS)
-        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
+        .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, 8))
         .map(|array| array.count as usize)
         .ok_or("raid region sizing header unreadable or invalid");
     let path_rows = {
@@ -241,7 +242,7 @@ pub fn observe_reserved_visibility(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_native::crelation_status::reserved_visibility_demand(memory, base, state).map(Some)
+    engine_native::crelation::status::reserved_visibility_demand(memory, base, state).map(Some)
 }
 
 pub fn observe_politics_demand(
@@ -522,12 +523,12 @@ pub fn observe_politics(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let demand = |outcome: engine_native::walk::Outcome| match outcome {
-        engine_native::walk::Outcome::Rows { len } => Ok(len),
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
+    let demand = |outcome: engine_native_memory::walk::Outcome| match outcome {
+        engine_native_memory::walk::Outcome::Rows { len } => Ok(len),
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("politics demand row count overflow"),
-        engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     let tokens = engine_characters::advisor_tokens::count(memory, base, state);
     let advisor_tokens = demand(tokens.outcome)?;
@@ -552,7 +553,7 @@ pub fn observe_politics(
         collector_characters::extended::characters::advisors::live_modifier_demand();
     let mut pride_name_bytes = 0_usize;
     let mut pride_name_failure = None;
-    let mut references = engine_native::creference_registry::ScopedResolver::new(base);
+    let mut references = engine_native_parts::creference_registry::ScopedResolver::new(base);
     let country_rosters = engine_native::ccountry::counter_roster_demand_with_pride_observer(
         memory,
         base,
@@ -643,7 +644,7 @@ fn pride_name_demand(
     memory: &impl Memory,
     base: usize,
     handle: u64,
-    references: &mut engine_native::creference_registry::ScopedResolver,
+    references: &mut engine_native_parts::creference_registry::ScopedResolver,
 ) -> Result<usize, &'static str> {
     if handle == 0 {
         return Ok(0);
@@ -807,7 +808,7 @@ mod tests {
 
     #[test]
     fn politics_staging_demand_follows_the_frames_holding_undrained_hours() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: cgame_state::SINGLETON_RVA.0,
             bytes: &[0; 8],
         };
@@ -825,7 +826,7 @@ mod tests {
                 Some(slots * 5 * 13)
             );
         }
-        let unreadable = engine_native::memory::SliceMemory {
+        let unreadable = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -1020,7 +1021,7 @@ mod tests {
 
     #[test]
     fn demand_observers_distinguish_a_menu_from_an_unreadable_game_state() {
-        let missing = engine_native::memory::SliceMemory {
+        let missing = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -1033,7 +1034,7 @@ mod tests {
             Err("input demand game state unreadable or address overflow")
         );
         let null = [0; 8];
-        let menu = engine_native::memory::SliceMemory {
+        let menu = engine_native_memory::memory::SliceMemory {
             base: cgame_state::SINGLETON_RVA.0,
             bytes: &null,
         };
@@ -1052,7 +1053,7 @@ mod tests {
             }
         }
         let memory = Unreadable(std::cell::Cell::new(0));
-        let mut references = engine_native::creference_registry::ScopedResolver::new(0);
+        let mut references = engine_native_parts::creference_registry::ScopedResolver::new(0);
         assert_eq!(pride_name_demand(&memory, 0, 0, &mut references), Ok(0));
         assert_eq!(memory.0.get(), 0);
         assert_eq!(
@@ -1163,7 +1164,8 @@ mod tests {
         assert_eq!(demand_air_game_state(&loaded, 0), Ok(Some(0x1000)));
     }
 
-    use engine_native::{ccountry, cgame_state as gs, msvc_string, walk::Outcome};
+    use engine_native::{ccountry, cgame_state as gs};
+    use engine_native_memory::{msvc_string, walk::Outcome};
     use engine_native_intelligence::{ccountry_intel, country_intel_row};
 
     const COUNTRIES: usize = 5_000;
@@ -1231,7 +1233,7 @@ mod tests {
     impl World {
         fn tactic_byte(&self, address: usize) -> Option<u8> {
             use engine_land_inputs::country_tactic_unlocks as doctrine;
-            use engine_native::ccombat_tactic as tactic;
+            use engine_native_parts::ccombat_tactic as tactic;
             let word = |at: usize, value: u64| (value >> ((address - at) * 8)) as u8;
             let header = |at: usize, pointer: usize, count: usize| match address - at {
                 0..8 => word(at, pointer as u64),
@@ -1256,7 +1258,7 @@ mod tests {
                 let index = (address - TACTIC_OBJECTS) / TACTIC_OBJECT;
                 let object = TACTIC_OBJECTS + index * TACTIC_OBJECT;
                 let vtable = match index {
-                    0 => engine_native::cnull_combat_tactic::VTABLE_RVA.0,
+                    0 => engine_native_parts::cnull_combat_tactic::VTABLE_RVA.0,
                     _ => tactic::VTABLE_RVA.0,
                 };
                 return Some(match address - object {
@@ -1310,11 +1312,11 @@ mod tests {
             if (singleton..singleton + 8).contains(&address) {
                 return word(singleton, STATE as u64);
             }
-            let database = BASE + engine_native::ccountry_database::SINGLETON_RVA.0;
+            let database = BASE + engine_native_parts::ccountry_database::SINGLETON_RVA.0;
             if (database..database + 8).contains(&address) {
                 return word(database, DATABASE as u64);
             }
-            let boundary = DATABASE + engine_native::ccountry_database::DYNAMIC_TAG_BOUNDARY;
+            let boundary = DATABASE + engine_native_parts::ccountry_database::DYNAMIC_TAG_BOUNDARY;
             if (boundary..boundary + 4).contains(&address) {
                 return word(boundary, slots);
             }
@@ -1326,13 +1328,13 @@ mod tests {
             if (DIPLOMACY..DIPLOMACY + 8).contains(&address) {
                 return word(
                     DIPLOMACY,
-                    (BASE + engine_native_politics::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                    (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
                 );
             }
             if let Some((enemies, allies)) = self.bloc {
                 for (field, count) in [
-                    (engine_native_politics::cdiplomacy_status::ENEMY_COUNTRIES, enemies),
-                    (engine_native_politics::cdiplomacy_status::WARTIME_ALLIES, allies),
+                    (engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, enemies),
+                    (engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES, allies),
                 ] {
                     let at = DIPLOMACY + field;
                     if (at..at + 16).contains(&address) {
@@ -1735,8 +1737,8 @@ mod tests {
         }
         fn copy_records(
             &self,
-            sources: engine_native::memory::RecordSources<'_>,
-            layout: &engine_native::memory::RecordLayout<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
+            layout: &engine_native_memory::memory::RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {
             self.1.fetch_add(1, Ordering::Relaxed);

@@ -178,14 +178,14 @@ pub fn player(
         state
             .checked_add(cgame_state::PLAYER_RECORDS)
             .ok_or("player roster overflow")?,
-        chuman::STRIDE,
+        engine_native_parts::chuman_layout::STRIDE,
     )
     .ok_or("player roster unreadable")?;
     let vtable =
-        engine_sites::at(base, chuman::VTABLE_RVA).ok_or("player identity overflow")? as u64;
+        engine_sites::at(base, engine_native_parts::chuman_layout::VTABLE_RVA).ok_or("player identity overflow")? as u64;
     for index in 0..players.count {
         let pointer = players
-            .element(index, chuman::STRIDE)
+            .element(index, engine_native_parts::chuman_layout::STRIDE)
             .ok_or("player row overflow")?;
         let actual =
             read::<i32>(memory, pointer + chuman::PLAYER_KEY).ok_or("player key unreadable")?;
@@ -205,13 +205,13 @@ pub fn player_at(
     base: usize,
     pointer: usize,
 ) -> Result<Player, &'static str> {
-    let vtable = engine_sites::at(base, chuman::VTABLE_RVA).ok_or("player identity mismatch")?;
+    let vtable = engine_sites::at(base, engine_native_parts::chuman_layout::VTABLE_RVA).ok_or("player identity mismatch")?;
     if read::<u64>(memory, pointer) != Some(vtable as u64) {
         return Err("player identity mismatch");
     }
     Ok(Player {
         key: read(memory, pointer + chuman::PLAYER_KEY).ok_or("player key unreadable")?,
-        country: read(memory, pointer + chuman::COUNTRY_TAG).ok_or("player country unreadable")?,
+        country: read(memory, pointer + engine_native_parts::chuman_layout::COUNTRY_TAG).ok_or("player country unreadable")?,
         user: Descriptor::read(memory, pointer + chuman::FIRST_STRING)?,
         name: Descriptor::read(memory, pointer + chuman::NAME)?,
     })
@@ -250,18 +250,18 @@ pub fn autonomous(
             .ok_or("command autonomous control unreadable")?;
         return Ok(flag != 0 && count == 0);
     }
-    let players = Array::read(memory, state + cgame_state::PLAYER_RECORDS, chuman::STRIDE)
+    let players = Array::read(memory, state + cgame_state::PLAYER_RECORDS, engine_native_parts::chuman_layout::STRIDE)
         .ok_or("command fallback roster unreadable")?;
-    let vtable = engine_sites::at(base, chuman::VTABLE_RVA)
+    let vtable = engine_sites::at(base, engine_native_parts::chuman_layout::VTABLE_RVA)
         .ok_or("command fallback player identity mismatch")? as u64;
     for index in 0..players.count {
         let at = players
-            .element(index, chuman::STRIDE)
+            .element(index, engine_native_parts::chuman_layout::STRIDE)
             .ok_or("command fallback player overflow")?;
         if read::<u64>(memory, at) != Some(vtable) {
             return Err("command fallback player identity mismatch");
         }
-        let country = read::<u32>(memory, at + chuman::COUNTRY_TAG)
+        let country = read::<u32>(memory, at + engine_native_parts::chuman_layout::COUNTRY_TAG)
             .ok_or("command fallback country unreadable")?;
         if country == raw {
             return Ok(false);

@@ -28,7 +28,7 @@ fn duration_script(days: i32) -> EventFeedScript {
     }
 }
 fn emit(instance: usize, tag: usize, cooldown: bool) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let stored = values(
         &memory,
         BASE.load(Ordering::Acquire),
@@ -56,7 +56,7 @@ fn emit(instance: usize, tag: usize, cooldown: bool) {
     feed::record_script(|world, memory, base| {
         let (definition, days) = values(memory, base, instance, cooldown, None)?;
         if engine_sites::at(base, engine_decisions::cdecision::VTABLE_RVA).is_none_or(|vtable| {
-            engine_native::read::<u64>(memory, definition) != Some(vtable as u64)
+            engine_native_memory::read::<u64>(memory, definition) != Some(vtable as u64)
         }) {
             return Err("decision duration definition identity differs");
         }
@@ -111,7 +111,7 @@ mod tests {
             .copy_from_slice(&99_u64.to_le_bytes());
         bytes[engine_decisions::ctimed_decision::DAYS..engine_decisions::ctimed_decision::DAYS + 4]
             .copy_from_slice(&10_i32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -131,7 +131,7 @@ mod tests {
         );
         bytes[8..16].copy_from_slice(&88_u64.to_le_bytes());
         bytes[16..20].copy_from_slice(&10_i32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -143,7 +143,7 @@ mod tests {
         bytes[24..28].copy_from_slice(&17_i32.to_le_bytes());
         for state in [0_i32, 1, 2, 3, 4] {
             bytes[28..32].copy_from_slice(&state.to_le_bytes());
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             };

@@ -1,4 +1,5 @@
-use engine_native::{Memory, ccountry, cprovince, cstate, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{ccountry, cprovince, cstate};
 use engine_research::ctechnology_status;
 
 pub(super) fn needed(flags: &[cstate::FlagRow]) -> bool {

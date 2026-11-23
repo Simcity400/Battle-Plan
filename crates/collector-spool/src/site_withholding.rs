@@ -23,19 +23,15 @@ pub(crate) fn apply(source: &mut FrameInput) -> io::Result<()> {
 mod tests {
     use super::*;
     use collector_stability::country_stability::{Capacities, Captured, TABLES};
-    use engine_native::{
-        Memory,
+    use engine_native_memory::{Memory, cpdx_array::Array, msvc_string};
+    use engine_native_parts::{
         cattache_relation,
-        ccountry,
-        cgame_state,
         cidea,
         cideology_group,
-        cpdx_array::Array,
-        crelation,
         cstatic_modifier,
         modifier_definition,
-        msvc_string,
     };
+    use engine_native::{ccountry, cgame_state, crelation};
     use engine_native_politics::{cdiplomacy_status, cpolitical_party, cpolitical_status};
     use engine_stability::{cmodifier, country_stability as native, cworld_threat};
     use replay_data::rows::{CountryStabilityLineRow, TableRows};
@@ -117,13 +113,13 @@ mod tests {
         memory.word(COUNTRY + ccountry::STABILITY, 50_000);
         memory.put(COUNTRY + native::PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
         memory.word(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-        memory.word(DIPLOMACY, (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64);
-        memory.word(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
+        memory.word(DIPLOMACY, (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64);
+        memory.word(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY, COUNTRY as u64);
         memory.word(COUNTRY + ccountry::POLITICAL_STATUS, STATUS as u64);
-        memory.word(STATUS, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
-        memory.word(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
-        memory.word(PARTY, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
-        memory.word(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
+        memory.word(STATUS, (BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64);
+        memory.word(STATUS + engine_native_parts::cpolitical_status_layout::RULING_PARTY, PARTY as u64);
+        memory.word(PARTY, (BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64);
+        memory.word(PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, GROUP as u64);
         memory.word(GROUP, (BASE + cideology_group::VTABLE_RVA.0) as u64);
         memory.string(
             GROUP + native::IDEOLOGY_GROUP_MODIFIER + cmodifier::DISPLAY_NAME,
@@ -192,7 +188,7 @@ mod tests {
 
         for (hour, with_attache) in [(0, false), (1, true)] {
             if with_attache {
-                memory.array(DIPLOMACY + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+                memory.array(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 1);
                 memory.word(RELATIONS, ATTACHE_REL as u64);
                 memory.word(ATTACHE_REL, (BASE + cattache_relation::VTABLE_RVA.0) as u64);
                 memory.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);

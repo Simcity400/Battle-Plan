@@ -1,12 +1,8 @@
 pub mod mission_layout;
 pub mod targeted_spotting;
 
-use crate::{
-    Memory, ccountry, cfleet,
-    cpdx_array::Array,
-    cunit, read,
-    walk::{Buffer, Outcome},
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use crate::{cfleet, cunit};
 use engine_sites::Rva;
 
 mod fresh_eta;
@@ -152,14 +148,14 @@ pub struct CounterRow {
     pub received_supply_ratio: i64,
     pub attached_headquarters: i32,
     pub name: Option<crate::cname_group_member::Span>,
-    pub supply: Option<crate::cunit_supply_inputs::Inputs>,
+    pub supply: Option<engine_native_parts::cunit_supply_inputs::Inputs>,
     pub supply_origins_start: usize,
-    pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
+    pub supply_failure: Option<engine_native_parts::cunit_supply_inputs::Failure>,
     pub port_mission: Option<port_mission::Inputs>,
 }
 
 pub struct SupplyOrigins<'a> {
-    pub origins: Buffer<'a, crate::cunit_supply_inputs::Origin>,
+    pub origins: Buffer<'a, engine_native_parts::cunit_supply_inputs::Origin>,
     pub len: usize,
     pub required: usize,
 }
@@ -167,7 +163,7 @@ pub struct SupplyOrigins<'a> {
 pub const ATTACHED_HEADQUARTERS: usize = 0x728;
 
 pub const TASK_FIELDS: [(usize, usize); 30] = {
-    use crate::{cnaval_mission as mission, cunit_supply_inputs as supply};
+    use engine_native_parts::{cnaval_mission as mission, cunit_supply_inputs as supply};
     [
         (0, 32),
         (supply::ASKED, 16),
@@ -180,7 +176,7 @@ pub const TASK_FIELDS: [(usize, usize); 30] = {
         (cunit::ORDINARY_ROUTE_DATA, 32),
         (cunit::ALTERNATE_ROUTE_DATA, 32),
         (0x240, 16),
-        (cached_name::NAME, crate::msvc_string::STRIDE),
+        (cached_name::NAME, engine_native_memory::msvc_string::STRIDE),
         (0x2ae, 2),
         (0x2f8, 8),
         (FLEET, 8),
@@ -207,7 +203,7 @@ pub(crate) fn authenticate_mission(
     base: usize,
     task: usize,
 ) -> Result<(), &'static str> {
-    use crate::cnaval_mission as mission;
+    use engine_native_parts::cnaval_mission as mission;
     let vtable = engine_sites::at(base, mission::VTABLE_RVA).ok_or("module address overflow")?;
     let word = |at: usize| {
         header
@@ -227,7 +223,7 @@ pub(crate) fn read_counter_inputs(
     task: usize,
     id: u64,
 ) -> Result<CounterRow, &'static str> {
-    use crate::{cnaval_mission as mission, cstrategic_region};
+    use engine_native_parts::{cnaval_mission as mission, cstrategic_region};
     let at = |offset| {
         task.checked_add(offset)
             .ok_or("task force address overflow")
@@ -323,7 +319,7 @@ pub struct MapMotionRow {
     pub combat_links: Option<[u64; 2]>,
     pub fresh: Option<FreshEtaInputs>,
     pub logical_owner: u32,
-    pub fresh_owner: Option<Result<ccountry::Country, &'static str>>,
+    pub fresh_owner: Option<Result<engine_native_memory::country_identity::Country, &'static str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,7 +381,7 @@ pub struct MapMotionCollector<'a, M: Memory> {
     rows: Buffer<'a, MapMotionRow>,
     paths: Buffer<'a, u32>,
     combats: &'a mut cunit::FirstCombatMemo,
-    combat_registry: crate::creference_registry::HeaderResolver,
+    combat_registry: engine_native_parts::creference_registry::HeaderResolver,
     len: usize,
     paths_len: usize,
     required_paths: usize,
@@ -434,7 +430,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             rows,
             paths,
             combats,
-            combat_registry: crate::creference_registry::HeaderResolver::default(),
+            combat_registry: engine_native_parts::creference_registry::HeaderResolver::default(),
             len: 0,
             paths_len: 0,
             required_paths: 0,
@@ -679,7 +675,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             &mut self.combat_registry,
         )
         .ok();
-        let started = crate::clock::qpc();
+        let started = engine_native_memory::clock::qpc();
         let fresh = self.fresh_hour.map(|hour| {
             if let Some((demand, guard)) = risk {
                 let contributor = demand.contributor();
@@ -700,7 +696,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         if fresh.is_some() {
             FRESH_ETA[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             FRESH_ETA[1].fetch_add(
-                crate::clock::since(started),
+                engine_native_memory::clock::since(started),
                 std::sync::atomic::Ordering::Relaxed,
             );
         }
@@ -879,7 +875,7 @@ fn mission_region_id(
     held: &mut Option<&mut WorldIds>,
     region: usize,
 ) -> Result<u32, &'static str> {
-    use crate::cstrategic_region as sr;
+    use engine_native_parts::cstrategic_region as sr;
     if let Some(id) = held.as_deref_mut().and_then(|held| held.get(region)) {
         return Ok(id);
     }
@@ -972,7 +968,7 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
     }
 
     fn read(&mut self, pointer: usize, id: u64) -> Result<(), &'static str> {
-        use crate::cnaval_mission as mission;
+        use engine_native_parts::cnaval_mission as mission;
         let root = pointer
             .checked_add(NAVAL_MISSION)
             .ok_or("task force address overflow")?;
@@ -1020,7 +1016,7 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
         let start = self.arena_len;
         let (memory, regions, held, arena) =
             (self.memory, self.regions, &mut self.held, &mut self.arena);
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             list,
             "mission accessible region pointer unreadable or null",

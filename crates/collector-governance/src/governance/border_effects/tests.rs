@@ -2,11 +2,14 @@ use super::super::*;
 use engine_decisions::{
     border_effect_demand, cdecision, ctargeted_decision as targeted, event_namespace,
 };
-use engine_native::{
-    cgame_state, cland_border_war_combat as combat, cland_border_war_combatant as side,
-    cland_combat, cland_combatant, cpdx_array, creference_registry as registry,
-    memory::CountedMemory, memory::ReadCounts, reference_bucket as bucket,
+use engine_native::{cgame_state, cland_combat, cland_combatant};
+use engine_native_parts::{
+    cland_border_war_combat as combat,
+    cland_border_war_combatant as side,
+    creference_registry as registry,
+    reference_bucket as bucket,
 };
+use engine_native_memory::{cpdx_array, memory::{CountedMemory, ReadCounts}};
 use std::{cell::Cell, collections::BTreeMap, time::Instant};
 
 const IMAGE: usize = 0x1400_0000;

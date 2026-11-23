@@ -127,7 +127,7 @@ impl PreparationPart {
         }
         self.maxima_reads
             .resize(self.maxima_pointers.len(), Err("division maxima unstaged"));
-        engine_native::csub_unit_definition::stage_division_maxima(
+        engine_native_parts::csub_unit_definition::stage_division_maxima(
             memory,
             base,
             &self.maxima_pointers,
@@ -278,7 +278,7 @@ impl PreparationPart {
                     experience_certificate,
                     &mut self.orders[0],
                     || {
-                        engine_native::read::<i64>(
+                        engine_native_memory::read::<i64>(
                             memory,
                             seed.pointer
                                 .checked_add(engine_native::carmy::EXPERIENCE)
@@ -408,7 +408,7 @@ mod tests {
     fn a_fresh_attach_registers_cold_receivers_across_the_ranges() {
         const COUNT: usize = 5_000;
         let seeds = seeds(COUNT);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -464,7 +464,7 @@ mod tests {
         }
         store.experience.finish(true);
         store.progression.finish(true);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

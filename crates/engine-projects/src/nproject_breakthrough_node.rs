@@ -6,7 +6,7 @@ pub const IS_NIL: usize = 0x19;
 pub const SPECIALIZATION_HANDLE: usize = 0x1c;
 pub const POINTS: usize = 0x20;
 
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Links {

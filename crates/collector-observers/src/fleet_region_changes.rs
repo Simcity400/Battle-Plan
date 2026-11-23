@@ -1,6 +1,6 @@
 
 use crate::{hook::Hook, watch_registry::WatchRegistry};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_sites::Rva;
 use std::{
     ops::Range,
@@ -251,8 +251,8 @@ unsafe fn invoke(
 unsafe fn region_count(fleet: usize) -> Option<i32> {
     // SAFETY: the authenticated native method owns its live receiver for
     // this call. The guarded copy contains no allocation or game call.
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    engine_native::read(
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    engine_native_memory::read(
         &memory,
         fleet.checked_add(engine_native::cfleet::MISSION_REGION_COUNT)?,
     )

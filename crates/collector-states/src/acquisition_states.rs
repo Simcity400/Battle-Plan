@@ -1,6 +1,9 @@
+#[cfg(test)]
+use engine_native_memory::memory::SliceMemory;
 use crate::{acquisition_gather, extended::state_flags};
 use collector_primitives::clock::qpc;
-use engine_native::{Memory, cstate, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cstate;
 use engine_railways::crailway_manager::fresh_inputs;
 
 mod occupation;
@@ -215,7 +218,7 @@ impl Request {
                 game_state,
                 outcome,
                 rows,
-                engine_native::walk::Buffer::Growing(&mut names.bytes),
+                engine_native_memory::walk::Buffer::Growing(&mut names.bytes),
                 |_| None,
                 |id| {
                     store
@@ -285,10 +288,10 @@ pub mod tests {
     use super::*;
     #[cfg(test)]
     use collector_workers::acquisition::Pool;
-    use engine_native::{cbuilding_database, cbuilding_template};
+    use engine_native_parts::{cbuilding_database, cbuilding_template};
     #[cfg(test)]
-    use engine_native::{cgame_state, memory::SliceMemory};
-    #[cfg(test)]
+    use engine_native::cgame_state;
+        #[cfg(test)]
     use std::cell::RefCell;
 
     pub const STATE: usize = 0x1000;
@@ -356,7 +359,7 @@ pub mod tests {
             for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
                 put(
                     &mut bytes,
-                    pointer + field + engine_native::msvc_string::CAPACITY,
+                    pointer + field + engine_native_memory::msvc_string::CAPACITY,
                     15_u64.to_le_bytes(),
                 );
             }

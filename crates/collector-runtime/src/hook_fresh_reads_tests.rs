@@ -648,13 +648,13 @@ impl Native {
         self.put(at + 12, &count.to_le_bytes());
     }
 }
-impl engine_native::Memory for Native {
+impl engine_native_memory::Memory for Native {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-        if at == engine_native::csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
+        if at == engine_native_parts::csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x9800_u64.to_le_bytes());
             return true;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &self.0,
         }
@@ -666,7 +666,8 @@ impl engine_native::Memory for Native {
 fn failed_local_observer_reads_changed_native_requirements_and_keeps_dependent_inputs() {
     use collector_model_inputs::local_subunit_changes::Changes;
     use engine_deployment::cdeployment_status;
-    use engine_native::{ccountry, cequipment_type, cgame_state, csub_unit_definition};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_parts::{cequipment_type, csub_unit_definition};
     if !contract_tests::isolated(
         "hook_failures::fresh_reads_tests::failed_local_observer_reads_changed_native_requirements_and_keeps_dependent_inputs",
     ) {

@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-extended-support/test-support"]
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-native-land.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
@@ -44,6 +45,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-supply-trains = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

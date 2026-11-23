@@ -3,7 +3,7 @@ use collector_divisions::extended::division_presentation::{
     tests::{PRESENTED, Populated, pass_failure_capacities, presentation_fixture},
 };
 use collector_production::production::Sources;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::rows::TableId;
 use replay_frame::frame::TableView;
 
@@ -15,7 +15,7 @@ fn map_presentation_reads_only_the_movement_full_reads() {
         rows: inputs.seeds(),
         outcome: inputs.outcome(),
     };
-    let memory = engine_native::read_counts::CountedMemory::new(populated.world.live());
+    let memory = engine_native_memory::read_counts::CountedMemory::new(populated.world.live());
     let countries = engine_allocation::shared(
         engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
@@ -81,12 +81,12 @@ fn map_presentation_reads_only_the_movement_full_reads() {
     assert_eq!(map_reads[movement], full_reads[movement]);
     assert_ne!(
         full_reads[TableId::DivisionStatus.index()],
-        engine_native::read_counts::ReadCounts::ZERO
+        engine_native_memory::read_counts::ReadCounts::ZERO
     );
     for table in STATUS_TABLES {
         assert_eq!(
             map_reads[table.index()],
-            engine_native::read_counts::ReadCounts::ZERO,
+            engine_native_memory::read_counts::ReadCounts::ZERO,
             "{table:?}"
         );
         let view = &map[TABLES.iter().position(|&id| id == table).unwrap()];
@@ -188,7 +188,7 @@ fn failed_presentation_passes_keep_the_merged_failure_order() {
     use collector_workers::acquisition::Failure;
     let (seed, bytes) = presentation_fixture();
     let seeds = [seed];
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };

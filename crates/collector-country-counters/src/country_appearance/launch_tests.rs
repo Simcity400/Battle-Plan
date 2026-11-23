@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{cgame_state, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 
 fn empty_navy(capture: &mut Captured, hour: Option<i32>) {

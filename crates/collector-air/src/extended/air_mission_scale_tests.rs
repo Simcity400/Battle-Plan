@@ -1,14 +1,8 @@
 use super::*;
 use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
-use engine_native::{
-    cgame_state as gs,
-    creference_registry as registry,
-    cship,
-    ctask_force,
-    cunit,
-    memory::{RecordLayout, RecordSources},
-    reference_bucket as bucket,
-};
+use engine_native::{cgame_state as gs, cship, ctask_force, cunit};
+use engine_native_parts::{creference_registry as registry, reference_bucket as bucket};
+use engine_native_memory::memory::{RecordLayout, RecordSources};
 use engine_native_air::cstrategic_air;
 use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 use std::{
@@ -29,7 +23,7 @@ const PROVINCES: u64 = 1_000;
 const COUNTRY_OBJECT: usize = 0x20;
 
 fn handle(id: u64) -> u64 {
-    id << 32 | u64::from(cair_base::TYPE)
+    id << 32 | u64::from(engine_native_parts::cair_base_layout::TYPE)
 }
 
 fn province_id(index: u64) -> u32 {
@@ -353,7 +347,7 @@ impl Scale {
         for country in &registered {
             let object = air[&country.slot];
             let last = country.regions.last().unwrap().0;
-            let outer = world.alloc((last as usize + 1) * engine_native::cpdx_array::STRIDE);
+            let outer = world.alloc((last as usize + 1) * engine_native_memory::cpdx_array::STRIDE);
             let ids = world.alloc(country.regions.len() * 4);
             let mut all = 0;
             for (index, (region, wings)) in country.regions.iter().enumerate() {
@@ -364,7 +358,7 @@ impl Scale {
                     world.u64(vector + ordinal * 8, mission as u64);
                 }
                 world.array(
-                    outer + *region as usize * engine_native::cpdx_array::STRIDE,
+                    outer + *region as usize * engine_native_memory::cpdx_array::STRIDE,
                     vector,
                     wings.len() as u32,
                 );
@@ -411,7 +405,7 @@ impl Scale {
         .into_iter()
         .enumerate()
         {
-            let stride = engine_native::cpdx_array::STRIDE;
+            let stride = engine_native_memory::cpdx_array::STRIDE;
             let states = world.alloc((STATES as usize + 1) * stride);
             world.array(manager + lists, states, STATES as u32 + 1);
             for id in 1..=STATES as u32 {
@@ -428,10 +422,10 @@ impl Scale {
             .chain(unique_bases)
             .collect();
         for &id in &ids {
-            let object = world.object(cair_base::SIZE, cair_base::VTABLE_RVA);
+            let object = world.object(cair_base::SIZE, engine_native_parts::cair_base_layout::VTABLE_RVA);
             let fields = reference(id);
-            world.u64(object + cair_base::HANDLE, handle(id));
-            world.u64(object + cair_base::HOST_REFERENCE, fields.host);
+            world.u64(object + engine_native_parts::cair_base_layout::HANDLE, handle(id));
+            world.u64(object + engine_native_parts::cair_base_layout::HOST_REFERENCE, fields.host);
             if fields.state.is_some() {
                 let state = world.states[(id % STATES) as usize];
                 world.u64(object + cair_base::STATE, state as u64);
@@ -464,7 +458,7 @@ impl Scale {
             world.ships.insert(fields.host, ship);
         }
         let bases = world.bases.clone();
-        world.registry(cair_base::TYPE, &bases);
+        world.registry(engine_native_parts::cair_base_layout::TYPE, &bases);
         let ships = world.ships.clone();
         world.registry(cship::HANDLE_TYPE, &ships);
         let navies = world.object(0x20, cstrategic_navy_manager::VTABLE_RVA);
@@ -624,7 +618,7 @@ impl Memory for Counted<'_> {
         if self.world.missions.contains(&address) {
             self.regional.set(self.regional.get() + 1);
         }
-        if address == BASE + registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8 {
+        if address == BASE + registry::LOW_ROOTS_RVA.0 + engine_native_parts::cair_base_layout::TYPE as usize * 8 {
             self.roots.set(self.roots.get() + 1);
         }
         if address == self.world.game_state + gs::STRATEGIC_AIR_MANAGER {
@@ -836,8 +830,8 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         scale.world.game_state,
         &wings,
         Some(&registrations),
-        engine_native::walk::Buffer::Growing(&mut handles),
-        engine_native::walk::Buffer::Growing(&mut output),
+        engine_native_memory::walk::Buffer::Growing(&mut handles),
+        engine_native_memory::walk::Buffer::Growing(&mut output),
         None,
     );
     assert_eq!(
@@ -861,7 +855,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         .unwrap();
     null[at].air_base = 0;
     assert_eq!(
-        capture_references_buffer(&scale.world, BASE, scale.world.game_state, &null, Some(&registrations), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None)
+        capture_references_buffer(&scale.world, BASE, scale.world.game_state, &null, Some(&registrations), engine_native_memory::walk::Buffer::Growing(&mut handles), engine_native_memory::walk::Buffer::Growing(&mut output), None)
         .err(),
         Some("registered wing has a null pool base")
     );
@@ -873,7 +867,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let ship = scale.world.ships[&base.unwrap().host];
     scale.world.u64(ship + cship::HANDLE, 0);
     assert_eq!(
-        capture_references_buffer(&scale.world, BASE, scale.world.game_state, &wings, Some(&registrations), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None)
+        capture_references_buffer(&scale.world, BASE, scale.world.game_state, &wings, Some(&registrations), engine_native_memory::walk::Buffer::Growing(&mut handles), engine_native_memory::walk::Buffer::Growing(&mut output), None)
         .err(),
         Some("carrier host reference handle mismatch")
     );

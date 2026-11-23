@@ -1,7 +1,8 @@
 
 use super::projects_test_kit as kit;
 use super::*;
-use engine_native::{ccountry, msvc_string};
+use engine_native::ccountry;
+use engine_native_memory::msvc_string;
 use engine_projects::{
     nproject_breakthrough_node as node, nproject_cprogram_status as status, nproject_cproject_pool,
     nproject_cproject_state_machine as machine, nproject_cprototype_project_state as prototype,
@@ -45,8 +46,8 @@ pub struct Space {
 }
 
 impl Space {
-    pub fn memory(&self) -> engine_native::memory::SliceMemory<'_> {
-        engine_native::memory::SliceMemory {
+    pub fn memory(&self) -> engine_native_memory::memory::SliceMemory<'_> {
+        engine_native_memory::memory::SliceMemory {
             base: self.bytes.as_ptr() as usize,
             bytes: &self.bytes,
         }
@@ -531,7 +532,7 @@ fn direct(memory: &impl Memory, game_state: usize, capacities: &Capacities) -> C
     captured.names.len = programs.bytes_len;
     captured.names.required = programs.required_bytes;
     captured.required_candidates = programs.required_candidates;
-    let (projects, histories) = nproject_cproject::walk_with_history_buffer(memory, kit::BASE, game_state, engine_native::walk::Buffer::Growing(&mut captured.projects.rows), engine_native::walk::Buffer::Growing(&mut captured.history.rows));
+    let (projects, histories) = nproject_cproject::walk_with_history_buffer(memory, kit::BASE, game_state, engine_native_memory::walk::Buffer::Growing(&mut captured.projects.rows), engine_native_memory::walk::Buffer::Growing(&mut captured.history.rows));
     captured.projects.outcome = bounded(projects, captured.projects.rows.len());
     captured.history.outcome = bounded(histories, captured.history.rows.len());
     captured.breakthroughs.outcome = bounded(
@@ -614,7 +615,7 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
     capacity
         .presize(&memory, kit::BASE, space.game_state)
         .unwrap();
-    let (expected, history) = nproject_cproject::walk_with_history_buffer(&memory, kit::BASE, space.game_state, engine_native::walk::Buffer::Count, engine_native::walk::Buffer::Count);
+    let (expected, history) = nproject_cproject::walk_with_history_buffer(&memory, kit::BASE, space.game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count);
     let demand = |outcome| match outcome {
         Outcome::Rows { len } => len,
         Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
@@ -672,7 +673,7 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
 }
 
 struct Fault<'a> {
-    memory: engine_native::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     fault: std::ops::Range<usize>,
 }
 
@@ -696,8 +697,8 @@ struct Site {
 
 fn fault_sites(space: &Space) -> Vec<Site> {
     let memory = space.memory();
-    let read = |address: usize| engine_native::read::<u64>(&memory, address).unwrap() as usize;
-    let read32 = |address: usize| engine_native::read::<u32>(&memory, address).unwrap();
+    let read = |address: usize| engine_native_memory::read::<u64>(&memory, address).unwrap() as usize;
+    let read32 = |address: usize| engine_native_memory::read::<u32>(&memory, address).unwrap();
     let table = read(space.game_state + engine_native::cgame_state::COUNTRIES);
     let links = read(space.game_state + engine_native::cgame_state::COUNTRY_LINKS);
     let status_of = |slot: usize| read(read(table + slot * 8) + ccountry::PROGRAM_STATUS);
@@ -820,8 +821,8 @@ fn scaled_faults_match_direct_walks_and_the_recorded_digests() {
 fn projects_copy_bench() {
     for countries in [440, 1_500, 5_000] {
         let space = space(countries, 50);
-        let memory = engine_native::memory::CountedMemory::new(unsafe {
-            engine_native::memory::LiveMemory::new()
+        let memory = engine_native_memory::memory::CountedMemory::new(unsafe {
+            engine_native_memory::memory::LiveMemory::new()
         });
         let context = ProjectsCopyContext {
             base: kit::BASE,

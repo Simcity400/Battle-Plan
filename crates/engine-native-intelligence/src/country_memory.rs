@@ -41,12 +41,12 @@ pub struct Cache {
     len: usize,
     observed_reads: usize,
     status: SeedStatus,
-    roster: Box<[Option<ccountry::Country>]>,
+    roster: Box<[Option<engine_native_memory::country_identity::Country>]>,
     roster_len: usize,
     roster_base: usize,
     roster_game_state: usize,
     roster_arrays: [Array; 2],
-    reserved: Option<ccountry::ReservedCountryObservation>,
+    reserved: Option<engine_native_memory::country_identity::ReservedCountryObservation>,
 }
 
 impl Cache {
@@ -181,7 +181,7 @@ impl Cache {
                         .unwrap_or_else(|| {
                             ccountry::observe_reserved_from_array(source, base, array)
                         }),
-                    Err(reason) => ccountry::ReservedCountryObservation::from_result(Err(reason)),
+                    Err(reason) => engine_native_memory::country_identity::ReservedCountryObservation::from_result(Err(reason)),
                 };
                 {
                     let mut cache = recording.cache.borrow_mut();
@@ -352,16 +352,16 @@ impl<M: Memory> Memory for RecordingMemory<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.authenticated_reserved_country_observation(base, game_state)
-            .map(ccountry::ReservedCountryObservation::result)
+            .map(engine_native_memory::country_identity::ReservedCountryObservation::result)
     }
 
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         let cache = self.cache.borrow();
         (base == cache.roster_base && game_state == cache.roster_game_state)
             .then_some(cache.reserved)
@@ -441,16 +441,16 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.authenticated_reserved_country_observation(base, game_state)
-            .map(ccountry::ReservedCountryObservation::result)
+            .map(engine_native_memory::country_identity::ReservedCountryObservation::result)
     }
 
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         if !ROSTER {
             return self
                 .source
@@ -474,7 +474,7 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         if !ROSTER {
             return self.source.authenticated_countries(base, game_state);
         }
@@ -483,7 +483,7 @@ impl<M: Memory, const CACHED_BYTES: bool, const ROSTER: bool> Memory
             && base == self.cache.roster_base
             && game_state == self.cache.roster_game_state)
             .then(|| {
-                ccountry::AuthenticatedRoster::new(
+                engine_native_memory::country_identity::AuthenticatedRoster::new(
                     &self.cache.roster[..self.cache.roster_len],
                     self.cache.roster_arrays,
                 )

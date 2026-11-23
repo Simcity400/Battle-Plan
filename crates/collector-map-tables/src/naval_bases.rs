@@ -4,7 +4,7 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native_naval::cnaval_base;
 use replay_data::rows::{NavalBaseRow, TableId, tables};
 use replay_frame::frame::{TableInput, TableView};
@@ -237,11 +237,12 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn cold_storage_publishes_first_and_later_mod_sized_base_headers() {
-        use engine_native::{cgame_state, rail_anchor_selector as map};
+        use engine_native::cgame_state;
+        use engine_native_parts::rail_anchor_selector as map;
         let mut capture = Captured::with_capacities(&Capacities::default());
         assert_eq!(capture.allocated_bytes(), 0);
         let game_state = 0x1000;
@@ -253,7 +254,7 @@ mod tests {
             let bases = buckets + (capacity + 1) * 0x18;
             let list = bases + count * cnaval_base::SIZE;
             let tags = list + list_len * 4;
-            let mut bytes = vec![0; tags + (list_len + 1) * engine_native::msvc_string::STRIDE];
+            let mut bytes = vec![0; tags + (list_len + 1) * engine_native_memory::msvc_string::STRIDE];
             let mut put = |at: usize, value: &[u8]| {
                 bytes[at..at + value.len()].copy_from_slice(value);
             };
@@ -264,7 +265,7 @@ mod tests {
             put(table + map::BUCKETS, &(buckets as u64).to_le_bytes());
             put(table + map::MASK, &((capacity - 1) as u32).to_le_bytes());
             put(table + map::MAX_PROBE, &[0]);
-            put(holder + cnaval_base::HOLDER_COUNTRY, &1_u32.to_le_bytes());
+            put(holder + engine_native_parts::cnaval_base_layout::HOLDER_COUNTRY, &1_u32.to_le_bytes());
             let tag_header = game_state + cgame_state::COUNTRY_TAGS;
             put(tag_header, &(tags as u64).to_le_bytes());
             for offset in [8, 12] {
@@ -273,7 +274,7 @@ mod tests {
             for index in 0..list_len {
                 put(list + index * 4, &(index as u32 + 1).to_le_bytes());
                 let text = format!("T{}", index + 1);
-                let tag = tags + (index + 1) * engine_native::msvc_string::STRIDE;
+                let tag = tags + (index + 1) * engine_native_memory::msvc_string::STRIDE;
                 put(tag, text.as_bytes());
                 put(tag + 16, &(text.len() as u64).to_le_bytes());
                 put(tag + 24, &15_u64.to_le_bytes());
@@ -284,10 +285,10 @@ mod tests {
                 put(entry + 4, &[1]);
                 put(entry + 8, &(index as u32 + 1).to_le_bytes());
                 put(entry + 0x10, &(base as u64).to_le_bytes());
-                put(base, &(cnaval_base::VTABLE_RVA.0 as u64).to_le_bytes());
-                put(base + cnaval_base::HOLDER, &(holder as u64).to_le_bytes());
+                put(base, &(engine_native_parts::cnaval_base_layout::VTABLE_RVA.0 as u64).to_le_bytes());
+                put(base + engine_native_parts::cnaval_base_layout::HOLDER, &(holder as u64).to_le_bytes());
                 put(
-                    base + cnaval_base::PROVINCE_ID,
+                    base + engine_native_parts::cnaval_base_layout::PROVINCE_ID,
                     &(index as u32 + 1).to_le_bytes(),
                 );
                 put(

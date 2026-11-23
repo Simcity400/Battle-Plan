@@ -1,5 +1,5 @@
 use collector_extended_support::demand::demand_game_state;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -40,11 +40,11 @@ pub fn observe_ace_names(
     };
     let walked = engine_native_air::cace::count(memory, base, state);
     let aces = match walked.outcome {
-        engine_native::walk::Outcome::Rows { len } => len,
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native_memory::walk::Outcome::Rows { len } => len,
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("ace roster sizing overflow")?,
-        engine_native::walk::Outcome::Unavailable { reason } => return Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => return Err(reason),
     };
     Ok(Some(AceNamesDemand {
         aces,

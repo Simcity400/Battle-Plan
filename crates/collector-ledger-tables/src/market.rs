@@ -1,6 +1,6 @@
 use collector_observers::market_changes::{self as producer, held};
 use collector_projection::{projection::Projection, table_conversion::unavailable};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::rows::{MarketEventRow, TableId, TableRows};
 use replay_frame::frame::{TableInput, TableView};
 use std::mem::size_of;
@@ -268,7 +268,7 @@ mod tests {
             &Unreadable,
             0,
             0x100,
-            engine_native::ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 pointer: 0x1000,
                 id: 5000,
                 canonical_slot: 5000,

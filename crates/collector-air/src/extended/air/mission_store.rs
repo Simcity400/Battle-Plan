@@ -196,7 +196,7 @@ impl<'a> MissionReuse<'a> {
     pub unsafe fn finish_with_order(
         self,
         complete: bool,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         wings: &[engine_native_air::cair_regional_mission::WingIdentity],
         output: &mut Vec<OrderLabel>,
     ) {

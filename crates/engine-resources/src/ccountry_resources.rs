@@ -1,14 +1,14 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
     batch_fallback::{Batch, Link},
-    ccountry::{self, Ahead},
     cpdx_array::Array,
-    cstrategic_resource, cstrategic_resource_pool,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
     walk::Outcome,
 };
+use engine_native::ccountry::{self, Ahead};
+use crate::{cstrategic_resource, cstrategic_resource_pool};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29d8f00);
@@ -74,7 +74,7 @@ pub fn storage_demand_with_country(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut visit: impl FnMut(ccountry::Country, usize) -> Result<(), &'static str>,
+    mut visit: impl FnMut(engine_native_memory::country_identity::Country, usize) -> Result<(), &'static str>,
 ) -> Result<[usize; 3], &'static str> {
     let definitions = crate::cstrategic_resource_database::Reader::new(memory, base)?
         .count()
@@ -114,7 +114,7 @@ pub fn walk(
         base,
         game_state,
         descriptors,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -123,7 +123,7 @@ pub fn walk_buffer(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     walk_buffer_with_country(memory, base, game_state, descriptors, output, |_, _| {})
 }
@@ -133,8 +133,8 @@ pub fn walk_buffer_with_country(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut visit: impl FnMut(ccountry::Country, usize),
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut visit: impl FnMut(engine_native_memory::country_identity::Country, usize),
 ) -> Outcome {
     let result = (|| {
         let count = u32::try_from(descriptors.len())
@@ -189,7 +189,7 @@ pub fn walk_buffer_with_country(
                 let mut outside = None;
                 let mut completed = chunk * 9;
                 if !whole {
-                    crate::batch_fallback::record(Batch::CountryResources);
+                    engine_native_memory::batch_fallback::record(Batch::CountryResources);
                     (outside, completed) = value_records(
                         memory,
                         &pools,
@@ -259,7 +259,7 @@ pub(crate) fn resources<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     resources_linked(memory, base, countries, country, Link::Unread)
 }
@@ -268,7 +268,7 @@ fn resources_linked<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     link: Link,
 ) -> Result<usize, &'static str> {
     let pointer = link
@@ -282,7 +282,7 @@ fn resources_linked<M: Memory>(
         .filter(|&p| p != 0)
         .ok_or("country resources pointer unreadable or null")?;
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
-    const FIELDS: [RecordField; 2] = crate::memory::packed_fields([(0, 8), (OWNER, 4)]);
+    const FIELDS: [RecordField; 2] = engine_native_memory::memory::packed_fields([(0, 8), (OWNER, 4)]);
     const LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&FIELDS, 12).expect("valid record layout");
     let owner = if pointer.checked_add(OWNER + 4).is_some() {
@@ -403,7 +403,7 @@ mod baseline;
 #[cfg(test)]
 pub(crate) mod scale_support {
     use super::*;
-    use crate::ccountry::synthetic::World;
+    use engine_native::ccountry::synthetic::World;
 
     pub(crate) trait Image {
         fn alloc(&mut self, len: usize) -> usize;
@@ -432,15 +432,15 @@ pub(crate) mod scale_support {
     }
 
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    impl Image for crate::crelation_status::bench::Arena {
+    impl Image for engine_native::crelation::status::bench::Arena {
         fn alloc(&mut self, len: usize) -> usize {
-            crate::crelation_status::bench::Arena::alloc(self, len)
+            engine_native::crelation::status::bench::Arena::alloc(self, len)
         }
         fn u64(&mut self, address: usize, value: u64) {
-            crate::crelation_status::bench::Arena::u64(self, address, value);
+            engine_native::crelation::status::bench::Arena::u64(self, address, value);
         }
         fn u32(&mut self, address: usize, value: u32) {
-            crate::crelation_status::bench::Arena::u32(self, address, value);
+            engine_native::crelation::status::bench::Arena::u32(self, address, value);
         }
         fn array(&mut self, header: usize, data: usize, count: u32) {
             self.vector(header, data, count);
@@ -493,8 +493,8 @@ pub(crate) mod scale_support {
     pub(crate) fn resource_arena(
         countries: usize,
         resources: u32,
-    ) -> (crate::crelation_status::bench::Arena, usize) {
-        use crate::crelation_status::bench::{Arena, countries as census};
+    ) -> (engine_native::crelation::status::bench::Arena, usize) {
+        use engine_native::crelation::status::bench::{Arena, countries as census};
         let object = ccountry::RESOURCES + 8;
         let pools = 9 * ((resources as usize + 1) * VALUE_STRIDE + 16);
         let per_country = 12 + object + 16 + 0x800 + 16 + pools;
@@ -508,9 +508,8 @@ pub(crate) mod scale_support {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use crate::{
-        cgame_state, cresource_exchange as trade, cstrategic_resource_database as database,
-    };
+    use engine_native::cgame_state;
+    use crate::{cresource_exchange as trade, cstrategic_resource_database as database};
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -624,18 +623,18 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::Fixture;
 
-    fn record(w: &crate::ccountry::synthetic::World, slot: u32, pool: usize, id: u32) -> usize {
+    fn record(w: &engine_native::ccountry::synthetic::World, slot: u32, pool: usize, id: u32) -> usize {
         let memory = w.memory();
-        let object = crate::read::<u64>(&memory, w.object(slot) + crate::ccountry::RESOURCES)
+        let object = engine_native_memory::read::<u64>(&memory, w.object(slot) + engine_native::ccountry::RESOURCES)
             .unwrap() as usize;
-        let data = crate::read::<u64>(&memory, object + POOLS[pool] + 8).unwrap() as usize;
+        let data = engine_native_memory::read::<u64>(&memory, object + POOLS[pool] + 8).unwrap() as usize;
         data + id as usize * VALUE_STRIDE
     }
 
     fn both(
         memory: &impl Memory,
         serial_memory: &impl Memory,
-        w: &crate::ccountry::synthetic::World,
+        w: &engine_native::ccountry::synthetic::World,
         descriptors: &[cstrategic_resource::Row],
         rows: usize,
     ) -> [(Outcome, Vec<Row>); 2] {
@@ -647,7 +646,7 @@ mod tests {
             0,
             w.game_state(),
             descriptors,
-            crate::walk::Buffer::Growing(&mut serial),
+            engine_native_memory::walk::Buffer::Growing(&mut serial),
         );
         [(new, batched), (old, serial)]
     }
@@ -655,7 +654,7 @@ mod tests {
     #[test]
     fn batched_values_match_the_serial_walk() {
         use super::scale_support::{descriptors, resource_world};
-        use crate::memory::{CountedMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, ReadCounts};
         const COUNT: u32 = 100;
         const RESOURCES: u32 = 7;
         let w = resource_world(COUNT, RESOURCES);
@@ -672,7 +671,7 @@ mod tests {
             0,
             w.game_state(),
             &descriptors,
-            crate::walk::Buffer::Growing(&mut serial),
+            engine_native_memory::walk::Buffer::Growing(&mut serial),
         );
         let old_reads = ReadCounts::take_current();
         prior.add_current();
@@ -685,11 +684,11 @@ mod tests {
         assert_eq!(new_reads.spans + 54 * n, old_reads.spans);
     }
 
-    fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
+    fn fault_sites(w: &engine_native::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
         let padding = record(w, 3, 4, 2) + 12;
         let value = record(w, 3, 4, 5);
-        let link = w.object(4) + crate::ccountry::RESOURCES;
-        let object = crate::read::<u64>(&w.memory(), link).unwrap() as usize;
+        let link = w.object(4) + engine_native::ccountry::RESOURCES;
+        let object = engine_native_memory::read::<u64>(&w.memory(), link).unwrap() as usize;
         let header = object + POOLS[6];
         [
             padding..padding + 4,
@@ -700,7 +699,7 @@ mod tests {
     }
 
     fn fallbacks() -> u64 {
-        crate::batch_fallback::count(crate::batch_fallback::Batch::CountryResources)
+        engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::CountryResources)
     }
 
     #[test]
@@ -710,7 +709,7 @@ mod tests {
         let descriptors = descriptors(7);
         for (site, (range, counted)) in fault_sites(&w).into_iter().zip([1, 1, 1, 0]).enumerate() {
             let before = fallbacks();
-            let memory = crate::batch_fallback::Faulty::new(w.memory(), vec![range], false);
+            let memory = engine_native_memory::batch_fallback::Faulty::new(w.memory(), vec![range], false);
             let [batched, serial] = both(&memory, &memory, &w, &descriptors, 42);
             assert_eq!(batched, serial, "site {site}");
             assert_eq!(fallbacks() - before, counted, "site {site}");
@@ -732,7 +731,7 @@ mod tests {
         let descriptors = descriptors(7);
         let [healthy, _] = both(&w.memory(), &w.memory(), &w, &descriptors, 42);
         for (site, (range, counted)) in fault_sites(&w).into_iter().zip([1, 1, 1, 0]).enumerate() {
-            let once = || crate::batch_fallback::Faulty::new(w.memory(), vec![range.clone()], true);
+            let once = || engine_native_memory::batch_fallback::Faulty::new(w.memory(), vec![range.clone()], true);
             let before = fallbacks();
             let [batched, serial] = both(&once(), &once(), &w, &descriptors, 42);
             assert_eq!(fallbacks() - before, counted, "site {site}");
@@ -752,7 +751,7 @@ mod tests {
     #[test]
     fn batched_values_cross_the_block_edge_as_the_serial_walk() {
         use super::scale_support::{descriptors, resource_world};
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         const RESOURCES: u32 = 33;
         let w = resource_world(6, RESOURCES);
         let descriptors = descriptors(RESOURCES);
@@ -780,10 +779,10 @@ mod tests {
     #[test]
     fn null_and_alias_slots_are_skipped_as_the_serial_walk_skips_them() {
         use super::scale_support::{descriptors, resource_world};
-        use crate::batch_fallback::Faulty;
+        use engine_native_memory::batch_fallback::Faulty;
         let mut w = resource_world(8, 7);
         let descriptors = descriptors(7);
-        let table = crate::ccountry::synthetic::START + 0x1000;
+        let table = engine_native::ccountry::synthetic::START + 0x1000;
         let links = table + 9 * 8;
         w.u64(table + 3 * 8, 0);
         w.u64(table + 5 * 8, w.object(4) as u64);
@@ -793,7 +792,7 @@ mod tests {
         assert_eq!(healthy, serial);
         assert_eq!(healthy.0, Outcome::Rows { len: rows });
         let link = |slot: u32| {
-            let at = w.object(slot) + crate::ccountry::RESOURCES;
+            let at = w.object(slot) + engine_native::ccountry::RESOURCES;
             at..at + 8
         };
         for (slot, counted) in [(2, 1), (4, 0)] {
@@ -821,7 +820,7 @@ mod tests {
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     fn acquisition_cost() {
         use super::scale_support::{descriptors, resource_arena};
-        use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
         let countries = std::env::var("BATTLEPLAN_RESOURCE_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_RESOURCE_COST_COUNTRIES"))
             .ok()
             .and_then(|v| v.parse().ok())
@@ -846,7 +845,7 @@ mod tests {
                         base,
                         state,
                         &descriptors,
-                        crate::walk::Buffer::Growing(&mut rows),
+                        engine_native_memory::walk::Buffer::Growing(&mut rows),
                     )
                 };
                 samples.push(start.elapsed().as_nanos() as f64);

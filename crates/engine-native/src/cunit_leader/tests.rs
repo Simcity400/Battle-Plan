@@ -1,16 +1,16 @@
 use super::*;
-use crate::memory::SliceMemory;
-use crate::walk::Buffer;
+use engine_native_memory::memory::SliceMemory;
+use engine_native_memory::walk::Buffer;
 use std::cell::{Cell, RefCell};
 
 #[test]
 fn portrait_tag_memo_holds_one_cell_per_country_and_expires_each_walk() {
-    let country = |slot| crate::ccountry::Country {
+    let country = |slot| engine_native_memory::country_identity::Country {
         pointer: 0x1000 + slot as usize * 0x20,
         canonical_slot: slot,
         id: slot,
     };
-    let tag = crate::msvc_string::Text::<64>::default();
+    let tag = engine_native_memory::msvc_string::Text::<64>::default();
     let mut memo = PortraitTagMemo::default();
     memo.begin(5_001);
     assert!(memo.cell(4_999).is_none());

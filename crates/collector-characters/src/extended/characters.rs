@@ -22,28 +22,33 @@ use collector_primitives::{
 };
 use collector_projection::table_conversion::{table, unavailable};
 use engine_land_inputs::active_ability_record;
-use engine_native::{
+use engine_native_memory::{
     Memory,
-    cadvisor,
-    carmy_leader,
-    ccharacter,
-    ccharacter_manager,
-    ccharacter_template,
-    ccountry,
-    cgame_state,
-    character_advisor_node,
-    cnavy_leader,
     cpdx_array::Array,
-    cunit_leader,
-    cunit_leader_skill,
-    cunit_leader_trait,
     msvc_string,
     msvc_tree_node,
     read,
     walk::Outcome,
 };
+use engine_native::{
+    cadvisor,
+    carmy_leader,
+    ccharacter::{
+        self,
+        manager as ccharacter_manager,
+        template as ccharacter_template,
+    },
+    ccountry,
+    cgame_state,
+    cunit_leader,
+};
+use engine_native_parts::{
+    character_advisor_node,
+    cnavy_leader,
+    cunit_leader_skill,
+    cunit_leader_trait,
+};
 use engine_native_politics::{ccountry_leader, character_leader_node};
-use engine_native_intelligence::coperative_leader;
 use replay_data::{
     BranchId, rows::ActiveAbilityRow, rows::AdvisorRoleRow, rows::CharacterRow,
     rows::CountryLeaderRoleRow, rows::TableId, rows::TableRows, rows::TableSchema,
@@ -508,7 +513,7 @@ impl Captured {
                     || {
                         let entries = bytes
                             [row.modifier_start..row.modifier_start + row.modifier_len]
-                            .chunks_exact(engine_native::modifier_entry::STRIDE);
+                            .chunks_exact(engine_native_parts::modifier_entry::STRIDE);
                         let mut values = owned_vec(engine_allocation::vec(entries.len()));
                         for entry in entries {
                             values.push(replay_data::rows::CachedModifier {
@@ -867,8 +872,8 @@ impl From<active_ability_record::TokenWalk> for ReadResult {
 }
 
 struct Batch<'a, R> {
-    rows: engine_native::walk::Buffer<'a, R>,
-    bytes: engine_native::walk::Buffer<'a, u8>,
+    rows: engine_native_memory::walk::Buffer<'a, R>,
+    bytes: engine_native_memory::walk::Buffer<'a, u8>,
     len: usize,
     bytes_len: usize,
     required_bytes: usize,
@@ -879,13 +884,13 @@ struct Batch<'a, R> {
 impl<'a, R> Batch<'a, R> {
     fn new(rows: &'a mut Vec<R>, bytes: &'a mut Vec<u8>) -> Self {
         Self::storage(
-            engine_native::walk::Buffer::Growing(rows),
-            engine_native::walk::Buffer::Growing(bytes),
+            engine_native_memory::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(bytes),
         )
     }
     fn storage(
-        rows: engine_native::walk::Buffer<'a, R>,
-        bytes: engine_native::walk::Buffer<'a, u8>,
+        rows: engine_native_memory::walk::Buffer<'a, R>,
+        bytes: engine_native_memory::walk::Buffer<'a, u8>,
     ) -> Self {
         Self {
             rows,
@@ -911,8 +916,8 @@ impl<'a, R> Batch<'a, R> {
     fn append(
         &mut self,
         walk: impl FnOnce(
-            engine_native::walk::Buffer<'_, R>,
-            engine_native::walk::Buffer<'_, u8>,
+            engine_native_memory::walk::Buffer<'_, R>,
+            engine_native_memory::walk::Buffer<'_, u8>,
         ) -> ReadResult,
         relocate: impl Fn(&mut R, usize) -> bool,
     ) {
@@ -927,8 +932,8 @@ impl<'a, R> Batch<'a, R> {
             (result, self.rows.len(), self.bytes.len())
         } else {
             let result = walk(
-                engine_native::walk::Buffer::Count,
-                engine_native::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             );
             (result, self.len, self.bytes_len)
         };
@@ -1461,8 +1466,8 @@ fn fresh_traits_unchanged(job: &CharactersJob) -> bool {
             &mut cursor,
             pointer,
             vector.leader,
-            engine_native::walk::Buffer::Exact(&mut rows),
-            engine_native::walk::Buffer::Exact(&mut bytes),
+            engine_native_memory::walk::Buffer::Exact(&mut rows),
+            engine_native_memory::walk::Buffer::Exact(&mut bytes),
         );
         if projected.outcome != (Outcome::Rows { len })
             || !carry.held_equals(at, &rows, &bytes[..projected.bytes_len])
@@ -1517,7 +1522,7 @@ struct UnitRead {
 
 impl UnitRead {
     fn store(self, rows: &mut Vec<LeaderRow>, at: usize) -> Result<Stored, &'static str> {
-        engine_native::walk::grow(rows, at + 1)?;
+        engine_native_memory::walk::grow(rows, at + 1)?;
         rows[at] = self.row;
         Ok(Stored {
             rows: 1,
@@ -1649,7 +1654,7 @@ fn training_entry(
     else {
         return Some("unit leader training byte count overflow");
     };
-    if let Err(reason) = engine_native::walk::grow(bytes, stop) {
+    if let Err(reason) = engine_native_memory::walk::grow(bytes, stop) {
         return Some(reason);
     }
     let start = from + *len;
@@ -1694,8 +1699,8 @@ pub(super) fn walk_abilities(
     rows: &mut Vec<active_ability_record::Row>,
     bytes: &mut Vec<u8>,
 ) -> ReadResult {
-    let mut rows = engine_native::walk::Buffer::Growing(rows);
-    let mut bytes = engine_native::walk::Buffer::Growing(bytes);
+    let mut rows = engine_native_memory::walk::Buffer::Growing(rows);
+    let mut bytes = engine_native_memory::walk::Buffer::Growing(bytes);
     let mut len = 0_usize;
     let mut bytes_len = 0_usize;
     let result = (|| {
@@ -1783,7 +1788,7 @@ fn advisor_ranges_valid(row: &cadvisor::Row, bytes: &[u8]) -> bool {
             .is_some_and(tooltip_ranges_valid)
         && row
             .modifier_len
-            .is_multiple_of(engine_native::modifier_entry::STRIDE)
+            .is_multiple_of(engine_native_parts::modifier_entry::STRIDE)
 }
 
 fn tooltip_ranges_valid(mut bytes: &[u8]) -> bool {
@@ -2396,8 +2401,8 @@ impl Captured {
             let (row_count, byte_count) = job.traits.demand()?;
             let (carried_rows, carried_bytes) = job.trait_carry.carried_demand();
             let (row_count, byte_count) = (row_count + carried_rows, byte_count + carried_bytes);
-            engine_native::walk::Buffer::Growing(&mut self.traits.rows.rows).ensure(row_count)?;
-            engine_native::walk::Buffer::Growing(&mut self.traits.bytes.first)
+            engine_native_memory::walk::Buffer::Growing(&mut self.traits.rows.rows).ensure(row_count)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.traits.bytes.first)
                 .ensure(byte_count)?;
             Ok::<_, &'static str>(())
         })()
@@ -2409,8 +2414,8 @@ impl Captured {
             if demand.overflowed {
                 return Err("character capture demand overflow");
             }
-            engine_native::walk::Buffer::Growing(&mut buffer.rows.rows).ensure(demand.rows)?;
-            engine_native::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
+            engine_native_memory::walk::Buffer::Growing(&mut buffer.rows.rows).ensure(demand.rows)?;
+            engine_native_memory::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
             Ok(())
         }
         let quiet_rows = quiet::rows_key(base, job);
@@ -2422,7 +2427,7 @@ impl Captured {
             reserve_payload(&mut self.units, job.unit_demand).err(),
         ];
         let leader_failure = if job.active[1] {
-            engine_native::walk::Buffer::Growing(&mut self.leaders.rows.rows)
+            engine_native_memory::walk::Buffer::Growing(&mut self.leaders.rows.rows)
                 .ensure(job.leader_rows)
                 .err()
         } else {

@@ -1,8 +1,7 @@
-use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::*;
 
 pub(super) struct Candidate<'a> {
-    pub country: ccountry::Country,
+    pub country: engine_native_memory::country_identity::Country,
     pub diplomacy: usize,
     pub matrix: &'a mut Option<Result<Array, &'static str>>,
     pub parties: [u32; 2],
@@ -56,7 +55,7 @@ pub(super) fn candidate(
         None => {
             (*matrix.insert(
                 diplomacy
-                    .checked_add(cdiplomacy_status::RELATIONS)
+                    .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
                     .and_then(|address| Array::read(memory, address, 8))
                     .ok_or("relation matrix unreadable or invalid"),
             ))?
@@ -155,7 +154,7 @@ pub(super) fn capture_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x400];
         bytes[SUBJECT_RELATION..SUBJECT_RELATION + 8].copy_from_slice(&0x300_u64.to_le_bytes());

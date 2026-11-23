@@ -2,21 +2,20 @@ use crate::{
     ccountry_resources, cresource_exchange, cstrategic_resource, cstrategic_resource_database,
     cstrategic_resource_pool,
 };
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read};
 use engine_native::{
-    Memory,
     ccountry,
     cgame_state,
-    cpdx_array::Array,
     cprovince,
-    crelation,
-    crelation_status,
+    crelation::{
+        self,
+        status as crelation_status,
+        subject as csubject_relation,
+    },
     cstate,
-    csubject_relation,
-    memory::Raw,
-    modifier_accumulator,
-    read,
 };
-use engine_native_politics::{cdiplomacy_status, cpolitical_party, cpolitical_status};
+use engine_native_parts::modifier_accumulator;
+use engine_native_politics::{cpolitical_party, cpolitical_status};
 use engine_sites::Rva;
 
 const ONE: i64 = 100_000;
@@ -127,10 +126,10 @@ fn quotient(a: i64, b: i64) -> i64 {
 }
 
 const BATCH: usize = 64;
-const UNIT_OWNER_FIELDS: [engine_native::memory::RecordField; 1] =
-    engine_native::memory::packed_fields([(UNIT_OWNER, 4)]);
-const UNIT_OWNER_LAYOUT: engine_native::memory::RecordLayout<'static> =
-    match engine_native::memory::RecordLayout::new(&UNIT_OWNER_FIELDS, 4) {
+const UNIT_OWNER_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+    engine_native_memory::memory::packed_fields([(UNIT_OWNER, 4)]);
+const UNIT_OWNER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    match engine_native_memory::memory::RecordLayout::new(&UNIT_OWNER_FIELDS, 4) {
         Some(layout) => layout,
         None => panic!("valid trade influence unit owner layout"),
     };
@@ -167,10 +166,10 @@ impl<M: Memory> Context<'_, M> {
         ptr(self.memory, p, ccountry::DIPLOMACY_STATUS)
     }
 
-    fn relation(&self, diplomacy: usize, other: ccountry::Country) -> Result<usize, &'static str> {
+    fn relation(&self, diplomacy: usize, other: engine_native_memory::country_identity::Country) -> Result<usize, &'static str> {
         element::<u64>(
             self.memory,
-            array(self.memory, diplomacy, cdiplomacy_status::RELATIONS, 8)?,
+            array(self.memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)?,
             other.canonical_slot,
             8,
         )
@@ -184,7 +183,7 @@ impl<M: Memory> Context<'_, M> {
 
     fn country_modifier(&self, p: usize, key: u32) -> Result<i64, &'static str> {
         self.modifier(
-            p.checked_add(ccountry::MODIFIER_ACCUMULATOR)
+            p.checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                 .ok_or("trade influence accumulator overflow")?,
             key,
         )
@@ -211,8 +210,8 @@ impl<M: Memory> Context<'_, M> {
 
     fn friendly(
         &self,
-        owner: ccountry::Country,
-        other: ccountry::Country,
+        owner: engine_native_memory::country_identity::Country,
+        other: engine_native_memory::country_identity::Country,
     ) -> Result<bool, &'static str> {
         let key = (owner.canonical_slot, other.canonical_slot);
         if let Some(&(_, verdict)) = self.friendly.borrow().iter().find(|(held, _)| *held == key) {
@@ -225,8 +224,8 @@ impl<M: Memory> Context<'_, M> {
 
     fn friendly_uncached(
         &self,
-        owner: ccountry::Country,
-        other: ccountry::Country,
+        owner: engine_native_memory::country_identity::Country,
+        other: engine_native_memory::country_identity::Country,
     ) -> Result<bool, &'static str> {
         if owner.canonical_slot == other.canonical_slot {
             return Ok(true);
@@ -237,13 +236,13 @@ impl<M: Memory> Context<'_, M> {
         if war != 0 && field::<u8>(self.memory, war, crelation::RETIRED)? == 0 {
             return Ok(false);
         }
-        let faction = ptr(self.memory, diplomacy, cdiplomacy_status::FACTION)?;
+        let faction = ptr(self.memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?;
         if faction != 0
             && faction
                 == ptr(
                     self.memory,
                     self.diplomacy(other.pointer)?,
-                    cdiplomacy_status::FACTION,
+                    engine_native_parts::cdiplomacy_status_layout::FACTION,
                 )?
         {
             return Ok(true);
@@ -321,11 +320,11 @@ impl<M: Memory> Context<'_, M> {
 
     fn ideology(&self, source: usize, other: usize) -> Result<i64, &'static str> {
         let source = ptr(self.memory, source, COUNTRY_POLITICS)?;
-        let party = ptr(self.memory, source, cpolitical_status::RULING_PARTY)?;
+        let party = ptr(self.memory, source, engine_native_parts::cpolitical_status_layout::RULING_PARTY)?;
         if party == 0 {
             return Ok(0);
         }
-        let ideology = ptr(self.memory, party, cpolitical_party::IDEOLOGY_GROUP)?;
+        let ideology = ptr(self.memory, party, engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP)?;
         let parties = array(
             self.memory,
             ptr(self.memory, other, COUNTRY_POLITICS)?,
@@ -334,7 +333,7 @@ impl<M: Memory> Context<'_, M> {
         )?;
         for index in 0..parties.count {
             let party = element::<u64>(self.memory, parties, index, 8)? as usize;
-            if ptr(self.memory, party, cpolitical_party::IDEOLOGY_GROUP)? == ideology {
+            if ptr(self.memory, party, engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP)? == ideology {
                 let popularity = field::<i64>(self.memory, party, cpolitical_party::POPULARITY)?;
                 return Ok(whole(
                     times(popularity, global(self.memory, self.base, IDEOLOGY_FACTOR)?)
@@ -360,14 +359,14 @@ impl<M: Memory> Context<'_, M> {
                 let at = list
                     .element(first, 8)
                     .ok_or("trade influence element unreadable")?;
-                if !engine_native::read_slice(self.memory, at, &mut handles[..len * 8]) {
+                if !engine_native_memory::read_slice(self.memory, at, &mut handles[..len * 8]) {
                     return Err("trade influence element unreadable");
                 }
                 for (unit, handle) in units.iter_mut().zip(handles[..len * 8].chunks_exact(8)) {
                     *unit = u64::from_le_bytes(handle.try_into().unwrap()) as usize;
                 }
                 if self.memory.copy_records(
-                    engine_native::memory::RecordSources::Pointers(&units[..len]),
+                    engine_native_memory::memory::RecordSources::Pointers(&units[..len]),
                     &UNIT_OWNER_LAYOUT,
                     &mut owners[..len * 4],
                 ) != len
@@ -387,8 +386,8 @@ impl<M: Memory> Context<'_, M> {
 
     fn borders(
         &self,
-        source: ccountry::Country,
-        other: ccountry::Country,
+        source: engine_native_memory::country_identity::Country,
+        other: engine_native_memory::country_identity::Country,
     ) -> Result<i64, &'static str> {
         let holders = array(self.memory, source.pointer, COUNTRY_BORDERS, 8)?;
         let mut counts = [0i32; 2];
@@ -422,8 +421,8 @@ impl<M: Memory> Context<'_, M> {
 
     fn navies(
         &self,
-        source: ccountry::Country,
-        other: ccountry::Country,
+        source: engine_native_memory::country_identity::Country,
+        other: engine_native_memory::country_identity::Country,
     ) -> Result<i64, &'static str> {
         let fleets = array(self.memory, other.pointer, ccountry::FLEETS, 8)?;
         let provinces = array(self.memory, self.game, cgame_state::PROVINCES, 8)?;
@@ -504,25 +503,25 @@ impl<M: Memory> Context<'_, M> {
 
     fn autonomy(
         &self,
-        country: ccountry::Country,
-        other: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
+        other: engine_native_memory::country_identity::Country,
     ) -> Result<bool, &'static str> {
         let diplomacy = self.diplomacy(country.pointer)?;
         Ok(self.equal(
-            field(self.memory, diplomacy, cdiplomacy_status::OVERLORD)?,
+            field(self.memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::OVERLORD)?,
             other.id,
         )? && ptr(
             self.memory,
             diplomacy,
-            cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
+            engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS,
         )? != 0
             && global::<u32>(self.memory, self.base, DLC_MASK)? & 0xe != 0)
     }
 
     fn monopoly(
         &self,
-        source: ccountry::Country,
-        other: ccountry::Country,
+        source: engine_native_memory::country_identity::Country,
+        other: engine_native_memory::country_identity::Country,
     ) -> Result<i64, &'static str> {
         let resources =
             ccountry_resources::resources(self.memory, self.base, self.countries, other)?;
@@ -645,7 +644,7 @@ impl<M: Memory> Context<'_, M> {
         )
     }
 
-    fn scripted(&self, source: ccountry::Country, relation: usize) -> Result<i64, &'static str> {
+    fn scripted(&self, source: engine_native_memory::country_identity::Country, relation: usize) -> Result<i64, &'static str> {
         let database = global_ptr(self.memory, self.base, OPINION_DATABASE)?;
         let limits = [
             global::<i32>(self.memory, self.base, OPINION_MIN)?,
@@ -777,11 +776,11 @@ pub fn read_current<M: Memory>(
     total = total.wrapping_add(c.distance(source.pointer, other.pointer)?);
     total = total.wrapping_add(if subject {
         whole(global(memory, base, SUBJECT)?)
-    } else if field::<i32>(memory, diplomacy, cdiplomacy_status::OVERLORD)? > 0
+    } else if field::<i32>(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::OVERLORD)? > 0
         || field::<i32>(
             memory,
             c.diplomacy(other.pointer)?,
-            cdiplomacy_status::OVERLORD,
+            engine_native_parts::cdiplomacy_status_layout::OVERLORD,
         )? > 0
     {
         whole(global(memory, base, SUBJECT_OTHER)?)
@@ -791,7 +790,7 @@ pub fn read_current<M: Memory>(
     total = total.wrapping_add(c.ideology(source.pointer, other.pointer)?);
     let mut opinion = i64::from(field::<i32>(memory, relation, crelation_status::OPINION)?)
         .wrapping_mul(global::<i64>(memory, base, OPINION_FACTOR)?);
-    let faction = ptr(memory, diplomacy, cdiplomacy_status::FACTION)?;
+    let faction = ptr(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?;
     if faction != 0 {
         let members = array(memory, faction, engine_native::cfaction::MEMBERS, 8)?;
         for index in 0..members.count {

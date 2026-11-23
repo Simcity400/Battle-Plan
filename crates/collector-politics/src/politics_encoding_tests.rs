@@ -139,7 +139,7 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
         for &country in &ids {
             let (staging, hour_gate, event_gate) = (&staging, &hour_gate, &event_gate);
             scope.spawn(move || {
-                let memory = engine_native::memory::SliceMemory {
+                let memory = engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
                 };

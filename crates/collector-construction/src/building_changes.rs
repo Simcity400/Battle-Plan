@@ -3,7 +3,7 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::{building_mutations::MUTATIONS, building_mutations::Receiver};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -116,10 +116,10 @@ fn status_of(receiver: Receiver, first: usize) -> Option<usize> {
     match receiver {
         Receiver::Status => Some(first),
         Receiver::Building => {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             first
-                .checked_add(engine_native::cbuilding::BUILDING_STATUS)
-                .and_then(|address| engine_native::read::<u64>(&memory, address))
+                .checked_add(engine_native_parts::cbuilding::BUILDING_STATUS)
+                .and_then(|address| engine_native_memory::read::<u64>(&memory, address))
                 .and_then(|status| usize::try_from(status).ok())
                 .filter(|&status| status != 0)
         }
@@ -142,10 +142,10 @@ fn forward(receiver: Receiver, first: usize) -> Forwarded {
         collector_observers::air_base_carry_changes::poison();
         return Forwarded(None, None, None);
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let location = status_of(receiver, first)
-        .and_then(|status| status.checked_add(engine_native::cbuilding_status::FLAGS))
-        .and_then(|address| engine_native::read::<[u8; 8]>(&memory, address));
+        .and_then(|status| status.checked_add(engine_native::cprovince::buildings::FLAGS))
+        .and_then(|address| engine_native_memory::read::<[u8; 8]>(&memory, address));
     match location {
         Some(bytes) => {
             let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
@@ -357,9 +357,9 @@ mod tests {
 
     #[test]
     fn a_building_writer_names_its_backlinked_status() {
-        let mut building = vec![0_u8; engine_native::cbuilding::TEMPLATE + 8];
+        let mut building = vec![0_u8; engine_native_parts::cbuilding::TEMPLATE + 8];
         let status = 0x7654_3210_usize;
-        let at = engine_native::cbuilding::BUILDING_STATUS;
+        let at = engine_native_parts::cbuilding::BUILDING_STATUS;
         building[at..at + 8].copy_from_slice(&(status as u64).to_le_bytes());
         let address = building.as_ptr() as usize;
         assert_eq!(status_of(Receiver::Building, address), Some(status));

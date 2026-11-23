@@ -1,4 +1,4 @@
-pub use engine_native_parts::naval_side_layout::{COUNTRIES, COUNTRY_COUNT};
+use engine_native_parts::naval_side_layout::{COUNTRIES, COUNTRY_COUNT};
 use engine_native_memory::{Memory, cpdx_array::Array};
 use engine_native::{ccountry, cnaval_combatant};
 use engine_native_parts::{
@@ -69,7 +69,7 @@ fn values(memory: &impl Memory, address: usize) -> Result<[Modifier; 5], &'stati
         return Ok(result);
     }
     Array::read(memory, address, 16).ok_or("naval summary modifier array invalid")?;
-    let mut raw = [accumulator::Value::default(); 5];
+    let mut raw = [engine_native_memory::modifier_cache::Value::default(); 5];
     accumulator::lookup_many_at(memory, address, &MODIFIER_KEYS, &mut raw)?;
     for (out, value) in result.iter_mut().zip(raw) {
         *out = Modifier {
@@ -192,14 +192,14 @@ pub fn read(
         let country = reader.resolve(arena[row.countries[0]])?;
         row.modifiers[0] = values(
             memory,
-            add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+            add(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
         )?;
         let province = field::<u64>(memory, combat, engine_native::cnaval_combat::PROVINCE)? as usize;
         let (_, regional) =
             engine_native::cweather_manager::movement_modifiers(memory, base, state, province)?;
         row.modifiers[1] = values(memory, regional)?;
         let region = field::<u64>(memory, province, engine_native::cprovince::STRATEGIC_REGION)? as usize;
-        let terrain = crate::naval_ship_modifier_inputs::terrain(memory, base, region)?;
+        let terrain = engine_native::cship::modifier_sources::terrain(memory, base, region)?;
         row.modifiers[2] = values(memory, add(terrain, 0xb8)?)?;
     }
     Ok(row)

@@ -3,7 +3,7 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::{naval_tree_mutations::COUNTRY_SITES, naval_tree_mutations::MUTATIONS};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_naval_history::naval_modifier_trees::RawNode;
 use std::{
     collections::HashMap,

@@ -1,6 +1,7 @@
 use super::*;
 use std::cell::Cell;
-use engine_native::{memory::SliceMemory, modifier_accumulator};
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::modifier_accumulator;
 
 const BASE: usize = 0x1000;
 const ENTRIES: usize = 0x1100;
@@ -56,7 +57,7 @@ impl<M: Memory> Memory for Scalar<'_, M> {
     }
 }
 impl Memory for Source {
-    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         self.scalars.set(self.scalars.get() + 1);
         Scalar(self).read_scalar::<T>(address)
     }
@@ -103,8 +104,11 @@ fn capacities(nodes: usize, entries: usize) -> Capacities {
 
 fn model_source() -> (Source, cship::Row) {
     use engine_native::{
-        cequipment_variant, cequipment_variant_pool, ctask_force, cunit, msvc_string,
+        cequipment_variant::{self, pool as cequipment_variant_pool},
+        ctask_force,
+        cunit,
     };
+    use engine_native_memory::msvc_string;
     let source = Source::from_bytes(BASE, vec![0; 0x5000]);
     let (parent, variant, bank) = (0x2000, 0x3000, 0x4000);
     let ship = (42_u64 << 32) | u64::from(cship::HANDLE_TYPE);
@@ -127,7 +131,7 @@ fn model_source() -> (Source, cship::Row) {
     source.put(bank + 8, &i64::MIN.to_le_bytes());
     source.put(
         variant,
-        &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     source.put(
         variant + 8,
@@ -383,9 +387,9 @@ fn only_current_country_authentication_is_forwarded_for_matching_context() {
 struct OptionalModelSource(Source);
 impl OptionalModelSource {
     fn new() -> (Self, cship::Row) {
-        use engine_native::{
-            cequipment_database, cequipment_type, cequipment_variant, msvc_string,
-        };
+        use engine_native_parts::{cequipment_database, cequipment_type};
+        use engine_native::cequipment_variant;
+        use engine_native_memory::msvc_string;
         let (source, row) = model_source();
         let (variant, definition, database, list) = (0x3000, 0x5000, 0x5700, 0x5800);
         source.put(BASE + cship::FALLBACK_SPRITE, &[0; 32]);
@@ -419,7 +423,7 @@ impl OptionalModelSource {
         source.put(list + 8, &(definition as u64).to_le_bytes());
         source.put(
             BASE + cship::SUBUNIT_DEFINITION,
-            &(engine_native::csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::csub_unit_definition::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         source.put(BASE + cship::SUBUNIT_INDEX, &i32::MIN.to_le_bytes());
         for (offset, value) in [
@@ -436,7 +440,7 @@ impl OptionalModelSource {
 }
 impl Memory for OptionalModelSource {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == engine_native::cequipment_database::SINGLETON_RVA.0 {
+        if address == engine_native_parts::cequipment_database::SINGLETON_RVA.0 {
             self.0.reads.borrow_mut().push((address, output.len()));
             if self.0.fault.get() == Some(address) {
                 return false;
@@ -554,7 +558,7 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
         (6, 0x3000 + engine_native::cequipment_variant::DEFINITION),
         (7, 0x5000),
         (7, 0x5000 + 0x478),
-        (7, engine_native::cequipment_database::SINGLETON_RVA.0),
+        (7, engine_native_parts::cequipment_database::SINGLETON_RVA.0),
         (7, 0x5700),
         (7, 0x5700 + 0x68),
         (7, 0x5800 + 8),
@@ -622,7 +626,7 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
 fn absent_selected_hull_is_not_counted_and_changed_selection_is_named() {
     let (source, census) = OptionalModelSource::new();
     source.0.array(
-        BASE + cship::EQUIPMENT_POOL + engine_native::cequipment_variant_pool::ITEMS,
+        BASE + cship::EQUIPMENT_POOL + engine_native::cequipment_variant::pool::ITEMS,
         0,
         0,
     );
@@ -708,9 +712,14 @@ fn cold_ship_model_modifier_arenas_grow_from_original_mod_sized_headers() {
 
 mod fleet {
     use engine_native::{
-        ccountry, cequipment_database, cequipment_type, cequipment_variant,
-        cequipment_variant_pool, cgame_state, cship, csub_unit_definition, ctask_force, cunit,
+        ccountry,
+        cequipment_variant::{self, pool as cequipment_variant_pool},
+        cgame_state,
+        cship,
+        ctask_force,
+        cunit,
     };
+    use engine_native_parts::{cequipment_database, cequipment_type, csub_unit_definition};
 
     pub(super) const IMAGE: usize = 0x1_4000_0000;
     pub(super) const LOW: usize = 0x1_0000;
@@ -804,7 +813,7 @@ mod fleet {
         }
         put(DOCTRINE, &word(DOCTRINE));
         put(DOCTRINE + 0x19, &[1]);
-        put(VARIANT, &word(IMAGE + cequipment_variant::VTABLE_RVA.0));
+        put(VARIANT, &word(IMAGE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0));
         put(
             VARIANT + 8,
             &((1_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
@@ -904,7 +913,7 @@ impl Fleet {
             output.copy_from_slice(&(fleet::GAME as u64).to_le_bytes());
             return true;
         }
-        if address == fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0
+        if address == fleet::IMAGE + engine_native_parts::cequipment_database::SINGLETON_RVA.0
             && output.len() == 8
         {
             output.copy_from_slice(&(fleet::DATABASE as u64).to_le_bytes());
@@ -1371,7 +1380,7 @@ fn a_carried_ships_model_part_is_not_read_again() {
     };
     let fresh = hour(&mut capture, &world);
     assert_eq!(fresh[0].hull_sprite.as_bytes(), b"hull");
-    world.low[fleet::DEFINITION + engine_native::cequipment_type::HULL_SPRITE - fleet::LOW] = b'w';
+    world.low[fleet::DEFINITION + engine_native_parts::cequipment_type::HULL_SPRITE - fleet::LOW] = b'w';
     assert_eq!(hour(&mut capture, &world), fresh);
     capture.forget_stores();
     let read = hour(&mut capture, &world);
@@ -1402,7 +1411,7 @@ fn a_touched_ship_with_unchanged_bytes_carries_again() {
         capture.rows.rows[..fleet::SHIPS].to_vec()
     };
     let fresh = hour(&world);
-    world.low[fleet::DEFINITION + engine_native::cequipment_type::HULL_SPRITE - fleet::LOW] = b'w';
+    world.low[fleet::DEFINITION + engine_native_parts::cequipment_type::HULL_SPRITE - fleet::LOW] = b'w';
     drop(watches.notify(fleet::ship(3), 0));
     assert_eq!(
         hour(&world),
@@ -1815,7 +1824,8 @@ fn ship_model_quiet_bench() {
 mod carry_cost_bench {
     use super::*;
     use crate::ship_model_changes::Watches;
-    use engine_native::{ccountry, cgame_state, cprovince, cterrain_type, cunit, cweather_manager};
+    use engine_native::{ccountry, cgame_state, cprovince, cunit, cweather_manager};
+    use engine_native_parts::cterrain_type;
     use std::{
         hint::black_box,
         sync::atomic::{AtomicUsize, Ordering},
@@ -2081,7 +2091,7 @@ mod carry_cost_bench {
             certificates: AtomicUsize::new(0),
         };
         let accounting = crate::read_accounting::Capture::new();
-        let memory = engine_native::memory::CountedMemory::new(Borrowed(&world.memory));
+        let memory = engine_native_memory::memory::CountedMemory::new(Borrowed(&world.memory));
         capture.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &changes);
         let reads = accounting.finish()[TableId::ShipModels.index()];
         assert!(reads.copy_calls + reads.scattered_calls + reads.record_calls != 0);
@@ -2164,10 +2174,10 @@ mod carry_cost_bench {
             }
             check_budget(world, &capture, eviction);
         }
-        let outer = engine_native::memory::ReadCounts::take_current();
-        let counted = engine_native::memory::CountedMemory::new(Borrowed(&world.memory));
+        let outer = engine_native_memory::memory::ReadCounts::take_current();
+        let counted = engine_native_memory::memory::CountedMemory::new(Borrowed(&world.memory));
         terms_hour(&counted, &held, &mut capture);
-        let reads = engine_native::memory::ReadCounts::take_current();
+        let reads = engine_native_memory::memory::ReadCounts::take_current();
         outer.add_current();
         let ns = median(samples);
         println!(
@@ -2278,7 +2288,7 @@ mod carry_cost_bench {
         world
             .memory
             .watched
-            .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0);
+            .set(fleet::IMAGE + engine_native_parts::cequipment_database::SINGLETON_RVA.0);
         world.memory.hits.set(0);
         let current = hour(&world, &mut held, &watches);
         assert_ne!(
@@ -2607,7 +2617,7 @@ mod carry_cost_bench {
                 output.copy_from_slice(&(fleet::GAME as u64).to_le_bytes());
                 return true;
             }
-            if address == fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0
+            if address == fleet::IMAGE + engine_native_parts::cequipment_database::SINGLETON_RVA.0
                 && output.len() == 8
             {
                 output.copy_from_slice(&(fleet::DATABASE as u64).to_le_bytes());
@@ -2669,7 +2679,7 @@ mod carry_cost_bench {
                     .try_into()
                     .unwrap(),
             ) as usize;
-            let at = ship + cship::EQUIPMENT_POOL + engine_native::cequipment_variant_pool::ITEMS
+            let at = ship + cship::EQUIPMENT_POOL + engine_native::cequipment_variant::pool::ITEMS
                 - fleet::LOW;
             world.memory.low[at + 8..at + 12].copy_from_slice(&3_u32.to_le_bytes());
             world.memory.low[at + 12..at + 16].copy_from_slice(&3_u32.to_le_bytes());
@@ -2704,7 +2714,7 @@ mod carry_cost_bench {
             {
                 return false;
             }
-            if address == fleet::IMAGE + engine_native::modifier_definition::TABLE_RVA.0
+            if address == fleet::IMAGE + engine_native_parts::modifier_definition::TABLE_RVA.0
                 && output.len() == 8
             {
                 output.copy_from_slice(&(self.table as u64).to_le_bytes());
@@ -2725,7 +2735,7 @@ mod carry_cost_bench {
                 inner: &world.memory,
                 watched: 0,
                 count_reads: Cell::new(0),
-                fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA.0),
+                fault: Some(fleet::IMAGE + engine_native_parts::cequipment_database::SINGLETON_RVA.0),
             },
             CaptureContext::new(fleet::IMAGE),
             &watches,
@@ -2827,9 +2837,8 @@ mod carry_cost_bench {
 
     #[test]
     fn modifier_guard_fallback_preserves_model_fault_order_and_is_bounded() {
-        use engine_native::{
-            batch_fallback::Batch, batch_fallback::count, modifier_definition as metadata,
-        };
+        use engine_native_memory::batch_fallback::{Batch, count};
+        use engine_native_parts::modifier_definition as metadata;
         for bad_variant in [false, true] {
             let mut world = World::new(4);
             let watches = Watches::enabled(4 * world.census.len());

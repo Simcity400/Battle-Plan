@@ -50,7 +50,7 @@ pub struct DetailBuffers<'a> {
     pub weapon_terms: &'a mut Vec<crate::naval_ship_modifier_inputs::ModifierTerm>,
     pub weapon_lengths: [usize; 2],
     pub weapon_required: [usize; 2],
-    pub doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
+    pub doctrine_keys: engine_native::cship::modifier_sources::DoctrineKeys,
     pub term_metadata: crate::naval_ship_modifier_inputs::TermMetadata,
     pub source_memo: Option<crate::naval_ship_modifier_inputs::SourceMemo>,
     pub commander_inputs: engine_native_memory::walk::Buffer<'a, crate::naval_commander_inputs::Row>,
@@ -77,7 +77,6 @@ pub struct DetailBuffers<'a> {
     pub plane_wings_required: usize,
 }
 
-pub use engine_native::cfex_member::DETAIL_ARENA_CAPACITY;
 
 const MEMBER_FIELDS: [(usize, usize); 17] = [
     (DAMAGE_ENTRIES, 16),

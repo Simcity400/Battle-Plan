@@ -1,6 +1,6 @@
 use super::{BaseWitness, WingIdentity};
 use engine_allocation as allocation;
-use engine_native::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_native_air::{cair_base, cair_wing};
 use replay_data::rows::AirTransferInputRow;
 
@@ -14,7 +14,7 @@ struct Member {
 mod tests {
     use super::*;
     use engine_map_air::map_air_base_reference::BaseReference;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     struct MemoryView<'a> {
         bytes: &'a [u8],
@@ -441,7 +441,7 @@ impl Store {
                 .ok_or("Air incoming-wing header unreadable")?;
             allocation::advisory(|| allocation::reserve(&mut self.scratch, array.count as usize))
                 .map_err(|_| "Air incoming-wing storage unavailable")?;
-            engine_native::cpdx_array::pointers(
+            engine_native_memory::cpdx_array::pointers(
                 memory,
                 array,
                 "Air incoming-wing vector unreadable",

@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::{RecordLayout, RecordSources, SliceMemory};
+use engine_native_memory::memory::{RecordLayout, RecordSources, SliceMemory};
 use std::cell::{Cell, RefCell};
 const COUNTRY: usize = 0x100;
 const STATUS: usize = 0x10000;
@@ -28,7 +28,7 @@ fn fixture(active: bool, applied: bool) -> Vec<u8> {
     let mut b = vec![0; 0x20000];
     put(
         &mut b,
-        COUNTRY + crate::ccountry::TECHNOLOGY_STATUS,
+        COUNTRY + engine_native::ccountry::TECHNOLOGY_STATUS,
         (STATUS as u64).to_le_bytes(),
     );
     put(
@@ -388,8 +388,8 @@ fn research_names_and_applied_bonus_populations_have_no_inline_limit() {
                 cost_scale_raw: 100_000,
                 cost_debug: 0
             }),
-            crate::walk::Buffer::Exact(&mut exact_rows),
-            crate::walk::Buffer::Exact(&mut exact_bonuses),
+            engine_native_memory::walk::Buffer::Exact(&mut exact_rows),
+            engine_native_memory::walk::Buffer::Exact(&mut exact_bonuses),
         ),
         (Outcome::Rows { len: 1 }, Outcome::Rows { len: 5_000 })
     );
@@ -499,8 +499,8 @@ fn count_probes_are_exact_and_bonus_faults_do_not_discard_progress() {
             COUNTRY,
             11,
             context,
-            crate::walk::Buffer::Growing(&mut rows),
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Count,
         ),
         (
             Outcome::Rows { len: 1 },
@@ -517,8 +517,8 @@ fn count_probes_are_exact_and_bonus_faults_do_not_discard_progress() {
         COUNTRY,
         11,
         context,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     );
     assert_eq!(
         result.0,
@@ -543,7 +543,7 @@ fn count_probes_are_exact_and_bonus_faults_do_not_discard_progress() {
         assert!(matches!(result.1, Outcome::Unavailable { .. }));
     }
     for fault in [
-        COUNTRY + crate::ccountry::TECHNOLOGY_STATUS,
+        COUNTRY + engine_native::ccountry::TECHNOLOGY_STATUS,
         STATUS,
         SLOTS,
         SLOT,
@@ -689,8 +689,8 @@ fn governance_batch_research_inputs_serial_and_batched_equality() {
             World::country(id),
             id,
             context,
-            crate::walk::Buffer::Growing(&mut before),
-            crate::walk::Buffer::Growing(&mut old_bonuses),
+            engine_native_memory::walk::Buffer::Growing(&mut before),
+            engine_native_memory::walk::Buffer::Growing(&mut old_bonuses),
         );
         let new = walk_country(
             &memory,
@@ -729,8 +729,8 @@ fn governance_batch_research_inputs_persistent_and_one_shot_every_serial_operand
                 World::country(1),
                 1,
                 context,
-                crate::walk::Buffer::Growing(&mut rows),
-                crate::walk::Buffer::Growing(&mut bonuses),
+                engine_native_memory::walk::Buffer::Growing(&mut rows),
+                engine_native_memory::walk::Buffer::Growing(&mut bonuses),
             )
         } else {
             walk_country(

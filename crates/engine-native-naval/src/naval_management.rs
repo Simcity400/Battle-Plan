@@ -1,4 +1,3 @@
-pub use engine_native::cfleet::CensusVisit;
 use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_sites::Rva;
 
@@ -63,7 +62,7 @@ fn variant(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'s
         return Ok(0);
     }
     if field::<u64>(memory, pointer, 0)?
-        != engine_sites::at(base, engine_native::cequipment_variant::VTABLE_RVA)
+        != engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
             .ok_or("naval refit variant vtable withheld")? as u64
     {
         return Err("naval refit variant identity mismatch");
@@ -155,7 +154,7 @@ pub fn base_settings(
     queue: &mut Vec<u64>,
 ) -> Result<BaseSettings, &'static str> {
     if field::<u64>(memory, object, 0)?
-        != engine_sites::at(base, crate::cnaval_base::VTABLE_RVA)
+        != engine_sites::at(base, engine_native_parts::cnaval_base_layout::VTABLE_RVA)
             .ok_or("naval repair base vtable withheld")? as u64
     {
         return Err("naval repair base identity mismatch");

@@ -150,7 +150,7 @@ pub(super) fn read_cost(
     const GROUP_STRIDE: usize = 24;
     const GROUP_TOTAL: usize = 16;
     let groups =
-        engine_native::cequipment_variant_pool::allocation_entries(memory, base, definition)?;
+        engine_native::cequipment_variant::pool::allocation_entries(memory, base, definition)?;
     let mut quoted = false;
     for index in 0..groups.count {
         if scalar::<i64>(
@@ -171,18 +171,18 @@ pub(super) fn read_cost(
         .map(|level| (level.variant, level.level))
         .collect();
     let factor: i64 = global(memory, base, market::MARKET_PRICE_FACTOR_RVA)?;
-    let items = engine_native::cequipment_variant_pool::entries(
+    let items = engine_native::cequipment_variant::pool::entries(
         memory,
         base,
         definition + market::DRAFT_EQUIPMENT,
     )?;
     let mut total = 0_i64;
     for index in 0..items.count {
-        let item = engine_native::equipment_entry::read(
+        let item = engine_native_parts::equipment_entry::read(
             memory,
             base,
             items
-                .element(index, engine_native::equipment_entry::STRIDE)
+                .element(index, engine_native_parts::equipment_entry::STRIDE)
                 .ok_or("market cost item address overflow")?,
             index,
         )?;
@@ -610,7 +610,7 @@ mod tests {
                     POINTER + engine_production::cpurchase_contract::EQUIPMENT_PROGRESS,
                     "scalar tick read delivery progress"
                 );
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: self.0,
                 }
@@ -781,14 +781,14 @@ mod tests {
     fn invalid_lazy_contract_cost_uses_native_quotes_and_live_mod_factors_without_writing_game_memory()
      {
         use engine_native::{
-            ccountry::synthetic::World, cequipment_variant as variant,
-            cequipment_variant_pool as native_pool,
+            ccountry::synthetic::World,
+            cequipment_variant::{self as variant, pool as native_pool},
         };
         let mut world = World::new(0, 5000, 0x20);
         let pointer = world.alloc(0x400);
         let definition = pointer + market::DRAFT;
         let model = world.alloc(0x400);
-        world.u64(model, variant::VTABLE_RVA.0 as u64);
+        world.u64(model, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         let reference = (31_u64 << 32) | variant::REFERENCE_TYPE as u64;
         world.u64(model + 8, reference);
         world.u64(model + market::VARIANT_MARKET_PRICE, 200_000);
@@ -919,8 +919,8 @@ mod tests {
     #[test]
     fn marked_agreement_reads_only_the_selected_pool_and_never_the_source_or_other_schedules() {
         use engine_native::{
-            ccountry::synthetic::World, cequipment_variant as variant,
-            cequipment_variant_pool as native_pool,
+            ccountry::synthetic::World,
+            cequipment_variant::{self as variant, pool as native_pool},
         };
         let mut world = World::new(0, 5000, 0x20);
         let resources = world.alloc(0x30);
@@ -942,7 +942,7 @@ mod tests {
         let entries = world.alloc(5000 * 16);
         for index in 0..5000 {
             let model = world.alloc(16);
-            world.u64(model, variant::VTABLE_RVA.0 as u64);
+            world.u64(model, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
             world.u64(
                 model + 8,
                 ((index as u64 + 1) << 32) | variant::REFERENCE_TYPE as u64,

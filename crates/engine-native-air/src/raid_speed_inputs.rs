@@ -146,7 +146,7 @@ fn transports(
 fn country(
     countries: &ccountry::Reader<'_, impl Memory>,
     raw: u32,
-) -> Result<Option<ccountry::Country>, &'static str> {
+) -> Result<Option<engine_native_memory::country_identity::Country>, &'static str> {
     if raw == 0 {
         return Ok(None);
     }
@@ -268,7 +268,7 @@ fn read_row(
     let raw = if override_country > 0 {
         override_country as u32
     } else {
-        let pool: u64 = field(memory, wing, cair_wing::POOL)?;
+        let pool: u64 = field(memory, wing, engine_native_parts::cair_wing_layout::POOL)?;
         let holder: u64 = field(memory, pool as usize, WING_POOL_OWNER)?;
         field(memory, holder as usize, POOL_OWNER_COUNTRY)?
     };
@@ -573,7 +573,7 @@ mod tests {
         m.u64(0x6118, 7);
         m.put(TRANSPORT, &[0; 0x500]);
         m.put(TRANSPORT_DEF, &[0; 0x500]);
-        m.u64(TRANSPORT, cequipment_variant::VTABLE_RVA.0 as u64);
+        m.u64(TRANSPORT, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         m.u64(
             TRANSPORT + cequipment_variant::TYPE,
             (41_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
@@ -681,7 +681,7 @@ mod tests {
         );
         let mut memory = fixture();
         memory.u32(WING + cair_wing::COUNTRY_OVERRIDE, 0);
-        memory.u64(WING + cair_wing::POOL, 0xb000);
+        memory.u64(WING + engine_native_parts::cair_wing_layout::POOL, 0xb000);
         memory.u64(0xb000 + WING_POOL_OWNER, 0xb100);
         memory.u32(0xb100 + POOL_OWNER_COUNTRY, 3);
         let (_, rows, _) = run(&memory);
@@ -821,7 +821,7 @@ mod tests {
         const SATURATED: i64 = 0x53e2_d620_fb40;
         let mut memory = fixture();
         for (variant, id) in [(TRANSPORT, 41_u64), (RIFLE, 42)] {
-            memory.u64(variant, cequipment_variant::VTABLE_RVA.0 as u64);
+            memory.u64(variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
             memory.u64(
                 variant + 8,
                 (id << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),

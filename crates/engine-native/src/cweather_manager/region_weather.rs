@@ -1,8 +1,6 @@
 
-use crate::{
-    Memory, cpdx_array::Array, cweather_manager::walk_dense_records, memory::RecordField,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::RecordField, walk::Outcome};
+use crate::cweather_manager::walk_dense_records;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_40e8);
@@ -116,7 +114,7 @@ pub fn decode_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn independent_flags_include_slot_zero() {
@@ -164,13 +162,13 @@ mod tests {
         bytes[CUSTOM_SEA + 8..CUSTOM_SEA + 12].copy_from_slice(&4_u32.to_le_bytes());
         bytes[CUSTOM_SEA + 12..CUSTOM_SEA + 16].copy_from_slice(&3_u32.to_le_bytes());
         let mut record = [0; RECORD_BYTES];
-        let layout = crate::memory::RecordLayout::new(&FIELDS, RECORD_BYTES).unwrap();
+        let layout = engine_native_memory::memory::RecordLayout::new(&FIELDS, RECORD_BYTES).unwrap();
         let memory = SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
         let copied = memory.copy_records(
-            crate::memory::RecordSources::Strided {
+            engine_native_memory::memory::RecordSources::Strided {
                 base: 0x1000,
                 stride: STRIDE,
                 count: 1,

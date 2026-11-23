@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, nproject_cprogram as program, nproject_cprogram_status as status, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{nproject_cprogram as program, nproject_cprogram_status as status};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
@@ -15,7 +14,7 @@ pub struct Row {
     pub project_definition: Option<u32>,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -62,7 +61,7 @@ fn row(
 }
 
 pub fn count(memory: &impl Memory, base: usize, game: usize) -> Outcome {
-    walk_buffer(memory, base, game, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -71,14 +70,14 @@ pub fn walk(
     game: usize,
     output: &mut Vec<Row>,
 ) -> Outcome {
-    walk_buffer(memory, base, game, crate::walk::Buffer::Growing(output))
+    walk_buffer(memory, base, game, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game)?;
@@ -143,10 +142,10 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn fixture(count: usize) -> (Vec<u8>, usize) {
-        use crate::cgame_state;
+        use engine_native::cgame_state;
         let array = 0x2000;
         let links = array + (count + 1) * 8;
         let start = links + (count + 1) * 4;

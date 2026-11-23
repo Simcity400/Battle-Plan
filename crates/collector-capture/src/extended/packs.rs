@@ -15,7 +15,7 @@ use collector_division_templates::extended::group_counters;
 use collector_divisions::{division_census::UnitInputs, orders::Orders};
 use collector_naval_history::extended::naval_history;
 use collector_naval_missions::extended::naval_mission_inputs;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use std::mem::size_of;

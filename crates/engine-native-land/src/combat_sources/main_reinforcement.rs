@@ -438,7 +438,7 @@ fn transport_intel_lane(
     countries: &ccountry::Reader<'_, impl Memory>,
     source: usize,
     target: usize,
-    target_country: ccountry::Country,
+    target_country: engine_native_memory::country_identity::Country,
 ) -> Result<i64, &'static str> {
     use engine_native_intelligence::{ccountry_intel, country_intel_row};
     let raw = field::<i32>(memory, target, ccountry_intel::OWNER)?;
@@ -537,11 +537,11 @@ fn transport_context(
             let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
             auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
             let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
-            auth(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-            if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
+            auth(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+            if pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != owner.pointer {
                 return Err("reinforcement transport diplomacy backlink mismatch");
             }
-            let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
+            let enemies = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 4)?;
             for index in 0..enemies.count {
                 let raw = field::<u32>(memory, element(enemies, index, 4)?, 0)?;
                 let enemy = countries.resolve(raw)?;
@@ -549,8 +549,8 @@ fn transport_context(
                     continue;
                 }
                 let enemy_diplomacy = pointer(memory, enemy.pointer, ccountry::DIPLOMACY_STATUS)?;
-                auth(memory, base, enemy_diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-                if pointer(memory, enemy_diplomacy, cdiplomacy_status::COUNTRY)? != enemy.pointer {
+                auth(memory, base, enemy_diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+                if pointer(memory, enemy_diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != enemy.pointer {
                     return Err("reinforcement transport enemy backlink mismatch");
                 }
                 if field::<u8>(memory, enemy_diplomacy, cdiplomacy_status::CAPITULATED)? != 0 {
@@ -600,7 +600,7 @@ fn transport_context(
             append_modifiers(
                 memory,
                 base,
-                owner.pointer + ccountry::MODIFIER_ACCUMULATOR,
+                owner.pointer + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
                 9,
                 &[0x1a7],
                 modifiers,
@@ -680,7 +680,7 @@ pub fn capture_context(
     let leader = engine_native::carmy_leader::movement_accumulator(memory, base, army)?;
     let country_accumulator = owner
         .pointer
-        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .ok_or("reinforcement country overflow")?;
     let actual_state = pointer(memory, location, cprovince::STATE)?;
     let mut row = ContextRow::default();

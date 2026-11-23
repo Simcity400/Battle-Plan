@@ -11,7 +11,7 @@ use engine_native_politics::{
         PartyCarry,
     },
 };
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use std::ops::Range;
 
 type Certified = (u64, u64);

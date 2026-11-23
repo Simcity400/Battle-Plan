@@ -5,7 +5,7 @@ use crate::{
 };
 use engine_allocation::{copy_vec, owned_vec};
 use engine_land_inputs::country_tactic_unlocks as native;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{
     cadence::{SKIPPED_REASON, should_walk},
     rows::{CountryTacticUnlockRow, TableId, tables},

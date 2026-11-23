@@ -1,8 +1,15 @@
 
-use engine_native::{
-    Memory, allocation, ccountry, cequipment_type, cequipment_variant_pool, cpdx_array::Array,
-    equipment_entry, msvc_string, msvc_tree_node::Cursor, read, walk::Buffer,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    msvc_tree_node::Cursor,
+    read,
+    walk::Buffer,
 };
+use engine_allocation as allocation;
+use engine_native::{ccountry, cequipment_variant::pool as cequipment_variant_pool};
+use engine_native_parts::{cequipment_type, equipment_entry};
 use engine_sites::Rva;
 
 use crate::{cequipment_market_status as status, cpurchase_contract as contract};
@@ -136,7 +143,7 @@ fn resize<T: Default>(rows: &mut Vec<T>, count: usize) -> Result<(), &'static st
 pub fn country(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     manager: usize,
     demand: Demand,
     output: &mut Country,

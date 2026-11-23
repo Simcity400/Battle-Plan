@@ -7,7 +7,7 @@ use collector_projection::{
     table_conversion::unavailable,
 };
 use engine_allocation::{collect_vec, copy_vec, map_slice, owned_vec, reserve_exact};
-use engine_native::{Memory, ccharacter, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{rows::CharacterPortraitRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableInput;
 #[cfg(any(test, feature = "test-support"))]
@@ -60,7 +60,7 @@ struct Certificate {
 
 pub struct Part {
     rows: CaptureRows<engine_native_politics::character_portraits::PortraitRow>,
-    arena: Arena<engine_native_politics::character_portrait_entry::Row<engine_native::capture_text::Owned>>,
+    arena: Arena<engine_native_politics::character_portrait_entry::Row<engine_native_memory::capture_text::Owned>>,
     cache: engine_native_politics::portrait_cache::Cache,
     plan: collector_snapshots::snapshot_plan::SnapshotPlan,
     certified: Option<Certificate>,
@@ -135,7 +135,7 @@ impl Part {
         memory: &impl Memory,
         context: CaptureContext,
         part: usize,
-        census: Option<&engine_native::ccharacter_manager::PortraitCensus>,
+        census: Option<&engine_native::ccharacter::manager::PortraitCensus>,
     ) -> u64 {
         self.capture_observed(
             memory,
@@ -151,7 +151,7 @@ impl Part {
         memory: &impl Memory,
         context: CaptureContext,
         part: usize,
-        census: Option<&engine_native::ccharacter_manager::PortraitCensus>,
+        census: Option<&engine_native::ccharacter::manager::PortraitCensus>,
         observer: &dyn engine_native_politics::portrait_cache::Changes,
     ) -> u64 {
         let _reads = collector_memory::read_accounting::table(TableId::CharacterPortraits);
@@ -162,7 +162,7 @@ impl Part {
         let before_any = observer.any_revision();
         let identities = census.and_then(|census| census.rows(context.base, context.game_state));
         let scope = (context.base, context.game_state, part, identities.is_some());
-        let stamp = census.map(engine_native::ccharacter_manager::PortraitCensus::stamp);
+        let stamp = census.map(engine_native::ccharacter::manager::PortraitCensus::stamp);
         let same_census = identities.is_none_or(|rows| {
             let first = rows.len() * part / PARTS;
             let last = rows.len() * (part + 1) / PARTS;
@@ -515,12 +515,10 @@ mod projection_tests;
 
 #[cfg(test)]
 mod owned_tests {
+    use engine_native::ccharacter;
     use super::*;
     use crate::extended::characters::characters_test_kit as kit;
-    use engine_native::{
-        ccharacter_manager::PortraitCensus, ccharacter_manager::PortraitIdentity,
-        ccharacter_manager::Roster,
-    };
+    use engine_native::ccharacter::manager::{PortraitCensus, PortraitIdentity, Roster};
     #[cfg(feature = "portrait_changes")]
     use std::cell::{Cell, RefCell};
 

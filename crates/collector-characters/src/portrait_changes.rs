@@ -1,6 +1,6 @@
 use collector_hooks::hook::Hook;
 use engine_characters::ccharacter_portraits::MUTATIONS;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_native_politics::portrait_cache::{
     Changes,
     Counts,
@@ -99,7 +99,7 @@ struct Mutation {
 }
 impl Mutation {
     fn change(array: usize, site: usize) -> Self {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         PRE_IMAGES.before_change(array, &memory);
         Self::enter(array, site, true)
     }
@@ -398,12 +398,12 @@ impl PreImages {
 
     fn copy(&self, array: usize, memory: &impl Memory, storage: &Storage) -> Option<Logged> {
         use engine_native_politics::character_portrait_entry as entry;
-        use engine_native::{msvc_string, read};
+        use engine_native_memory::{msvc_string, read};
         let unreadable = Some(Logged::Unreadable);
         let Some(header) = read::<[u8; 16]>(memory, array) else {
             return unreadable;
         };
-        let Some(holder) = engine_native::cpdx_array::Array::from_header(header, entry::STRIDE)
+        let Some(holder) = engine_native_memory::cpdx_array::Array::from_header(header, entry::STRIDE)
         else {
             return unreadable;
         };
@@ -728,7 +728,7 @@ unsafe extern "system" fn insert(array: usize, at: i32, source: usize, count: i3
 #[cfg(test)]
 mod revision_tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use engine_native_politics::portrait_cache::PreImages as _;
 
     const ENTRY: usize = 0x100;

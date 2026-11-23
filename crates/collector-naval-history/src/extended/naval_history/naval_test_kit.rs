@@ -1,5 +1,5 @@
 use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
     let mut wings = wing_census(memory);
@@ -54,8 +54,17 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 
 pub fn fixture() -> Vec<u8> {
     use engine_native::{
-        carmy, ccountry, corder_instance, corders_group, corders_group_member,
-        creference_registry as registry, ctheater_group, ctheatre, cunit,
+        carmy,
+        ccountry,
+        corder_instance,
+        corders_group,
+        corders_group_member,
+        ctheatre,
+        cunit,
+    };
+    use engine_native_parts::{
+        creference_registry as registry,
+        ctheater_group,
         reference_bucket as bucket,
     };
     let mut bytes = vec![0; 0x3500000];
@@ -202,7 +211,7 @@ pub fn fixture() -> Vec<u8> {
     );
     header(
         &mut bytes,
-        OOB_GROUP + engine_native::carmy_group::MEMBER_DATA,
+        OOB_GROUP + engine_native_parts::carmy_group::MEMBER_DATA,
         0x66000,
         0,
     );
@@ -219,9 +228,9 @@ pub struct Split {
     pub land_outcome: Outcome,
     pub land: Vec<engine_native::ctheatre::Row>,
     pub groups_outcome: Outcome,
-    pub groups: Vec<engine_native::ctheater_group::Row>,
+    pub groups: Vec<engine_native_parts::ctheater_group::Row>,
     pub members_outcome: Outcome,
-    pub members: Vec<engine_native::ctheater_group::MemberRow>,
+    pub members: Vec<engine_native_parts::ctheater_group::MemberRow>,
     pub oob_groups_outcome: Outcome,
     pub oob_groups: Vec<engine_native::corders_group::GroupRow>,
     pub oob_members_outcome: Outcome,
@@ -565,7 +574,8 @@ pub fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split
 
 #[test]
 fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
-    use engine_native::{carmy_group, corders_group, corders_group_member};
+    use engine_native_parts::carmy_group;
+    use engine_native::{corders_group, corders_group_member};
     use std::cell::RefCell;
 
     struct Fault<'a> {
@@ -821,12 +831,12 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     p64(
         &mut bytes,
         OOB_GROUP,
-        (BASE + engine_native::carmy_group::VTABLE_RVA.0) as u64,
+        (BASE + engine_native_parts::carmy_group::VTABLE_RVA.0) as u64,
     );
     bytes[OOB_GROUP + corders_group::IS_ARMY_GROUP] = 1;
     header(
         &mut bytes,
-        OOB_GROUP + engine_native::carmy_group::MEMBER_DATA,
+        OOB_GROUP + engine_native_parts::carmy_group::MEMBER_DATA,
         0x66000,
         0,
     );

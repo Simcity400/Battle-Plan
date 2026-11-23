@@ -1,8 +1,6 @@
 use engine_allocation::{default_vec, owned_vec, reserve_exact, vec};
-use engine_native::{
-    Memory, ccharacter, ccharacter_manager::PortraitIdentity, memory::RecordField,
-    memory::RecordLayout, memory::RecordSources,
-};
+use engine_native_memory::{Memory, memory::{RecordField, RecordLayout, RecordSources}};
+use engine_native::ccharacter::{self, manager::PortraitIdentity};
 
 pub const ROW: usize = 64;
 const ROLE_SPAN: usize = ccharacter::OPERATIVE + 8 - ccharacter::LEADER_MAP_HEAD;

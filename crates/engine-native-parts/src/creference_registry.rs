@@ -323,7 +323,6 @@ fn probe_with(
 }
 #[cfg(any(test, feature = "test-support"))]
 pub const DYNAMIC_TYPE_BASE: u32 = 0x1268;
-pub use engine_native_memory::save_allocation_counters::ID_COUNTER_RVA;
 pub const INVALID_REFERENCE_RVA: Rva = Rva(0x033e_b2a0);
 
 #[cfg(any(test, feature = "test-support"))]

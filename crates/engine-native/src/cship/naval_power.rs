@@ -1,5 +1,8 @@
 use super::SelectedModelVariant;
-use crate::{Memory, allocation, cequipment_type, cequipment_variant, read};
+use engine_native_memory::{Memory, read};
+use engine_allocation as allocation;
+use engine_native_parts::cequipment_type;
+use crate::cequipment_variant;
 
 pub(super) const HEAVY_ATTACK: usize = 0x1d8;
 pub(super) const SPEED_RANGE: usize = 0x208;
@@ -82,7 +85,7 @@ pub fn read_naval_power(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     #[test]
     fn unavailable_certificate_does_not_invalidate_an_already_unknown_packet() {
         let mut cache = NavalPowerCache::default();

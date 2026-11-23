@@ -20,6 +20,7 @@ character_record_changes = ["advisor_pool_changes", "roster_changes"]
 roster_changes = []
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-native-politics.workspace = true
 engine-allocation.workspace = true
 engine-characters.workspace = true
@@ -57,6 +58,7 @@ collector-hooks = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

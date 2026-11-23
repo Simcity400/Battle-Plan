@@ -3,7 +3,7 @@ use crate::{
     hook::Hook,
 };
 use engine_mutations::{territory_mutations::MUTATIONS, territory_mutations::Receiver};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -94,7 +94,7 @@ impl Domain {
     }
 
     pub fn building(&self, flags: u32, location: u32) -> Marks<'_> {
-        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
+        use engine_native::cprovince::buildings::{PROVINCE_FLAG, STATE_FLAG};
         self.buildings[0].fetch_add(1, Ordering::Relaxed);
         let id = (location != 0).then_some(location as usize);
         Marks([
@@ -211,10 +211,10 @@ pub enum Target {
 }
 
 fn object_id(object: usize, offset: usize) -> Option<usize> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     object
         .checked_add(offset)
-        .and_then(|address| engine_native::read::<u32>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<u32>(&memory, address))
         .filter(|&id| id != 0)
         .map(|id| id as usize)
 }
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn building_writes_mark_their_location() {
-        use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
+        use engine_native::cprovince::buildings::{PROVINCE_FLAG, STATE_FLAG};
         let domain = Domain::enabled(64, 1024);
         let states = take_states(&domain).0.unwrap();
         let provinces = take_provinces(&domain).0.unwrap();

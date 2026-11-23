@@ -8,16 +8,12 @@ use super::{
 use engine_native::{
     cadvisor,
     carmy_leader,
-    ccharacter,
-    ccharacter_manager,
-    character_advisor_node,
-    cnavy_leader,
+    ccharacter::{self, manager as ccharacter_manager},
     cunit_leader,
-    cunit_leader_skill,
-    msvc_string,
-    msvc_tree_node,
 };
-use engine_native_politics::{ccountry_leader, character_leader_node};
+use engine_native_parts::{character_advisor_node, cnavy_leader, cunit_leader_skill};
+use engine_native_memory::{msvc_string, msvc_tree_node};
+use engine_native_politics::character_leader_node;
 
 pub const BASE: usize = IMAGE;
 pub const GAME_STATE: usize = ADDRESS;
@@ -33,8 +29,8 @@ pub const UNIT2: usize = 0x5200;
 const HEAD2L: usize = 0x2500;
 const HEAD2A: usize = 0x2530;
 
-pub fn memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
-    engine_native::memory::SliceMemory {
+pub fn memory(bytes: &[u8]) -> engine_native_memory::memory::SliceMemory<'_> {
+    engine_native_memory::memory::SliceMemory {
         base: ADDRESS,
         bytes,
     }
@@ -93,11 +89,11 @@ pub fn mapped_fixture() -> Vec<u8> {
     put(
         &mut bytes,
         LEAD_ROLE,
-        ((IMAGE + ccountry_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
+        ((IMAGE + engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
     );
     pointer(
         &mut bytes,
-        LEAD_ROLE + ccountry_leader::CHARACTER,
+        LEAD_ROLE + engine_native_parts::ccountry_leader_layout::CHARACTER,
         CHARACTERS[0],
     );
     put(
@@ -264,7 +260,7 @@ pub fn mapped_fixture() -> Vec<u8> {
     bytes
 }
 
-pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
+pub fn direct(memory: &impl engine_native_memory::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     captured.set_character_activity([true; N]);
     let results = walk_family(memory, BASE, GAME_STATE, captured.family(), None, None);
@@ -277,7 +273,7 @@ pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> C
 }
 
 pub fn split(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     capacities: &Capacities,
 ) -> (Captured, CharactersCopyReport, CharactersJob) {
     let mut captured = Captured::with_capacities(capacities);

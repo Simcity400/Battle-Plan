@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 fn bytes(slot: u32) -> [u8; STRIDE] {
     let mut bytes = [0; STRIDE];
@@ -110,7 +110,7 @@ fn temperature_and_raw_mud_failures_withhold_the_row_without_narrowing() {
 
 #[test]
 fn a_dense_census_costs_one_guarded_gather_per_batch_not_one_per_row() {
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     const ROWS: usize = 130;
     let mut storage = vec![0_u8; ROWS * STRIDE];
     for slot in 0..ROWS {
@@ -166,7 +166,7 @@ fn clock_records_preserve_signed_words_and_never_commit_a_failed_pair() {
 
 #[test]
 fn clock_join_copies_only_twelve_bytes_per_admitted_slot_and_checks_live_counts() {
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     const ROWS: usize = 130;
     let mut bytes = vec![0; ROWS * CLOCK_STRIDE];
     for index in 0..ROWS {
@@ -256,7 +256,7 @@ fn static_modifier_lists_keep_order_days_and_names() {
     const LIST: usize = 0x100;
     const FIRST: usize = 0x200;
     const HEAP: usize = 0x800;
-    let definition_bytes = crate::cstatic_modifier::NAME + crate::msvc_string::STRIDE;
+    let definition_bytes = engine_native_parts::cstatic_modifier::NAME + engine_native_memory::msvc_string::STRIDE;
     let mut bytes = vec![0_u8; 0x900];
     let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
     let long = b"a_mod_static_modifier_name";
@@ -266,17 +266,17 @@ fn static_modifier_lists_keep_order_days_and_names() {
     {
         let definition = FIRST + index * definition_bytes;
         put(definition, &VTABLE.to_le_bytes());
-        let string = definition + crate::cstatic_modifier::NAME;
+        let string = definition + engine_native_parts::cstatic_modifier::NAME;
         if name.len() <= 15 {
             put(string, name);
-            put(string + crate::msvc_string::CAPACITY, &15_u64.to_le_bytes());
+            put(string + engine_native_memory::msvc_string::CAPACITY, &15_u64.to_le_bytes());
         } else {
             put(HEAP, name);
             put(string, &((0x10_000 + HEAP) as u64).to_le_bytes());
-            put(string + crate::msvc_string::CAPACITY, &31_u64.to_le_bytes());
+            put(string + engine_native_memory::msvc_string::CAPACITY, &31_u64.to_le_bytes());
         }
         put(
-            string + crate::msvc_string::LENGTH,
+            string + engine_native_memory::msvc_string::LENGTH,
             &(name.len() as u64).to_le_bytes(),
         );
         let entry = LIST + index * STATIC_MODIFIER_STRIDE;

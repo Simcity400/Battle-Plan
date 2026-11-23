@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 struct Fixture(Vec<u8>);
 impl Memory for Fixture {
@@ -73,8 +73,8 @@ const HEAP_LABEL: &[u8] = b"a label on the heap.";
 
 fn fixture() -> Fixture {
     let mut memory = Fixture(vec![0; 0x7000]);
-    memory.array(0x1000 + crate::cgame_state::COUNTRIES, 0x2000, 2);
-    memory.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0x2100, 2);
+    memory.array(0x1000 + engine_native::cgame_state::COUNTRIES, 0x2000, 2);
+    memory.array(0x1000 + engine_native::cgame_state::COUNTRY_LINKS, 0x2100, 2);
     memory.word(0x2008, COUNTRY as u64);
     memory.put(0x2104, &1_u32.to_le_bytes());
     memory.word(COUNTRY, ccountry::VTABLE_RVA.0 as u64);

@@ -6,7 +6,8 @@ use crate::{
 use collector_observers::naval_tree_changes;
 use engine_allocation as allocation;
 use engine_native_land::land_tactic_inputs;
-use engine_native::{Memory, carmy_combat_inputs, cland_combat, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cland_combat;
 use engine_native_land::{
     combat_sources::{Images, Sources},
     land_reinforcement_inputs::speed as reserve_speed,
@@ -235,7 +236,7 @@ type DivisionRead = (
 struct DivisionOutputs<'r, 'n> {
     name_groups: &'r mut engine_native::cname_group_member::GroupKeys,
     names: &'r mut engine_native::cname_group_member::Names<'n>,
-    exile_tags: engine_native::walk::Buffer<'r, u32>,
+    exile_tags: engine_native_memory::walk::Buffer<'r, u32>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -277,7 +278,7 @@ fn read_division<M: Memory, C: Memory>(
         sources,
         pointer,
         handle,
-        engine_native::walk::Buffer::Growing(&mut scratch.widths),
+        engine_native_memory::walk::Buffer::Growing(&mut scratch.widths),
     )?;
     let reserve_speed = (role == 2).then(|| {
         if scratch.defer_speed {
@@ -328,11 +329,11 @@ struct Destination<'a> {
     country_tags_progress: Progress,
     country_set_limit: Result<usize, &'static str>,
     rosters: &'a mut Vec<u64>,
-    commander_traits: &'a mut Vec<engine_native_land::land_combat_details::CommanderTrait>,
+    commander_traits: &'a mut Vec<engine_native::cunit_leader::CommanderTrait>,
     detail_text: &'a mut Vec<u8>,
     timed_traits: &'a mut Vec<engine_native_land::land_combat_details::CommanderTimedTrait>,
     air_counts: &'a mut Vec<i32>,
-    learning_traits: &'a mut Vec<engine_native_land::land_combat_details::CommanderLearningTrait>,
+    learning_traits: &'a mut Vec<engine_native::cunit_leader::CommanderLearningTrait>,
     unit_scratch: &'a mut Vec<usize>,
     detail_used: engine_native_land::land_combat_details::DetailCounts,
     detail_required: engine_native_land::land_combat_details::DetailCounts,
@@ -521,7 +522,7 @@ impl Destination<'_> {
                                 DivisionOutputs {
                                     name_groups: self.name_groups,
                                     names: &mut self.names,
-                                    exile_tags: engine_native::walk::Buffer::GrowingFrom(
+                                    exile_tags: engine_native_memory::walk::Buffer::GrowingFrom(
                                         self.exile_tags,
                                         exile_start,
                                     ),
@@ -608,7 +609,7 @@ impl Destination<'_> {
             base,
             source,
             limit,
-            engine_native::walk::Buffer::GrowingFrom(self.country_tags, start),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.country_tags, start),
         ) {
             Ok((mut row, count)) => {
                 self.country_tags_progress.required += count;
@@ -643,12 +644,12 @@ impl Destination<'_> {
         let at = self.detail_used;
         let roster = self.arenas[0].len;
         let mut arenas = engine_native_land::land_combat_details::DetailArenas::with_buffers(
-            engine_native::walk::Buffer::GrowingFrom(self.rosters, roster),
-            engine_native::walk::Buffer::GrowingFrom(self.air_counts, at.air),
-            engine_native::walk::Buffer::GrowingFrom(self.detail_text, at.text),
-            engine_native::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
-            engine_native::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
-            engine_native::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.rosters, roster),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.air_counts, at.air),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.detail_text, at.text),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
         let result = engine_native_land::land_combat_details::read_details_sharing(
             memory,
@@ -751,7 +752,7 @@ impl Destination<'_> {
             base,
             pointer,
             handle,
-            engine_native::walk::Buffer::Growing(scratch),
+            engine_native_memory::walk::Buffer::Growing(scratch),
         ) {
             Ok(count) => {
                 self.arenas[2].required += count;
@@ -821,11 +822,11 @@ pub struct Captured {
     division_names: Arena<u8>,
     name_cache: engine_native::cname_group_member::GroupKeys,
     leaders: engine_native_land::land_combat_details::Leaders,
-    commander_traits: Arena<engine_native_land::land_combat_details::CommanderTrait>,
+    commander_traits: Arena<engine_native::cunit_leader::CommanderTrait>,
     detail_text: Arena<u8>,
     timed_traits: Arena<engine_native_land::land_combat_details::CommanderTimedTrait>,
     air_counts: Arena<i32>,
-    learning_traits: Arena<engine_native_land::land_combat_details::CommanderLearningTrait>,
+    learning_traits: Arena<engine_native::cunit_leader::CommanderLearningTrait>,
     unit_scratch: Vec<usize>,
     census: Vec<cland_combat::Row>,
     census_participants: Vec<u64>,
@@ -916,7 +917,7 @@ impl HeldReserveTrees {
 fn leader_name(memory: &impl Memory, leader: usize) -> Result<Vec<u8>, &'static str> {
     let mut name = Vec::new();
     let mut used = 0;
-    engine_native::msvc_string::append(
+    engine_native_memory::msvc_string::append(
         memory,
         leader
             .checked_add(engine_native::cunit_leader::NAME)
@@ -1162,7 +1163,7 @@ impl Captured {
             scratch: &mut self.scratch,
             name_groups: &mut self.name_cache,
             names: engine_native::cname_group_member::Names {
-                bytes: engine_native::walk::Buffer::Growing(&mut self.division_names.first),
+                bytes: engine_native_memory::walk::Buffer::Growing(&mut self.division_names.first),
                 len: 0,
                 required: 0,
             },
@@ -1396,7 +1397,7 @@ impl Captured {
                 receiver: row
                     .context
                     .country_accumulator
-                    .wrapping_sub(engine_native::ccountry::MODIFIER_ACCUMULATOR),
+                    .wrapping_sub(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR),
                 leader: None,
             });
             let kind = row.context.leader_modifier_kind;

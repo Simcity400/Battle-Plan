@@ -2,15 +2,19 @@
 use std::cell::Cell;
 use std::time::Instant;
 
-use crate::{
-    Memory, ccountry,
-    ccountry::synthetic::World,
-    cdeployment_status::{self, LocalRequirement, LocalSubunitRow},
-    cequipment_type,
-    creferenced_division_template::{self as template, IconRow, MemoSlot, Row, SubunitCount},
-    csub_unit_definition as subunit,
-    walk::Outcome,
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{
+    ccountry::{self, synthetic::World},
+    creferenced_division_template::{
+        self as template,
+        IconRow,
+        MemoSlot,
+        Row,
+        SubunitCount,
+    },
 };
+use crate::cdeployment_status::{self, LocalRequirement, LocalSubunitRow};
+use engine_native_parts::{cequipment_type, csub_unit_definition as subunit};
 
 const MODULE: usize = 0x7_0000_0000;
 const GLOBALS: usize = 64;
@@ -37,20 +41,20 @@ impl Memory for Bench {
     }
 
     fn prefetch(&self, address: usize, len: usize) {
-        if let Some(offset) = address.checked_sub(crate::ccountry::synthetic::START)
+        if let Some(offset) = address.checked_sub(engine_native::ccountry::synthetic::START)
             && offset < self.world.bytes.len()
         {
-            crate::prefetch::span(self.world.bytes.as_ptr() as usize + offset, len);
+            engine_native_memory::prefetch::span(self.world.bytes.as_ptr() as usize + offset, len);
         }
     }
 }
 
 fn inline_text(world: &mut World, at: usize, text: &[u8]) {
     world.put(at, text);
-    world.u64(at + crate::msvc_string::LENGTH, text.len() as u64);
+    world.u64(at + engine_native_memory::msvc_string::LENGTH, text.len() as u64);
     world.u64(
-        at + crate::msvc_string::CAPACITY,
-        crate::msvc_string::INLINE_CAPACITY,
+        at + engine_native_memory::msvc_string::CAPACITY,
+        engine_native_memory::msvc_string::INLINE_CAPACITY,
     );
 }
 
@@ -216,7 +220,7 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
     let mut globals = vec![template::GlobalSlot::default(); 16];
     let mut locals = vec![template::LocalSlot::default(); 16];
     for _ in 0..3 {
-        let walk = template::walk_icons_inner(&bench, MODULE, state, engine_native::walk::Buffer::Growing(&mut icons), engine_native::walk::Buffer::Growing(&mut bytes), engine_native::walk::Buffer::Growing(&mut counts), engine_native::walk::Buffer::Count, template::DefinitionSlots {
+        let walk = template::walk_icons_inner(&bench, MODULE, state, engine_native_memory::walk::Buffer::Growing(&mut icons), engine_native_memory::walk::Buffer::Growing(&mut bytes), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Count, template::DefinitionSlots {
                 database: &mut database,
                 globals: &mut globals,
                 locals: &mut locals,
@@ -229,7 +233,7 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
         locals.resize(walk.required_locals.max(locals.len()), Default::default());
     }
     let (hourly, hourly_seconds, hourly_copies) = fastest(&bench, || {
-        template::walk_icons_inner(&bench, MODULE, state, engine_native::walk::Buffer::Growing(&mut icons), engine_native::walk::Buffer::Growing(&mut bytes), engine_native::walk::Buffer::Growing(&mut counts), engine_native::walk::Buffer::Count, template::DefinitionSlots {
+        template::walk_icons_inner(&bench, MODULE, state, engine_native_memory::walk::Buffer::Growing(&mut icons), engine_native_memory::walk::Buffer::Growing(&mut bytes), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Count, template::DefinitionSlots {
                 database: &mut database,
                 globals: &mut globals,
                 locals: &mut locals,

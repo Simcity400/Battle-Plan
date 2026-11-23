@@ -1,7 +1,8 @@
 use crate::table_capture::{grow_capacity, grow_vec};
 use engine_allocation::{copy_vec, default_vec, filled, owned_vec};
 use engine_fuel::fuel_demand as native;
-use engine_native::{Memory, corders_group as group, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::corders_group as group;
 use replay_data::{rows, rows::Recorded};
 use std::{collections::HashSet, io, mem::size_of};
 
@@ -193,17 +194,17 @@ impl Captured {
             wings: rows(&mut self.wings),
             weather: rows(&mut self.weather),
             contexts: rows(&mut self.contexts),
-            context_slots: engine_native::walk::Buffer::Growing(&mut self.context_slots),
-            names: engine_native::walk::Buffer::Growing(&mut self.names),
+            context_slots: engine_native_memory::walk::Buffer::Growing(&mut self.context_slots),
+            names: engine_native_memory::walk::Buffer::Growing(&mut self.names),
             name_len: 0,
             name_required: 0,
-            roots: engine_native::walk::Buffer::Growing(&mut self.roots),
-            groups: engine_native::walk::Buffer::Growing(&mut self.groups),
-            members: engine_native::walk::Buffer::Growing(&mut self.members),
-            children: engine_native::walk::Buffer::Growing(&mut self.children),
-            roster_scratch: engine_native::walk::Buffer::Growing(&mut self.scratch),
-            group_names: engine_native::walk::Buffer::Growing(&mut self.group_names),
-            group_countries: engine_native::walk::Buffer::Growing(&mut self.group_countries),
+            roots: engine_native_memory::walk::Buffer::Growing(&mut self.roots),
+            groups: engine_native_memory::walk::Buffer::Growing(&mut self.groups),
+            members: engine_native_memory::walk::Buffer::Growing(&mut self.members),
+            children: engine_native_memory::walk::Buffer::Growing(&mut self.children),
+            roster_scratch: engine_native_memory::walk::Buffer::Growing(&mut self.scratch),
+            group_names: engine_native_memory::walk::Buffer::Growing(&mut self.group_names),
+            group_countries: engine_native_memory::walk::Buffer::Growing(&mut self.group_countries),
             group_owner_reason: None,
             group_outcomes: None,
             roots_outcome: None,
@@ -473,7 +474,7 @@ fn context_slots(count: usize) -> io::Result<usize> {
 }
 fn rows<T>(rows: &mut Vec<T>) -> native::BufferRows<'_, T> {
     native::BufferRows {
-        rows: engine_native::walk::Buffer::Growing(rows),
+        rows: engine_native_memory::walk::Buffer::Growing(rows),
         len: 0,
         required: 0,
     }

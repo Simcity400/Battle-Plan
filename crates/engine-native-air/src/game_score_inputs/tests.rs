@@ -519,7 +519,7 @@ fn game_score_first_sites_keep_repeats_access_false_and_read_failures_distinct()
         u64_at(&mut bytes, 0x500 + index * 8, pointer);
     }
     for (pointer, handle) in [(0x1000, 65_u64), (0x2000, 66)] {
-        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA.0 as u64);
+        u64_at(&mut bytes, pointer, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, pointer + 8, handle);
     }
     i32_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS_COUNT, 2);
@@ -712,7 +712,7 @@ fn first_score_air_sites_grow_from_original_headers_for_mod_sized_lists() {
             0x5000,
             count,
         );
-        u64_at(&mut bytes, 0x1000, cair_base::VTABLE_RVA.0 as u64);
+        u64_at(&mut bytes, 0x1000, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, 0x1008, 65);
         i32_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS_COUNT, 1);
         for index in 0..count {
@@ -830,7 +830,7 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
     for index in 0..SITES {
         let pointer = site(index);
         u64_at(&mut bytes, ROSTER + index * 8, pointer as u64);
-        u64_at(&mut bytes, pointer, cair_base::VTABLE_RVA.0 as u64);
+        u64_at(&mut bytes, pointer, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
         u64_at(&mut bytes, pointer + 8, 1_000 + index as u64);
         i32_at(&mut bytes, pointer + cair_base::COUNTRY_CONTAINERS_COUNT, 4);
         let vector = VECTORS + index * 0x40;
@@ -1086,7 +1086,7 @@ fn bench_first_site_batches() {
         .map(|index| {
             let pointer = arena.alloc(STRIDE);
             let vector = arena.alloc(OWNERS * 8 + 8);
-            arena.u64(pointer, arena.rva(cair_base::VTABLE_RVA));
+            arena.u64(pointer, arena.rva(engine_native_parts::cair_base_layout::VTABLE_RVA));
             arena.u64(pointer + 8, 1_000 + index as u64);
             arena.vector(
                 pointer + cair_base::COUNTRY_CONTAINERS,

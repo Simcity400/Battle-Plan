@@ -1,14 +1,8 @@
 
-use crate::{
-    Memory,
-    allocation,
-    ccontroller_area,
-    cpdx_array::Array,
-    cprovince::{self, definition as province_definition},
-    province_neighbour,
-    read,
-    read_slice,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
+use engine_allocation as allocation;
+use engine_native_parts::{ccontroller_area, province_neighbour};
+use crate::cprovince::{self, definition as province_definition};
 
 const MEMBERS: usize = ccontroller_area::REPRESENTATIVE_PROVINCE;
 const CONTACTS: usize = 0x90;

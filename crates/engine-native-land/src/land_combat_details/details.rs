@@ -1,4 +1,4 @@
-pub use engine_native::cunit_leader::{CommanderLearningTrait, CommanderTrait};
+use engine_native::cunit_leader::{CommanderLearningTrait, CommanderTrait};
 use engine_native::cland_combat::{
     ATTACKER,
     ATTACKER_BONUS,
@@ -680,7 +680,7 @@ impl<M: Memory> DetailReader<'_, M> {
         let accumulator = leader
             .checked_add(block + MODIFIER_ACCUMULATOR)
             .ok_or("land commander modifier address overflow")?;
-        let mut values = [engine_native_parts::modifier_accumulator::Value::default(); 2];
+        let mut values = [engine_native_memory::modifier_cache::Value::default(); 2];
         engine_native_parts::modifier_accumulator::lookup_many_at(
             self.memory,
             accumulator,

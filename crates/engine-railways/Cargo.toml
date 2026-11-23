@@ -10,9 +10,12 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection"]
 
 [dependencies]
+engine-allocation.workspace = true
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-native-politics.workspace = true
 engine-native-air.workspace = true
 engine-sites.workspace = true
@@ -22,6 +25,10 @@ engine-native.workspace = true
 engine-naval-history.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
+engine-native-parts = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -33,4 +40,6 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
+engine-native-naval = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

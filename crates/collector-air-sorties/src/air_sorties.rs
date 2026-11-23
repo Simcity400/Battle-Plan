@@ -4,7 +4,8 @@ use engine_map_air::{
     map_air_carrier_operands, map_air_country_region_modifier, map_air_rocket_slots,
     map_air_sortie_inputs as native,
 };
-use engine_native::{Memory, ccountry, cpdx_array::Array, walk::{Buffer, Outcome}};
+use engine_native_memory::{Memory, cpdx_array::Array, walk::{Buffer, Outcome}};
+use engine_native::ccountry;
 use engine_native_air::cair_regional_mission::WingIdentity;
 use replay_data::{
     rows::AIR_MISSION_MAP_FLAGS, rows::AIR_MISSION_REACHED_IDS, rows::AirMissionInputRow,

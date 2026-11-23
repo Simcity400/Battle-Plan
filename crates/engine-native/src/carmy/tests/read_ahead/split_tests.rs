@@ -18,7 +18,7 @@ fn serial(
     memory: &impl Memory,
     seeds: &[carmy::DivisionSeed],
     outcome: Outcome,
-    held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+    held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
 ) -> (StatusPacket, Vec<carmy::StatusRow>, u64) {
     let mut packet = StatusPacket::new(seeds.len()).unwrap();
     packet.capture_holding(memory, 0, GS, seeds, outcome, held, &[]);
@@ -33,11 +33,11 @@ fn split_hour(
     memory: &(impl Memory + Sync),
     seeds: &[carmy::DivisionSeed],
     source: Outcome,
-    held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+    held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
     packet: &mut StatusPacket,
     parts: &mut [StatusPart],
 ) -> (Vec<carmy::StatusRow>, u64, u64) {
-    let growths_before = crate::allocation::growths();
+    let growths_before = engine_allocation::growths();
     packet.prepare_holding(memory, 0, GS, seeds, source, held, &[]);
     let admitted = packet.prepared_units();
     let count = parts.len();
@@ -51,9 +51,9 @@ fn split_hour(
             .map(|part| {
                 let packet = &*packet;
                 scope.spawn(move || {
-                    let before = crate::allocation::growths();
+                    let before = engine_allocation::growths();
                     part.capture(memory, 0, GS, seeds, packet);
-                    crate::allocation::growths() - before
+                    engine_allocation::growths() - before
                 })
             })
             .collect();
@@ -67,7 +67,7 @@ fn split_hour(
     (
         rows,
         refused,
-        crate::allocation::growths() - growths_before + part_growths,
+        engine_allocation::growths() - growths_before + part_growths,
     )
 }
 
@@ -75,7 +75,7 @@ fn assert_same(
     memory: &(impl Memory + Sync),
     seeds: &[carmy::DivisionSeed],
     source: Outcome,
-    held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+    held: &[Option<engine_native_parts::csub_unit_definition::DivisionMaxima>],
 ) {
     let (expected, rows, refused) = serial(memory, seeds, source, held);
     for count in [1, 2, 3, 7, 15, 23] {
@@ -163,7 +163,7 @@ fn status_split_faults_preserve_first_reason_and_prepared_maxima() {
     }
     for address in [
         original[64].stat_block.unwrap(),
-        A1 + crate::cunit_supply_inputs::ASKED,
+        A1 + engine_native_parts::cunit_supply_inputs::ASKED,
         carmy::EXERCISE_MAXIMUM_LEVEL_RVA.0,
         GS + cgame_state::COUNTRIES,
     ] {
@@ -255,7 +255,7 @@ fn status_split_failed_part_keeps_the_first_range_reason() {
 
 #[test]
 fn status_split_nonempty_supply_origins_and_footer_faults_rebase_exactly() {
-    use crate::cunit_supply_inputs as supply;
+    use engine_native_parts::cunit_supply_inputs as supply;
     let (mut source, mut seeds, _) = distinct_status_world(65);
     let origins = 0x4200_0000;
     let mut rows = vec![0; 2 * supply::ORIGIN_STRIDE];
@@ -368,7 +368,10 @@ fn status_split_exercise_manpower_thresholds_and_earlier_scalar_fault_match_seri
 
 #[test]
 fn status_split_camouflage_weather_and_shared_category_faults_match_serial() {
-    use crate::{acclimatization_category as category, acclimatization_data as data};
+    use engine_native_parts::{
+        acclimatization_category as category,
+        acclimatization_data as data,
+    };
     let (mut source, mut seeds) = status_world(129);
     let registry = source.bytes.len();
     let pointers = registry + 0x100;
@@ -542,7 +545,7 @@ fn staged_maxima_settle_reads_no_staged_block_and_keeps_exact_rows() {
             .map(|&index| seeds[index].stat_block.unwrap())
             .collect();
         let mut reads = vec![Err("unstaged"); pointers.len()];
-        crate::csub_unit_definition::stage_division_maxima(&memory, 0, &pointers, &mut reads);
+        engine_native_parts::csub_unit_definition::stage_division_maxima(&memory, 0, &pointers, &mut reads);
         let mut staged = vec![None; seeds.len()];
         for (&index, read) in staged_seeds.iter().zip(reads) {
             staged[index] = Some(read);

@@ -1,12 +1,17 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
     capture_text::{Owned, Value},
     cpdx_array::Array,
-    dlc_content_entry as content_entry, dlc_content_map_node as content_node, msvc_map,
     msvc_string::{STRIDE, Text},
-    msvc_tree_node as tree_node, read,
+    msvc_tree_node as tree_node,
+    read,
     walk::Outcome,
+};
+use crate::{
+    dlc_content_entry as content_entry,
+    dlc_content_map_node as content_node,
+    msvc_map,
 };
 use engine_sites::Rva;
 

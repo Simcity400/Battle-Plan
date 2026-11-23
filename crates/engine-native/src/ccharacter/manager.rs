@@ -6,7 +6,8 @@ pub const DYNAMIC_CHARACTERS: usize = 0x28;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x006f_c660);
 pub const CLEAR_RVA: Rva = Rva(0x0070_16f0);
 
-use crate::{Memory, ccharacter, cgame_state, cpdx_array::Array, read, read_slice};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
+use crate::{ccharacter, cgame_state};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Roster {
@@ -52,7 +53,7 @@ impl PortraitCensus {
 
     pub fn try_new(capacity: usize) -> std::io::Result<Self> {
         Ok(Self {
-            rows: crate::allocation::vec(capacity)?,
+            rows: engine_allocation::vec(capacity)?,
             scope: (0, 0),
             complete: false,
             written: 0,
@@ -78,7 +79,7 @@ impl PortraitCensus {
     pub fn grow(&mut self) -> std::io::Result<()> {
         if self.needs_growth() {
             let additional = self.required.saturating_sub(self.rows.len());
-            crate::allocation::reserve_exact(&mut self.rows, additional)?;
+            engine_allocation::reserve_exact(&mut self.rows, additional)?;
         }
         Ok(())
     }

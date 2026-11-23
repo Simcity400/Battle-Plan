@@ -9,7 +9,7 @@ fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
     captured.details.outcome = Outcome::Rows { len: 1 };
     captured.details.rows[0].row.id = 62;
     for combat_width in [i64::MIN, -1, 0, 8_000_000, i64::MAX] {
-        captured.details.rows[0].row.border_war = Some(cland_combat::BorderWarInputs {
+        captured.details.rows[0].row.border_war = Some(engine_native_land::land_combat_details::BorderWarInputs {
             combat_width,
             ..Default::default()
         });
@@ -59,12 +59,12 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     captured.detail_text.first[..18].copy_from_slice(b"DESCtrait_atrait_b");
     captured.detail_text.len = 18;
     captured.timed_traits.first[..2].copy_from_slice(&[
-        cland_combat::CommanderTimedTrait {
+        engine_native_land::land_combat_details::CommanderTimedTrait {
             token_id: 5,
             definition_ordinal: 2,
             remaining_days: -1,
         },
-        cland_combat::CommanderTimedTrait {
+        engine_native_land::land_combat_details::CommanderTimedTrait {
             token_id: 6,
             definition_ordinal: 3,
             remaining_days: 0,
@@ -72,7 +72,7 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     ]);
     captured.timed_traits.len = 2;
     let learning =
-        |token_id, experience, required, token_start| cland_combat::CommanderLearningTrait {
+        |token_id, experience, required, token_start| engine_native::cunit_leader::CommanderLearningTrait {
             token_id,
             definition_ordinal: token_id + 10,
             required_experience: required,
@@ -99,10 +99,10 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     });
     side.learning_threshold = Some(5_000);
     side.skill_modifiers = Some([-12_345, 67_891]);
-    side.commander_description_token = cland_combat::Span { start: 0, len: 4 };
+    side.commander_description_token = engine_native_land::land_combat_details::Span { start: 0, len: 4 };
     side.timed_traits_start = 0;
     side.timed_traits_len = 2;
-    side.learning_traits = cland_combat::Span { start: 0, len: 3 };
+    side.learning_traits = engine_native_land::land_combat_details::Span { start: 0, len: 3 };
     let views = captured.tables();
     let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(rows)) = &views[0]
     else {
@@ -223,7 +223,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
     ] {
         image[address..address + 8].copy_from_slice(&value.to_le_bytes());
     }
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &image,
     };
@@ -239,19 +239,19 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         },
     ];
     let mut members = vec![ModifierMember::default(); 2];
-    let mut values = vec![carmy_combat_inputs::Modifier::default(); 1];
+    let mut values = vec![engine_native_land::division_combat_inputs::Modifier::default(); 1];
     let mut test_sources = Sources::new();
     let mut images = Images::default();
     let mut scratch = Scratch::default();
     let mut destination = Destination {
         sources: &mut test_sources,
         commanders: Default::default(),
-        leaders: &mut cland_combat::Leaders::default(),
+        leaders: &mut engine_native_land::land_combat_details::Leaders::default(),
         images: &mut images,
         scratch: &mut scratch,
         name_groups: &mut engine_native::cname_group_member::GroupKeys::default(),
         names: engine_native::cname_group_member::Names {
-            bytes: engine_native::walk::Buffer::Growing(&mut Vec::new()),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
             len: 0,
             required: 0,
         },
@@ -263,8 +263,8 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         air_counts: &mut Vec::new(),
         learning_traits: &mut Vec::new(),
         unit_scratch: &mut Vec::new(),
-        detail_used: cland_combat::DetailCounts::default(),
-        detail_required: cland_combat::DetailCounts::default(),
+        detail_used: engine_native_land::land_combat_details::DetailCounts::default(),
+        detail_required: engine_native_land::land_combat_details::DetailCounts::default(),
         divisions: &mut Vec::new(),
         sides: &mut sides,
         combat_sides: &mut Vec::new(),
@@ -315,9 +315,9 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
             pointer: 0,
             id: 62,
             sides: [0; 2],
-            attackers: engine_native::cpdx_array::Array { data: 0, count: 1 },
-            defenders: engine_native::cpdx_array::Array { data: 0, count: 0 },
-            provinces: engine_native::cpdx_array::Array { data: 0, count: 0 },
+            attackers: engine_native_memory::cpdx_array::Array { data: 0, count: 1 },
+            defenders: engine_native_memory::cpdx_array::Array { data: 0, count: 0 },
+            provinces: engine_native_memory::cpdx_array::Array { data: 0, count: 0 },
         },
         cland_combat::Members::none(),
     );
@@ -414,7 +414,7 @@ fn destination(c: &mut Captured) -> Destination<'_> {
         reference: false,
         name_groups: &mut c.name_cache,
         names: engine_native::cname_group_member::Names {
-            bytes: engine_native::walk::Buffer::Growing(&mut c.division_names.first),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut c.division_names.first),
             len: 0,
             required: 0,
         },
@@ -432,8 +432,8 @@ fn destination(c: &mut Captured) -> Destination<'_> {
         air_counts: &mut c.air_counts.first,
         learning_traits: &mut c.learning_traits.first,
         unit_scratch: &mut c.unit_scratch,
-        detail_used: cland_combat::DetailCounts::default(),
-        detail_required: cland_combat::DetailCounts::default(),
+        detail_used: engine_native_land::land_combat_details::DetailCounts::default(),
+        detail_required: engine_native_land::land_combat_details::DetailCounts::default(),
         members: &mut c.members.first,
         modifiers: &mut c.modifiers.first,
         width_terms: &mut c.width_terms.first,
@@ -455,7 +455,7 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     let mut captured = Captured::with_capacities(&c);
     let combat = 0x1000_0000_003e;
     let division = |exile| Acquired {
-        stats: carmy_combat_inputs::Row {
+        stats: engine_native_land::division_combat_inputs::Row {
             naming: Some(Default::default()),
             ..Default::default()
         },
@@ -473,7 +473,7 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
         exile_start,
     };
     let row = |cores, occupiers| {
-        carmy_combat_inputs::Exile::Row(carmy_combat_inputs::ExileRow {
+        engine_native_land::division_combat_inputs::Exile::Row(engine_native_land::division_combat_inputs::ExileRow {
             origin_type: 2,
             country: 4,
             cores,
@@ -481,14 +481,14 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
             ..Default::default()
         })
     };
-    let pass = |captured: &mut Captured, second: carmy_combat_inputs::Exile| {
+    let pass = |captured: &mut Captured, second: engine_native_land::division_combat_inputs::Exile| {
         let mut d = destination(captured);
         grow_vec(d.divisions, 2);
         d.exile_tags[..2].copy_from_slice(&[11, 12]);
         for (ordinal, exile) in [row((0, 2), (2, 0)), second].into_iter().enumerate() {
             d.progress[1].required += 1;
             let start = d.exile_progress.len;
-            if let carmy_combat_inputs::Exile::Row(_) = exile
+            if let engine_native_land::division_combat_inputs::Exile::Row(_) = exile
                 && ordinal == 1
             {
                 d.exile_tags[start..start + 3].copy_from_slice(&[21, 22, 23]);
@@ -499,7 +499,7 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     };
     let (divisions, exile) = pass(
         &mut captured,
-        carmy_combat_inputs::Exile::DoesNotFit { required: 3 },
+        engine_native_land::division_combat_inputs::Exile::DoesNotFit { required: 3 },
     );
     assert_eq!(
         divisions.outcome(Outcome::Rows { len: 1 }),
@@ -618,7 +618,7 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     captured.exile_tags.len = 4;
     captured.division_names.first = b"xGER_INF_01Guards".to_vec();
     captured.division_names.len = 17;
-    let stats = carmy_combat_inputs::Row {
+    let stats = engine_native_land::division_combat_inputs::Row {
         direction_group: -3,
         categories: 0x4000_0000_0000_0001,
         initiative: 2_500,
@@ -638,7 +638,7 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
         province: 362,
         role: 1,
         stats,
-        exile: Some(carmy_combat_inputs::ExileRow {
+        exile: Some(engine_native_land::division_combat_inputs::ExileRow {
             origin_type: 2,
             country: 0,
             country_fallback: 12,
@@ -745,7 +745,7 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
         learning_traits: 1,
     };
     let mut captured = Captured::with_capacities(&c);
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -880,7 +880,7 @@ fn modifier_capture() -> Captured {
     captured.members.len = 2;
     captured.members.required = 2;
     for (at, (id, value)) in [(4, 10), (4, 10), (6, 7_000)].into_iter().enumerate() {
-        captured.modifiers.first[at] = carmy_combat_inputs::Modifier {
+        captured.modifiers.first[at] = engine_native_land::division_combat_inputs::Modifier {
             id,
             value_a: value,
             value_b: -value,
@@ -1026,7 +1026,7 @@ struct ReserveWorld(Vec<u8>);
 
 impl Memory for ReserveWorld {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if address == engine_native::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
+        if address == engine_native_parts::modifier_definition::TABLE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
             return true;
         }
@@ -1034,7 +1034,7 @@ impl Memory for ReserveWorld {
             output.fill(0);
             return true;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &self.0,
         }
@@ -1121,7 +1121,7 @@ fn reserve_tree_carries_stay_linear() {
     struct Certificates(std::cell::Cell<bool>);
     impl naval_tree_changes::Changes for Certificates {
         fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
-            let accumulator = receiver.wrapping_add(engine_native::ccountry::MODIFIER_ACCUMULATOR);
+            let accumulator = receiver.wrapping_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR);
             let index = (accumulator - FIRST) / STRIDE;
             Some((1, if self.0.get() && index % 2 == 1 { 2 } else { 1 }))
         }

@@ -92,11 +92,11 @@ pub fn refused(kind: Kind, site: Option<usize>, cause: &str) {
     });
 }
 pub fn sentinel<const N: usize>(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     at: usize,
     expected: [u8; N],
 ) -> bool {
-    let matches = engine_native::read::<[u8; N]>(memory, at) == Some(expected);
+    let matches = engine_native_memory::read::<[u8; N]>(memory, at) == Some(expected);
     if !matches {
         refused(
             Kind::Sentinel,

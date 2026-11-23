@@ -71,7 +71,7 @@ impl ReferenceReads {
             return;
         }
         if let Some((_, Ok(country))) = selection.country {
-            if let Some(accumulator) = country.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR) {
+            if let Some(accumulator) = country.pointer.checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR) {
                 self.capture_root(
                     memory,
                     store,

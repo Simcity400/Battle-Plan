@@ -6,7 +6,8 @@ use engine_mutations::{
     political_status_mutations::Domain, political_status_mutations::MUTATIONS,
     political_status_mutations::Patch, political_status_mutations::SET_POPULARITY_RVA,
 };
-use engine_native::{Memory, ccountry};
+use engine_native_memory::Memory;
+use engine_native::ccountry;
 use engine_native_politics::cpolitical_status;
 use std::{
     ops::Range,
@@ -126,17 +127,17 @@ impl Drop for Guard<'_> {
 }
 
 fn last_election(status: usize) -> Option<i32> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     status
         .checked_add(cpolitical_status::LAST_ELECTION)
-        .and_then(|address| engine_native::read::<i32>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<i32>(&memory, address))
 }
 
 fn capitals(country: usize) -> Option<u64> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     country
         .checked_add(ccountry::CAPITAL)
-        .and_then(|address| engine_native::read::<u64>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(&memory, address))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

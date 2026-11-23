@@ -5,11 +5,14 @@ use crate::{
     table_capture::{CaptureRows, grow_capacity},
 };
 use engine_allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
-use engine_native::{
-    Memory, cship, memory::RecordLayout, memory::RecordSources,
-    modifier_accumulator::SnapshotArena, modifier_accumulator::SnapshotCapacity,
-    modifier_accumulator::Value, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    memory::{RecordLayout, RecordSources},
+    modifier_cache::Value,
+    walk::Outcome,
 };
+use engine_native::cship;
+use engine_native_parts::modifier_accumulator::{SnapshotArena, SnapshotCapacity};
 use std::{
     cell::RefCell,
     sync::{Arc, OnceLock},
@@ -39,7 +42,7 @@ struct ModifierMemory<'a, M> {
 
 impl<M: Memory> Memory for ModifierMemory<'_, M> {
     #[inline]
-    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         self.inner.read_scalar::<T>(address)
     }
 
@@ -65,7 +68,7 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, state)
     }
 
@@ -73,14 +76,14 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.inner.authenticated_reserved_country(base, state)
     }
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         state: usize,
-    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.inner
             .authenticated_reserved_country_observation(base, state)
     }
@@ -96,7 +99,7 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
             if let Some(result) = arena.existing_at(address, key) {
                 return Some(result);
             }
-            return Some(engine_native::modifier_accumulator::lookup_snapshot(
+            return Some(engine_native_parts::modifier_accumulator::lookup_snapshot(
                 entries.as_flattened(),
                 key,
             ));
@@ -915,7 +918,7 @@ impl Captured {
             .checked_add(1)
             .ok_or("ship model seed count overflow")
             .and_then(|required| {
-                engine_native::walk::Buffer::Growing(&mut self.seeds).ensure(required)
+                engine_native_memory::walk::Buffer::Growing(&mut self.seeds).ensure(required)
             });
         if let Err(reason) = result {
             self.terminal_failure = Some(reason);
@@ -930,15 +933,15 @@ impl Captured {
 
     pub fn finish_sources(&mut self, parent: Outcome) {
         if let Err(reason) =
-            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.seed_len)
+            engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.seed_len)
         {
             self.terminal_failure = Some(reason);
         }
         let rows = part_rows(self.seed_len);
         for part in &mut self.extra {
             for result in [
-                engine_native::walk::Buffer::Growing(&mut part.seeds).ensure(rows),
-                engine_native::walk::Buffer::Growing(&mut part.rows.rows).ensure(rows),
+                engine_native_memory::walk::Buffer::Growing(&mut part.seeds).ensure(rows),
+                engine_native_memory::walk::Buffer::Growing(&mut part.rows.rows).ensure(rows),
             ] {
                 if let Err(reason) = result {
                     self.terminal_failure = Some(reason);
@@ -1061,7 +1064,7 @@ impl Captured {
         let night_factor = held
             .as_ref()
             .and_then(|held| held.weather)
-            .and_then(|(weather, _, _)| engine_native::read::<u64>(memory, weather.night_factor()));
+            .and_then(|(weather, _, _)| engine_native_memory::read::<u64>(memory, weather.night_factor()));
         carrying.task_modifiers = None;
         if let Some(held) = held.as_ref() {
             if let Some(entries) = held.modifiers.as_ref()
@@ -1160,7 +1163,7 @@ impl Captured {
                                 held.night_factor() == weather.night_factor()
                             })
                     })
-                    .or_else(|| engine_native::read::<u64>(memory, weather.night_factor()))?;
+                    .or_else(|| engine_native_memory::read::<u64>(memory, weather.night_factor()))?;
                 let certificate = weather_certificate(carrying.changes, &weather, country)?;
                 Some((weather, certificate, factor))
             });
@@ -1290,8 +1293,8 @@ impl Captured {
                 Ok(matches) => matches,
                 Err(_) => {
                     carrying.guard_fallback = true;
-                    engine_native::batch_fallback::record(
-                        engine_native::batch_fallback::Batch::ShipModelGuards,
+                    engine_native_memory::batch_fallback::record(
+                        engine_native_memory::batch_fallback::Batch::ShipModelGuards,
                     );
                     return false;
                 }
@@ -1575,8 +1578,8 @@ impl Captured {
                     Ok(matches) => matches,
                     Err(_) => {
                         carrying.guard_fallback = true;
-                        engine_native::batch_fallback::record(
-                            engine_native::batch_fallback::Batch::ShipModelGuards,
+                        engine_native_memory::batch_fallback::record(
+                            engine_native_memory::batch_fallback::Batch::ShipModelGuards,
                         );
                         false
                     }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 struct Image(
     BTreeMap<usize, u8>,
-    Option<Result<ccountry::Country, &'static str>>,
+    Option<Result<engine_native_memory::country_identity::Country, &'static str>>,
 );
 
 impl Memory for Image {
@@ -24,7 +24,7 @@ impl Memory for Image {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         ((base, state) == (0, GS)).then_some(self.1).flatten()
     }
 }
@@ -88,13 +88,13 @@ fn fixture() -> Image {
         m.u32(country + ccountry::ID, id);
     }
     m.accumulator(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x3400,
         &[(0x1a, -10_000), (0x184, 200_000)],
     );
     m.u64(COUNTRY + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    m.u64(DIPLOMACY, cdiplomacy_status::VTABLE_RVA.0 as u64);
-    m.array(DIPLOMACY + cdiplomacy_status::RELATIONS, MATRIX, 3);
+    m.u64(DIPLOMACY, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+    m.array(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS, MATRIX, 3);
     m.put(MATRIX, &[0; 24]);
     m.u64(MATRIX + 16, RELATION as u64);
     m.u64(RELATION, crelation_status::VTABLE_RVA.0 as u64);
@@ -287,7 +287,7 @@ const ZERO: usize = 0x4400;
 fn route_fixture() -> Image {
     let mut m = fixture();
     m.u32(UNIT + cunit::LOGICAL_OWNER, 2);
-    m.u64(DIPLOMACY + cdiplomacy_status::COUNTRY, COUNTRY as u64);
+    m.u64(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY, COUNTRY as u64);
     m.u64(MATRIX, ZERO as u64);
     for (status, target) in [(ZERO, 0_u32), (RELATION, 3)] {
         m.u64(status, crelation_status::VTABLE_RVA.0 as u64);
@@ -299,9 +299,9 @@ fn route_fixture() -> Image {
         m.u64(status + crelation_status::WAR_RELATION, 0);
         m.put(status + crelation_status::CO_BELLIGERENT, &[1]);
     }
-    m.array(DIPLOMACY + cdiplomacy_status::WARTIME_ALLIES, 0x4f00, 1);
+    m.array(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES, 0x4f00, 1);
     m.u32(0x4f00, 3);
-    m.array(DIPLOMACY + cdiplomacy_status::ENEMY_COUNTRIES, 0x4f80, 0);
+    m.array(DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 0x4f80, 0);
     m
 }
 
@@ -464,7 +464,7 @@ fn the_route_unit_falls_back_to_the_group_then_the_request_countrys_roster() {
 }
 
 fn reserved(memory: &mut Image) {
-    memory.1 = Some(Ok(ccountry::Country {
+    memory.1 = Some(Ok(engine_native_memory::country_identity::Country {
         pointer: COUNTRY,
         canonical_slot: 0,
         id: 0,

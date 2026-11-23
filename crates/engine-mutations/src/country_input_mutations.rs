@@ -1,10 +1,24 @@
 
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
+    ccharacter,
+    ccountry,
+    cproduction_status::equipment_license as cequipment_production_license,
+    cfaction,
+    cgame_state,
+    crelation::{self, status as crelation_status},
+    cstate,
+};
+use engine_native_politics::cpolitical_party;
 use crate::{
-    Memory, ccharacter, ccountry, ccountry_characters, cdiplomacy_status,
-    cequipment_production_license, cfaction, cgame_state, cnational_focus_progress,
-    cpdx_array::Array, cpolitical_party, cpolitical_status, crelation, crelation_status,
-    cresearch_slot, cstate, ctechnology, ctechnology_sharing_group, ctechnology_status,
-    ctechnology_template, nproject_cprogram_status, nproject_cproject, read,
+    cnational_focus_progress,
+    cresearch_slot,
+    ctechnology,
+    ctechnology_sharing_group,
+    ctechnology_status,
+    ctechnology_template,
+    nproject_cprogram_status,
+    nproject_cproject,
 };
 use engine_sites::Rva;
 
@@ -526,7 +540,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     (
         MutationSite {
             name: "register_license",
-            rva: crate::clicensed_production_status::REGISTER_LICENSE_RVA,
+            rva: engine_native_parts::clicensed_production_status::REGISTER_LICENSE_RVA,
         },
         Receiver::Every,
         Tables::RESEARCH,
@@ -1104,14 +1118,14 @@ pub fn countries(
             memory,
             base,
             first,
-            engine_native::ccountry_manpower::COUNTRY,
+            engine_native_parts::ccountry_manpower::COUNTRY,
         )),
         Receiver::Interception => {
             second as u32 != INTERCEPTION_COLUMN || named(of_country(memory, first))
         }
         Receiver::RelationStatus => named(
             pointer(memory, first, crelation_status::DIPLOMACY_STATUS)
-                .and_then(|diplomacy| pointer(memory, diplomacy, cdiplomacy_status::COUNTRY))
+                .and_then(|diplomacy| pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY))
                 .and_then(|country| of_country(memory, country)),
         ),
         Receiver::WarRelation => [crelation::FIRST_COUNTRY, crelation::SECOND_COUNTRY]
@@ -1125,11 +1139,11 @@ pub fn countries(
                 )
             }),
         Receiver::CountryCharacters => named(
-            pointer(memory, first, ccountry_characters::OWNER)
+            pointer(memory, first, engine_native::ccountry::rosters::OWNER)
                 .and_then(|country| of_country(memory, country)),
         ),
         Receiver::PoliticalStatus => named(
-            pointer(memory, first, cpolitical_status::COUNTRY)
+            pointer(memory, first, engine_native_parts::cpolitical_status_layout::COUNTRY)
                 .and_then(|country| of_country(memory, country)),
         ),
         Receiver::Party => named(link_at(memory, base, first, cpolitical_party::TAG)),
@@ -1203,7 +1217,7 @@ pub fn countries(
                     memory,
                     base,
                     first
-                        .checked_add(cdiplomacy_status::OVERLORD)
+                        .checked_add(engine_native_parts::cdiplomacy_status_layout::OVERLORD)
                         .and_then(|address| read::<u32>(memory, address)),
                     visit,
                 )
@@ -1250,7 +1264,7 @@ fn positive_link(
 }
 
 fn diplomacy_country(memory: &impl Memory, diplomacy: usize) -> Option<u32> {
-    pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)
+    pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)
         .and_then(|country| of_country(memory, country))
 }
 
@@ -1322,7 +1336,7 @@ pub fn sharing(
         return false;
     };
     let Some(faction) = diplomacy
-        .checked_add(cdiplomacy_status::FACTION)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::FACTION)
         .and_then(|address| read::<u64>(memory, address))
     else {
         return false;
@@ -1375,7 +1389,7 @@ fn sharing_partners(
         return false;
     };
     let Some(faction) = diplomacy
-        .checked_add(cdiplomacy_status::FACTION)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::FACTION)
         .and_then(|address| read::<u64>(memory, address))
     else {
         return false;

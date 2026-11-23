@@ -23,7 +23,7 @@ pub const MUTATIONS: [MutationSite; 4] = [
     },
     MutationSite {
         name: "construct",
-        rva: crate::crelation_status::CONSTRUCTOR_RVA,
+        rva: engine_native::crelation::status::CONSTRUCTOR_RVA,
     },
 ];
 

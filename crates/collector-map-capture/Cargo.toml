@@ -15,7 +15,7 @@ acquisition_profile = ["engine-native/acquisition_profile", "collector-memory/ac
 advisor_pool_changes = ["character_changes", "collector-observers/advisor_pool_changes"]
 air_base_carry_changes = ["raid_changes", "ship_model_changes", "collector-observers/air_base_carry_changes"]
 air_base_changes = ["collector-air/air_base_changes"]
-alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-native/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
+alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-native-memory/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
 appearance_changes = ["country_input_changes", "collector-observers/appearance_changes"]
 area_changes = ["collector-observers/area_changes"]
 callback_profile = ["collector-workers/callback_profile"]
@@ -55,6 +55,8 @@ worker_sampler = ["collector-workers/worker_sampler"]
 world_input_changes = ["collector-observers/world_input_changes"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 engine-native-politics.workspace = true
 engine-native-air.workspace = true
 collector-air.workspace = true
@@ -115,6 +117,7 @@ collector-production = { workspace = true, features = ["test-support"] }
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

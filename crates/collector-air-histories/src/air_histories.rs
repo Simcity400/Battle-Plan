@@ -8,7 +8,8 @@ use crate::{
 };
 use engine_air_history::{air_kamikaze as native, air_kamikaze::WindowState};
 use engine_allocation as allocation;
-use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
 use replay_data::{rows::AirNavalPatrolHistoryRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 use std::sync::{
@@ -1905,7 +1906,7 @@ mod tests {
                 })
                 .collect();
         }
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &image,
         };
@@ -1989,7 +1990,7 @@ mod tests {
                     * engine_air_history::loop_history_record_fields::VALUE_STRIDE,
             1,
         );
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &image,
         };

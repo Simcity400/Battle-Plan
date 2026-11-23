@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::Cell;
 
 const COUNTRY_POINTER: usize = 0x1000;
@@ -637,8 +637,8 @@ impl Memory for ObservedMemory<'_> {
 
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let (batches, spans, bytes) = if layout.stride() == ctechnology::IDENTITY_BYTES {
@@ -1420,7 +1420,7 @@ fn governance_batch_slots_serial_and_batched_equality() {
             0,
             World::country(id),
             id,
-            crate::walk::Buffer::Growing(&mut old),
+            engine_native_memory::walk::Buffer::Growing(&mut old),
         );
         let batched = walk_slots(&after, 0, World::country(id), id, &mut new);
         assert_eq!(serial, Outcome::Rows { len: 3 });
@@ -1447,7 +1447,7 @@ fn governance_batch_slots_persistent_and_one_shot_every_serial_operand() {
                 0,
                 World::country(1),
                 1,
-                crate::walk::Buffer::Growing(&mut rows),
+                engine_native_memory::walk::Buffer::Growing(&mut rows),
             )
         } else {
             walk_slots(memory, 0, World::country(1), 1, &mut rows)

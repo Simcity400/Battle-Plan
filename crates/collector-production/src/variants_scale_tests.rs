@@ -1,7 +1,7 @@
 
 use super::*;
 use engine_equipment::cequipment_upgrades_instance;
-use engine_native::{cequipment_module, cequipment_type, cequipment_upgrade};
+use engine_native_parts::{cequipment_module, cequipment_type, cequipment_upgrade};
 use engine_native_politics::{equipment_module_entry, equipment_upgrade_entry};
 use replay_data::rows::TableSchema;
 
@@ -44,8 +44,8 @@ pub(super) struct Space {
 }
 
 impl Space {
-    pub fn memory(&self) -> engine_native::memory::SliceMemory<'_> {
-        engine_native::memory::SliceMemory {
+    pub fn memory(&self) -> engine_native_memory::memory::SliceMemory<'_> {
+        engine_native_memory::memory::SliceMemory {
             base: self.bytes.as_ptr() as usize,
             bytes: &self.bytes,
         }
@@ -107,8 +107,8 @@ impl Writer {
 }
 
 pub(super) fn space(countries: usize, per_country: usize) -> Space {
-    let reference_extent = engine_native::creference_registry::LOW_ROOTS_RVA.0
-        + engine_native::creference_registry::LOW_ROOT_COUNT as usize * 8
+    let reference_extent = engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
+        + engine_native_parts::creference_registry::LOW_ROOT_COUNT as usize * 8
         - cgame_state::SINGLETON_RVA.0;
     let variants = countries * per_country;
     let plans: Vec<(usize, usize)> = (0..variants)
@@ -196,7 +196,7 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         let seed = mix(index as u64 ^ 0x5eed);
         let variant = objects + (index * step % variants) * VARIANT;
         writer.u64(pointers + index * 8, variant as u64);
-        writer.u64(variant, vtable(cequipment_variant::VTABLE_RVA));
+        writer.u64(variant, vtable(engine_native_parts::equipment_variant_identity::VTABLE_RVA));
         writer.u64(
             variant + cequipment_variant::TYPE,
             (index as u64 + 1) << 32 | u64::from(cequipment_variant::REFERENCE_TYPE),
@@ -447,8 +447,8 @@ fn variants_walk_bench() {
         let variants = countries * 16;
         let space = space(countries, 16);
         // SAFETY: the synthetic space is immutable and lives for the whole loop.
-        let memory = engine_native::memory::CountedMemory::new(unsafe {
-            engine_native::memory::LiveMemory::new()
+        let memory = engine_native_memory::memory::CountedMemory::new(unsafe {
+            engine_native_memory::memory::LiveMemory::new()
         });
         let mut evict = vec![0_u8; 512 << 20];
         let mut samples = Vec::new();

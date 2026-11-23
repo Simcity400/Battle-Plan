@@ -1,10 +1,10 @@
 use collector_snapshots::snapshot_plan::SnapshotPlan;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::cell::RefCell;
 
 #[cfg(test)]
 pub(crate) fn allocation_failure_exercise() {
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &[0x11; 32],
     };
@@ -36,7 +36,8 @@ pub(crate) fn allocation_failure_exercise() {
 #[test]
 fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
     use collector_characters::extended::characters::characters_test_kit as kit;
-    use engine_native::{ccharacter, walk};
+    use engine_native::ccharacter;
+    use engine_native_memory::walk;
     use engine_native_politics::character_portrait_entry;
     struct Source<'a> {
         bytes: &'a [u8],
@@ -56,11 +57,11 @@ fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
     ) -> (
         engine_native::cprovince::UnitOrderWalk,
         Vec<engine_native_politics::character_portraits::PortraitRow>,
-        Vec<character_portrait_entry::Row<engine_native::capture_text::Owned>>,
+        Vec<character_portrait_entry::Row<engine_native_memory::capture_text::Owned>>,
     ) {
-        let mut rows = vec![ccharacter::PortraitRow::default(); 4];
+        let mut rows = vec![engine_native_politics::character_portraits::PortraitRow::default(); 4];
         let mut entries =
-            vec![character_portrait_entry::Row::<engine_native::capture_text::Owned>::default(); 4];
+            vec![character_portrait_entry::Row::<engine_native_memory::capture_text::Owned>::default(); 4];
         let result = engine_native_politics::character_portraits::walk_portraits(
             memory,
             kit::BASE,

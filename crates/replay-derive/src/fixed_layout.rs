@@ -4,7 +4,8 @@ use crate::{
     rows::{TableId, tables},
 };
 use engine_executable::modifier_keys as keys;
-use engine_native::{cbuilding_database, cpdx_lexer};
+use engine_native_parts::cbuilding_database;
+use engine_native_memory::cpdx_lexer;
 use engine_research::cresearch_slot;
 
 #[derive(Clone, Copy, Debug)]

@@ -4,7 +4,8 @@ use collector_primitives::{
 };
 use collector_projection::table_conversion::table;
 use engine_allocation::{copy_vec, default_vec, owned_vec};
-use engine_native::{Memory, cstate, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cstate;
 use replay_data::{rows::StateFlagRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 use std::mem::size_of;
@@ -99,7 +100,7 @@ impl Captured {
                 .checked_add(1)
                 .ok_or("state visitor demand overflow")
                 .and_then(|required| {
-                    engine_native::walk::Buffer::Growing(&mut self.first).ensure(required)
+                    engine_native_memory::walk::Buffer::Growing(&mut self.first).ensure(required)
                 }) {
                 Ok(_) => {}
                 Err(reason) => self.source_failure = Some(reason),
@@ -168,7 +169,7 @@ impl Captured {
 
     pub fn acquire_owned(&mut self, memory: &impl Memory, base: usize, state: usize) {
         if let Err(reason) =
-                engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.source.len())
+                engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.source.len())
         {
             self.fail_sources(reason);
             return;
@@ -230,7 +231,7 @@ pub mod tests {
     #[cfg(test)]
     use crate::acquisition_states::tests::Movement;
     #[cfg(test)]
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     pub const STATE: usize = 0x1000;
     const SOURCE: cstate::Source = cstate::Source {
         pointer: 0x2000,
@@ -255,7 +256,7 @@ pub mod tests {
 
     fn empty_names(bytes: &mut [u8], state: usize) {
         for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
-            let capacity = state + field + engine_native::msvc_string::CAPACITY;
+            let capacity = state + field + engine_native_memory::msvc_string::CAPACITY;
             bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
         }
     }

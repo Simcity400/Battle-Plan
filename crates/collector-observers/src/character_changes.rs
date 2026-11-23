@@ -200,9 +200,9 @@ pub fn advisor_map(map: usize) -> Notification<'static> {
 }
 
 pub fn role_character(role: usize, offset: usize) -> Option<usize> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     role.checked_add(offset)
-        .and_then(|address| engine_native::read::<u64>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(&memory, address))
         .and_then(|character| usize::try_from(character).ok())
         .filter(|&character| character != 0)
 }

@@ -340,7 +340,8 @@ mod tests {
     #[test]
     fn the_sizing_thread_sizes_cold_output_logs_and_the_boundary_only_installs_them() {
         use super::super::production::production_rest_test_kit as kit;
-        use engine_native::{Memory, cgame_state, cproduction_status};
+        use engine_native_memory::Memory;
+        use engine_native::{cgame_state, cproduction_status};
         let _construction = collector_output::construction_ic::test_lock();
         let _lines = collector_output::line_output::test_lock();
         struct Loaded(Vec<u8>);
@@ -350,7 +351,7 @@ mod tests {
                     output.copy_from_slice(&(kit::BASE as u64).to_le_bytes());
                     true
                 } else {
-                    engine_native::memory::SliceMemory {
+                    engine_native_memory::memory::SliceMemory {
                         base: kit::BASE,
                         bytes: &self.0,
                     }

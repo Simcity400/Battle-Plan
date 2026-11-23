@@ -1,12 +1,13 @@
 
-use crate::{
-    Memory, cbuilding, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, cstate,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
     walk::Outcome,
 };
+use engine_native_parts::cbuilding;
+use crate::{cgame_state, cprovince, cstate};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a1_5510);
@@ -279,7 +280,7 @@ fn walk_locations(
                         if carried {
                             let end = authenticated.start + authenticated.len;
                             if end > output.len() {
-                                crate::allocation::reserve(output, end - output.len())
+                                engine_allocation::reserve(output, end - output.len())
                                     .map_err(|_| "building row allocation failed")?;
                                 output.resize(end, cbuilding::Row::default());
                             }

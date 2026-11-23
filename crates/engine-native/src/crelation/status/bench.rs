@@ -1,7 +1,8 @@
-use crate::{
-    Memory, ccountry, cgame_state,
+use engine_native_memory::{
+    Memory,
     memory::{LiveMemory, Raw, RecordLayout, RecordSources},
 };
+use crate::{ccountry, cgame_state};
 use std::{cell::Cell, time::Instant};
 
 pub const IMAGE: usize = 0x0351_0000;
@@ -78,8 +79,8 @@ pub struct Counting {
     pub calls: Cell<u64>,
     pub bytes: Cell<u64>,
     census: Option<(
-        Vec<Option<ccountry::Country>>,
-        [crate::cpdx_array::Array; 2],
+        Vec<Option<engine_native_memory::country_identity::Country>>,
+        [engine_native_memory::cpdx_array::Array; 2],
     )>,
 }
 
@@ -97,8 +98,8 @@ impl Counting {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_census(mut self, game_state: usize, objects: &[usize]) -> Self {
         let n = objects.len() as u32;
-        let read = |at: usize| crate::cpdx_array::Array {
-            data: crate::read::<u64>(&self.live, game_state + at).unwrap() as usize,
+        let read = |at: usize| engine_native_memory::cpdx_array::Array {
+            data: engine_native_memory::read::<u64>(&self.live, game_state + at).unwrap() as usize,
             count: n,
         };
         let arrays = [
@@ -109,7 +110,7 @@ impl Counting {
             .iter()
             .enumerate()
             .map(|(slot, &pointer)| {
-                (slot != 0).then_some(ccountry::Country {
+                (slot != 0).then_some(engine_native_memory::country_identity::Country {
                     pointer,
                     canonical_slot: slot as u32,
                     id: slot as u32,
@@ -130,10 +131,10 @@ impl Memory for Counting {
         &self,
         _base: usize,
         _game_state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.census
             .as_ref()
-            .map(|(slots, arrays)| ccountry::AuthenticatedRoster::new(slots, *arrays))
+            .map(|(slots, arrays)| engine_native_memory::country_identity::AuthenticatedRoster::new(slots, *arrays))
     }
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let copied = self.live.copy(address, destination);
@@ -235,21 +236,21 @@ fn relation_world(n: usize) -> (Arena, usize) {
     for (slot, &country) in countries.iter().enumerate().skip(1) {
         let diplomacy = arena.alloc(0x300);
         arena.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        arena.u64(diplomacy, arena.rva(cdiplomacy_status::VTABLE_RVA));
-        arena.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
+        arena.u64(diplomacy, arena.rva(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA));
+        arena.u64(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
         arena.u8(country + ccountry::CAN_OCCUPY_NON_WAR, 1);
         let row = matrix + slot * 16;
-        arena.vector(diplomacy + cdiplomacy_status::RELATIONS, row, n as u32 + 1);
+        arena.vector(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, row, n as u32 + 1);
         let own = usize::from(slot > half);
         let enemy = 1 - own;
         let counts = [half, n - half];
         arena.vector(
-            diplomacy + cdiplomacy_status::ENEMY_COUNTRIES,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
             sides[enemy],
             counts[enemy] as u32,
         );
         arena.vector(
-            diplomacy + cdiplomacy_status::WARTIME_ALLIES,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
             sides[own],
             counts[own] as u32,
         );
@@ -279,7 +280,7 @@ fn relation_world(n: usize) -> (Arena, usize) {
             arena.u64(data + index * 8, *relation as u64);
         }
         arena.vector(
-            diplomacy + cdiplomacy_status::OWNED_RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             data,
             owned.len() as u32,
         );
@@ -299,7 +300,7 @@ fn bench_relation_links_and_country_wars() {
         let mut links_out = vec![0_u32; n * n];
         let mut resolver = Resolver::with_capacity(2 * n + 2);
         report("RelationLinks+CountryWars", n, &memory, || {
-            let walk = links_observed_inner(&memory, arena.base(), game_state, crate::walk::Buffer::Growing(&mut rows), WarOutput {
+            let walk = links_observed_inner(&memory, arena.base(), game_state, engine_native_memory::walk::Buffer::Growing(&mut rows), WarOutput {
                     rows: &mut wars,
                     countries: &mut links_out,
                 }.into(), &mut resolver, None, None);

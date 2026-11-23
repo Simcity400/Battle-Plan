@@ -1,8 +1,13 @@
 use super::*;
-use crate::{
-    cattache_relation, cdocking_rights_relation, cgame_state, cguarantee_relation,
-    cmarket_access_rights_relation, coffer_military_access_relation, memory::SliceMemory,
+use engine_native_parts::{
+    cattache_relation,
+    cdocking_rights_relation,
+    cguarantee_relation,
+    cmarket_access_rights_relation,
+    coffer_military_access_relation,
 };
+use crate::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0;
 const GS: usize = 0x1000;
@@ -28,7 +33,7 @@ fn own(bytes: &mut [u8], owner: usize, relations: &[usize]) {
     let relations: Vec<u64> = relations.iter().map(|&r| r as u64).collect();
     array(
         bytes,
-        DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+        DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         0x3400 + owner * 0x40,
         &relations,
     );
@@ -75,17 +80,17 @@ fn fixture() -> Vec<u8> {
         p64(
             &mut bytes,
             diplomacy,
-            (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
+            (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
         );
         p64(
             &mut bytes,
-            diplomacy + cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             country as u64,
         );
         let slots: Vec<u64> = (0..4).map(|t| status(owner, t) as u64).collect();
         array(
             &mut bytes,
-            diplomacy + cdiplomacy_status::RELATIONS,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             matrix_data(owner),
             &slots,
         );
@@ -117,8 +122,8 @@ fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     SliceMemory { base: 0, bytes }
 }
 
-fn country(index: usize) -> ccountry::Country {
-    ccountry::Country {
+fn country(index: usize) -> engine_native_memory::country_identity::Country {
+    engine_native_memory::country_identity::Country {
         pointer: COUNTRIES[index],
         id: index as u32 + 1,
         canonical_slot: index as u32 + 1,
@@ -168,13 +173,13 @@ fn co_belligerents_read_each_candidate_byte_in_both_vectors() {
     let mut bytes = fixture();
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
         0x3600,
         &[3, 0, 2],
     );
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x3700,
         &[2],
     );
@@ -218,13 +223,13 @@ fn co_inputs_fixture() -> Vec<u8> {
     p32(&mut bytes, status(0, 3) + TARGET_COUNTRY, 5);
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
         0x3600,
         &[3, 0, 4, 2, 4],
     );
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x3700,
         &[2, 3],
     );
@@ -256,17 +261,17 @@ fn reverse_fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         ZERO_DIPLOMACY,
-        cdiplomacy_status::VTABLE_RVA.0 as u64,
+        engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64,
     );
     p64(
         &mut bytes,
-        ZERO_DIPLOMACY + cdiplomacy_status::COUNTRY,
+        ZERO_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
         ZERO_COUNTRY as u64,
     );
     let slots = std::array::from_fn::<_, 4, _>(|slot| zero_status(slot) as u64);
     array(
         &mut bytes,
-        ZERO_DIPLOMACY + cdiplomacy_status::RELATIONS,
+        ZERO_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
         ZERO_MATRIX,
         &slots,
     );
@@ -323,7 +328,7 @@ impl Memory for ReverseTrace<'_> {
 }
 
 fn reverse_source(memory: &impl Memory) -> ReservedVisibilitySource {
-    let mut naming = ccountry::read_reserved_naming_observed_inner(memory, BASE, GS, crate::walk::Buffer::Count, None);
+    let mut naming = ccountry::read_reserved_naming_observed_inner(memory, BASE, GS, engine_native_memory::walk::Buffer::Count, None);
     assert!(matches!(naming.outcome, Outcome::Unavailable { .. }));
     let observed = naming.visibility.take().unwrap();
     ReservedVisibilitySource::new(memory, &observed).unwrap()
@@ -371,8 +376,8 @@ fn observed_forward_keeps_the_original_order_values_and_read_faults() {
                 &[
                     (COUNTRIES[0] + ccountry::DIPLOMACY_STATUS, 8),
                     (DIPLOMACY[0], 8),
-                    (DIPLOMACY[0] + cdiplomacy_status::COUNTRY, 8),
-                    (DIPLOMACY[0] + cdiplomacy_status::RELATIONS, 16),
+                    (DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::COUNTRY, 8),
+                    (DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 16),
                     (matrix_data(0), 8),
                     (status(0, 0), 8),
                     (status(0, 0) + DIPLOMACY_STATUS, 8),
@@ -410,10 +415,10 @@ fn reverse_zero_cell_and_header_hint_are_independent_of_positive_links_and_names
     memory.calls.borrow_mut().clear();
     assert_eq!(reserved_visibility_demand(&memory, BASE, GS), Ok(4));
     assert_eq!(memory.reads(ZERO_COUNTRY + ccountry::OWNED_STATE_COUNT), 0);
-    assert_eq!(memory.reads(ZERO_DIPLOMACY + cdiplomacy_status::FACTION), 0);
-    assert_eq!(memory.reads(crate::ccountry_database::SINGLETON_RVA.0), 0);
+    assert_eq!(memory.reads(ZERO_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION), 0);
+    assert_eq!(memory.reads(engine_native_parts::ccountry_database::SINGLETON_RVA.0), 0);
     assert_eq!(
-        memory.reads(ZERO_DIPLOMACY + cdiplomacy_status::RELATIONS),
+        memory.reads(ZERO_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS),
         1
     );
     source.clear();
@@ -479,7 +484,7 @@ fn nonnull_reserved_faction_self_match_skips_zero_cell_target_and_subject() {
     );
     p64(
         &mut bytes,
-        ZERO_DIPLOMACY + cdiplomacy_status::FACTION,
+        ZERO_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION,
         FACTION as u64,
     );
     let memory = ReverseTrace::new(&bytes, Some(zero_status(0) + TARGET_COUNTRY));
@@ -851,8 +856,8 @@ fn co_inputs_keep_directed_native_truth_aliases_and_exact_capacity_demand() {
 fn co_inputs_read_slot_zero_even_when_the_candidate_vectors_are_empty() {
     let mut bytes = co_inputs_fixture();
     for (offset, data) in [
-        (cdiplomacy_status::WARTIME_ALLIES, 0x3600),
-        (cdiplomacy_status::ENEMY_COUNTRIES, 0x3700),
+        (engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES, 0x3600),
+        (engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 0x3700),
     ] {
         links_vector(&mut bytes, DIPLOMACY[0] + offset, data, &[]);
     }
@@ -912,7 +917,7 @@ fn co_inputs_refuse_each_operand_once_without_erasing_the_independent_result() {
             Ok([1, 0x7f]),
         ),
         (
-            DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+            DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
             Err("co-belligerent candidate vector unreadable or invalid"),
             1,
             Ok([1, 0x7f]),
@@ -936,7 +941,7 @@ fn co_inputs_refuse_each_operand_once_without_erasing_the_independent_result() {
             Ok([1, 0x7f]),
         ),
         (
-            DIPLOMACY[0] + cdiplomacy_status::RELATIONS,
+            DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             Err("relation matrix unreadable or invalid"),
             0,
             Err("relation matrix unreadable or invalid"),
@@ -968,7 +973,7 @@ fn co_inputs_refuse_each_operand_once_without_erasing_the_independent_result() {
         let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
         let mut slots = vec![99_u32; 4];
         let zero_subject = if [
-            DIPLOMACY[0] + cdiplomacy_status::RELATIONS,
+            DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             status(0, 0),
             status(0, 0) + TARGET_COUNTRY,
             COUNTRIES[0] + ccountry::DIPLOMACY_STATUS,
@@ -1037,7 +1042,7 @@ fn co_inputs_authenticate_the_target_slot_and_refuse_unsupported_native_width() 
     }
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
         0x3600,
         &[1],
     );
@@ -1069,7 +1074,7 @@ fn co_demand_reads_only_native_headers_and_keeps_other_countries_bounds() {
     assert_eq!(memory.attempts.get(), 0);
     p32(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES + 12,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES + 12,
         6,
     );
     let memory = self::memory(&bytes);
@@ -1109,13 +1114,13 @@ fn native_empty_and_zero_only_co_candidates_need_no_positive_headers() {
         let mut bytes = fixture();
         links_vector(
             &mut bytes,
-            DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+            DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
             0x3600,
             candidates,
         );
         links_vector(
             &mut bytes,
-            DIPLOMACY[0] + cdiplomacy_status::ENEMY_COUNTRIES,
+            DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
             0x3700,
             &[],
         );
@@ -1139,13 +1144,13 @@ fn native_alias_zero_is_skipped_but_positive_status_target_remains_binding() {
     let mut bytes = fixture();
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
         0x3600,
         &[2, 0, 3, 2, 3],
     );
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x3700,
         &[3],
     );
@@ -1164,7 +1169,7 @@ fn native_alias_zero_is_skipped_but_positive_status_target_remains_binding() {
     );
     assert_eq!(slots, [3]);
     assert_eq!(
-        co_belligerents_native_buffer(&memory, BASE, &countries, country(0), crate::walk::Buffer::Count),
+        co_belligerents_native_buffer(&memory, BASE, &countries, country(0), engine_native_memory::walk::Buffer::Count),
         Ok((0, 3))
     );
     for raw in [0, 2] {
@@ -1238,7 +1243,7 @@ fn links_come_from_owned_relations_without_walking_the_matrix() {
     for owner in [0, 2] {
         array(
             &mut bytes,
-            DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+            DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             0x3400 + owner * 0x40,
             &[RELATION[0] as u64, RELATION[1] as u64],
         );
@@ -1293,7 +1298,7 @@ fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
     );
     array(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::OWNED_RELATIONS,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         0x3400,
         &[RELATION[0] as u64, RELATION[1] as u64],
     );
@@ -1332,16 +1337,16 @@ fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
 }
 
 fn link_rows(bytes: &[u8], rows: &mut Vec<LinkRow>, resolver: &mut Resolver) -> Outcome {
-    link_rows_into(bytes, crate::walk::Buffer::Growing(rows), resolver)
+    link_rows_into(bytes, engine_native_memory::walk::Buffer::Growing(rows), resolver)
 }
 
 fn link_count(bytes: &[u8], resolver: &mut Resolver) -> Outcome {
-    link_rows_into(bytes, crate::walk::Buffer::Count, resolver)
+    link_rows_into(bytes, engine_native_memory::walk::Buffer::Count, resolver)
 }
 
 fn link_rows_into(
     bytes: &[u8],
-    rows: crate::walk::Buffer<'_, LinkRow>,
+    rows: engine_native_memory::walk::Buffer<'_, LinkRow>,
     resolver: &mut Resolver,
 ) -> Outcome {
     let (mut wars, mut countries) = (Vec::new(), Vec::new());
@@ -1563,7 +1568,7 @@ fn war_fixture() -> Vec<u8> {
     for owner in [0, 1] {
         array(
             &mut bytes,
-            DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+            DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             0x3400 + owner * 0x40,
             &[RELATION[0] as u64],
         );
@@ -1575,19 +1580,19 @@ fn war_fixture() -> Vec<u8> {
     );
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x3600,
         &[3],
     );
     links_vector(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
         0x3640,
         &[2, 2],
     );
     links_vector(
         &mut bytes,
-        DIPLOMACY[2] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[2] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x3680,
         &[1, 2],
     );
@@ -1600,7 +1605,7 @@ fn walk_wars(bytes: &[u8]) -> (LinkWalk, Vec<WarRow>, Vec<u32>) {
     let mut rows = Vec::new();
     let mut wars = Vec::new();
     let mut countries = Vec::new();
-    let walk = links_observed_inner(&memory(bytes), BASE, GS, crate::walk::Buffer::Growing(&mut rows), WarOutput {
+    let walk = links_observed_inner(&memory(bytes), BASE, GS, engine_native_memory::walk::Buffer::Growing(&mut rows), WarOutput {
             rows: &mut wars,
             countries: &mut countries,
         }.into(), &mut Resolver::default(), None, None);
@@ -1637,7 +1642,7 @@ fn a_civil_war_revolter_has_its_enemy_vector_read() {
     p32(&mut bytes, COUNTRIES[1] + ccountry::CIVIL_WAR_LINK, 1);
     links_vector(
         &mut bytes,
-        DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
         0x36c0,
         &[3, 9],
     );
@@ -1673,7 +1678,7 @@ fn a_retired_war_relation_makes_its_owner_read_the_vector() {
     bytes[RELATION[1] + crelation::RETIRED] = 1;
     array(
         &mut bytes,
-        DIPLOMACY[2] + cdiplomacy_status::OWNED_RELATIONS,
+        DIPLOMACY[2] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         0x3480,
         &[RELATION[1] as u64],
     );
@@ -1717,7 +1722,7 @@ fn access_and_docking_slots_come_from_their_owned_relations() {
     for owner in [0, 2] {
         array(
             &mut bytes,
-            DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+            DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             0x3400 + owner * 0x40,
             &[RELATION[0] as u64, RELATION[1] as u64],
         );
@@ -1965,14 +1970,14 @@ fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
         (
             "relation matrix does not cover country ordinals",
             &|bytes: &mut Vec<u8>| {
-                p32(bytes, DIPLOMACY[0] + cdiplomacy_status::RELATIONS + 12, 2);
+                p32(bytes, DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS + 12, 2);
             },
         ),
         ("diplomacy vtable mismatch", &|bytes: &mut Vec<u8>| {
             p64(bytes, DIPLOMACY[1], 0);
         }),
         ("diplomacy country mismatch", &|bytes: &mut Vec<u8>| {
-            p64(bytes, DIPLOMACY[1] + cdiplomacy_status::COUNTRY, 0x1234);
+            p64(bytes, DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::COUNTRY, 0x1234);
         }),
         ("country diplomacy is null", &|bytes: &mut Vec<u8>| {
             p64(bytes, COUNTRIES[1] + ccountry::DIPLOMACY_STATUS, 0);
@@ -1988,7 +1993,7 @@ fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
             &|bytes: &mut Vec<u8>| {
                 p32(
                     bytes,
-                    DIPLOMACY[2] + cdiplomacy_status::OWNED_RELATIONS + 12,
+                    DIPLOMACY[2] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS + 12,
                     9,
                 );
             },
@@ -2217,7 +2222,7 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     let entries: Vec<u64> = (0..4).map(|t| status(1, t) as u64).collect();
     array(
         &mut moved,
-        DIPLOMACY[1] + cdiplomacy_status::RELATIONS,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
         copy,
         &entries,
     );
@@ -2472,7 +2477,7 @@ mod dense {
                     continue;
                 };
                 let diplomacy = diplomacy_root(memory, base, country)?;
-                let matrix = Array::read(memory, diplomacy + cdiplomacy_status::RELATIONS, 8)
+                let matrix = Array::read(memory, diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)
                     .ok_or("relation matrix unreadable or invalid")?;
                 if matrix.count <= highest_slot {
                     return Err("relation matrix does not cover country ordinals");
@@ -2540,9 +2545,12 @@ mod dense {
 
 mod world {
     use super::super::*;
-    use crate::{
-        cgame_state, cguarantee_relation, cmarket_access_rights_relation,
-        cmilitary_access_relation, cnon_aggression_pact_relation,
+    use crate::cgame_state;
+    use engine_native_parts::{
+        cguarantee_relation,
+        cmarket_access_rights_relation,
+        cmilitary_access_relation,
+        cnon_aggression_pact_relation,
     };
 
     pub const BASE: usize = 0;
@@ -2794,27 +2802,27 @@ mod world {
                 let owned = self.owned(owner, &mut owned) as u32;
                 field(
                     0,
-                    &((BASE + cdiplomacy_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+                    &((BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
                 );
                 let matrix = MATRICES + owner * self.slots() * 8;
-                field(cdiplomacy_status::RELATIONS, &(matrix as u64).to_le_bytes());
-                field(cdiplomacy_status::RELATION_CAPACITY, &slots.to_le_bytes());
-                field(cdiplomacy_status::RELATION_COUNT, &slots.to_le_bytes());
+                field(engine_native_parts::cdiplomacy_status_layout::RELATIONS, &(matrix as u64).to_le_bytes());
+                field(engine_native_parts::cdiplomacy_status_layout::RELATION_CAPACITY, &slots.to_le_bytes());
+                field(engine_native_parts::cdiplomacy_status_layout::RELATION_COUNT, &slots.to_le_bytes());
                 let vector = OWNED + owner * OWNED_STRIDE;
                 field(
-                    cdiplomacy_status::OWNED_RELATIONS,
+                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                     &(vector as u64).to_le_bytes(),
                 );
                 field(
-                    cdiplomacy_status::OWNED_RELATION_CAPACITY,
+                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATION_CAPACITY,
                     &owned.to_le_bytes(),
                 );
                 field(
-                    cdiplomacy_status::OWNED_RELATION_COUNT,
+                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATION_COUNT,
                     &owned.to_le_bytes(),
                 );
                 let country = OBJECTS + owner * OBJECT;
-                field(cdiplomacy_status::COUNTRY, &(country as u64).to_le_bytes());
+                field(engine_native_parts::cdiplomacy_status_layout::COUNTRY, &(country as u64).to_le_bytes());
             } else if object >= OBJECTS {
                 let slot = (object - OBJECTS) / OBJECT;
                 field(0, &((BASE + ccountry::VTABLE_RVA.0) as u64).to_le_bytes());
@@ -3126,7 +3134,7 @@ impl Memory for Sparse {
 
 fn star(partners: usize) -> Sparse {
     const COUNTRY: usize = ccountry::CIVIL_WAR_LINK + 4;
-    const DIPLOMACY: usize = cdiplomacy_status::COUNTRY + 8;
+    const DIPLOMACY: usize = engine_native_parts::cdiplomacy_status_layout::COUNTRY + 8;
     const STATUS: usize = AIR_BASE_ACCESS + 8;
     const RELATION: usize = crelation::RETIRED + 1;
     let slots = partners + 2;
@@ -3157,9 +3165,9 @@ fn star(partners: usize) -> Sparse {
             root,
             DIPLOMACY,
             0,
-            (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
+            (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
         );
-        world.p64(root, DIPLOMACY, cdiplomacy_status::COUNTRY, object as u64);
+        world.p64(root, DIPLOMACY, engine_native_parts::cdiplomacy_status_layout::COUNTRY, object as u64);
         let row: Vec<u64> = (0..slots)
             .map(|target| {
                 if (slot == 1) != (target == 1) {
@@ -3169,7 +3177,7 @@ fn star(partners: usize) -> Sparse {
                 }
             })
             .collect();
-        let at = cdiplomacy_status::RELATIONS;
+        let at = engine_native_parts::cdiplomacy_status_layout::RELATIONS;
         world.array(root, DIPLOMACY, at, matrix(slot), &row);
         let relations: Vec<u64> = if slot == 1 {
             let order = |index: usize, step: usize| partner(index * step % partners);
@@ -3180,7 +3188,7 @@ fn star(partners: usize) -> Sparse {
         } else {
             vec![relation(slot, 0) as u64, relation(slot, 1) as u64]
         };
-        let at = cdiplomacy_status::OWNED_RELATIONS;
+        let at = engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS;
         world.array(root, DIPLOMACY, at, owned(slot), &relations);
     }
     for index in 0..partners {
@@ -3277,7 +3285,7 @@ fn reverse_military_fault_is_independent_and_active_war_skips_the_read() {
 fn refused_source_faction_does_not_suppress_military_presence() {
     let mut bytes = reverse_fixture();
     p64(&mut bytes, zero_status(0) + MILITARY_ACCESS, 1_u64 << 40);
-    let memory = ReverseTrace::new(&bytes, Some(ZERO_DIPLOMACY + cdiplomacy_status::FACTION));
+    let memory = ReverseTrace::new(&bytes, Some(ZERO_DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION));
     let source = reverse_source(&memory);
     let captured = source.cell(&memory, BASE, None, 0, None);
     let value = captured.value.unwrap();
@@ -3673,7 +3681,7 @@ fn forward_packet_failed_status_controls_refuse_without_reacquiring_root_or_head
     let bytes = reverse_fixture();
     for fault in [
         COUNTRIES[0] + ccountry::DIPLOMACY_STATUS,
-        DIPLOMACY[0] + cdiplomacy_status::RELATIONS,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
         status(0, 0),
         status(0, 0) + DIPLOMACY_STATUS,
     ] {
@@ -3778,17 +3786,17 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
         p32(&mut bytes, status(index, 0) + TARGET_COUNTRY, 0);
         p64(
             &mut bytes,
-            DIPLOMACY[index] + cdiplomacy_status::RELATIONS,
+            DIPLOMACY[index] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             data as u64,
         );
         p32(
             &mut bytes,
-            DIPLOMACY[index] + cdiplomacy_status::RELATIONS + 8,
+            DIPLOMACY[index] + engine_native_parts::cdiplomacy_status_layout::RELATIONS + 8,
             (HIGH_SLOT + 1) as u32,
         );
         p32(
             &mut bytes,
-            DIPLOMACY[index] + cdiplomacy_status::RELATIONS + 12,
+            DIPLOMACY[index] + engine_native_parts::cdiplomacy_status_layout::RELATIONS + 12,
             (HIGH_SLOT + 1) as u32,
         );
         for (target, old) in [(1, 1), (2, 2), (HIGH_SLOT, 3)] {
@@ -3842,7 +3850,7 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
     assert_eq!(tuples[0].target_country, HIGH_SLOT as u32);
     array(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
         0x3600,
         &[HIGH_SLOT as u64],
     );
@@ -3947,7 +3955,7 @@ fn owners_enemy_headers_and_owned_pointers_are_hinted_before_their_reads() {
     let log = hints.log.into_inner();
     let first = |hint: bool, address: usize| log.iter().position(|&entry| entry == (hint, address));
     for diplomacy in DIPLOMACY {
-        let enemies = diplomacy + cdiplomacy_status::ENEMY_COUNTRIES;
+        let enemies = diplomacy + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES;
         assert!(first(true, enemies).unwrap() < first(false, enemies).unwrap());
     }
     for owner in 0..2 {
@@ -3975,7 +3983,7 @@ fn relation_hints_leave_every_read_and_a_one_shot_fault_unchanged() {
     for fault in [
         None,
         Some(0x3440),
-        Some(DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES),
+        Some(DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES),
     ] {
         let hinted = HintedTrace {
             trace: ReverseTrace::new(&bytes, fault),
@@ -4039,7 +4047,7 @@ impl Memory for StarFaults<'_> {
 fn star_links(memory: &impl Memory, partners: usize) -> (Outcome, Vec<LinkRow>) {
     let mut resolver = Resolver::with_capacity(partners + 2);
     let mut rows = vec![LinkRow::default(); partners * 2];
-    let outcome = links_observed_inner(memory, BASE, GS, crate::walk::Buffer::Growing(&mut rows), WarOutput {
+    let outcome = links_observed_inner(memory, BASE, GS, engine_native_memory::walk::Buffer::Growing(&mut rows), WarOutput {
             rows: &mut Vec::new(),
             countries: &mut Vec::new(),
         }.into(), &mut resolver, None, None)
@@ -4093,9 +4101,9 @@ fn gathered_relation_candidates_equal_the_serial_walk() {
             serially(|| star_transport(&world, partners)),
             "{partners}"
         );
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::RelationLinks);
         assert_eq!(star_links(&SerialCandidates(&world), partners), serial);
-        assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks) > before);
+        assert!(engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::RelationLinks) > before);
     }
 }
 
@@ -4109,10 +4117,10 @@ fn a_persistent_candidate_fault_gives_the_serial_result() {
             persistent: vec![at],
             once: Default::default(),
         };
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::RelationLinks);
         let gathered = star_links(&faults(), partners);
         assert!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks) > before,
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::RelationLinks) > before,
             "{at:#x}"
         );
         assert!(matches!(gathered.0, Outcome::Unavailable { .. }), "{at:#x}");

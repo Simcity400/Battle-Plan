@@ -456,7 +456,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(modified_base(fuel, ace, self.country_term(country, false)?))
     }
 
-    fn country_term(&mut self, country: ccountry::Country, ace: bool) -> Value {
+    fn country_term(&mut self, country: engine_native_memory::country_identity::Country, ace: bool) -> Value {
         self.country_terms
             .ensure(country.canonical_slot as usize + 1)?;
         let slot = self
@@ -471,7 +471,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         *term.get_or_insert_with(|| {
             let address = country
                 .pointer
-                .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                 .ok_or("carrier country modifier address overflow")?;
             modifier_accumulator::requested_effective_at(
                 self.memory,
@@ -529,23 +529,23 @@ impl<'a, M: Memory> Reader<'a, M> {
         )?;
         let assigned = field(self.memory, ace, cace::ASSIGNED_WING_REFERENCE)?;
         let count = if let Some(secondary) = self.references.resolve(self.memory, assigned)? {
-            if secondary == cair_wing::SECONDARY {
+            if secondary == engine_native_parts::cair_wing_layout::SECONDARY {
                 None
             } else {
                 let wing = secondary
-                    .checked_sub(cair_wing::SECONDARY)
+                    .checked_sub(engine_native_parts::cair_wing_layout::SECONDARY)
                     .ok_or("carrier ace wing address invalid")?;
-                if assigned as u32 != cair_wing::TYPE {
+                if assigned as u32 != engine_native_parts::cair_wing_layout::TYPE {
                     return Err("carrier ace assigned wing reference type mismatch");
                 }
                 object(
                     self.memory,
                     self.base,
                     secondary,
-                    cair_wing::SECONDARY_VTABLE_RVA,
+                    engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA,
                 )?;
-                object(self.memory, self.base, wing, cair_wing::VTABLE_RVA)?;
-                if field::<u64>(self.memory, wing, cair_wing::REFERENCE_TYPE)? != assigned {
+                object(self.memory, self.base, wing, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
+                if field::<u64>(self.memory, wing, engine_native_parts::cair_wing_layout::REFERENCE_TYPE)? != assigned {
                     return Err("carrier ace assigned wing full reference mismatch");
                 }
                 Some(field::<i32>(self.memory, wing, cair_wing::PLANE_COUNT)?)
@@ -590,14 +590,14 @@ impl<'a, M: Memory> Reader<'a, M> {
             .references
             .resolve(self.memory, pool.base_reference)?
             .ok_or("carrier training base unresolved")?;
-        object(self.memory, self.base, base, cair_base::VTABLE_RVA)?;
-        if field::<u64>(self.memory, base, cair_base::HANDLE)? != pool.base_reference {
+        object(self.memory, self.base, base, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
+        if field::<u64>(self.memory, base, engine_native_parts::cair_base_layout::HANDLE)? != pool.base_reference {
             return Err("carrier training base full reference mismatch");
         }
         let kind = if pointer(self.memory, base, cair_base::STATE)? != 0 {
             0
         } else {
-            let reference = field(self.memory, base, cair_base::HOST_REFERENCE)?;
+            let reference = field(self.memory, base, engine_native_parts::cair_base_layout::HOST_REFERENCE)?;
             let host = self
                 .references
                 .resolve(self.memory, reference)?
@@ -655,7 +655,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 .element(index, 16)
                 .ok_or("carrier host variant address overflow")?;
             let variant = pointer(self.memory, entry, 0)?;
-            cequipment_variant::identity(self.memory, self.base, variant)?;
+            engine_native_parts::equipment_variant_identity::identity(self.memory, self.base, variant)?;
             let modules = array(self.memory, variant, cequipment_variant::MODULES + 8, 16)?;
             for index in 0..modules.count {
                 let entry = modules

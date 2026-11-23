@@ -1,20 +1,22 @@
 use super::*;
 #[cfg(test)]
-use engine_native::memory::{CountedMemory, LiveMemory};
+use engine_native_memory::memory::{CountedMemory, LiveMemory};
 use engine_native::{
     ccharacter,
     cfleet,
     cgame_state,
-    cnaval_mission,
-    cnavy_leader,
     cprovince,
-    cstrategic_region,
     ctask_force,
     cunit,
-    memory::SliceMemory,
-    reference_bucket as bucket,
-    sweather_per_region,
+    cweather_manager::region_weather as sweather_per_region,
 };
+use engine_native_parts::{
+    cnaval_mission,
+    cnavy_leader,
+    cstrategic_region,
+    reference_bucket as bucket,
+};
+use engine_native_memory::memory::SliceMemory;
 use engine_native_naval::{cstrategic_navy, naval_mission_inputs as native};
 
 const GAME_STATE: usize = 0x10000;
@@ -171,7 +173,7 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
         heap.vtable(country, ccountry::VTABLE_RVA);
         heap.u32(country + ccountry::ID, slot);
         heap.accumulator(
-            country + ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             &[
                 (0x19, 5_000),
                 (0xcc, i64::from(slot)),
@@ -233,30 +235,30 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
         navies.push(navy);
         let navy_leader = heap.alloc(0x500);
         heap.vtable(navy_leader, cnavy_leader::VTABLE_RVA);
-        heap.accumulator(navy_leader + native::LEADER_MODIFIERS, &[(0xcc, 2_500)]);
+        heap.accumulator(navy_leader + engine_native::ctask_force::mission_layout::LEADER_MODIFIERS, &[(0xcc, 2_500)]);
         handles.push((leader(slot), navy_leader));
         let person = heap.alloc(0x100);
         heap.vtable(person, ccharacter::VTABLE_RVA);
         let unit_leader = heap.alloc(0x1000);
         heap.u64(
-            person + native::CHARACTER_UNIT_LEADER,
+            person + engine_native::ctask_force::mission_layout::CHARACTER_UNIT_LEADER,
             heap.ptr(unit_leader),
         );
-        heap.u32(unit_leader + native::UNIT_LEADER_KIND, 2);
-        for (index, source) in native::UNIT_LEADER_SOURCES.into_iter().enumerate() {
+        heap.u32(unit_leader + engine_native::ctask_force::mission_layout::UNIT_LEADER_KIND, 2);
+        for (index, source) in engine_native::ctask_force::mission_layout::UNIT_LEADER_SOURCES.into_iter().enumerate() {
             let object = heap.alloc(0x100);
             heap.u64(unit_leader + source, heap.ptr(object));
             heap.accumulator(
-                object + native::SOURCE_MODIFIERS,
+                object + engine_native::ctask_force::mission_layout::SOURCE_MODIFIERS,
                 &[(0x19, index as i64 + 1)],
             );
         }
         handles.push((character(slot), person));
         let commander = heap.alloc(0x20);
-        heap.u64(commander + native::COMMANDER_CHARACTER, character(slot));
+        heap.u64(commander + engine_native::ctask_force::mission_layout::COMMANDER_CHARACTER, character(slot));
         let headquarters = heap.alloc(0x80);
         heap.u64(
-            headquarters + native::HEADQUARTERS_COMMANDER,
+            headquarters + engine_native::ctask_force::mission_layout::HEADQUARTERS_COMMANDER,
             heap.ptr(commander),
         );
         let fleet = heap.alloc(0x100);
@@ -308,7 +310,7 @@ fn build_in(countries: u32, mut bytes: Vec<u8>, hubs: bool) -> World {
             ] {
                 heap.u32(at, value);
             }
-            heap.accumulator(task + native::LOCAL_MODIFIERS, &[(0xcc, -1_000)]);
+            heap.accumulator(task + engine_native::ctask_force::mission_layout::LOCAL_MODIFIERS, &[(0xcc, -1_000)]);
             heap.array(task + ctask_force::ATTACHED_HEADQUARTERS, 0, 0);
             let filed: &[u32] = match index {
                 ESCORTING => &escort_regions(slot),
@@ -1135,12 +1137,12 @@ fn p2_range_operands_preserve_nonzero_signed_native_values() {
             .unwrap(),
     ) as usize
         - world.base;
-    world.put(stats + native::STAT_RANGE, 123_456);
-    world.put(task + native::FUEL, (-17_i64) as u64);
-    world.put(task + native::FUEL + 8, 73);
-    world.put(task + native::UNDERWAY, 7);
+    world.put(stats + engine_native::ctask_force::mission_layout::STAT_RANGE, 123_456);
+    world.put(task + engine_native::ctask_force::mission_layout::FUEL, (-17_i64) as u64);
+    world.put(task + engine_native::ctask_force::mission_layout::FUEL + 8, 73);
+    world.put(task + engine_native::ctask_force::mission_layout::UNDERWAY, 7);
     world.put(
-        task + native::REPLENISHMENT,
+        task + engine_native::ctask_force::mission_layout::REPLENISHMENT,
         u64::from((-2_i32) as u32) | (5_u64 << 32),
     );
     let mut captured = Captured::with_capacities(&fixture_capacities(&world)).fixture();
@@ -1541,8 +1543,8 @@ fn omitted_patrol_context_shares_headquarters_until_references_change() {
     let header = world.tasks[1][ESCORTING] + ctask_force::ATTACHED_HEADQUARTERS;
     let references = world.pointer(header) - world.base;
     let headquarters = world.pointer(references) - world.base;
-    let commander = world.pointer(headquarters + native::HEADQUARTERS_COMMANDER) - world.base;
-    world.put(commander + native::COMMANDER_CHARACTER, 0);
+    let commander = world.pointer(headquarters + engine_native::ctask_force::mission_layout::HEADQUARTERS_COMMANDER) - world.base;
+    world.put(commander + engine_native::ctask_force::mission_layout::COMMANDER_CHARACTER, 0);
     captured.capture(&world.slice(), world.base, world.game_state, 2, true, None);
     let third = source(&captured);
     assert_eq!(third.headquarters.as_slice(), &[0]);

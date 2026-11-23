@@ -1,4 +1,4 @@
-pub use engine_native::corder_instance::{
+use engine_native::corder_instance::{
     DivisionOrderTransportInputs,
     OrderExecutionInputs,
     ParadropPreparationInputs,
@@ -19,7 +19,6 @@ use engine_native::{
     cstate,
     cunit,
 };
-use engine_native_politics::cdiplomacy_status;
 use engine_native_parts::{
     csub_unit_definition,
     modifier_accumulator::{SnapshotArena, SnapshotCapacity},
@@ -665,7 +664,7 @@ impl Prepared {
         let country_term = self.effective(
             countries.memory(),
             base,
-            at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+            at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
             modifier_keys::AIR_INVASION_PREPARATION,
         )?;
         let relation_term = if (target as i32) > 0
@@ -712,7 +711,7 @@ impl Prepared {
         let days_term = self.effective(
             countries.memory(),
             base,
-            at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+            at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
             modifier_keys::AIR_INVASION_PREP_DAYS,
         )?;
         Ok(ParadropPreparationTerms {
@@ -917,7 +916,7 @@ impl Prepared {
                         let country_term = self.effective(
                             countries.memory(),
                             base,
-                            at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                            at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                             modifier_keys::PARATROOPER_WEIGHT_FACTOR,
                         )?;
                         let commander_term = match self.commander(&observed, base, index, seed)? {
@@ -1310,14 +1309,14 @@ impl<M: Memory> Memory for UnitMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.memory.authenticated_countries(base, state)
     }
     fn authenticated_reserved_country(
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.memory.authenticated_reserved_country(base, state)
     }
 
@@ -1325,7 +1324,7 @@ impl<M: Memory> Memory for UnitMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.memory
             .authenticated_reserved_country_observation(base, state)
     }
@@ -1483,8 +1482,8 @@ fn relation(
     slot: u32,
 ) -> Result<usize, &'static str> {
     let diplomacy = pointer(memory, country, ccountry::DIPLOMACY_STATUS)?;
-    authenticate(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-    let rows = Array::read(memory, at(diplomacy, cdiplomacy_status::RELATIONS)?, 8)
+    authenticate(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    let rows = Array::read(memory, at(diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?, 8)
         .ok_or("execution relation matrix invalid")?;
     let relation = pointer(
         memory,
@@ -1511,14 +1510,14 @@ impl<M: Memory> Memory for Observed<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.memory.authenticated_countries(base, state)
     }
     fn authenticated_reserved_country(
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.memory.authenticated_reserved_country(base, state)
     }
 
@@ -1526,7 +1525,7 @@ impl<M: Memory> Memory for Observed<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.memory
             .authenticated_reserved_country_observation(base, state)
     }

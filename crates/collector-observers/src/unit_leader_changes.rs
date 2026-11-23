@@ -6,7 +6,7 @@ use engine_mutations::{
     unit_leader_mutations::EXILE_GENERATION, unit_leader_mutations::EXILE_REMOVAL,
     unit_leader_mutations::MUTATIONS,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},

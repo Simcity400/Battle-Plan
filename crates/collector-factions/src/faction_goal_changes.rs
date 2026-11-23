@@ -4,7 +4,8 @@ use engine_mutations::{
     faction_goal_mutations::MUTATIONS, faction_goal_mutations::Patch,
     faction_goal_mutations::Receiver,
 };
-use engine_native::{Memory, cfaction_goal_status as native};
+use engine_native_memory::Memory;
+use engine_native_parts::cfaction_goal_status as native;
 use std::{
     mem::ManuallyDrop,
     ops::Range,
@@ -293,9 +294,9 @@ unsafe extern "system-unwind" fn progress(
     count(10);
     let flight = ManuallyDrop::new(WATCHES.running());
     // SAFETY: the native caller owns this goal through the CALL's return.
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let address = first.checked_add(native::GOAL_PROGRESS - native::GOAL_PROGRESS_STATUS);
-    let before = address.and_then(|at| engine_native::read::<i64>(&memory, at));
+    let before = address.and_then(|at| engine_native_memory::read::<i64>(&memory, at));
     let notification =
         ManuallyDrop::new(progress_changed(before, second as i64).then(|| WATCHES.notify(first)));
     let original: Function = unsafe { std::mem::transmute(ORIGINAL[10].load(Ordering::Acquire)) };

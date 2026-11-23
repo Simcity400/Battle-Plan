@@ -1,4 +1,4 @@
-pub use engine_native::ctask_force::mission_layout::{
+use engine_native::ctask_force::mission_layout::{
     CHARACTER_UNIT_LEADER,
     CHARACTER_UNIT_LEADER_REFERENCE,
     COMMANDER_CHARACTER,
@@ -13,7 +13,6 @@ pub use engine_native::ctask_force::mission_layout::{
     UNIT_LEADER_KIND,
     UNIT_LEADER_SOURCES,
 };
-pub use engine_native::ctask_force::targeted_spotting;
 
 use engine_native_memory::{
     Memory,
@@ -32,8 +31,9 @@ use engine_native::{
 use engine_native_parts::{
     cnaval_mission,
     cnavy_leader,
-    modifier_accumulator::{self as accumulator, Value},
+    modifier_accumulator::self as accumulator,
 };
+use engine_native_memory::modifier_cache::Value;
 use crate::cstrategic_navy;
 use engine_executable::modifier_keys as keys;
 use engine_sites::Rva;

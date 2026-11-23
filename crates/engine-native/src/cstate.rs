@@ -1,10 +1,12 @@
-use crate::{
-    Memory, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{FieldBatch, RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
     walk::{self, Outcome},
 };
+use crate::cgame_state;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029b_4d58);
@@ -130,7 +132,7 @@ pub(crate) fn copy_ids(
     Ok(())
 }
 
-fn movement_field<T: crate::memory::Raw>(
+fn movement_field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -141,7 +143,7 @@ fn movement_field<T: crate::memory::Raw>(
         .ok_or("state movement input unreadable")
 }
 
-fn movement_global<T: crate::memory::Raw>(
+fn movement_global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -166,7 +168,7 @@ fn movement_state_vtable(
     Ok(())
 }
 
-fn movement_batched<T: crate::memory::Raw, const N: usize>(
+fn movement_batched<T: engine_native_memory::memory::Raw, const N: usize>(
     memory: &impl Memory,
     fields: &FieldBatch<N>,
     index: usize,
@@ -203,7 +205,7 @@ pub fn movement_modifier(
         key,
         |root, key| {
             Ok(
-                crate::modifier_accumulator::lookup_effective_at(memory, base, root, key)?
+                engine_native_parts::modifier_accumulator::lookup_effective_at(memory, base, root, key)?
                     .effective,
             )
         },
@@ -376,12 +378,8 @@ fn movement_infrastructure_shared(
     state: usize,
     shared: &mut Option<InfrastructureInputs>,
 ) -> Result<i64, &'static str> {
-    use crate::{
-        cbuilding,
-        cbuilding_database,
-        cprovince::buildings as cbuilding_status,
-        cbuilding_template,
-    };
+    use engine_native_parts::{cbuilding, cbuilding_database, cbuilding_template};
+    use crate::cprovince::buildings as cbuilding_status;
     enum Lookup {
         Known(u8),
         Gathered(FieldBatch<2>),
@@ -724,13 +722,13 @@ pub fn read_continents_selected(
             if state == 0
                 || template == 0
                 || read::<u64>(memory, template)
-                    != engine_sites::at(base, crate::cstate_template::VTABLE_RVA)
+                    != engine_sites::at(base, engine_native_parts::cstate_template::VTABLE_RVA)
                         .map(|address| address as u64)
             {
                 return None;
             }
             let pointer = template
-                .checked_add(crate::cstate_template::CONTINENT)
+                .checked_add(engine_native_parts::cstate_template::CONTINENT)
                 .and_then(|address| read::<u64>(memory, address))?;
             if pointer == null {
                 return Some(0);
@@ -846,7 +844,7 @@ pub fn read_names_carried_scripted<'h>(
     mut carried: impl FnMut(usize) -> Option<Carried<'h>>,
     scripted: impl Fn(u32) -> (bool, bool),
 ) -> NameWalk {
-    use crate::msvc_string::{Descriptor, STRIDE};
+    use engine_native_memory::msvc_string::{Descriptor, STRIDE};
     const SPAN: usize = SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME + STRIDE;
     let mut bytes_len = 0_usize;
     let mut required_bytes = 0_usize;
@@ -1021,7 +1019,7 @@ pub fn name_demand(
         .ok_or("state name demand root invalid")?;
     let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut required = 0_usize;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         array
             .slice(1, array.count - 1, 8)
@@ -1043,7 +1041,7 @@ pub fn name_demand(
                 let address = pointer
                     .checked_add(offset)
                     .ok_or("state name demand address overflow")?;
-                let descriptor = crate::msvc_string::Descriptor::read(memory, address)?;
+                let descriptor = engine_native_memory::msvc_string::Descriptor::read(memory, address)?;
                 required = required
                     .checked_add(descriptor.len)
                     .ok_or("state name demand size overflow")?;
@@ -1142,7 +1140,10 @@ const GLOBAL_BYTES: usize = 8 + 8 + 4 + 1 + 4 + 4 + 4 + 16 + 8 + 4 + 8 + 16;
 pub struct Globals([u8; GLOBAL_BYTES]);
 
 pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
-    use crate::{cbuilding_database as database, cbuilding_template as template};
+    use engine_native_parts::{
+        cbuilding_database as database,
+        cbuilding_template as template,
+    };
     let mut bytes = [0_u8; GLOBAL_BYTES];
     let mut at = 0;
     let mut put = |value: &[u8]| {
