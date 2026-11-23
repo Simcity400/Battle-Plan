@@ -8,4 +8,4 @@ Naval fleet selection stays independent of selected task forces and uses the fle
 
 Selection effects are queued in the game’s callback order for newly added units. The first added division can request the viewer’s original country idle voice, with its own cooldown. Distinct effects play once per frame and a recently started effect is skipped. New units must belong to the viewer before requesting audio.
 
-[Selection and cursor rules](../../crates/viewer-counters/src/map/unit_selection.rs) · [Naval selection](../../crates/viewer-counters/src/map/naval_selection.rs) · [Combat hit coordinates](../../crates/viewer-engagements/src/combat_selection.rs) · [Selection sounds](../../crates/viewer-counters/src/map/selection_sounds.rs)
+[Selection and cursor rules](../../crates/viewer-counters/src/unit_selection.rs) · [Naval selection](../../crates/viewer-counters/src/naval_selection.rs) · [Combat hit coordinates](../../crates/viewer-engagements/src/combat_selection.rs) · [Selection sounds](../../crates/viewer-counters/src/selection_sounds.rs)

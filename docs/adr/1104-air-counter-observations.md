@@ -8,4 +8,4 @@ The latest daily air pass can affect the last-day interception window by pruning
 
 When a prepared layer is presented, hovers use current-hour efficiencies and recorded wing order. Average them by plane count with the native signed fixed5 arithmetic. A wing with no planes contributes zero, so the hover demands none of its otherwise unused efficiency inputs. The Air base volunteer calculation indexes aliases once and evaluates each demanded host's ordered sites once.
 
-[Air wing grid](../../crates/viewer-counters/src/map/counters/air_grid/prepared.rs) · [Wing windows](../../crates/viewer-counters/src/map/counters/air_grid/windows.rs) · [Regional mission entries](../../crates/viewer-counters/src/map/counters/air_missions.rs)
+[Air wing grid](../../crates/viewer-counters-naval/src/air_grid/prepared.rs) · [Wing windows](../../crates/viewer-counters-naval/src/air_grid/windows.rs) · [Regional mission entries](../../crates/viewer-counters-naval/src/air_missions.rs)

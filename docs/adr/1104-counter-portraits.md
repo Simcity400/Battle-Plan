@@ -4,4 +4,4 @@ Army categories zero and one select the authored large army portrait. An availab
 
 Read effective character files once per content set. Parse on a bounded pool and merge in loader order so declarations have the same agreement and coverage as a serial load. Conditional alternatives and duplicate definitions must agree before an authored token can name a portrait. A recorded sprite identity can still resolve directly through an ambiguous token set. A truncated file marks the tokens it could have supplied as unknown and names the file and cause. Declared assets resolve through the effective content layers, with a broken visual replacement retried using the recorded art. The texture cache decodes lazily, retaining native extents and mipmaps and keeping visible art resident. The standalone unknown portrait uses the client texture policy and goes through the same strip validation.
 
-[Portrait index and loader](../../crates/viewer-counters/src/map/counter_portraits.rs)
+[Portrait index and loader](../../crates/viewer-counter-kit/src/counter_portraits.rs)

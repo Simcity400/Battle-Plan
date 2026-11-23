@@ -4,4 +4,4 @@ Each combat window part or marker tooltip keeps one lazy read worker. The reques
 
 Carry the recording's executable tables into the worker with the job. A result that reads any undeclared table cannot be cached and reports the missed table by name. Dispose of discarded jobs and their frames on the worker because they may own the last reference to large row sets. An idle worker retains no completed job's frame, and the owner's drop stops the worker.
 
-[Read worker](../../crates/viewer-combat/src/reads.rs)
+[Read worker](../../crates/viewer-runtime/src/reads.rs)
