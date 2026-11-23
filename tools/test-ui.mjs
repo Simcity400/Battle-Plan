@@ -233,14 +233,13 @@ export function testGroups(files, manifest = browserTests, { tabFull = false } =
   }
   const serial = new Set(manifest);
   return [
-    { name: 'UI tests', files: files.filter(file => !serial.has(file)), concurrency: true },
+    { name: 'UI tests', files: files.filter(file => !serial.has(file)), concurrency: true, deadlineMinutes: 20 },
     { name: 'Browser tests', files: files.filter(file => serial.has(file)), concurrency: 1 },
   ];
 }
 
-export const groupDeadlineMinutes = 20;
-
-export async function executeGroup(group, root = repositoryRoot, output = process.stdout, signal = AbortSignal.timeout(groupDeadlineMinutes * 60_000)) {
+export async function executeGroup(group, root = repositoryRoot, output = process.stdout,
+  signal = group.deadlineMinutes ? AbortSignal.timeout(group.deadlineMinutes * 60_000) : undefined) {
   if (!group.files.length) return 0;
   const flags = ['BATTLEPLAN_VIRTUAL_TAB_ONLY', 'BATTLEPLAN_VIRTUAL_TAB_FULL'];
   const previous = flags.map(flag => process.env[flag]);
@@ -251,13 +250,17 @@ export async function executeGroup(group, root = repositoryRoot, output = proces
   const invokedFrom = process.cwd(), base = resolve(root);
   try {
     process.chdir(base);
-    let failed = false;
+    let failed = false, unfinished = [];
+    const running = new Set();
     const tests = run({ files: group.files.map(file => resolve(base, file)), concurrency: group.concurrency,
       execArgv: ['--experimental-strip-types'], signal });
+    tests.on('test:dequeue', event => { if (event.nesting === 0) running.add(event.file); });
+    tests.on('test:complete', event => { if (event.nesting === 0) running.delete(event.file); });
+    signal?.addEventListener('abort', () => { unfinished = [...running].map(file => relative(base, file).split(sep).join('/')).sort(); }, { once: true });
     tests.on('test:fail', () => { failed = true; });
     for await (const chunk of tests.compose(spec)) output.write(chunk);
-    if (signal.aborted) output.write(`${group.name ?? 'UI tests'} stopped at the ${groupDeadlineMinutes}-minute deadline: each file reported cancelled above never finished, often a handle left open after its last test\n`);
-    return failed || signal.aborted ? 1 : 0;
+    if (signal?.aborted) output.write(`${group.name} hit its deadline while these files were still running: ${unfinished.join(', ') || 'none'}\n`);
+    return failed || signal?.aborted ? 1 : 0;
   } finally {
     process.chdir(invokedFrom);
     for (let i = 0; i < flags.length; i++) {

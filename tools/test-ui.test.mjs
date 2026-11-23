@@ -26,6 +26,7 @@ test('test:ui runs every file once, with normal pure concurrency and serial brow
   const groups = testGroups(files);
   assert.equal(groups[0].concurrency, true, 'pure tests use ordinary Node file concurrency');
   assert.equal(groups[1].concurrency, 1, 'browser fixtures have exclusive process ownership');
+  assert.deepEqual(groups.map(group => group.deadlineMinutes), [20, undefined], 'a pure test file is stopped at a deadline; a browser fixture is never killed with Edge open');
   assert.deepEqual(groups[1].files.slice().sort(), browserTests.slice().sort());
   const scheduled = groups.flatMap(group => group.files);
   assert.equal(new Set(scheduled).size, files.length, 'no test is scheduled twice');
@@ -127,10 +128,12 @@ test('the production group runner reports actual Node test failures, and a group
     await writeFile(resolve(root, 'pass.test.mjs'), `import assert from 'node:assert/strict'; import test from 'node:test';
 test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
-    await writeFile(resolve(root, 'leak.test.mjs'), "import test from 'node:test'; test('synthetic leak', () => { setInterval(() => {}, 1000); });");
+    await writeFile(resolve(root, 'leak.test.mjs'), `import test from 'node:test'; import { writeFileSync } from 'node:fs';
+test('synthetic leak', () => { new MessageChannel().port1.on('message', () => {}); writeFileSync(new URL('./leaked', import.meta.url), ''); });`);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
+import { watch } from 'node:fs';
 let reported = '';
 const output = { write(chunk) { reported += chunk; } };
 const passed = await executeGroup({ files: ['pass.test.mjs'], concurrency: true }, ${JSON.stringify(root)}, output);
@@ -143,7 +146,10 @@ reported = '';
 const failed = await executeGroup({ files: ['fail.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output);
 const failureReport = reported;
 reported = '';
-const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs'], concurrency: true }, ${JSON.stringify(root)}, output, AbortSignal.abort());
+const controller = new AbortController();
+const watcher = watch(${JSON.stringify(root)}, (_, name) => { if (name === 'leaked') controller.abort(); });
+const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs', 'pass.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output, controller.signal);
+watcher.close();
 console.log(JSON.stringify({ passed, failed, passReport, failureReport, stopped, stopReport: reported, cwd: process.cwd(), relativePassed }));
 `);
     const env = { ...process.env };
@@ -157,8 +163,8 @@ console.log(JSON.stringify({ passed, failed, passReport, failureReport, stopped,
     assert.equal(result.failed, 1);
     assert.match(result.failureReport, /expected synthetic failure/);
     assert.equal(result.stopped, 1, 'a group stopped at its deadline fails');
-    assert.match(result.stopReport, /leak\.test\.mjs/, 'the unfinished file is named');
-    assert.match(result.stopReport, /Synthetic group stopped at the \d+-minute deadline/);
+    assert.match(result.stopReport, /^Synthetic group hit its deadline while these files were still running: leak\.test\.mjs$/m,
+      'the file holding its process open is named, and the queued one behind it is not');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
