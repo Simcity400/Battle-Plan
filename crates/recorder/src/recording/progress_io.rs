@@ -52,9 +52,9 @@ impl PassProgress {
     }
 }
 
-pub(super) fn passes(directory: &Path) -> replay::progress::Guard {
+pub(super) fn passes(directory: &Path) -> replay_settings::progress::Guard {
     let progress = PassProgress::new(directory);
-    replay::progress::Progress::new(move || progress.completed_at(std::time::Instant::now()))
+    replay_settings::progress::Progress::new(move || progress.completed_at(std::time::Instant::now()))
         .install()
 }
 

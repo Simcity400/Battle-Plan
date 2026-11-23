@@ -287,7 +287,7 @@ fn window_reads(query: &Query<'_>, window: &Window, lives: &[(u128, i64, i64)], 
     let column = |table: TableId, name: &str| dashboard_declare::field(table, name).map(Column::Cell);
     let (first, last, run) = (window.first, window.last, window.run);
     let mut reads = WindowReads {
-        observed: replay::lanes::available_reads(recording, run, TableId::CasualtyLifetimes, first, last)?,
+        observed: replay_lanes::lanes::available_reads(recording, run, TableId::CasualtyLifetimes, first, last)?,
         ..WindowReads::default()
     };
     let keys: Vec<u128> = lives.iter().filter(|&&(_, _, gone)| gone >= i64::from(first)).map(|life| life.0).collect();
@@ -324,7 +324,7 @@ pub fn run_ends(source: &Source, run: u32) -> io::Result<EndedCounters> {
         return Ok(out);
     }
     let columns = [dashboard_declare::field(TableId::CasualtyLifetimes, "taken_a")?, dashboard_declare::field(TableId::CasualtyLifetimes, "taken_b")?];
-    replay::lanes::at_each(recording, run, TableId::CasualtyLifetimes, Some(&columns), &asks, &mut |_, key, row| {
+    replay_lanes::lanes::at_each(recording, run, TableId::CasualtyLifetimes, Some(&columns), &asks, &mut |_, key, row| {
         let [a, b] = columns.map(|column| row.as_ref().and_then(|(view, slot)| view.number(column, *slot)));
         out.0.insert(key, (a, b));
         Ok(())
@@ -390,7 +390,7 @@ fn spans(runs: &[(i32, i32)]) -> Vec<HourSpan> {
 fn branch_observed(query: &Query<'_>) -> io::Result<Vec<HourSpan>> {
     let mut out = Vec::new();
     for stretch in &query.timeline.stretches {
-        out.extend(spans(&replay::lanes::available_reads(query.replay.recording(), stretch.run, TableId::CasualtyLifetimes, stretch.first, stretch.last)?));
+        out.extend(spans(&replay_lanes::lanes::available_reads(query.replay.recording(), stretch.run, TableId::CasualtyLifetimes, stretch.first, stretch.last)?));
     }
     Ok(out)
 }

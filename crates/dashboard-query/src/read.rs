@@ -1,6 +1,7 @@
 
-use replay::{cells::TableReader, columnar_frames::Recording, lanes::Snapshot};
-pub use replay::at::{Keys, Read};
+use replay_recording::{cells::TableReader, columnar_frames::Recording};
+use replay_lanes::lanes::Snapshot;
+pub use replay_lanes::at::{Keys, Read};
 use replay_data::rows::TableId;
 use replay_columnar::{
     envelope::UNIT_ORDINALS,
@@ -51,14 +52,14 @@ pub fn walk(recording: &Recording, run: u32, tables: &[(TableId, Option<&[usize]
 }
 
 pub fn at(recording: &Recording, run: u32, reads: &[Read<'_>], hour: i32) -> io::Result<Vec<Snapshot>> {
-    crate::cost::storage(|| replay::at::snapshots(recording, run, hour, reads))
+    crate::cost::storage(|| replay_lanes::at::snapshots(recording, run, hour, reads))
 }
 
 pub fn text<'a>(view: &TableView<'a>, column: usize, slot: u32) -> Option<&'a [u8]> {
     view.text(column, slot).and_then(|id| view.string(id))
 }
 
-pub type Runs = replay::lanes::Runs;
+pub type Runs = replay_lanes::lanes::Runs;
 
 pub fn runs(
     recording: &Recording,
@@ -69,12 +70,12 @@ pub fn runs(
     from: i32,
     to: i32,
 ) -> io::Result<HashMap<u128, Runs>> {
-    let held = crate::cost::storage(|| replay::lanes::keyed_runs(recording, run, table, source, keys, from, to))?;
+    let held = crate::cost::storage(|| replay_lanes::lanes::keyed_runs(recording, run, table, source, keys, from, to))?;
     Ok(held.into_iter().collect())
 }
 
-pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<replay::lanes::StatusRun>> {
-    crate::cost::storage(|| replay::lanes::statuses(recording, run, table, from, to))
+pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<replay_lanes::lanes::StatusRun>> {
+    crate::cost::storage(|| replay_lanes::lanes::statuses(recording, run, table, from, to))
 }
 
 pub fn columns_of(source: &summary::Source) -> Vec<usize> {

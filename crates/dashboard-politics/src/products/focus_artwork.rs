@@ -236,7 +236,7 @@ fn held_campaign(replay: &Replay, branch: u64, hour: i32) -> io::Result<()> {
         .run(block.run)?
         .ordinal(hour)
         .ok_or_else(|| dashboard_core::invalid("A block's hour lies outside its run"))?;
-    let mut campaign = replay::cells::TableReader::new(recording, block.run, TableId::Campaign, None)?;
+    let mut campaign = replay_recording::cells::TableReader::new(recording, block.run, TableId::Campaign, None)?;
     campaign.seek(recording, ordinal)?;
     let held = campaign.view();
     let mut rows = held.rows();

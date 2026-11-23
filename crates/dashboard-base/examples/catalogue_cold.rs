@@ -58,10 +58,10 @@ fn main() -> io::Result<()> {
         Ok(files)
     };
     let cancelled = AtomicBool::new(false);
-    let open = || -> io::Result<(Source, replay::cold_cache::Probe)> {
-        let probe = replay::cold_cache::probe_file(
+    let open = || -> io::Result<(Source, replay_tools::cold_cache::Probe)> {
+        let probe = replay_tools::cold_cache::probe_file(
             &recording,
-            replay::cold_cache::ResetScope::FreshSourcePerSample,
+            replay_tools::cold_cache::ResetScope::FreshSourcePerSample,
         )?;
         let source = Source::open(
             SourceKey {
@@ -117,9 +117,9 @@ fn main() -> io::Result<()> {
         let (source, _) = open()?;
         if purge_kept {
             for file in kept_files()? {
-                replay::cold_cache::probe_file(
+                replay_tools::cold_cache::probe_file(
                     &file,
-                    replay::cold_cache::ResetScope::FreshSourcePerSample,
+                    replay_tools::cold_cache::ResetScope::FreshSourcePerSample,
                 )?;
             }
         }

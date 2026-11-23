@@ -324,8 +324,8 @@ fn facet(id: u32, entry: u32, outcome: u32) -> u128 {
 
 fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked) -> io::Result<RunTally> {
     let recording = query.replay.recording();
-    let totals = dashboard_query::cost::storage(|| replay::lanes::at(recording, run, TableId::LeaderBattleTotals, hour, None))?;
-    let dated = dashboard_query::cost::storage(|| replay::lanes::at(recording, run, TableId::LeaderTraitDates, hour, None))?;
+    let totals = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, run, TableId::LeaderBattleTotals, hour, None))?;
+    let dated = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, run, TableId::LeaderTraitDates, hour, None))?;
     Ok(RunTally::of(&totals.view(), &dated.view(), asked))
 }
 
@@ -449,7 +449,7 @@ pub fn battles_partial_from(query: &Query<'_>, from: i32, to: i32) -> io::Result
     let recording = query.replay.recording();
     for stretch in query.timeline.within(from, to) {
         let mut at = stretch.first;
-        for (first, last) in replay::lanes::reads(recording, stretch.run, TableId::LeaderBattles, stretch.first, stretch.last.min(to))? {
+        for (first, last) in replay_lanes::lanes::reads(recording, stretch.run, TableId::LeaderBattles, stretch.first, stretch.last.min(to))? {
             if first > at {
                 return Ok(Some(at));
             }
@@ -855,7 +855,7 @@ impl Product for LeaderPortraits {
             Err(error) => return Ok(LeaderPortraitsReply { portraits: missing(&error.to_string()), warnings: Vec::new() }),
         };
         let keys: Vec<u128> = params.references.iter().filter_map(|reference| reference.parse::<u64>().ok()).map(u128::from).collect();
-        let first = replay::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay::at::Keys::These(&{
+        let first = replay_lanes::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&{
             let mut keys = keys.clone();
             keys.sort_unstable();
             keys.dedup();
@@ -865,7 +865,7 @@ impl Product for LeaderPortraits {
         let mut characters = characters;
         characters.sort_unstable();
         characters.dedup();
-        let second = replay::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay::at::Keys::These(&characters) }])?;
+        let second = replay_lanes::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay_lanes::at::Keys::These(&characters) }])?;
         let mut frame = first;
         frame.tables[TableId::CharacterPortraits.index()] = second.tables[TableId::CharacterPortraits.index()].clone();
         let portraits = params

@@ -8,7 +8,9 @@ use recorder::controller::{
     self, CaptureOutcome, Control, Discovery, GameProcess, LoadedCampaign, Omission, Probe,
     Recording, Refusal, SetAside, Stage, Waiting,
 };
-use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
+use replay::campaign::Replay;
+use replay_settings::recorder_settings::RecorderSettings;
+use replay_files::recording_files;
 use replay_data::scope::CaptureMode;
 use serde_json::Value;
 use std::{
@@ -407,7 +409,7 @@ impl Recorder {
         let options = content_reader_layers::ResolveOptions {
             game_dir,
             user_dir,
-            cache_dir: replay::recorder_settings::directory(),
+            cache_dir: replay_settings::recorder_settings::directory(),
         };
         let content = Arc::new(FlagContent::load(&identity, &options)?);
         *cached = Some((session.to_path_buf(), Arc::clone(&content)));
@@ -1456,7 +1458,7 @@ impl AbandonedRetry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::recorder_settings::NextLoad;
+    use replay_settings::recorder_settings::NextLoad;
 
     const CAMPAIGN: &str = "00000000-0000-4000-8000-000000000000";
     const OTHER: &str = "00000000-0000-4000-8000-000000000001";
@@ -1866,7 +1868,7 @@ mod tests {
         let choose = |mut settings: RecorderSettings, record| {
             settings.campaigns.insert(
                 OTHER.to_owned(),
-                replay::recorder_settings::CampaignChoice {
+                replay_settings::recorder_settings::CampaignChoice {
                     record: Some(record),
                     ..Default::default()
                 },

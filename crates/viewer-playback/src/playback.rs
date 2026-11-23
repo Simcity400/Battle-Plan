@@ -147,7 +147,7 @@ impl Playback {
         Arc::clone(&self.replay)
     }
 
-    pub fn air_roster_source(&self) -> Option<Arc<replay::columnar_natives::Natives>> {
+    pub fn air_roster_source(&self) -> Option<Arc<replay_recording::columnar_natives::Natives>> {
         self.map.as_ref().map(|map| map.roster_source())
     }
 
@@ -441,7 +441,7 @@ pub mod tests {
     }
 
     use super::*;
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::rows::TableRows;
     use replay_frame::{
         branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,

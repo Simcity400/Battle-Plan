@@ -1728,7 +1728,7 @@ impl Document {
         let mut warnings = dashboard_base::metadata::build_warnings(&replay);
         warnings.extend(replay.compatibility_gaps());
         warnings.extend(replay.warnings.iter().cloned());
-        if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
+        if let Some(replay_recording::control::ControlRecord::Partial { reason, .. }) = replay.partial() {
             warnings.push(format!("Partial recording: {reason}"));
         }
         check_verification(

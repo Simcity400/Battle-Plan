@@ -3,7 +3,8 @@ use dashboard_base::{products::{BranchParams, LoadContext, Product}, queries::co
 use dashboard_base::{Source, catalogue::{self, Catalogue}, span::HourSpan};
 use dashboard_query::{read, timeline::Stretch};
 use content_reader_politics::autonomy::AutonomyStates;
-use replay::{columnar_frames::Recording, lanes};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::lanes;
 use replay_columnar::summary::{Cells, Source as Column};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};

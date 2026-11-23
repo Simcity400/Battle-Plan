@@ -17,7 +17,7 @@ fn the_schema_numbers_the_cells_a_relation_and_a_level_are_read_from() {
 
 #[test]
 fn a_switch_between_levels_with_equal_bounds_is_a_new_level_and_an_unshown_row_is_not_recorded() {
-    use replay::points::Cell;
+    use replay_lanes::points::Cell;
     let step = |hour, cell: Option<Cell>| lanes::Step { hour, cells: cell.map(|cell| Box::from([cell])) };
     let history = lanes::History {
         columns: vec![STATE],

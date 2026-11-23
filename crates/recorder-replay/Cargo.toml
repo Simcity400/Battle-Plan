@@ -10,15 +10,20 @@ license.workspace = true
 doctest = false
 
 [features]
-keep-journal = ["replay/keep-journal"]
-memory-labels = ["replay/memory-labels", "recorder-derive/memory-labels"]
-multiplied = ["replay/multiplied"]
+keep-journal = ["replay-journal/keep-journal"]
+memory-labels = ["replay-journal/memory-labels", "recorder-derive/memory-labels"]
+multiplied = ["replay-journal/multiplied"]
 
 [dependencies]
+replay = { workspace = true, features = ["recording"] }
+replay-capture-spool.workspace = true
+replay-files.workspace = true
+replay-journal = { workspace = true, features = ["recording"] }
+replay-recording.workspace = true
+replay-settings.workspace = true
 blake3.workspace = true
 rayon.workspace = true
 recorder-derive.workspace = true
-replay = { workspace = true, features = ["recording"] }
 replay-columnar.workspace = true
 content-reader-country-names.workspace = true
 content-reader-localisation.workspace = true
@@ -52,7 +57,8 @@ content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

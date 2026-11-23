@@ -76,9 +76,9 @@ fn run() -> io::Result<bool> {
     }
     let cold_cache = cold
         .then(|| {
-            replay::cold_cache::probe_file(
+            replay_tools::cold_cache::probe_file(
                 &recording,
-                replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+                replay_tools::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
             )
         })
         .transpose()?;
@@ -158,9 +158,9 @@ fn run() -> io::Result<bool> {
                 if !cold {
                     return Ok(0.0);
                 }
-                replay::cold_cache::probe_file(
+                replay_tools::cold_cache::probe_file(
                     &recording,
-                    replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+                    replay_tools::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
                 )?;
                 let fresh = open()?;
                 *source.borrow_mut() = fresh;

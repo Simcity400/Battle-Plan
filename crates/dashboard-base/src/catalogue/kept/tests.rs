@@ -160,9 +160,9 @@ fn game(name: &str, files: &[(&str, &str)]) -> (PathBuf, ContentOptions, replay_
     (root, options, identity)
 }
 
-fn session(identity: &replay_data::identity::Identity) -> Vec<replay::spool::Record> {
+fn session(identity: &replay_data::identity::Identity) -> Vec<replay_capture_spool::spool::Record> {
     let mut input = crate::test_fixtures::records(1, vec![crate::test_fixtures::source(1, 100, Some(1))]);
-    let replay::spool::Record::SessionStart(session) = &mut input[0] else {
+    let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else {
         unreachable!()
     };
     session.identity = identity.clone();

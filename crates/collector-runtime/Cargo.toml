@@ -80,6 +80,8 @@ worker_sampler = ["collector-workers/worker_sampler", "collector-capture/worker_
 world_input_changes = ["collector-observers/world_input_changes", "collector-capture/world_input_changes", "collector-spool/world_input_changes"]
 
 [dependencies]
+replay-files.workspace = true
+replay-settings.workspace = true
 collector-railway-guns.workspace = true
 collector-advisors.workspace = true
 collector-air.workspace = true
@@ -175,7 +177,6 @@ engine-scripts.workspace = true
 engine-sites.workspace = true
 engine-stability.workspace = true
 engine-visibility.workspace = true
-replay = { workspace = true, features = ["journal"] }
 replay-data.workspace = true
 replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
@@ -184,8 +185,10 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 collector-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
-proc-macro2 = "1.0.107"
 replay = { workspace = true, features = ["test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal"] }
+replay-recording.workspace = true
+proc-macro2 = "1.0.107"
 collector-test-support.workspace = true
 collector-advisors = { workspace = true, features = ["test-support"] }
 collector-air = { workspace = true, features = ["test-support"] }
@@ -305,7 +308,7 @@ content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

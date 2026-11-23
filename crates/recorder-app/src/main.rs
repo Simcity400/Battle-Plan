@@ -20,7 +20,7 @@ fn main() {
     if first.as_ref().is_some_and(|arg| arg == compress::ARGUMENT) {
         std::process::exit(compress::child(args.next()));
     }
-    if first.is_some_and(|arg| arg == replay::recorder_settings::STARTED_WITH_REPLAY) && startup::held_by_a_job() {
+    if first.is_some_and(|arg| arg == replay_settings::recorder_settings::STARTED_WITH_REPLAY) && startup::held_by_a_job() {
         return;
     }
     if app_update::refused_during_setup(app_update::recorder_name()) {
@@ -38,7 +38,7 @@ fn main() {
         .manage(recordings::Library::default())
         .setup(move |app| {
             let handle = app.handle().clone();
-            if let Ok(settings) = replay::recorder_settings::RecorderSettings::load() {
+            if let Ok(settings) = replay_settings::recorder_settings::RecorderSettings::load() {
                 for root in std::iter::once(worker::save_folder(&settings)).chain(settings.earlier_save_folders.iter().cloned()) {
                     jobs.take_up(&root, &settings);
                 }

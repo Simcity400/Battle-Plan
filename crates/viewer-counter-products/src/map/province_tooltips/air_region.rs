@@ -1,9 +1,7 @@
 use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
-use replay::{
-    campaign::Replay,
-    columnar_natives::{Cursor, Natives},
-};
+use replay::campaign::Replay;
+use replay_recording::columnar_natives::{Cursor, Natives};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_derive::air_region_derive as derive;
 use replay_frame::frame::DecodedFrame;
@@ -861,7 +859,7 @@ pub(super) mod tests {
     }
 
     pub(in super::super) fn recording(until: Hour, missing: &[Hour]) -> Arc<Replay> {
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use replay_data::{
             identity::Identity, identity::Roster as Verified, identity::SessionStart,
             identity::Verification, rows::AirDailyRosterRow, rows::CampaignRow,

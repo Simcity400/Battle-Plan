@@ -56,7 +56,7 @@ viewer-unit-reads = { workspace = true }
 [dev-dependencies]
 dashboard-base.workspace = true
 engine-heap = { workspace = true }
-replay = { workspace = true, features = ["test-support"] }
+replay-recording.workspace = true
 viewer-layers-forces = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -76,8 +76,10 @@ content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }

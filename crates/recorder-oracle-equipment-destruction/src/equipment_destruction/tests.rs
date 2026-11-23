@@ -842,7 +842,7 @@ fn unknown_queue_provenance_first_interval_refuses_identity_and_zero_claims() {
 }
 
 fn history_replay(branches: Vec<Vec<(DecodedFrame, bool)>>) -> Replay {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
     };

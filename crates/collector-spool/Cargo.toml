@@ -68,7 +68,7 @@ tap-foreign-probe = ["collector-observers/tap-foreign-probe", "collector-map-cap
 technology_changes = ["country_input_changes", "collector-observers/technology_changes", "collector-map-capture/technology_changes", "collector-capture/technology_changes"]
 template_changes = ["collector-capture/template_changes"]
 territory_changes = ["collector-observers/territory_changes", "collector-map-capture/territory_changes", "collector-capture/territory_changes"]
-test-support = ["replay/test-support", "collector-capture/test-support", "collector-certificates/test-support", "collector-characters/test-support", "collector-extended-support/test-support", "collector-factions/test-support", "collector-fuel-awards/test-support", "collector-governance/test-support", "collector-hook-failures/test-support", "collector-intel/test-support", "collector-lexical/test-support", "collector-map-capture/test-support", "collector-map-events/test-support", "collector-memory/test-support", "collector-metadata/test-support", "collector-naval-management/test-support", "collector-observers/test-support", "collector-operation-outcomes/test-support", "collector-output/test-support", "collector-player-commands/test-support", "collector-politics/test-support", "collector-primitives/test-support", "collector-projects/test-support", "collector-stability/test-support", "collector-workers/test-support", "dep:collector-test-support"]
+test-support = ["replay/test-support", "replay-capture-spool/test-support", "replay-journal/test-support", "collector-capture/test-support", "collector-certificates/test-support", "collector-characters/test-support", "collector-extended-support/test-support", "collector-factions/test-support", "collector-fuel-awards/test-support", "collector-governance/test-support", "collector-hook-failures/test-support", "collector-intel/test-support", "collector-lexical/test-support", "collector-map-capture/test-support", "collector-map-events/test-support", "collector-memory/test-support", "collector-metadata/test-support", "collector-naval-management/test-support", "collector-observers/test-support", "collector-operation-outcomes/test-support", "collector-output/test-support", "collector-player-commands/test-support", "collector-politics/test-support", "collector-primitives/test-support", "collector-projects/test-support", "collector-stability/test-support", "collector-workers/test-support", "dep:collector-test-support"]
 unit_leader_changes = ["roster_changes", "naval_tree_changes", "collector-observers/unit_leader_changes", "collector-map-capture/unit_leader_changes", "collector-capture/unit_leader_changes"]
 unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_leader_trait_changes", "collector-map-capture/unit_leader_trait_changes", "collector-capture/unit_leader_trait_changes"]
 variable_changes = ["collector-intel/variable_changes", "collector-capture/variable_changes"]
@@ -80,6 +80,11 @@ worker_sampler = ["collector-workers/worker_sampler", "collector-map-capture/wor
 world_input_changes = ["collector-observers/world_input_changes", "collector-map-capture/world_input_changes", "collector-capture/world_input_changes"]
 
 [dependencies]
+replay.workspace = true
+replay-capture-spool = { workspace = true, features = ["journal"] }
+replay-files.workspace = true
+replay-journal = { workspace = true, features = ["journal"] }
+replay-recording.workspace = true
 collector-capture.workspace = true
 collector-certificates.workspace = true
 collector-characters.workspace = true
@@ -112,7 +117,6 @@ engine-fixed-layout.workspace = true
 engine-native.workspace = true
 engine-sites.workspace = true
 engine-stability.workspace = true
-replay = { workspace = true, features = ["journal"] }
 replay-columnar.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
@@ -123,8 +127,11 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 collector-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
-recorder-derive.workspace = true
 replay = { workspace = true, features = ["test-support"] }
+replay-capture-spool = { workspace = true, features = ["test-support"] }
+replay-journal = { workspace = true, features = ["test-support"] }
+replay-settings.workspace = true
+recorder-derive.workspace = true
 collector-test-support.workspace = true
 collector-capture = { workspace = true, features = ["test-support"] }
 collector-certificates = { workspace = true, features = ["test-support"] }
@@ -203,7 +210,7 @@ content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

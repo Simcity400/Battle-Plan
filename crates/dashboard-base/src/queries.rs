@@ -24,8 +24,8 @@ pub fn spellings(source: &Source, run: u32, hour: i32, tokens: &std::collections
         tokens.iter().filter(|token| known.is_none_or(|known| !known.contains_key(token))).map(|&token| u128::from(token)).collect()
     };
     if !missing.is_empty() {
-        let read = [replay::at::Read { table: replay_data::rows::TableId::LexicalTokens, columns: None, keys: replay::lanes::Keys::These(&missing) }];
-        let frame = dashboard_query::cost::storage(|| replay::at::frame(source.replay_ref().recording(), run, hour, &read))?;
+        let read = [replay_lanes::at::Read { table: replay_data::rows::TableId::LexicalTokens, columns: None, keys: replay_lanes::lanes::Keys::These(&missing) }];
+        let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(source.replay_ref().recording(), run, hour, &read))?;
         let mut spelled: std::collections::HashMap<u32, Option<String>> = missing.iter().map(|&token| (token as u32, None)).collect();
         for row in frame.complete::<replay_data::rows::tables::LexicalTokens>().unwrap_or(&[]) {
             if let Ok(text) = std::str::from_utf8(content_reader_parser::parser::c_string(&row.literal))

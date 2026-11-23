@@ -14,8 +14,11 @@ name = "tile-bench"
 test = false
 
 [dependencies]
-dashboard-declare.workspace = true
 replay.workspace = true
+replay-lanes.workspace = true
+replay-recording.workspace = true
+replay-tools.workspace = true
+dashboard-declare.workspace = true
 replay-columnar.workspace = true
 replay-data.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -23,6 +26,10 @@ serde_json.workspace = true
 ts-rs = "11.1"
 
 [dev-dependencies]
+replay-capture-spool.workspace = true
+replay = { workspace = true, features = ["test-support"] }
+replay-journal = { workspace = true, features = ["test-support"] }
+replay-settings.workspace = true
 recorder-derive.workspace = true
 recorder-derive-framework.workspace = true
 replay-frame.workspace = true
@@ -43,8 +50,10 @@ content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
 unify-winapi-util = { workspace = true }

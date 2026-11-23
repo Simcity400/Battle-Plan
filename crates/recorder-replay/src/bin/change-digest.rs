@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use replay::columnar_frames::{Recording, schema};
+use replay_recording::{columnar_frames::Recording, schema::schema};
 use replay_columnar::{
     manifest::Status,
     state::Kind,
@@ -321,10 +321,7 @@ impl replay_columnar::store::StringSource for Archive {
 }
 
 fn journal_mode(args: &[String]) -> io::Result<()> {
-    use replay::{
-        columnar_journal::{Record, Source},
-        multiplied::{Factors, Multiplied, Start},
-    };
+    use replay_journal::{columnar_journal::{Record, Source}, multiplied::{Factors, Multiplied, Start}};
     use replay_columnar::{
         manifest::Manifest,
         store::{Store, journal::Journal as Adapter},
@@ -361,10 +358,10 @@ fn journal_mode(args: &[String]) -> io::Result<()> {
     let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
     let digested: Vec<usize> = (0..kinds.len()).filter(|table| !derived.contains(table)).collect();
     let archive = Archive::default();
-    let mut store = Store::new(kinds.clone(), replay::columnar_frames::keeps_last().to_vec());
+    let mut store = Store::new(kinds.clone(), replay_recording::schema::keeps_last().to_vec());
     store.declare_logs(&replay_data::rows::logs())?;
     store.read_strings_from(Box::new(archive.clone()));
-    let mut adapter = Adapter::leaving(&derived, replay::columnar_frames::names());
+    let mut adapter = Adapter::leaving(&derived, replay_recording::schema::names());
     let mut digests: Vec<TableDigest> = (0..kinds.len()).map(TableDigest::for_table).map(TableDigest::at_run_start).collect();
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut whole = blake3::Hasher::new();

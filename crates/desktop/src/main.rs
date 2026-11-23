@@ -159,7 +159,7 @@ pub(crate) fn replay_path(path: &str) -> Result<String, String> {
     if path.contains('\0') {
         return Err("The recording path holds a NUL character".into());
     }
-    if !replay::recording_files::is_recording(std::path::Path::new(path)) {
+    if !replay_files::recording_files::is_recording(std::path::Path::new(path)) {
         return Err("Choose a BattlePlan recording.".into());
     }
     Ok(path.to_owned())

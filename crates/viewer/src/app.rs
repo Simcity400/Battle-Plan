@@ -479,7 +479,7 @@ fn mode_name(mode: replay_data::scope::CaptureMode) -> &'static str {
 }
 
 pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
-    if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
+    if let Some(replay_recording::control::ControlRecord::Partial { reason, .. }) = replay.partial() {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(egui::Color32::YELLOW, "Partial recording:");
             ui.colored_label(egui::Color32::YELLOW, reason);
@@ -8539,7 +8539,8 @@ pub(crate) mod tests {
 
     #[test]
     fn unload_releases_campaign_map_admission_and_discards_a_late_loader() {
-        use replay::{campaign::Replay, spool::Record};
+        use replay::campaign::Replay;
+        use replay_capture_spool::spool::Record;
         use replay_data::{
             identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
             identity::SessionStart, identity::Verification,
@@ -9032,7 +9033,8 @@ pub(crate) mod tests {
 
     #[test]
     fn partial_recording_notice_names_the_failure_without_diagnostics() {
-        use replay::{spool::ControlRecord, spool::Record};
+        use replay_recording::control::ControlRecord;
+        use replay_capture_spool::spool::Record;
         let healthy = crate::playback::tests::fixture();
         let partial = healthy
             .append(recorder_derive::writers(), &[vec![
@@ -9070,7 +9072,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_map_recording_names_its_mode_and_what_it_leaves_out() {
-        use replay::{campaign::Replay, spool::Record};
+        use replay::campaign::Replay;
+        use replay_capture_spool::spool::Record;
         use replay_data::scope::CaptureMode;
         let healthy = crate::playback::tests::fixture();
         let mut session = healthy.sessions[0].clone();

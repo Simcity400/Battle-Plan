@@ -341,7 +341,7 @@ fn vision_side(layer: impl Layer + 'static, name: &str) -> MapSide {
         Arc::new(sight::Content::new(Ok(FogContent { topology: Topology { land: (1..=4).collect(), sea: BTreeSet::from([9]), neighbors }, defines: test_defines() })))
     };
     let timeline = Timeline::whole(&*pages).unwrap();
-    let units = Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(replay::columnar_frames::schema().unwrap()) };
+    let units = Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(replay_recording::schema::schema().unwrap()) };
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() };
     let entry = open(units, settings).unwrap();
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(layer)];
@@ -456,7 +456,7 @@ fn hidden() -> View {
 
 #[test]
 fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every_table() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut layer = Buildings::new(catalogue());
     let mut inputs = Inputs::new(&kinds, "buildings");
     layer.inputs(&hidden(), &mut inputs).unwrap();

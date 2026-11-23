@@ -45,7 +45,7 @@ pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     drop(opened);
     let folder = std::fs::canonicalize(path)?;
     let folder = folder.parent().unwrap_or_else(|| Path::new("."));
-    let _names = replay::recording_files::NamesLock::wait(folder)?;
+    let _names = replay_files::recording_files::NamesLock::wait(folder)?;
     let mut steps = Vec::new();
     for step in STEPS {
         let replay = Replay::open_newest(path)?;
@@ -68,7 +68,7 @@ fn uncontinued(path: &Path, replay: &Replay) -> io::Result<()> {
     let path = std::fs::canonicalize(path)?;
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
     let deferred = |why: &str| Err(io::Error::new(io::ErrorKind::WouldBlock, why));
-    if folder.file_name() == replay::publication::unsaved_folder(Path::new("")).file_name() {
+    if folder.file_name() == replay_settings::publication::unsaved_folder(Path::new("")).file_name() {
         return deferred("unsaved hours are upgraded once they are saved");
     }
     if replay.unsaved() {
@@ -110,7 +110,7 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         withheld,
     };
     let (pack, stats) = facts::write(&source, identity, tables, &folders.cache, &|| false, content_reader_key_names::equipment_facts::gather)?;
-    let level = replay::recorder_settings::RecorderSettings::load()
+    let level = replay_settings::recorder_settings::RecorderSettings::load()
         .map(|settings| settings.compression)
         .unwrap_or_default()
         .level();
@@ -150,7 +150,7 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
 mod tests {
     use super::*;
     use content_reader_layers::{GatherOptions, gather};
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::SessionStart, rows::CampaignRow, rows::TableId, rows::TableRows};
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame, frame::Metrics, frame::TableUpdate};
     use std::{collections::BTreeMap, fs, sync::Arc};
@@ -216,7 +216,7 @@ mod tests {
         Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records]).unwrap().write_atomic(&path).unwrap();
         let recorded = Replay::open_newest(&path).unwrap();
         let addition = writer::Addition { facts: Some(&older), ..writer::Addition::default() };
-        let level = replay::compression::Compression::default().level();
+        let level = replay_settings::compression::Compression::default().level();
         writer::revise(&path, recorded.recording(), &addition, true, level).unwrap();
         drop(recorded);
         write("user/changed/common/ideas/mod.txt", "ideas = { second = {} }");

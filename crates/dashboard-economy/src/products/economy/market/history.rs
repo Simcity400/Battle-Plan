@@ -1,7 +1,7 @@
 use super::{LeaseTerms, lease_terms, lease_variants};
 use dashboard_base::{Source, products::{BranchParams, LoadContext, Product, check_reply_budget}, queries::country_ids::Names};
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
-use replay::lanes::{self, Keys};
+use replay_lanes::lanes::{self, Keys};
 use replay_columnar::store::TableView;
 use replay_data::{
     codec::Decoder,

@@ -808,7 +808,7 @@ impl Options {
                 _ => return Err(invalid(USAGE)),
             }
         }
-        if options.replay.as_deref().is_some_and(|path| !replay::recording_files::is_recording(path)) {
+        if options.replay.as_deref().is_some_and(|path| !replay_files::recording_files::is_recording(path)) {
             return Err(invalid("Choose a BattlePlan recording."));
         }
         match walk {

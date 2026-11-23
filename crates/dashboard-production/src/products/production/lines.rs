@@ -158,7 +158,7 @@ pub(super) fn index_of(source: &Source) -> impl Fn(u32) -> io::Result<Arc<RunLin
     move |run| crate::products::production::cached_production_lines(source, run)
 }
 
-fn column_runs(recording: &replay::columnar_frames::Recording, run: u32, table: TableId, columns: &[&str], keys: &[u128], from: i32, to: i32) -> io::Result<Vec<std::collections::HashMap<u128, read::Runs>>> {
+fn column_runs(recording: &replay_recording::columnar_frames::Recording, run: u32, table: TableId, columns: &[&str], keys: &[u128], from: i32, to: i32) -> io::Result<Vec<std::collections::HashMap<u128, read::Runs>>> {
     if keys.is_empty() {
         return Ok(columns.iter().map(|_| std::collections::HashMap::new()).collect());
     }
@@ -215,11 +215,11 @@ fn ended_rows(appearance: &Appearance, index: &RunLines) -> Vec<super::OutputLif
     index.outputs_of(appearance.handle).iter().filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last())).copied().collect()
 }
 
-fn ended_parts(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<BTreeMap<u128, (OutputPart, i32, bool)>> {
+fn ended_parts(recording: &replay_recording::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<BTreeMap<u128, (OutputPart, i32, bool)>> {
     let columns: Vec<usize> = OUTPUT_COLUMNS.iter().map(|name| dashboard_declare::field(TableId::ProductionLineOutput, name)).collect::<io::Result<_>>()?;
     let mut parts = BTreeMap::new();
     dashboard_query::cost::storage(|| {
-        replay::lanes::at_each(recording, run, TableId::ProductionLineOutput, Some(&columns), asks, &mut |_, key, row| {
+        replay_lanes::lanes::at_each(recording, run, TableId::ProductionLineOutput, Some(&columns), asks, &mut |_, key, row| {
             let Some((view, slot)) = row else { return Ok(()) };
             let values: Vec<Option<i64>> = columns.iter().map(|&column| view.number(column, slot)).collect();
             if let Some(part) = part(&values) {

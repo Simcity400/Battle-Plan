@@ -192,7 +192,7 @@ fn build(query: &dashboard_query::Query<'_>) -> io::Result<History> {
     let mut folds: HashMap<u64, Fold> = HashMap::new();
     for stretch in &query.timeline.stretches {
         let runs = read::runs(recording, stretch.run, TableId::AirAces, summary::Source::Cell(alive), None, stretch.first, stretch.last)?;
-        let reads = dashboard_query::cost::storage(|| replay::lanes::reads(recording, stretch.run, TableId::AirAces, stretch.first, stretch.last))?;
+        let reads = dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, TableId::AirAces, stretch.first, stretch.last))?;
         for (key, runs) in runs {
             let fold = folds.entry(key as u64).or_default();
             for &(first, last, value) in &runs {

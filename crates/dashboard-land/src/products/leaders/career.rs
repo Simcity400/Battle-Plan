@@ -6,7 +6,7 @@ use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHo
 use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::{Query, log::{FacetFilter, Reader}};
-use replay::lanes::{Cell as Step, History, Keys as LaneKeys};
+use replay_lanes::lanes::{Cell as Step, History, Keys as LaneKeys};
 use replay_data::{
     codec::Decoder,
     rows::{LeaderBattleRow, LeaderCommandRow as Command, LeaderTraitGainRow, TableId, tables},
@@ -293,7 +293,7 @@ impl Product for LeaderCareer {
             let links: std::sync::Arc<RunLinks> = dashboard_base::queries::links(source, stretch.run)?;
             let mut ascending = run_columns.columns.clone();
             ascending.sort_unstable();
-            let history = dashboard_query::cost::storage(|| replay::lanes::history(recording, stretch.run, TableId::UnitLeaders, &ascending, LaneKeys::These(&[key]), stretch.first, stretch.last))?;
+            let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, TableId::UnitLeaders, &ascending, LaneKeys::These(&[key]), stretch.first, stretch.last))?;
             let steps: Vec<(i32, Option<RunValues>)> = history
                 .keys
                 .iter()
@@ -306,7 +306,7 @@ impl Product for LeaderCareer {
                     runs.push(CareerRun { first_hour: a, last_hour: b, role: content.role(tag.map(str::to_owned), values.kind, values.category, values.skill), skill: values.skill, components: values.components });
                 }
             }
-            let open = dashboard_query::cost::storage(|| replay::lanes::at(recording, stretch.run, TableId::LeaderCommandSpans, stretch.last, None))?;
+            let open = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, stretch.run, TableId::LeaderCommandSpans, stretch.last, None))?;
             let view = open.view();
             for slot in view.rows() {
                 if view.number(0, slot).map(|held| held as u64) != Some(leader) {
@@ -353,10 +353,10 @@ impl Product for LeaderCareer {
         let (name, portrait_hour, missing) = match last_seen {
             Some((run, hour)) => {
                 let leaders = [key];
-                let frame = dashboard_query::cost::storage(|| replay::at::frame(recording, run, hour, &[replay::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay::at::Keys::These(&leaders) }, replay::at::Read::all(TableId::LexicalTokens)]))?;
+                let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&leaders) }, replay_lanes::at::Read::all(TableId::LexicalTokens)]))?;
                 let character = frame.complete::<tables::UnitLeaders>().ok().and_then(|rows| rows.first().map(|row| u128::from(row.character_id)));
                 let characters: Vec<u128> = character.into_iter().collect();
-                let people = dashboard_query::cost::storage(|| replay::at::frame(recording, run, hour, &[replay::at::Read { table: TableId::Characters, columns: None, keys: replay::at::Keys::These(&characters) }]))?;
+                let people = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read { table: TableId::Characters, columns: None, keys: replay_lanes::at::Keys::These(&characters) }]))?;
                 let name = content.person_name(people.complete::<tables::Characters>().ok().and_then(|rows| rows.first()), frame.complete::<tables::LexicalTokens>().ok());
                 (name, Some(hour), None)
             }
@@ -646,7 +646,7 @@ impl Product for LeaderChoices {
             asks.sort_unstable();
             let links = dashboard_base::queries::links(source, run)?;
             let mut people: Vec<(i32, u128, u128, u32, u8)> = Vec::new();
-            replay::lanes::at_each(recording, run, TableId::UnitLeaders, Some(&leader_columns), &asks, &mut |hour, key, row| {
+            replay_lanes::lanes::at_each(recording, run, TableId::UnitLeaders, Some(&leader_columns), &asks, &mut |hour, key, row| {
                 if let Some((view, slot)) = row
                     && let (Some(raw), Some(id), Some(leader_kind)) = (view.number(owner, slot), view.number(character, slot), view.number(kind, slot))
                 {
@@ -658,7 +658,7 @@ impl Product for LeaderChoices {
             let mut character_asks: Vec<(i32, u128)> = people.iter().map(|person| (person.0, person.2)).collect();
             character_asks.sort_unstable();
             character_asks.dedup();
-            replay::lanes::at_each(recording, run, TableId::Characters, Some(&[token]), &character_asks, &mut |hour, key, row| {
+            replay_lanes::lanes::at_each(recording, run, TableId::Characters, Some(&[token]), &character_asks, &mut |hour, key, row| {
                 if let Some((view, slot)) = row
                     && let Some(saved) = dashboard_query::read::text(&view, token, slot).and_then(|bytes| std::str::from_utf8(bytes).ok())
                     && let Some(name) = content.character_name(saved)

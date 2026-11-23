@@ -7,7 +7,7 @@ use super::{
 };
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use engine_executable::modifier_keys as keys;
-use replay::cells::TableReader;
+use replay_recording::cells::TableReader;
 use replay_data::{fixed_point::fixed5_to_q15, fixed_point::q15_to_fixed5};
 use replay_data::{
     rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow, rows::ProductionModifierTree,

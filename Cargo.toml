@@ -317,6 +317,13 @@ png = "0.18"
 pollster = "1"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay", default-features = false }
+replay-settings = { path = "crates/replay-settings" }
+replay-recording = { path = "crates/replay-recording" }
+replay-journal = { path = "crates/replay-journal" }
+replay-capture-spool = { path = "crates/replay-capture-spool" }
+replay-lanes = { path = "crates/replay-lanes" }
+replay-files = { path = "crates/replay-files" }
+replay-tools = { path = "crates/replay-tools", default-features = false }
 replay-looks = { path = "crates/replay-looks" }
 recorder-derive = { path = "crates/recorder-derive" }
 recorder-derive-air = { path = "crates/recorder-derive-air" }
