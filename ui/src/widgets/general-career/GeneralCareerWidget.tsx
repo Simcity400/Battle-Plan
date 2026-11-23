@@ -31,8 +31,9 @@ function TopGeneralCareer(props: WidgetProps) {
   const params = useMemo(() => atRead.requestTags === undefined ? null : { selection: leaderRequestSelection(atRead.requestTags), leaders: 'land' },
     [atRead.requestTags]);
   const head = useHeadProduct(runtime, atRead.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
-  const read = atRead.hour;
-  const rows = useMemo(() => head.data && read !== null && atRead.countries !== undefined ? leaderRows(head.data, read, atRead.countries, 'land') : [], [head.data, read, atRead.countries]);
+  const read = atRead.outside ? null : head.at ?? atRead.hour;
+  const readCountries = read === null ? atRead.countries : atRead.countriesAt(read);
+  const rows = useMemo(() => head.data && read !== null && readCountries !== undefined ? leaderRows(head.data, read, readCountries, 'land') : [], [head.data, read, readCountries]);
   const top = useMemo(() => topLeader(rows), [rows]);
   const country = useCountryNameAt(runtime.client, track, tag, read, active);
   const nameDetail = dashboard && country.nameFailure ? <span data-detail={country.nameFailure.message}>{country.name}</span> : undefined;
@@ -43,11 +44,11 @@ function TopGeneralCareer(props: WidgetProps) {
     if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
     if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-    if (!head.data || atRead.countries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;
+    if (!head.data || readCountries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;
     if (top) return <CareerView {...props} reference={top.key} caption={dashboard ? nameDetail ?? `Following ${country.name}’s top general.` : 'Following the top general of these countries.'} />;
     if (head.data.missing) return <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." detail={nameDetail ?? head.data.missing} />;
     if (rows.length) return <WidgetState kind="unavailable" message="Generals’ skills weren’t recorded at this time." detail={nameDetail} />;
-    const withheld = withheldLeaders(head.data, atRead.countries, 'land');
+    const withheld = withheldLeaders(head.data, readCountries, 'land');
     if (withheld.length) {
       const state = withheldLeaderState(withheld, dashboard && !nameDetail ? country.name : undefined);
       return <WidgetState kind="unavailable" message={state.message} detail={nameDetail ? <>{nameDetail}{'\n'}{state.detail}</> : state.detail} />;

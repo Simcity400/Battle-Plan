@@ -125,7 +125,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   }, [stateRoot, drillRoot]);
   const menu = useContextMenu('Army losses actions');
   const pinned = following || widget.time.mode === 'pin';
-  const pick = (at: number) => dispatch({ type: 'open', breakdown: String(monthOf(at)), hour: at, follow: false, country: tag ? { tag, origin: Math.floor(at) } : null });
+  const pick = (at: number) => dispatch({ type: 'open', breakdown: String(monthOf(at)), hour: at, follow: false, country: gate.country?.holder ?? null });
   const kinds = LEDGERS[ledger];
   const drillData = useMemo(() => drillReply && drillHour !== null ? resolveArmyLosses(drillReply, drillHour, drillState.live.read()) : null, [drillReply, drillHour, drillState.live]);
   const drillRows = useMemo(() => drillData && month !== null ? monthArmies(drillData, month, kinds) : [], [drillData, month, kinds]);

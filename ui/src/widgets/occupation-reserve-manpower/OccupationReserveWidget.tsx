@@ -98,7 +98,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const drilled = pinned ? pinnedHolder : drill.breakdown ? chosen : null;
   const drillRegion = useRegion(widget, pinned ? SPEC : drillControl.region.action);
   const regionAt = useRegionHour(runtime, drillRegion, active && (pinned || drill.breakdown !== null));
-  const drillAt = pinned ? moment : regionAt;
+  const drillAt = pinned || drillControl.following && widget.time.mode === 'follow' ? moment : regionAt;
   const headRoot = head.root;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   const none = grouped ? noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0) : null;

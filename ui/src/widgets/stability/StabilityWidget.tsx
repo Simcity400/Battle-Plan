@@ -77,7 +77,7 @@ import type { StabilityPick } from './stabilityDrillData';
 import './stability.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { busyWait } from '../../shell/busy.ts';
-import { axisAt, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
+import { axisAt, gapAt, SPEC, UNRECORDED_MESSAGE, type GatedHour } from '../../dashboard/regionTime.ts';
 import { useGate, useHeldEdges } from '../../dashboard/regionGate';
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -428,7 +428,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
             const notes = [
               ...(hovered.error ? [failureText(hovered.error, 'Couldn’t load the breakdown.')]
                 : hoveredFor && !hoveredFor.breakdown ? [hoveredFor.missing ?? 'No breakdown was recorded for this hour.']
-                  : !hoveredFor ? [single && !isMember(membership?.get(single), Math.floor(hour)) ? 'Not in the group at this date.' : 'Loading the breakdown…'] : []),
+                  : !hoveredFor ? [gate.recorded(Math.floor(hour)) === null ? gapAt(track, Math.floor(hour))?.reason ?? UNRECORDED_MESSAGE
+                    : single && !isMember(membership?.get(single), Math.floor(hour)) ? 'Not in the group at this date.' : 'Loading the breakdown…'] : []),
               ...(hoveredFor?.breakdown && hoveredFor.breakdown.readHour < hour ? [`As of ${formatDateTime(hoveredFor.breakdown.readHour)}.`] : []),
             ];
             return fitTooltip([{ title: dayLabel(hour), rows, detail: hovered.error?.message, note: notes.length ? notes.join(' ') : undefined }], viewport);

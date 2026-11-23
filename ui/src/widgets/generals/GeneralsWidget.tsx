@@ -62,7 +62,7 @@ export default function GeneralsWidget(props: WidgetProps) {
     [members.requestTags, kind]);
   const head = useHeadProduct(runtime, members.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const hour = members.outside ? null : head.at ?? members.hour;
-  const selection = { group: members.group, countries: members.countries, selectionReason: members.selectionReason ?? members.selectionReason };
+  const selection = { group: members.group, countries: hour === null ? members.countries : members.countriesAt(hour), selectionReason: members.selectionReason };
   const shown = useShownHour();
   shown(head.data ? hour : null);
   const data = head.data;

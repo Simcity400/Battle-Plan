@@ -35,6 +35,7 @@ import { motionOf } from '../../charts/easing.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { axisAt } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_TRANSFERS: readonly TransferOccurrence[] = [];
@@ -142,7 +143,8 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const playhead = track ? Math.floor(playbackHour + track.axisOffset) : null;
   const drillRegion = drillControl.region;
   const regionAt = useRegionHour(runtime, drillRegion, active && drill.breakdown != null);
-  const drillAt = drill.breakdown ? regionAt ?? moment : moment;
+  const followedAt = drill.breakdown && drillControl.following ? drillControl.gate.hourAt(axisAt(playbackHour)) : null;
+  const drillAt = drill.breakdown ? followedAt ?? regionAt ?? moment : moment;
   const drillThrough = transfers ? transferCutoff(transfers.hours, drillAt) : -Infinity;
   const drillReached = useMemo(() => drill.breakdown || pinned ? transfersAt(scoped, drillThrough, rangeFrom, wholeCampaign) : NO_TRANSFERS,
     [drill.breakdown, pinned, scoped, drillThrough, rangeFrom, wholeCampaign]);
