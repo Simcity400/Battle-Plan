@@ -11,6 +11,7 @@ doctest = false
 
 [features]
 test-support = [
+    "dep:recorder-derive",
     "content-reader-core/test-support",
     "content-reader-country-names/test-support",
     "content-reader-gfx/test-support",
@@ -61,6 +62,7 @@ test-support = [
 ]
 
 [dependencies]
+recorder-derive = { workspace = true, optional = true }
 content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
 content-reader-gfx = { workspace = true }
@@ -121,6 +123,7 @@ viewer-world = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+recorder-derive.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
@@ -142,7 +145,6 @@ recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

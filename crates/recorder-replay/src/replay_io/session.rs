@@ -558,13 +558,14 @@ impl Campaign {
         let state_path = campaign_dir.join(STATE_FILE);
         let source = source_of(session_dir)?;
         let open = || {
-            LiveWriter::open(
+            LiveWriter::open_with(
                 &path,
                 &state_path,
                 &source,
                 capture,
                 block_settings(),
                 Vec::new(),
+                recorder_derive::writers(),
             )
         };
         let writing = read_writing(&campaign_dir)?;

@@ -73,7 +73,7 @@ fn frame(hour: i32) -> DecodedFrame {
 
 fn recording() -> Source {
     let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "politics".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
@@ -196,7 +196,7 @@ fn a_holders_schedule_across_its_raw_ids_is_in_hour_order() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "politics-ids".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None };

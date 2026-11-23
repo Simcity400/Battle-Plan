@@ -343,6 +343,7 @@ mod tests {
             },
         };
         let bytes = replay::campaign::fixtures::encode_records(
+            recorder_derive::writers(),
             CAMPAIGN.as_bytes().to_vec(),
             &[vec![replay::spool::Record::SessionStart(session)]],
         )

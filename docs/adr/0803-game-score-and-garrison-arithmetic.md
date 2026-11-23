@@ -4,4 +4,4 @@ The end-screen score writer keeps the game's fixed-point operation order, includ
 
 Garrison strength is derived before playback so the cell can be read without decoding its opaque equipment operands. Sum assigned manpower with wrapping arithmetic over the occupation state's rows whose resolved controller and occupied countries match the garrison. An incomplete assignment table or unresolved assignment identity in that state can make the sum unknown. Missing equipment operands and a refused capture remain distinct from zero assigned manpower or an explicit game requirement failure. The game's low-64-bit products, signed division and sentinel handling apply. Each repeated fixed5 multiplication rounds separately, so exponentiation by squaring would change the result. The weaker manpower and equipment result sets the strength.
 
-[Game score writer](../../crates/recorder-derive/src/game_score.rs) · [Garrison strength writer](../../crates/recorder-derive/src/garrison_strength.rs)
+[Game score writer](../../crates/recorder-derive-politics/src/game_score.rs) · [Garrison strength writer](../../crates/recorder-derive-land/src/garrison_strength.rs)

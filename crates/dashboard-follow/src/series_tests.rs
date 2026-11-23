@@ -104,7 +104,7 @@ fn replay() -> &'static Replay {
             input.scope_to(CaptureMode::Full);
             records.push(Record::Frame(encoder.encode_input(input, false).unwrap()));
         }
-        Replay::from_records(b"follow".to_vec(), &[records]).unwrap()
+        Replay::from_records(recorder_derive::writers(), b"follow".to_vec(), &[records]).unwrap()
     })
 }
 
@@ -265,7 +265,7 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
 fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_seek() {
     use crate::{Follow, Message, Sink, StepStats, decode};
     use playhead::{Playhead, Settings as PlaySettings, Timeline as PlayTimeline};
-    use recorder_derive::framework::{
+    use recorder_derive_framework::framework::{
         Definitions,
         definitions::{Define, Form},
     };
@@ -367,7 +367,7 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
     let key = SectionKey::derived(TableId::SupplyHealth.index() as u32);
 
     let file = FileWriter::create(Cursor::new(Vec::new()), identity_env.clone(), TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(definitions());
     write_hours(&mut writer, first_v1, last_v1);
     let mut file = writer.finish().unwrap();
@@ -386,7 +386,7 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
     let root = container::read_root(v1_bytes.as_slice(), &extent).unwrap();
     let at = container::Revision { number: root.revision, length, root: extent.digest };
     let file = FileWriter::resume(Cursor::new(v1_bytes), Resumed { root, at, last: Some((1, last_v1)), open: None }, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(definitions());
     write_hours(&mut writer, first_v2, last_v2);
     let two_run_bytes = writer.finish().unwrap().finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
@@ -396,7 +396,7 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
     assert!(!held_v1_run[TableId::SupplyHealth.index()], "pure v1 run of mixed recording must not be held by dashboard-follow");
 
     let file = FileWriter::create(Cursor::new(Vec::new()), identity_env, TABLE_COUNT, Settings { level: 1 }, None).unwrap();
-    let mut writer = HourWriter::new(file, 1).unwrap();
+    let mut writer = HourWriter::new(file, 1, recorder_derive::writers()).unwrap();
     writer.define(definitions());
     write_hours(&mut writer, first_v1, last_v2);
     let mut file = writer.finish().unwrap();
