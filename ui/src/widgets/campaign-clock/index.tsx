@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import CampaignClockWidget from './CampaignClockWidget';
+import { campaignClockDeclaration } from './clockProjection';
 
-export default { render: CampaignClockWidget } satisfies WidgetRenderer;
+export default { declaration: campaignClockDeclaration } satisfies WidgetRenderer;

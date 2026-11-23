@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
+import { liveKey } from '../live.ts';
+import type { LiveValues } from '../live';
 import { usNumber } from '../numberFormat.ts';
 import { tooltipHeight } from '../tooltip.ts';
-import type { TooltipContent } from '../tooltip';
+import type { TooltipContent, TooltipRow } from '../tooltip';
 import { isMissing } from './logic.ts';
 import type { SortValue, SortDirection } from './logic';
 
@@ -15,7 +17,7 @@ export interface TableColumn<T> {
   render?: (row: T) => ReactNode;
   paint?: (value: NonNullable<SortValue>, key: string) => string;
   sortsLive?: boolean;
-  missingText?: (key: string) => string;
+  missingText?: (key: string, reason: string) => string;
   barOf?: (row: T) => number | bigint | null | 'cell';
   barCell?: { id: string; value?: (value: number) => number | bigint; tone?: (value: number) => string | undefined };
   cellClass?: (row: T) => string | undefined;
@@ -76,10 +78,26 @@ export function cellContent<T>(column: TableColumn<T>, row: T, value = column.va
   return column.render ? column.render(row) : isMissing(value) ? '—' : String(value);
 }
 
+export function hiddenText<T>(column: TableColumn<T>, row: T, key: string, values: LiveValues<SortValue> | null): { value: string; detail?: string } {
+  if (column.paint && values) {
+    const cellKey = liveKey(key, column.key), value = values.get(cellKey);
+    if (value == null || isMissing(value)) {
+      const reason = values.missing(cellKey);
+      const shown = column.missingText?.(cellKey, reason) ?? '—';
+      return reason && reason !== shown ? { value: reason, detail: reason } : { value: shown };
+    }
+    return { value: column.paint(value, cellKey) };
+  }
+  return { value: cellText(column, row) };
+}
+
 export function withHidden<T>(content: TooltipContent | null, row: T, hidden: readonly TableColumn<T>[], shown: readonly TableColumn<T>[],
-  key: string, viewportHeight: number): TooltipContent | null {
+  key: string, viewportHeight: number, values: LiveValues<SortValue> | null = null): TooltipContent | null {
   if (!hidden.length) return content;
-  const rows = hidden.map((column, index) => ({ label: column.label, value: cellText(column, row), divider: index === 0 && !!content?.rows.length }));
+  const rows: TooltipRow[] = hidden.map((column, index) => {
+    const cell = hiddenText(column, row, key, values);
+    return { label: column.label, value: cell.value, ...(cell.detail ? { detail: cell.detail, tone: 'muted' as const } : {}), divider: index === 0 && !!content?.rows.length };
+  });
   const first = shown[0];
   const combined: TooltipContent = content
     ? { ...content, rows: [...content.rows, ...rows], spoken: content.spoken && [content.spoken, ...rows.map(item => `${item.label} ${item.value}`)].join('; ') }

@@ -27,7 +27,7 @@ test('each recording keeps its own choice, with the title it is shown by, and no
     'a choice saved before titles were kept flies the same model without showing its registered name');
   storage.items.set('battleplan:fly-aircraft:C:/d.battleplan', '{"title":"Fighter I"}');
   assert.equal(loadAircraftChoice('C:/d.battleplan', storage), null);
-  assert.equal(aircraftTitle({ titles: ['Fighter I', 'Fighter II'], name: 'fighter_entity' }), 'Fighter I / Fighter II');
+  assert.equal(aircraftTitle({ titles: ['Fighter I', 'Fighter II'], name: 'fighter_entity' }), 'Fighter I', 'the first title names it, as the list sorts it');
   assert.equal(aircraftTitle({ titles: [], name: 'jet_mesh' }), 'Jet');
   assert.equal(aircraftTitle({ titles: [], name: 'GER_cas_equipment_2_entity' }), 'GER cas equipment 2');
 });

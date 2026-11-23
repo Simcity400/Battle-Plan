@@ -55,7 +55,8 @@ pub struct ApmMembership {
 #[serde(rename_all = "camelCase")]
 pub struct ApmPlayer {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
     pub tags: Vec<String>,
 }
 
@@ -87,7 +88,8 @@ pub struct ApmBucket {
 #[serde(rename_all = "camelCase")]
 pub struct ApmSeries {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
     pub tag: Option<String>,
     pub hour: i32,
     pub summary: ApmValue,
@@ -195,8 +197,12 @@ fn player_id(timeline: &Timeline, actor: u64, history: &[replay_recording::comma
     id
 }
 
-fn player_name(observation: &replay_recording::command_packet::Actor) -> String {
-    String::from_utf8(observation.name.clone()).unwrap_or_else(|_| "Player name unavailable".into())
+pub(super) fn player_name(observation: &replay_recording::command_packet::Actor) -> Result<String, String> {
+    match std::str::from_utf8(&observation.name) {
+        Ok(name) if !name.trim().is_empty() => Ok(name.to_owned()),
+        Ok(_) => Err("Player name was not recorded.".into()),
+        Err(_) => Err("Player name is not valid UTF-8.".into()),
+    }
 }
 
 fn tag(bytes: &[u8]) -> Option<&str> {
@@ -252,7 +258,8 @@ impl Amount {
 
 #[derive(Default)]
 struct Series {
-    name: String,
+    name: Option<String>,
+    name_missing: Option<String>,
     tag: Option<String>,
     total: Amount,
     buckets: BTreeMap<i64, Amount>,
@@ -407,7 +414,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
         warnings: Vec::new(),
     };
     if params.registry {
-        let mut players: BTreeMap<String, ((u64, u64), String, BTreeSet<String>)> = BTreeMap::new();
+        let mut players: BTreeMap<String, ((u64, u64), Option<String>, Option<String>, BTreeSet<String>)> = BTreeMap::new();
         for timeline in &index.timelines {
             for (&actor, history) in &timeline.actors {
                 let tags: Vec<_> = history.iter().filter_map(|actor| tag(&actor.tag)).collect();
@@ -420,16 +427,26 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                 let at = (timeline.session, last.at_qpc);
                 if entry.0 <= at {
                     entry.0 = at;
-                    entry.1 = player_name(last);
+                    match player_name(last) {
+                        Ok(name) => {
+                            entry.1 = Some(name);
+                            entry.2 = None;
+                        }
+                        Err(reason) => {
+                            entry.1 = None;
+                            entry.2 = Some(reason);
+                        }
+                    }
                 }
-                entry.2.extend(tags.into_iter().map(str::to_owned));
+                entry.3.extend(tags.into_iter().map(str::to_owned));
             }
         }
         reply.players = players
             .into_iter()
-            .map(|(id, (_, name, tags))| ApmPlayer {
+            .map(|(id, (_, name, name_missing, tags))| ApmPlayer {
                 id,
                 name,
+                name_missing,
                 tags: tags.into_iter().collect(),
             })
             .collect();
@@ -527,11 +544,21 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                 let entry = series.entry(id.clone()).or_default();
                 let display_at = (timeline.session, observation.at_qpc);
                 if entry.display_at <= display_at {
-                    entry.name = if params.group == ApmGroup::Country {
-                        tag.to_owned()
+                    if params.group == ApmGroup::Country {
+                        entry.name = Some(tag.to_owned());
+                        entry.name_missing = None;
                     } else {
-                        player_name(observation)
-                    };
+                        match player_name(observation) {
+                            Ok(name) => {
+                                entry.name = Some(name);
+                                entry.name_missing = None;
+                            }
+                            Err(reason) => {
+                                entry.name = None;
+                                entry.name_missing = Some(reason);
+                            }
+                        }
+                    }
                     entry.tag = Some(tag.to_owned());
                     entry.display_at = display_at;
                 }
@@ -641,6 +668,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
             ApmSeries {
                 id,
                 name: series.name,
+                name_missing: series.name_missing,
                 tag: series.tag,
                 hour: series.total.last_hour.unwrap(),
                 summary: series.total.value(),
@@ -819,8 +847,8 @@ mod tests {
             .unwrap()
             .players;
         assert_eq!(players.len(), 2);
-        assert_eq!(players[0].name, "renamed");
-        assert_eq!(players[1].name, "same name");
+        assert_eq!(players[0].name.as_deref(), Some("renamed"));
+        assert_eq!(players[1].name.as_deref(), Some("same name"));
         let reply = query(
             &index,
             &params(ApmGroup::Player, 100, 101),
@@ -861,7 +889,7 @@ mod tests {
             .find(|series| series.id.ends_with(":1"))
             .unwrap();
         assert_eq!(player.tag.as_deref(), Some("GER"));
-        assert_eq!(player.name, "same name");
+        assert_eq!(player.name.as_deref(), Some("same name"));
         assert_eq!(player.summary.apm, Some(1.0));
         assert_eq!(player.summary.paused_orders, None);
     }

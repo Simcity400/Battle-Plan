@@ -1523,6 +1523,10 @@ fn walk_below(
 }
 
 impl ResolvedLayer {
+    pub fn visual_mod_name(&self) -> Option<&str> {
+        self.overlay.as_ref().map(|overlay| overlay.name.as_str())
+    }
+
     fn verifies(&self) -> bool {
         self.facts.is_none() && self.overlay.as_ref().is_none_or(|overlay| overlay.verified)
     }
@@ -1565,7 +1569,7 @@ impl ResolvedLayer {
             .then(|| unproven(prefix, self.coverage))
     }
 
-    fn dlc_name(&self) -> io::Result<Option<String>> {
+    pub fn dlc_name(&self) -> io::Result<Option<String>> {
         if let Some(facts) = &self.facts {
             let layer = facts.layer();
             return match (&layer.dlc_name, self.role) {
@@ -3338,10 +3342,17 @@ impl ResolvedLayers {
         Ok(hit.is_some())
     }
 
-    pub fn layer_index(&self, relative: &str) -> Option<usize> {
-        self.effective
-            .get(&relative.as_bytes().to_ascii_lowercase())
-            .map(|file| file.layer)
+    pub fn layer_index(&self, relative: impl AsRef<[u8]>) -> Option<usize> {
+        let relative = sanitize(relative.as_ref())?;
+        let hit = self
+            .resolved_file(&relative, !self.covered_path(&relative))
+            .ok()?;
+        let hit = hit.as_ref().as_ref()?;
+        hit.folder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        Some(hit.layer)
     }
 
     pub fn read(&self, relative: &str) -> io::Result<Bytes> {
@@ -3757,24 +3768,10 @@ impl ResolvedLayers {
     }
 
     pub fn supplied_by_visual_mod(&self, relative: impl AsRef<[u8]>) -> bool {
-        if !self.shows_visual_mods() {
-            return false;
-        }
-        let Some(relative) = sanitize(relative.as_ref()) else {
-            return false;
-        };
-        let layer = self
-            .resolved_file(&relative, !self.covered_path(&relative))
-            .ok()
-            .and_then(|hit| {
-                let hit = hit.as_ref().as_ref()?;
-                hit.folder
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                Some(hit.layer)
-            });
-        layer.is_some_and(|layer| self.layers[layer].overlay.is_some())
+        self.shows_visual_mods()
+            && self
+                .layer_index(relative)
+                .is_some_and(|layer| self.layers[layer].overlay.is_some())
     }
 
     pub fn shows_visual_mods(&self) -> bool {
@@ -3784,7 +3781,7 @@ impl ResolvedLayers {
     pub fn visual_mod_names(&self) -> Vec<String> {
         self.layers
             .iter()
-            .filter_map(|layer| layer.overlay.as_ref().map(|overlay| overlay.name.clone()))
+            .filter_map(|layer| layer.visual_mod_name().map(str::to_owned))
             .collect()
     }
 

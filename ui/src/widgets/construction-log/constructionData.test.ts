@@ -574,3 +574,89 @@ test('over a block the log holds each row\'s states, at every hour exactly that 
     for (const row of playback.states(130, 130)) assert.ok(keys.has(row.key), `${row.key} keeps its key in the block from 130`);
   }
 });
+
+test('unread built counters stay per-hour and unknown kind or source stay missing and never read as zero or known from output', () => {
+  const unreadBuilt = project({ id: '20', runs: [{ firstHour: 100, lastHour: 147, factories: 10, remaining: 2, repairLevels: 0 }], builtUnread: [[110, 125]] });
+  validateConstructionLogWindow(windowOf([unreadBuilt]));
+  assert.equal(builtLabel(projectAt(unreadBuilt, 105)!), '0 of 2', 'recorded zero before unread span stays zero');
+  const atUnread = projectAt(unreadBuilt, 120)!;
+  assert.equal(builtLabel(atUnread), 'Not recorded');
+  assert.equal(levelsLabel(atUnread), 'Not recorded');
+  const tipUnread = projectTooltip(logOf([unreadBuilt]), atUnread, 120, 'Germany')[0];
+  assert.deepEqual(tipUnread.rows.find(row => row.label === 'Levels built'), { label: 'Levels built', value: 'Not recorded', tone: 'muted' });
+  assert.equal(builtLabel(projectAt(unreadBuilt, 130)!), '0 of 2', 'recorded zero after unread span stays zero');
+  const playback = constructionPlayback(logOf([unreadBuilt]), every, 'start');
+  assert.equal(playback.at(105)[0].item.countersUnread, false);
+  assert.equal(playback.at(120)[0].item.countersUnread, true);
+  assert.equal(playback.at(130)[0].item.countersUnread, false);
+
+  const censusMissingCreated = project({ id: '21', source: 'census', createdHour: null, firstRead: 100, runs: [{ firstHour: 100, lastHour: 147, factories: 10, remaining: 2, repairLevels: 0 }] });
+  const tipCensus = projectTooltip(logOf([censusMissingCreated]), projectAt(censusMissingCreated, 120)!, 120, 'Germany')[0];
+  assert.deepEqual(tipCensus.rows.find(row => row.label === 'Started'), { label: 'Started', value: 'Not recorded', tone: 'muted' });
+  assert.ok(!tipCensus.rows.some(row => row.value === 'Known from output'), 'a census project with missing createdHour never claims Known from output');
+
+  const unknown = project({ id: '22', kind: 'unknown', source: 'unknown', censusRead: null, repair: null, createdHour: null, runs: [] });
+  validateConstructionLogWindow(windowOf([unknown]));
+  const atUnknown = projectAt(unknown, 120)!;
+  assert.deepEqual([atUnknown.status, atUnknown.kind, builtLabel(atUnknown), levelsLabel(atUnknown)], ['unread', 'unknown', 'Not recorded', null]);
+  const tipUnknown = projectTooltip(logOf([unknown]), atUnknown, 120, 'Germany')[0];
+  assert.equal(tipUnknown.rows.find(row => row.label === 'Source')?.value, 'Not recorded');
+  assert.equal(tipUnknown.rows.find(row => row.label === 'Progress')?.value, 'Not recorded');
+
+  const unknownSourceWithBuilds = project({
+    id: '25', source: 'unknown', censusRead: 100, createdHour: 90, runs: [{ firstHour: 100, lastHour: 109, factories: 5, remaining: 2, repairLevels: 0 }],
+    built: [{ hour: 108, knownAt: 110, count: 2, repair: false, carried: false }], end: { kind: 'finished', hour: 108, knownAt: 110, unknown: null },
+  });
+  const atUnknownSource = projectAt(unknownSourceWithBuilds, 110)!;
+  assert.equal(builtLabel(atUnknownSource), '2 of 2', 'an unread source flag still shows recorded completions from counter evidence');
+  assert.equal(levelsLabel(atUnknownSource), '×2');
+  const tipUnknownSource = projectTooltip(logOf([unknownSourceWithBuilds]), atUnknownSource, 110, 'Germany')[0];
+  assert.deepEqual(tipUnknownSource.rows.find(row => row.label === 'Source'), { label: 'Source', value: 'Not recorded', tone: 'muted' });
+  assert.equal(tipUnknownSource.rows.find(row => row.label === 'Levels built')?.value, '2 of 2');
+  assert.equal(tipUnknownSource.rows.find(row => row.label === 'Factories at its last read')?.value, '5');
+  assert.match(describeRow(logOf([unknownSourceWithBuilds]), logRows(logOf([unknownSourceWithBuilds]), 110, every, 'change')[0], 'Germany'), /×2.*source not recorded/);
+
+  const recovered = project({
+    id: '26', runs: [{ firstHour: 100, lastHour: 119, factories: 5, remaining: 1, repairLevels: 0 }],
+    built: [{ hour: 108, knownAt: 110, count: 1, repair: false, carried: false }], builtUnread: [[100, 109]],
+  });
+  const atRecovered = projectAt(recovered, 110)!;
+  assert.deepEqual([atRecovered.changed, atRecovered.changedBy, atRecovered.countersUnread], [108, false, false]);
+  assert.ok(jumpHours(atRecovered, 110).includes(108), 'a dated rise after an unread step offers the 108 jump');
+
+  const truncatedOmission = project({
+    id: '27', runs: [{ firstHour: 100, lastHour: 105, factories: 5, remaining: 2, repairLevels: 0 }],
+    built: [], builtUnread: [[104, 105]],
+  });
+  const atTruncated = projectAt(truncatedOmission, 106)!;
+  assert.equal(atTruncated.countersUnread, false);
+  assert.equal(builtLabel(atTruncated), '0 of 2', 'a truncated omission keeps main count display at 106');
+
+  const boundaryWin0 = project({ id: '28', runs: [{ firstHour: 100, lastHour: 119, factories: 5, remaining: 2, repairLevels: 0 }],
+    built: [{ hour: 110, knownAt: 110, count: 1, repair: false, carried: false }] });
+  const boundaryWin1 = project({ id: '28', runs: [{ firstHour: 120, lastHour: 140, factories: 5, remaining: 1, repairLevels: 0 }],
+    built: [{ hour: null, knownAt: 120, count: 2, repair: false, carried: true }] });
+  assert.equal(projectAt(joinProject(boundaryWin0, boundaryWin1), 120)!.built, 2, 'a rise from 1 to 2 at a window boundary shows 2 instead of dropping incoming carry');
+
+  const joined = joinProject(unreadBuilt, { ...unknown, id: '20', builtUnread: [[126, 130]] });
+  assert.deepEqual(joined.builtUnread, [[110, 130]]);
+  assert.equal(joined.kind, 'building');
+  assert.equal(joined.source, 'census', 'joinProject keeps an earlier witnessed source when a later window has unknown source');
+
+  const unreadWin0 = project({ id: '23', runs: [{ firstHour: 100, lastHour: 110, factories: 10, remaining: 3, repairLevels: 0 }], built: [], builtUnread: [[100, 110]] });
+  const win1Carried = project({ id: '23', runs: [{ firstHour: 111, lastHour: 120, factories: 10, remaining: 1, repairLevels: 0 }],
+    built: [{ hour: null, knownAt: 112, count: 2, repair: false, carried: true }] });
+  const joinedCarried = joinProject(unreadWin0, win1Carried);
+  assert.equal(projectAt(joinedCarried, 105)!.built, 0);
+  assert.equal(projectAt(joinedCarried, 105)!.countersUnread, true);
+  assert.equal(projectAt(joinedCarried, 112)!.built, 2, 'carried built count after an unread window is never dropped at the join');
+  assert.equal(projectAt(joinedCarried, 112)!.countersUnread, false);
+
+  const partialWin0 = project({ id: '24', runs: [{ firstHour: 100, lastHour: 110, factories: 10, remaining: 3, repairLevels: 0 }],
+    built: [{ hour: 102, knownAt: 102, count: 1, repair: false, carried: false }], builtUnread: [[105, 110]] });
+  const win1Risen = project({ id: '24', runs: [{ firstHour: 111, lastHour: 120, factories: 10, remaining: 0, repairLevels: 0 }],
+    built: [{ hour: null, knownAt: 112, count: 3, repair: false, carried: true }] });
+  const joinedDelta = joinProject(partialWin0, win1Risen);
+  assert.equal(projectAt(joinedDelta, 104)!.built, 1);
+  assert.equal(projectAt(joinedDelta, 112)!.built, 3, 'carried cumulative count adds only the unseen delta above window 0');
+});

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
-import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleWarnings, navalBattleWindows,
+import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleState, navalBattleWarnings, navalBattleWindows,
   navalWindowPlaces, rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
   NAVAL_BATTLE_DEFAULT_MEASURE } from './navalBattlesData.ts';
-import { battleChangeHours, battlePlaceRequests, battlePlaceText, battleTooltip, namedBattles, isBattleRow } from '../battles/battleRows.ts';
+import { battleChangeHours, battleJumpHour, battlePlaceRequests, battlePlaceText, battleStateRows, battleTooltip, namedBattles, isBattleRow } from '../battles/battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { registerWidgets, widgetUnavailable } from '../../dashboard/definitions.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
@@ -249,20 +249,35 @@ test('the log renders at window starts, reads and each battle run edge, never ho
     'an unavailable manifest names why');
 });
 
-test('per-run province ids stay unrecorded on early runs and never show as unnamed province', () => {
+test('per-run province ids stay unrecorded on early runs, name later provinces at their observed hour, and update in follow playback', () => {
   const early = run(100, 104, false, null);
   const late = run(105, 109, false, 45);
+  late.row.place.namedAt = 105;
   const data = reply([{ id: 'combat:900:100', provinceId: 45, runs: [early, late] }]);
   validateNavalBattlesReply(data);
   const windows = new Map([[0, data]]);
-  assert.deepEqual(navalWindowPlaces(windows), [{ provinceId: 45, hour: 100 }]);
+  assert.deepEqual(navalWindowPlaces(windows), [{ provinceId: 45, hour: 105 }]);
   const before = navalBattleRows(windows, 102, () => true, true)[0];
   const after = navalBattleRows(windows, 107, () => true, true)[0];
   assert.equal(before.provinceId, null);
   assert.equal(after.provinceId, 45);
+  assert.equal(after.place.hour, 100);
+  assert.equal(after.place.namedAt, 105);
+  assert.equal(battleJumpHour(after), 100);
   const labels = { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
     ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unrecordedPlace: 'Province not recorded', unknownStart: 'Start not recorded' };
   assert.equal(battlePlaceText(before, labels, true), 'Province not recorded');
   assert.equal(battleTooltip(before, labels, tag => ({ name: tag })).title, 'Province not recorded');
   assert.equal(battlePlaceText(after, labels, false), 'Unnamed province');
+
+  const known = run(100, 104, false, 500);
+  const dropped = run(105, 109, false, null);
+  const dropWindows = new Map([[0, reply([{ id: 'combat:900:100', provinceId: 500, runs: [known, dropped] }])]]);
+  assert.equal(navalBattleRows(dropWindows, 102, () => true, true)[0].provinceId, 500);
+  assert.equal(navalBattleRows(dropWindows, 107, () => true, true)[0].provinceId, null);
+  const states = battleStateRows([100, 105], at => navalBattleRows(dropWindows, at, () => true, true), true, navalBattleState);
+  assert.equal(states.length, 2);
+  assert.equal(states[0].item.provinceId, 500);
+  assert.equal(states[1].revealedHour, 105);
+  assert.equal(states[1].item.provinceId, null);
 });

@@ -5,7 +5,7 @@ import type { BattleViewAdapter } from '../battles/BattleLogView';
 import type { BattleMeasure, BattleSideSummary } from '../battles/battleRows';
 import { battleValueText } from '../battles/battleRows';
 import { definition } from './definition';
-import { navalBattleChanges, navalBattleRow, navalBattleRows, navalRunDetails, navalWindowPlaces, rankedNavalBattleRows,
+import { navalBattleChanges, navalBattleRow, navalBattleRows, navalBattleState, navalRunDetails, navalWindowPlaces, rankedNavalBattleRows,
   validateNavalBattlesManifest, validateNavalBattlesReply, validateNavalBattlesRanking,
   navalBattleSize, navalBattleMeasureText, NAVAL_BATTLE_SIZE_LABELS } from './navalBattlesData.ts';
 import type { NavalBattleRow } from './navalBattlesData';
@@ -22,7 +22,7 @@ const SIDES: BattleSideSummary = { label: 'Sides', countLabel: 'Ships', separato
   formatCount: (value, compact) => `${battleValueText(value)}${compact || value.value === null ? '' : value.value === 1 ? ' ship' : ' ships'}` };
 const adapter: BattleViewAdapter<NavalBattleRow, NavalBattlesReply, NavalBattlesRankingReply> = {
   definition, product: 'naval-battles', validateManifest: validateNavalBattlesManifest, validateWindow: validateNavalBattlesReply,
-  validateRanking: validateNavalBattlesRanking, rows: navalBattleRows, row: navalBattleRow, changes: navalBattleChanges, windowPlaces: navalWindowPlaces,
+  validateRanking: validateNavalBattlesRanking, rows: navalBattleRows, row: navalBattleRow, changes: navalBattleChanges, state: navalBattleState, windowPlaces: navalWindowPlaces,
   rankedRows: rankedNavalBattleRows,
   labels: { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
     ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unrecordedPlace: 'Province not recorded', unknownStart: 'Start not recorded' },

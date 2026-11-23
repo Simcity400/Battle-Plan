@@ -19,6 +19,14 @@ fn step(hour: i32, set: &[(usize, i64)]) -> Step {
     Step { hour, cells: Some(row(set)) }
 }
 
+fn step_with_unrecorded(hour: i32, set: &[(usize, i64)], unrecorded: &[usize]) -> Step {
+    let mut cells = row(set);
+    for &column in unrecorded {
+        cells[column] = Cell::Unrecorded;
+    }
+    Step { hour, cells: Some(cells) }
+}
+
 fn census(factories: i64, remaining: i64, built: i64, repaired: i64, more: &[(usize, i64)]) -> Vec<(usize, i64)> {
     let mut set = vec![
         (col::KIND, i64::from(P::BUILDING)),
@@ -93,7 +101,7 @@ fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
     assert_eq!(rise_hours(&steps), [120, 168, 192]);
     let dated = Rises { built: vec![ConstructionRise { hour: 117, count: 1 }], repaired: Vec::new() };
     let rises = |hour: i32| (hour == 120).then_some(&dated);
-    let Assembled::Project(project) = assemble(5, &steps, 199, &rises, &tag) else { panic!("the line is shown and named") };
+    let Assembled::Project(project) = assemble(5, &steps, 199, &[], &rises, &tag) else { panic!("the line is shown and named") };
     assert_eq!((project.id.as_str(), project.tag.as_str(), project.source, project.building, project.state), ("5", "AAA", ProjectSource::Census, Some(300), Some(12)));
     assert_eq!(project.first_read, 90);
     assert_eq!(project.repair, Some(false));
@@ -130,19 +138,113 @@ fn an_output_alone_line_keeps_its_origin_and_an_unresolved_owner_is_left_out() {
     taken.push((col::FIRST_READ, 50));
     let steps = vec![step(50, &alone(7)), step(90, &taken)];
     let none = |_: i32| -> Option<&Rises> { None };
-    let Assembled::Project(project) = assemble(6, &steps, 99, &none, &tag) else { panic!("named") };
+    let Assembled::Project(project) = assemble(6, &steps, 99, &[], &none, &tag) else { panic!("named") };
     assert_eq!(project.source, ProjectSource::Census);
     let origin = project.output_origin.as_ref().unwrap();
     assert_eq!((origin.tag.as_str(), origin.building, origin.state), ("AAA", Some(301), Some(4)));
     assert_eq!(project.runs.len(), 1);
     assert_eq!(project.runs[0].first_hour, 90);
-    assert!(matches!(assemble(8, &[step(50, &alone(9))], 99, &none, &tag), Assembled::Unnamed));
-    assert!(matches!(assemble(8, &[Step { hour: 50, cells: None }], 99, &none, &tag), Assembled::Hidden));
+    assert!(matches!(assemble(8, &[step(50, &alone(9))], 99, &[], &none, &tag), Assembled::Unnamed));
+    assert!(matches!(assemble(8, &[Step { hour: 50, cells: None }], 99, &[], &none, &tag), Assembled::Hidden));
     let unknown = census(0, 0, 0, 0, &[(col::END, i64::from(P::UNKNOWN_END)), (col::END_REASON, i64::from(P::SHARED_TARGET)), (col::END_KNOWN_AT, 96)]);
-    let Assembled::Project(gone) = assemble(9, &[step(96, &unknown)], 99, &none, &tag) else { panic!("named") };
+    let Assembled::Project(gone) = assemble(9, &[step(96, &unknown)], 99, &[], &none, &tag) else { panic!("named") };
     let end = gone.end.clone().unwrap();
     assert_eq!((end.kind, end.hour, end.known_at, end.unknown), (EndKind::Unknown, None, 96, Some(UnknownEnd::SharedTarget)));
     assert!(gone.runs.is_empty(), "a gone line holds no run");
+}
+
+#[test]
+fn unread_project_counters_and_classification_fields_stay_unknown_never_defaulted() {
+    let none = |_: i32| -> Option<&Rises> { None };
+    let levels = |hour, known_at, count, repair, carried| LevelsBuilt { hour, known_at, count, repair, carried };
+    let base = census(2, 2, 0, 0, &[]);
+    let Assembled::Project(partial) = assemble(
+        10,
+        &[step(100, &base), step_with_unrecorded(110, &base, &[col::BUILT]), step(120, &base)],
+        129,
+        &[],
+        &none,
+        &tag,
+    ) else { panic!("named") };
+    assert!(partial.built.is_empty());
+    assert_eq!(partial.built_unread, Some(vec![(110, 119)]), "an unread built counter records only the unread hour spans");
+    assert_eq!(partial.repaired_unread, None, "a recorded zero repaired counter is not marked unread");
+
+    let Assembled::Project(unknown) = assemble(
+        11,
+        &[step_with_unrecorded(100, &base, &[col::KIND, col::OUTPUT_ALONE, col::REPAIR_LEVELS, col::END])],
+        105,
+        &[],
+        &none,
+        &tag,
+    ) else { panic!("named") };
+    assert_eq!(unknown.kind, ProjectKind::Unknown, "unread kind is unknown, not building");
+    assert_eq!(unknown.source, ProjectSource::Unknown, "unread output_alone is unknown, not census");
+    assert_eq!(unknown.repair, None, "unread repair_levels stays absent, never false");
+    assert!(unknown.runs.is_empty(), "unread repair_levels never fabricates an open run");
+
+    let Assembled::Project(no_repair) = assemble(12, &[step_with_unrecorded(100, &base, &[col::REPAIR_LEVELS])], 105, &[], &none, &tag) else { panic!("named") };
+    assert_eq!(no_repair.source, ProjectSource::Census);
+    assert_eq!(no_repair.repair, None, "a census line with unread repair_levels leaves repair absent");
+
+    let Assembled::Project(no_end) = assemble(13, &[step_with_unrecorded(100, &census(5, 2, 0, 0, &[]), &[col::END])], 105, &[], &none, &tag) else { panic!("named") };
+    assert_eq!(no_end.end, None);
+    assert_eq!(
+        no_end.runs,
+        [ProjectRun { first_hour: 100, last_hour: 105, factories: 5, remaining: 2, repair_levels: 0 }],
+        "a census row with only END unread retains its witnessed factories and remaining levels"
+    );
+
+    let gone = Step { hour: 106, cells: None };
+    let started_one = census(2, 1, 1, 0, &[]);
+    let Assembled::Project(disappeared) = assemble(
+        14,
+        &[step(100, &started_one), step_with_unrecorded(104, &started_one, &[col::BUILT]), gone.clone()],
+        120,
+        &[],
+        &none,
+        &tag,
+    ) else { panic!("named") };
+    assert_eq!(disappeared.built, [levels(None, 100, 1, false, true)]);
+    assert_eq!(disappeared.built_unread, Some(vec![(104, 120)]), "unread final counter stays uncertain through window end after the row disappears");
+
+    let resolved_steps = vec![step(100, &started_one), step_with_unrecorded(104, &started_one, &[col::BUILT]), gone.clone(), step(108, &census(2, 0, 2, 0, &[]))];
+    assert_eq!(rise_hours(&resolved_steps), [108]);
+    let rise_108 = Rises { built: vec![ConstructionRise { hour: 107, count: 1 }], repaired: Vec::new() };
+    let rises_108 = |hour: i32| (hour == 108).then_some(&rise_108);
+    let Assembled::Project(resolved) = assemble(15, &resolved_steps, 120, &[], &rises_108, &tag) else { panic!("named") };
+    assert_eq!(resolved.built, [levels(None, 100, 1, false, true), levels(Some(107), 108, 1, false, false)]);
+    assert_eq!(resolved.built_unread, Some(vec![(104, 107)]), "a later recorded counter resolves the earlier unread span");
+
+    let recovered_steps = vec![step_with_unrecorded(100, &census(5, 2, 0, 0, &[]), &[col::BUILT]), step(110, &census(5, 1, 1, 0, &[]))];
+    assert_eq!(rise_hours(&recovered_steps), [110], "a counter becoming readable after an unread step looks up its recorded rises");
+    let rise_110 = Rises { built: vec![ConstructionRise { hour: 108, count: 1 }], repaired: Vec::new() };
+    let rises_110 = |hour: i32| (hour == 110).then_some(&rise_110);
+    let Assembled::Project(recovered) = assemble(16, &recovered_steps, 120, &[], &rises_110, &tag) else { panic!("named") };
+    assert_eq!(recovered.built, [levels(Some(108), 110, 1, false, false)], "recorded rise list dates the build to 108 instead of marking it carried");
+    assert_eq!(recovered.built_unread, Some(vec![(100, 109)]));
+
+    let Assembled::Project(kept_source) = assemble(
+        17,
+        &[step(100, &census(5, 2, 0, 0, &[])), step_with_unrecorded(110, &census(5, 2, 0, 0, &[]), &[col::OUTPUT_ALONE])],
+        120,
+        &[],
+        &none,
+        &tag,
+    ) else { panic!("named") };
+    assert_eq!(kept_source.source, ProjectSource::Census, "an unread output_alone later in the window keeps earlier witnessed census source");
+    assert_eq!(kept_source.runs, [ProjectRun { first_hour: 100, last_hour: 120, factories: 5, remaining: 2, repair_levels: 0 }]);
+
+    let Assembled::Project(truncated_gap) = assemble(
+        18,
+        &[step(100, &census(5, 2, 0, 0, &[])), step_with_unrecorded(104, &census(5, 2, 0, 0, &[]), &[col::BUILT]), gone],
+        120,
+        &[(106, 106)],
+        &none,
+        &tag,
+    ) else { panic!("named") };
+    assert_eq!(truncated_gap.built_unread, Some(vec![(104, 105)]), "a truncated omission closes the unread span before the truncated hour");
+    assert_eq!(truncated_gap.runs, [ProjectRun { first_hour: 100, last_hour: 105, factories: 5, remaining: 2, repair_levels: 0 }]);
 }
 
 #[test]

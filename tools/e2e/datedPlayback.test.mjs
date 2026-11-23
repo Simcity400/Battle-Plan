@@ -600,6 +600,23 @@ test('review 9: a table placement passes exact content only on its own renderer\
   const paused = { ...window(-1), to: 2000 };
   paused.audit = paused.audit.map(sample => ({ ...sample, at: 1500 }));
   assert.equal(datedPlaybackVerdict([paused], records).pass, false, 'review 11: a comparison after the last judged frame, still inside the window, does not count');
+
+  const paintedRecords = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: -1, mode: 'picture', hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const sparseAuditWin = window(-1);
+  const sparseVerdict = datedPlaybackVerdict([sparseAuditWin], paintedRecords);
+  assert.equal(sparseVerdict.pass, false, 'S20: a single audit sample cannot mask 60 unaudited painted pictures');
+  assert.equal(sparseVerdict.placements[0].unauditedPictures, 60);
+  const fullAuditWin = {
+    ...window(-1),
+    audit: presented.map(at => ({ widget: 'w', surface: 'table', placement: 1, owner: -1, at, error: null })),
+  };
+  assert.equal(datedPlaybackVerdict([fullAuditWin], paintedRecords).pass, true, 'S20: full per-picture audit passes');
 });
 
 test('a window with overlapping lost perf records, a refused widget, or a failed input check fails by name', () => {
@@ -836,4 +853,75 @@ test('dated playback fails on playbackReasons, fails every placement on playing-
   const withEmptyLossesIncomplete = datedPlaybackVerdict([{ ...baseWindow('s1'), complete: false, losses: {} }], makeRecords('s1'));
   assert.equal(withEmptyLossesIncomplete.pass, false);
   assert.ok(withEmptyLossesIncomplete.reasons.includes('incomplete presented playing window'));
+});
+
+test('S20: per-picture audit coverage checks every painted picture including owner 0 and isolates generations', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map((at, i) => ({
+      t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: i === 0 ? 0 : -1, generation: 1,
+      hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', mode: 'picture',
+    })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const baseAudit = presented.slice(1).map(at => ({ widget: 'w', surface: 'table', placement: 1, owner: -1, generation: 1, at, error: null }));
+  const window = {
+    page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'scoreboard', visible: true, surfaces: ['table'] }],
+    audit: baseAudit,
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] },
+  };
+  const missingOwner0 = datedPlaybackVerdict([window], records);
+  assert.equal(missingOwner0.pass, false, 'unaudited owner 0 painted picture fails even when owner -1 pictures on the same placement passed');
+
+  const wrongGenAudit = [
+    { widget: 'w', surface: 'table', placement: 1, owner: 0, generation: 2, at: presented[0], error: null },
+    ...baseAudit,
+  ];
+  assert.equal(datedPlaybackVerdict([{ ...window, audit: wrongGenAudit }], records).pass, false, 'audit from generation 2 cannot cover generation 1 picture');
+
+  const fullRecords = records.map(r => (r.t === 'picture' ? { ...r, owner: -1 } : r));
+  const fullAudit = [
+    { widget: 'w', surface: 'table', placement: 1, owner: -1, generation: 1, at: presented[0], error: null },
+    ...baseAudit,
+  ];
+  assert.equal(datedPlaybackVerdict([{ ...window, audit: fullAudit }], fullRecords).pass, true, 'passes once every painted picture is audited in its own generation with table renderer owner');
+
+  const baseStart = { sampleLabel: 'start', from: 0, to: 1000, seconds: 1, complete: true };
+  const baseEnd = { sampleLabel: 'end', from: 2000, to: 3000, seconds: 1, complete: true };
+  const costRecords = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    { t: 'tick', at: 2000, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 3000, hour: 1440, speed: 1440, playing: true },
+    { t: 'tick', at: 5000, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 6000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'frame', at, playing: true, main: 2, dt: 16, commits: 0 })),
+    ...presented.map(at => ({ t: 'frame', at: 2000 + at, playing: true, main: 2, dt: 16, commits: 0 })),
+    ...presented.map(at => ({ t: 'frame', at: 5000 + at, playing: true, main: 3, dt: 16, commits: 0 })),
+    ...presented.map(at => ({ t: 'workerFrame', at: 5000 + at, playing: true, changed: 1, workMs: 1 })),
+    ...presented.map((at, i) => ({
+      t: 'picture', at: 5000 + at, widget: 'w-cost', surface: 'table', placement: 1, owner: i === 0 ? 0 : -1, generation: 1,
+      hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', mode: 'picture',
+    })),
+  ];
+  const costAuditNoOwner0 = presented.slice(1).map(at => ({ widget: 'w-cost', surface: 'table', placement: 1, owner: -1, generation: 1, at: 5000 + at, error: null }));
+  const costMissingOwner0 = summarizeWidgetCosts(
+    [{ kind: 'scoreboard', widget: 'w-cost', from: 5000, to: 6000, seconds: 1, outcome: 'content', complete: true, audit: costAuditNoOwner0 }],
+    costRecords,
+    { baselines: [baseStart, baseEnd] },
+  );
+  assert.equal(costMissingOwner0.widgets[0].exact, 'fail', 'S20: widget-cost verdict fails when owner 0 painted picture is unaudited');
+  const costWrongGen = summarizeWidgetCosts(
+    [{
+      kind: 'scoreboard', widget: 'w-cost', from: 5000, to: 6000, seconds: 1, outcome: 'content', complete: true,
+      audit: [{ widget: 'w-cost', surface: 'table', placement: 1, owner: -1, generation: 2, at: 5000 + presented[0], error: null }, ...costAuditNoOwner0],
+    }],
+    costRecords,
+    { baselines: [baseStart, baseEnd] },
+  );
+  assert.equal(costWrongGen.widgets[0].exact, 'fail', 'S20: widget-cost verdict isolates generations in audit keys');
 });

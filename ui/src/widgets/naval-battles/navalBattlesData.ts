@@ -1,7 +1,7 @@
 import type { PlaybackIntervals } from '../../charts/playbackIntervals';
 import { playbackRows, spanChanges } from '../../charts/playbackIntervals.ts';
 import { countryMatchChangeHours } from '../../dashboard/groups.ts';
-import { battleChanges, isBattleRow, isBattleValue, battleValueText } from '../battles/battleRows.ts';
+import { battleChanges, battleState, isBattleRow, isBattleValue, battleValueText } from '../battles/battleRows.ts';
 import type { BattleChanges } from '../battles/battleRows';
 import { isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
@@ -82,6 +82,10 @@ export function navalBattleMeasureText(value: BattleValue, row: NavalBattleRow):
   const text = `${battleValueText(value)}${value.value !== null && value.label === 'Length' ? ' h' : ''}`;
   if (value.value !== null && row.end === null && value.label === 'Ships sunk') return `${text} so far`;
   return text;
+}
+
+export function navalBattleState(row: NavalBattleRow): string {
+  return JSON.stringify([row.provinceId, battleState(row)]);
 }
 
 export function navalBattleChanges(windows: ReadonlyMap<number, NavalBattlesReply>): BattleChanges {
