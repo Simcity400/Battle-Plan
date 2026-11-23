@@ -58,7 +58,7 @@ test('input marks judge a scrub from the start of its drag and a pin after it ap
   const picture = { t: 'picture', at: 15, placement: 1, hour: 80, since: 80, through: 80, seek: 2, fixedHour: 80 };
   const window = { complete: true, from: 0, to: 100, seconds: 1, presented: [0, 50, 100], pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
-    audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: [{ kind: 'rewind', at: 0 }, { kind: 'scrub', at: 10 }, { kind: 'pin', at: 20, pinWidget: 'w' },
       { kind: 'speed', at: 30 }, { kind: 'scroll', at: 40, notApplicable: 'nothing to scroll' }, { kind: 'pause', at: 50 }],
       to: 100, presented: [15, 25, 30, 50, 75], visibility: [{ at: 10, shown: [[1, null, 'w']] }, { at: 20, shown: [[1, 80, 'w']] }] } };
@@ -124,7 +124,7 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
     ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
   ];
   const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
-    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, false);
   const served = [...records.filter(r => r.t !== 'workerFrame'), ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 }))];
@@ -200,7 +200,7 @@ test('Research requires five visible dated widgets, a full playing window and sa
   const kinds = ['active-research', 'research', 'special-projects', 'nuclear-arsenal', 'doctrine-mastery'];
   const widgets = kinds.map(kind => ({ id: kind, kind, visible: true, surfaces: [kind] }));
   widgets[2].surfaces.push('special-project-details');
-  const audit = widgets.flatMap(w => w.surfaces.map(surface => ({ widget: w.id, surface, placement: surface, hour: 720, error: null })));
+  const audit = widgets.flatMap(w => w.surfaces.map(surface => ({ widget: w.id, surface, placement: surface, hour: 720, at: 500, error: null })));
   const window = { complete: true, from: 0, to: 1000, seconds: 1, widgets, audit, pressureMerges: 0,
     presented: Array.from({ length: 101 }, (_, i) => 10 * i) };
   const records = Array.from({ length: 101 }, (_, i) => {
@@ -309,7 +309,7 @@ test('placement visibility keeps a hidden surface out of the held-frame gate unt
   const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
     visibility: [{ id: 'w', placement: 1, at: 0, visible: true }, { id: 'w', placement: 2, at: 0, visible: false }, { id: 'w', placement: 2, at: 500, visible: true }],
-    audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }, { widget: 'w', surface: 'surface', placement: 2, error: null }],
+    audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'surface', placement: 2, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, true);
 });
@@ -328,7 +328,7 @@ test('the dated verdict rejects a stale pinned picture after it has settled', ()
   ];
   const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['w'] }],
-    audit: [{ widget: 'w', surface: 'w', placement: 'p', error: null }],
+    audit: [{ widget: 'w', surface: 'w', placement: 'p', at: 500, error: null }],
     inputs: { actions: [{ kind: 'pin', at: 1100, pinWidget: 'w' }], to: 1300, presented: [1110, 1210],
       visibility: [{ at: 1100, shown: [['p', 10, 'w']] }] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, false);
@@ -349,7 +349,7 @@ test('displayed age p95 fails even when every late frame crosses a verified stru
   ];
   const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['s'] }],
-    audit: [{ widget: 'w', surface: 's', placement: 1, error: null }],
+    audit: [{ widget: 'w', surface: 's', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] } };
   const result = datedPlaybackVerdict([window], records);
   assert.equal(result.placements[0].p95, 109);
@@ -372,13 +372,13 @@ test('an unmatched or ambiguous commit source fails instead of being assigned by
   ];
   const base = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['one', 'two'] }],
-    audit: [{ widget: 'w', surface: 'one', placement: 1, error: null }, { widget: 'w', surface: 'two', placement: 2, error: null }],
+    audit: [{ widget: 'w', surface: 'one', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'two', placement: 2, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] } };
   const unmatched = datedPlaybackVerdict([base], records);
   assert.equal(unmatched.pass, false);
   assert.ok(unmatched.reasons.some(reason => reason.includes('Unmapped commit source') && reason.includes('missing-source')));
   const ambiguousWindow = { ...base, widgets: [{ ...base.widgets[0], surfaces: ['foo-bar', 'foobar'] }],
-    audit: [{ widget: 'w', surface: 'foo-bar', placement: 1, error: null }, { widget: 'w', surface: 'foobar', placement: 2, error: null }] };
+    audit: [{ widget: 'w', surface: 'foo-bar', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'foobar', placement: 2, at: 500, error: null }] };
   const ambiguousRecords = records.map(record => record.t === 'picture' ? { ...record, surface: record.placement === 1 ? 'foo-bar' : 'foobar' } : record)
     .map(record => record.t === 'commit' ? { ...record, changes: [{ ...record.changes[0], source: 'FOO BAR' }] } : record);
   const ambiguous = datedPlaybackVerdict([ambiguousWindow], ambiguousRecords);
@@ -443,7 +443,7 @@ test('an unsettled scrub is reported as a verdict failure with each widget reaso
   const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
   const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
-    audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window' })),
       unsettled: [{ widget: 'Nuclear arsenal', reason: 'blank' }] } };
   const records = [
@@ -463,7 +463,7 @@ test('an unsettled rewind is reported as a verdict failure with its wait time', 
   const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
   const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
-    audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window' })),
       rewindSettledMs: 10_000, rewindUnsettled: [{ widget: 'Nuclear arsenal', reason: 'blank' }] } };
   const records = [
@@ -507,13 +507,13 @@ test('a visible two-surface widget fails exact coverage when one surface reports
   ];
   const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['one', 'two'] }],
-    audit: [{ widget: 'w', surface: 'one', placement: 1, error: null }, { widget: 'w', surface: 'two', placement: 2, error: null }],
+    audit: [{ widget: 'w', surface: 'one', placement: 1, at: 500, error: null }, { widget: 'w', surface: 'two', placement: 2, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   const result = datedPlaybackVerdict([window], records);
   assert.equal(result.placements[0].exact, false);
   assert.equal(result.pass, false);
   const undeclared = datedPlaybackVerdict([{ ...window, widgets: [{ ...window.widgets[0], surfaces: [] }],
-    audit: [{ widget: 'w', surface: 'one', placement: 1, error: null }] }], records);
+    audit: [{ widget: 'w', surface: 'one', placement: 1, at: 500, error: null }] }], records);
   assert.equal(undeclared.placements[0].exact, false, 'reported surfaces do not become required surfaces');
   assert.equal(undeclared.pass, false);
 });
@@ -545,7 +545,7 @@ test('review 7 F: every lane is held to both rate bounds', () => {
     ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
   ];
   const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
-    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
   assert.equal(datedPlaybackVerdict([window], records).pass, false, 'a lane at 120/s on a 60 FPS display fails though the other is at 60');
 });
@@ -579,8 +579,12 @@ test('review 9: a table placement passes exact content only on its own renderer\
     ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
   ];
   const window = owner => ({ page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
-    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['table'] }], audit: [{ widget: 'w', surface: 'table', placement: 1, owner, error: null }],
+    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['table'] }], audit: [{ widget: 'w', surface: 'table', placement: 1, owner, at: 500, error: null }],
     inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } });
   assert.equal(datedPlaybackVerdict([window(-1)], records).pass, true, 'the table renderer compared its own rows');
   assert.equal(datedPlaybackVerdict([window(-1000)], records).pass, false, 'the raw panel answer at the same placement is not the table\'s comparison');
+  assert.equal(datedPlaybackVerdict([window(undefined)], records).pass, false, 'review 10: a comparison without an owner is not the renderer\'s');
+  const late = window(-1);
+  late.audit = late.audit.map(sample => ({ ...sample, at: 1500 }));
+  assert.equal(datedPlaybackVerdict([late], records).pass, false, 'review 10: a comparison from the later idle phase does not stand for the judged window');
 });

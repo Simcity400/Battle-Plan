@@ -5,7 +5,7 @@ import { PreparingPage } from '../preparing.ts';
 import type { FollowedAnswer } from './message.ts';
 import { FollowedCard, FollowedWidgetKey, installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from './store.ts';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
-import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading, onInstalled } from './useFollowed.ts';
+import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading, datedReading, datedStore, onInstalled } from './useFollowed.ts';
 import type { Reading } from './useFollowed';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
@@ -65,6 +65,6 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
     status, ...entry?.reason !== undefined ? { reason: entry.reason } : {},
     structure: entry ? structureOf(entry.answer, entry) : '',
     entry, hidden: !!query && !visible,
-    reading: query ? componentReading(pipeline && pipe !== null ? pipeline.view(pipe) : view, sub) : null,
+    reading: query ? datedReading(componentReading(pipeline && pipe !== null ? pipeline.view(pipe) : view, sub), datedStore(pipeline, pipe)) : null,
   };
 }

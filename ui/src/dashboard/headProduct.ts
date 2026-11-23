@@ -61,7 +61,7 @@ export interface HeadProduct<T> extends ProductState<T> {
   live: Live<LiveValues<number>>;
   shownAt: () => number | null;
   current: () => T | undefined;
-  inspected: () => { texts: ReadonlyMap<string, string>; hour: number } | undefined;
+  inspected: () => { texts: ReadonlyMap<string, string>; hour: number; data: T | undefined } | undefined;
 }
 
 export function momentHour(moment: string | undefined): number | null {
@@ -186,7 +186,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     inspected: () => {
       if (!pushed || !pipeline || pipe === null || sub === undefined) return undefined;
       const shown = pipeline.view(pipe), texts = shown?.fields?.[`texts:${sub}`] as ReadonlyMap<string, string> | null | undefined, hour = shown?.painted ?? shown?.h;
-      return shown?.mode === 'picture' && texts && hour !== undefined ? { texts, hour } : undefined;
+      return shown?.mode === 'picture' && texts && hour !== undefined ? { texts, hour, data: panelReply(installedPanel(installedModel(shown, sub)), validate).data } : undefined;
     },
     read: outside ? 'off' : following ? 'followed' : hour === null ? 'off' : 'asked',
   };

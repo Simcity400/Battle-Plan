@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
+import { inspectedSlot, slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots } from './activeResearchData.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
@@ -88,4 +88,11 @@ test('at an hour without a read, slots open at the last read are unavailable rat
   assert.deepEqual(slots.map(slot => [slot.kind, slot.slot.index]), [['unavailable', 0]]);
   const covered = activeSlots(history, reply(day(90), [], 'This country\'s research slots were not read together'));
   assert.deepEqual(covered.map(slot => slot.kind === 'unavailable' && slot.reason), ['This country\'s research slots were not read together']);
+});
+
+test('review 10: an open tooltip reads its technology and its values from the same installation, and a vanished slot has no subject', () => {
+  const texts = slotValues(reply(day(97), [{ index: 0, state: state('radar', day(0), { details: { remainingDays: 3, bonuses: null, modifiers: null } }), progress: null }]), day(98));
+  const installed = (token: string | null) => ({ texts, hour: day(98), data: { slots: [{ index: 0, state: { token } }] } });
+  assert.equal(inspectedSlot(installed('sonar'), 0)?.token, 'sonar', 'the successor installed with these values is the subject, so Radar\'s tooltip withdraws');
+  assert.equal(inspectedSlot({ ...installed('radar'), data: { slots: [] } }, 0)?.token, undefined, 'a slot gone from the installation has no subject');
 });

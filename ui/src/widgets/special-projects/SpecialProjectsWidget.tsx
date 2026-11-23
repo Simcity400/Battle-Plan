@@ -91,9 +91,10 @@ function CurrentList({ reply, at, item, clock, feed, placement }: { clock: Playb
     {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
       const { run, info } = card;
       return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
-        style={progressStyle(run.progress, painted) as CSSProperties | undefined} {...item(card)}>
+        style={progressStyle(run.progress, painted) as CSSProperties | undefined} {...item(card)} aria-label={undefined}
+        aria-labelledby={['name', 'progress', 'iterations'].map(part => `${valueId}-${card.project.id}-${part}`).join(' ')}>
         <ProjectTile icon={info.icon} />
-        <span className="special-project-now-text"><strong>{info.name}</strong><span>
+        <span className="special-project-now-text"><strong id={`${valueId}-${card.project.id}-name`}>{info.name}</strong><span>
           {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}
           {run.state === 'unknown' && <><b className="special-project-state">State unknown</b>·</>}
           <Scientist reply={reply} info={info} /></span></span>

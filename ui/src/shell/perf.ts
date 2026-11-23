@@ -108,7 +108,7 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
 interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead; placement?: number }
 type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
-type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; hour: number; error: string | null };
+type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; at: number; hour: number; error: string | null };
 
 const READERS_HELD = 1024;
 
@@ -203,7 +203,7 @@ export class PerfRecorder {
       let error: string | null;
       try { error = pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour)); }
       catch (cause) { error = String(cause); }
-      return { widget, surface, placement, owner, hour, error };
+      return { widget, surface, placement, owner, at: record.at, hour, error };
     });
     const done = work.done && work.pictures.length === 0;
     if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }

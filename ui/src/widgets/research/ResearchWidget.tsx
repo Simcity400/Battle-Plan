@@ -113,8 +113,8 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
   const databaseIndex = entry?.databaseIndex ?? null;
   const name = text.name(token, databaseIndex);
   const content = () => {
-    if ((latest.current ?? now).slots.find(item => item.index === slot.index)?.state.token !== read.state.token) return null;
     const shown = latest.inspect?.(slot.index);
+    if ((shown ? shown.token : (latest.current ?? now).slots.find(item => item.index === slot.index)?.state.token) !== read.state.token) return null;
     if (shown) return currentTooltip(token, slot.index, shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }, shown.left, !!entry, text, null, databaseIndex);
     const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;
     const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, reply.hour);

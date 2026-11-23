@@ -69,3 +69,9 @@ test('review 9: a retained reader keeps the last complete values when its instal
   assert.deepEqual(held.read(), { answer: 'complete', version: 1 }, 'a rank-only install does not lose the previous measures');
   assert.equal(retainedLive(live), held, 'one retained reader per reader, so members and values stay paired');
 });
+
+test('review 10: on the render that changes membership, answers still from the previous subscriptions are not saved as complete', () => {
+  const before = heldCasualties<string>(null, ['a', 'b'], ['GER', 'SOV'], true, null);
+  const mixed = heldCasualties<string>(before.held, ['a', 'b'], ['GER', 'ITA'], true, null, false);
+  assert.deepEqual([mixed.members, mixed.lives, mixed.held], [['GER', 'SOV'], ['a', 'b'], before.held], 'the previous membership and values stay together');
+});

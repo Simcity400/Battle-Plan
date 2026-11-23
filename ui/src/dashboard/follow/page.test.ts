@@ -139,7 +139,7 @@ test('review 3: an empty same-seek reset withdraws a follow picture in that comm
   const { p, offer, view } = page();
   p.mount(2, { route: 9, lane: 0, surfaces: [surface()] });
   offer(entry({ id: 1, h: 0, c: 50 }), entry({ id: 2, widget: 2, n: 1, h: 0, c: 50, follows: false })); p.publish(10);
-  p.offer({ lane: 1, serial: 1, resets: [[9, 1]], entries: [] }); p.frame();
+  p.offer({ lane: 0, serial: 1, resets: [[9, 1]], entries: [] }); p.frame();
   assert.deepEqual([view().mode, p.view(2).id], ['reading', 2]);
   assert.deepEqual([p.widgets.get(1)!.content, (p.widgets.get(1)!.surfaces[0] as FakeSurface).content], [{}, null], 'pixels, fields and content ids go together');
 });
@@ -230,14 +230,17 @@ test('clock: pause, speed change, seek and rebind each wake a request at the act
   }
 });
 
-test('reset: once the page has seen a same-seek reset, a pre-reset presentation from another lane is refused', () => {
+test('reset: each lane is judged by the resets it has seen, and its pre-reset picture goes once it sees the reset', () => {
   const { p, offer, view } = page();
   p.mount(2, { route: 9, lane: 1, surfaces: [surface()] });
   offer(entry({ id: 1, h: 0, c: 50, gen: { seek: 0, reset: 1 } }));
-  offer(entry({ id: 2, widget: 2, n: 1, h: 0, c: 50, gen: { seek: 0, reset: 0 } }));
+  p.offer({ lane: 1, serial: 2, entries: [entry({ id: 2, widget: 2, n: 1, h: 0, c: 50, gen: { seek: 0, reset: 0 } })] });
   p.publish(10);
-  assert.deepEqual([view().id, p.view(2).mode], [1, 'reading']);
-  assert.equal(p.stats.rejected.reset, 1);
+  assert.deepEqual([view().id, p.view(2).id], [1, 2]);
+  p.offer({ lane: 1, serial: 3, resets: [[9, 1]], entries: [] }); p.frame();
+  assert.equal(p.view(2).mode, 'reading', 'every lane receives the reset header, and its own count withdraws the pre-reset picture');
+  p.offer({ lane: 1, serial: 4, entries: [entry({ id: 4, widget: 2, n: 1, h: 0, c: 50, gen: { seek: 0, reset: 0 } })] }); p.frame();
+  assert.deepEqual([p.view(2).mode, p.stats.rejected.reset], ['reading', 1], 'a late pre-reset picture from that lane is refused');
 });
 
 test('ownership: the frame request acknowledges only what was installed', () => {
@@ -501,4 +504,24 @@ test('review 9: while paused, a dated refusal that does not cover the target nev
   assert.deepEqual([view().id, view().mode], [1, 'picture']);
   offer(entry({ id: 3, h: 96, c: 150, mode: 'refused', reason: 'Not recorded', content: 'R' })); p.frame();
   assert.deepEqual([view().id, view().mode], [3, 'refused'], 'the refusal that covers the target installs');
+});
+
+test('review 10: a lane that joins on a later seek is judged by its own reset count, not by another lane\'s', () => {
+  const p = new Page<Fake>({ lanes: 2 });
+  p.mount(1, { route: 9, lane: 0, surfaces: [] });
+  p.mount(2, { route: 9, lane: 1, surfaces: [] });
+  p.publish(10);
+  p.offer({ lane: 0, serial: 1, resets: [[9, 1]], entries: [{ ...entry({ id: 1, c: 20 }), gen: { seek: 0, reset: 1 } }] }); p.frame();
+  p.offer({ lane: 1, serial: 2, resets: [[9, 0]], entries: [{ ...entry({ id: 2, widget: 2, c: 20 }), gen: { seek: 0, reset: 0 } }] }); p.frame();
+  assert.deepEqual([p.view(1).id, p.view(2).id], [1, 2], 'lane 1 never counted lane 0\'s earlier reset, and its picture still installs');
+  p.offer({ lane: 0, serial: 3, resets: [[9, 2]], entries: [] }); p.frame();
+  assert.deepEqual([p.view(1).mode, p.view(2).id], ['reading', 2], 'a later reset withdraws only the pictures of the lane that saw it');
+});
+
+test('review 10: the structure React reads is made once per install, not on every view', () => {
+  const { p, offer } = page();
+  offer(entry({ id: 1, c: 20 })); p.publish(10);
+  const made = p.widgets.get(1)!.installed!.structure;
+  assert.equal(typeof made, 'string');
+  assert.equal(p.view(1).structure, made);
 });

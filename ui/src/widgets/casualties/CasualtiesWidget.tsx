@@ -137,7 +137,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const refused = reading.state === 'refused' ? reading.reason : null;
   const answeredLives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined && item.live ? retainedLive(item.live) : undefined);
   const complete = useRef<HeldCasualties<Live<FollowEntry>> | null>(null);
-  const shownHead = heldCasualties(complete.current, answeredLives, members, following, refused);
+  const subIds = measured.map(item => item.entry?.id ?? null).join(',');
+  const joined = useRef({ members: membersKey, stale: '' });
+  if (joined.current.members !== membersKey) joined.current = { members: membersKey, stale: subIds };
+  const shownHead = heldCasualties(complete.current, answeredLives, members, following, refused, joined.current.stale !== subIds);
   complete.current = shownHead.held;
   const lives = shownHead.lives;
   const shownMembers = shownHead.members as string[];

@@ -25,7 +25,7 @@ import type { ChartTokens } from '../../charts/tokens';
 import { useRowTooltips } from '../../charts/useRowTooltips';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
-import { formatAmount, formatSigned } from '../../charts/valueAxis';
+import { formatSigned } from '../../charts/valueAxis';
 import { easeTau, motionOf } from '../../charts/easing.ts';
 import type { CSSProperties } from 'react';
 import CountryComparisons from '../../dashboard/CountryComparisons';
@@ -50,7 +50,7 @@ import { useShownHour } from '../../dashboard/widgetPerf';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { RESOURCE_BALANCE, RESOURCE_SIZES, automaticResource, balanceOf, barParts, barStructure, campaignScale, chosenResources, dealsOf, momentScale,
   orderResources, overTimeTooltip, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourceTooltip, toggleResource, validateResourceBalance,
-  validateResourceSizes } from './resourceData';
+  validateResourceSizes, describeResource, legendFlags, segmentLook } from './resourceData';
 import type { Balance, LineAt, RowOrder } from './resourceData';
 import ResourceBreakdown from './ResourceBreakdown';
 import './resourceBalance.css';
@@ -186,7 +186,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   </div>;
 }
 
-interface RowCells { parts: Map<string, HTMLElement>; net: HTMLElement | null }
+interface RowCells { parts: Map<string, HTMLElement>; net: HTMLElement | null; row?: HTMLElement | null; resource?: ResourceInfo }
 
 function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, track, onPick }: ComparisonProps & {
   tag: string; track: BoundTrack; onPick: (resource: ResourceInfo, hour: number | null) => void;
@@ -205,7 +205,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
   const cells = useRef(new Map<number, RowCells>());
   const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
     { active, validate: validateResourceBalance, structure: barStructure });
-  const shownDay = useInstalledValue(head.live.subscribe, () => { const at = head.atNow(); return at === null ? null : dayLabel(at); });
+  const bars = useRef<HTMLOListElement | null>(null);
   const data = head.data;
   const report = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -225,7 +225,9 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
         for (const [part, raw] of parts ? [...parts.supply, ...parts.demand] : []) {
           const element = held.parts.get(part);
           setStyle(element, 'width', partWidth(raw, scale));
+          for (const [property, value] of Object.entries(segmentLook(raw, colours.get(part)))) setStyle(element, property, value);
         }
+        if (held.resource) setAttr(held.row, 'aria-label', describeResource(held.resource, balance, data.decimals));
         if (!held.parts.size || !held.net) continue;
         if (!balance) for (const element of held.parts.values()) setStyle(element, 'width', '0%');
         setText(held.net, balance ? formatSigned(balance.net, data.decimals) : '—');
@@ -233,9 +235,12 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
         setAttr(held.net, 'title', balance ? '' : poolsMissing(values, id));
       }
     };
-    paint();
-    return live.subscribe(paint);
-  }, [data, live, scaleOf]);
+    const label = () => { const at = head.atNow(); setAttr(bars.current, 'aria-label', at === null ? 'Resources' : `Resources on ${dayLabel(at)}`); };
+    paint(); label();
+    return live.subscribe(() => { paint(); label(); });
+  }, [data, live, scaleOf, colours, head.atNow]);
+  const flags = useInstalledValue(data ? live.subscribe : undefined, () => data
+    ? legendFlags(data.pools.map(id => { const pools = poolsAt(live.read(), id); return pools ? balanceOf(pools) : null; })) : 'false|false');
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);
   const hour = head.at ?? Math.floor(runtime.clock.getHour());
   const partners = useMemo(() => [...new Set(data?.deals.map(deal => deal.partner) ?? [])].map(partner => ({ tag: partner, hour })), [data?.deals, hour]);
@@ -265,13 +270,13 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
       return { resource, held: held.has(resource.id), balance: pools ? balanceOf(pools) : null };
     });
     const scale = scaleOf(data, values);
-    const any = (pick: (balance: Balance) => bigint) => rows.some(row => row.balance && pick(row.balance) !== 0n);
+    const [subjects, overlord] = flags.split('|').map(flag => flag === 'true');
     const legend = [
       { id: 'produced', label: 'Produced', color: colours.get('produced')! },
-      ...(any(balance => balance.fromSubjects) ? [{ id: 'subjects', label: 'From subjects', color: colours.get('subjects')! }] : []),
+      ...(subjects ? [{ id: 'subjects', label: 'From subjects', color: colours.get('subjects')! }] : []),
       { id: 'imported', label: 'Imported', color: colours.get('imported')! },
       { id: 'needed', label: 'Needed', color: colours.get('needed')! },
-      ...(any(balance => balance.toOverlord) ? [{ id: 'overlord', label: 'To the overlord', color: colours.get('overlord')! }] : []),
+      ...(overlord ? [{ id: 'overlord', label: 'To the overlord', color: colours.get('overlord')! }] : []),
       { id: 'exported', label: 'Exported', color: colours.get('exported')! },
     ];
     const cellsOf = (id: number) => {
@@ -284,15 +289,14 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     const segments = (id: number, parts: readonly [string, bigint][]) => parts.map(([part, raw], index) =>
       <i key={part} ref={element => { if (element) cellsOf(id).parts.set(part, element); else cellsOf(id).parts.delete(part); }}
         style={{ width: partWidth(raw, scale), marginLeft: index > 0 ? 1 : 0, ...(raw < 0n ? { boxShadow: `inset 0 0 0 1.5px ${colours.get(part)}` } : { background: colours.get(part) }) }} />);
-    const describe = (resource: ResourceInfo, balance: Balance | null) => balance
-      ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, data.decimals)}, demand ${formatAmount(balance.demand, data.decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, data.decimals)}`
-      : `${resourceName(resource)}: not recorded at this time`;
+    const describe = (resource: ResourceInfo, balance: Balance | null) => describeResource(resource, balance, data.decimals);
     body = <div className="resource-balance">
       <p className="resource-caption">Per day · outlined parts are negative{data.dealsMissing ? ` · ${data.dealsMissing}` : ''}</p>
       <Legend label="Bar parts" items={legend} />
-      <ol className="resource-bars" aria-label={shownDay === null ? 'Resources' : `Resources on ${shownDay}`}
+      <ol className="resource-bars" ref={bars}
         style={{ '--resource-glide': `${Math.round(3 * easeTau(tokens.motion, motionOf(runtime.clock.getSnapshot()), tokens.reducedMotion))}ms` } as CSSProperties}>
         {rows.map(({ resource, held: has, balance }) => <li key={resource.id} role="button" aria-label={describe(resource, balance)} {...rowTips.rowProps(resource.id)}
+          ref={element => { const held = cellsOf(resource.id); held.row = element; held.resource = resource; }}
           onClick={() => onPick(resource, head.hour)} onKeyDown={event => {
             if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick(resource, head.hour); }
             else rowTips.rowProps(resource.id).onKeyDown(event);

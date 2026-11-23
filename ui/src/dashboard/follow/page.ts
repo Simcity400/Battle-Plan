@@ -62,7 +62,7 @@ export type PageMessage = FrameRequest
 
 export interface Installed {
   id: number; h: number; c: number; lo: number; hi: number; gen: Generation; binding: number; follows: boolean;
-  mode: Mode; reason?: string; fields: Readonly<Record<string, unknown>>; ms: number; kept: readonly string[];
+  mode: Mode; reason?: string; fields: Readonly<Record<string, unknown>>; ms: number; kept: readonly string[]; structure?: string;
 }
 
 export interface WidgetView {
@@ -97,7 +97,7 @@ interface Widget<B extends Bitmap> {
   failed: boolean; face: string; drawn: number;
 }
 
-interface RouteState { reset: number; command: number; failed: { seek: number; reason: string } | null }
+interface RouteState { resets: number[]; command: number; failed: { seek: number; reason: string } | null }
 
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null }
 
@@ -150,11 +150,11 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private route(id: number): RouteState {
     let route = this.routes.get(id);
-    if (!route) this.routes.set(id, route = { reset: 0, command: 0, failed: null });
+    if (!route) this.routes.set(id, route = { resets: [], command: 0, failed: null });
     return route;
   }
 
-  generation(route: number): Generation { return { seek: this.seek, reset: this.route(route).reset }; }
+  generation(route: number, lane = 0): Generation { return { seek: this.seek, reset: this.route(route).resets[lane] ?? 0 }; }
 
   mount(id: number, mount: Mount<B>) {
     this.route(mount.route);
@@ -271,11 +271,11 @@ export class Page<B extends Bitmap = Bitmap> {
     const queue = this.queue;
     this.queue = [];
     for (const presentation of queue) for (const [id, reset] of presentation.resets ?? []) {
-      const route = this.route(id);
-      if (reset <= route.reset) continue;
-      route.reset = reset;
+      const route = this.route(id), lane = presentation.lane;
+      if (reset <= (route.resets[lane] ?? 0)) continue;
+      route.resets[lane] = reset;
       for (const widget of this.widgets.values())
-        if (widget.route === id && widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
+        if (widget.route === id && widget.lane === lane && widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
     }
     const early = [...this.widgets.values()].flatMap(widget => {
       const held = widget.early;
@@ -290,7 +290,7 @@ export class Page<B extends Bitmap = Bitmap> {
     const route = this.route(widget.route), at = this.target(widget);
     if (widget.pin === null) {
       if (entry.gen.seek !== this.seek) return 'stream';
-      if (entry.gen.reset < route.reset) return 'reset';
+      if (entry.gen.reset < (route.resets[widget.lane] ?? 0)) return 'reset';
       if (route.failed && route.failed.seek >= entry.gen.seek) return 'failed stream';
     }
     if (entry.binding !== widget.binding) return 'binding';
@@ -336,7 +336,7 @@ export class Page<B extends Bitmap = Bitmap> {
     }
     if (why) { this.refuse(widget, entry, why); return; }
     const route = this.route(widget.route);
-    if (entry.gen.reset > route.reset) route.reset = entry.gen.reset;
+    if (entry.gen.reset > (route.resets[widget.lane] ?? 0)) route.resets[widget.lane] = entry.gen.reset;
     if (route.failed && entry.gen.seek > route.failed.seek) route.failed = null;
     try {
       for (let k = 0; k < widget.surfaces.length; k++) {
@@ -368,7 +368,7 @@ export class Page<B extends Bitmap = Bitmap> {
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     this.drop(widget.installed);
     widget.installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
-      mode: entry.mode, reason: entry.reason, fields, ms: entry.ms ?? 0, kept };
+      mode: entry.mode, reason: entry.reason, fields, ms: entry.ms ?? 0, kept, structure: structureOf(widget.content, fields) };
     widget.status = entry.mode; widget.reason = entry.reason;
     this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });
     this.stats.installs++;
@@ -400,7 +400,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (!shown) return { mode: widget.status, reason: widget.reason, target: at, dim: false, tooltip: null };
     const tip = shown.fields.tooltip as { key: string; text: unknown } | undefined;
     const until = Math.min(shown.c, shown.hi);
-    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: structureOf(widget.content, shown.fields), target: at,
+    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: shown.structure ?? structureOf(widget.content, shown.fields), target: at,
       dim: (!this.playing && at > until) || shown.binding !== widget.binding, fields: shown.fields,
       tooltip: tip && widget.inspect !== null && tip.key === widget.inspect ? tip.text : null };
   }

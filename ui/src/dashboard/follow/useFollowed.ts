@@ -111,6 +111,10 @@ export function readingOf(view: WidgetView | null | undefined): Reading {
   return { state: 'covered', hour: view.painted ?? view.h!, dim: view.dim };
 }
 
+export function datedReading(reading: Reading, dated: { read(): number | null }): Reading {
+  return reading.state !== 'covered' ? reading : { state: 'covered', dim: reading.dim, get hour() { return dated.read() ?? reading.hour; } };
+}
+
 export function componentReading(view: WidgetView | null | undefined, sub: number | undefined): Reading {
   const refused = sub === undefined || view?.mode !== 'picture' ? undefined : view.fields?.[`refused:${sub}`];
   return typeof refused === 'string' ? { state: 'refused', reason: refused } : readingOf(view);

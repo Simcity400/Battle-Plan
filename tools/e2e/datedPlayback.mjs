@@ -11,7 +11,7 @@ const rate = times => times.length < 2 ? null : 1000 * (times.length - 1) / (tim
 const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
 const WORKER_GRACE_MS = 34;
 const RENDERER_OWNER = { table: -1, race: -2 };
-const rendered = sample => !(sample.surface in RENDERER_OWNER) || !Number.isFinite(sample.owner) || sample.owner === RENDERER_OWNER[sample.surface];
+const rendered = sample => !(sample.surface in RENDERER_OWNER) || sample.owner === RENDERER_OWNER[sample.surface];
 export const CANONICAL_INPUTS = Object.freeze(['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause']);
 
 export function inputPictures(frames, visibility, records, pinWidget) {
@@ -282,11 +282,11 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         if (!lag.length || visibleCount !== expected || lag.includes(Infinity)) { missing++; ages.push(Infinity); } else { const worst = Math.max(...lag); ages.push(worst); hours.add(Math.min(...drawn)); if (worst > MAX_PLAYBACK_AGE_HOURS) { late++; if (uncrossedLate) lateWithoutCrossing++; } if (crossed) structureCrossings++; }
         eligibleAges.push(available.length && visibleCount === expected ? Math.max(...available) : Infinity);
       }
-      const samples = auditByWidget.get(widget.id) ?? [];
+      const audited = auditByWidget.get(widget.id) ?? [], samples = audited.filter(s => Number.isFinite(s.at) && s.at >= w.from && s.at <= w.to);
       const auditedPairs = new Set(samples.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
       const exact = required.size > 0 && [...required].every(surface => observedSurfaces.has(surface))
         && [...required].every(surface => samples.some(s => s.surface === surface && rendered(s)))
-        && [...observedPairs].every(pair => auditedPairs.has(pair)) && samples.every(s => s.error === null);
+        && [...observedPairs].every(pair => auditedPairs.has(pair)) && audited.every(s => s.error === null);
       const age = p95(ages), eligible = p95(eligibleAges);
       const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length, draw: drawCost(reports, id) }));
       const pass = Number.isFinite(age) && age <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(eligible) && eligible <= MAX_PLAYBACK_AGE_HOURS &&

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, NATIVE } from './inProcess.fixture.ts';
-import { datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
+import { datedReading, datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
@@ -330,4 +330,12 @@ test('review 9: a rejoin keeps its route\'s named failure, and a detail\'s sampl
     const named = (await capturePictures(false) as { t: string; placement?: number; widget?: string }[]).filter(record => record.t === 'picture' && record.placement === detail);
     assert.ok(named.length > 0 && named.every(record => record.widget === 'card'), 'R3-S7: ' + JSON.stringify(named.slice(-1)));
   } finally { close(); }
+});
+
+test('review 10: a reading\'s hour is the installed date when it is read, and the installed structure is made once', () => {
+  let hour: number | null = 10;
+  const reading = datedReading({ state: 'covered', hour: 10, dim: false }, { read: () => hour });
+  hour = 16;
+  assert.equal(reading.state === 'covered' && reading.hour, 16, 'a same-structure install from 10 to 16 reads 16');
+  assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
 });

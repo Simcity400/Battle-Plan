@@ -57,9 +57,9 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
     const content = (): TooltipContent | null => {
       const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index);
-      if (!current || current.state.token !== token) return null;
-      const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
       const shown = latest.inspect(slot.index);
+      if ((shown ? shown.token : current?.state.token) !== token || !current) return null;
+      const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
       const progress = shown ? shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }
         : researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
       const left = shown ? shown.left : slotNumbers(current, hour).left;
@@ -81,6 +81,6 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
     <div className="active-rows">{rows.map(row)}</div>
-    {!rows.length && <p>{reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`}</p>}
+    {!rows.length && <p>{reply.missing ?? <>No research slots recorded at <span data-paint="date">{researchDate(reply.hour)}</span>.</>}</p>}
   </section>;
 }

@@ -1,3 +1,5 @@
+import { answerShape } from './message.ts';
+import { answerBody } from './messages.fixture.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CELL, cellState, cellValue, parseDatedPanels, parseFollowed, rowHour, rowKeys, rowName, rowReason } from './message.ts';
@@ -43,3 +45,10 @@ test('a dated panel reads the native MessagePack bytes', () => {
   assert.deepEqual(parseDatedPanels(bytes).panels[0]!.panel?.data, { rows: [7] });
 });
 
+test('review 10: an answer\'s shape names its rows and columns, not their order', () => {
+  const a = answerBody({ keys: [1n, 2n, 3n], columns: 1, values: [10n, 20n, 30n] });
+  const swapped = answerBody({ keys: [2n, 1n, 3n], columns: 1, values: [20n, 10n, 30n] });
+  const other = answerBody({ keys: [1n, 2n, 4n], columns: 1, values: [10n, 20n, 40n] });
+  assert.equal(answerShape(a), answerShape(swapped), 'a rank swap with the same members commits nothing');
+  assert.notEqual(answerShape(a), answerShape(other), 'a new member is a new shape');
+});
