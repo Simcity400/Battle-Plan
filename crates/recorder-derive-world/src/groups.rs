@@ -453,13 +453,13 @@ mod tests {
         let mut groups = Groups::default();
         let member = |slot| ((Span::MEMBER, Span::HUMANS, slot), 0);
         let store = store();
-        let mut out = Rows::logging(&store);
+        let mut out = recorder_derive_framework::testing::logging(&store, groups.tables());
         groups.settle(0, BTreeMap::from([member(5), member(6)]), &mut out).unwrap();
         assert_eq!(written(&out).0, vec![span_key((Span::MEMBER, 0, 5), 0), span_key((Span::MEMBER, 0, 6), 1)]);
-        let mut out = Rows::logging(&store);
+        let mut out = recorder_derive_framework::testing::logging(&store, groups.tables());
         groups.settle(0, BTreeMap::from([member(5)]), &mut out).unwrap();
         assert_eq!(written(&out), (vec![], vec![span_key((Span::MEMBER, 0, 6), 1)]));
-        let mut out = Rows::logging(&store);
+        let mut out = recorder_derive_framework::testing::logging(&store, groups.tables());
         groups.settle(0, BTreeMap::from([member(5), member(6)]), &mut out).unwrap();
         assert_eq!(written(&out), (vec![span_key((Span::MEMBER, 0, 6), 2)], vec![]));
     }

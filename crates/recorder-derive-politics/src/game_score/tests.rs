@@ -204,7 +204,7 @@ fn an_hour_recomputes_only_the_countries_its_changes_reach() {
         for table in OPTIONAL.into_iter().chain([TableId::Countries, TableId::CountryLinks, TableId::CountryGameScores]) {
             store.index(table.index());
         }
-        let mut rows = Rows::logging(&store);
+        let mut rows = testing::logging(&store, score.tables());
         score.hour(&Hour::new(&store, 1, at, at == 0, at == 0, &[]), &mut rows).unwrap();
         keys.push(rows.keys(TableId::CountryGameScores).0);
         drop(rows);
@@ -233,7 +233,7 @@ fn a_wing_change_that_moves_no_score_sets_no_row() {
         for table in OPTIONAL.into_iter().chain([TableId::Countries, TableId::CountryLinks, TableId::CountryGameScores]) {
             store.index(table.index());
         }
-        let mut rows = Rows::logging(&store);
+        let mut rows = testing::logging(&store, score.tables());
         score.hour(&Hour::new(&store, 1, at, at == 0, at == 0, &[]), &mut rows).unwrap();
         recomputed.push(rows.keys(TableId::CountryGameScores).0);
         drop(rows);

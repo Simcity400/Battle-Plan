@@ -295,7 +295,7 @@ fn an_hour_recomputes_only_the_countries_its_changes_reach() {
         for table in TABLES.into_iter().chain([TableId::StabilityParts, TableId::StabilityPartKeys]) {
             store.index(table.index());
         }
-        let mut rows = Rows::logging(&store);
+        let mut rows = testing::logging(&store, writer.tables());
         writer.hour(&Hour::new(&store, 1, at, at == 0, at == 0, &[]), &mut rows).unwrap();
         let mut set: Vec<u32> = rows.keys(TableId::StabilityParts).0.iter().map(|key| (key >> 40) as u32).collect();
         set.dedup();
@@ -327,7 +327,7 @@ fn a_read_dated_anew_with_nothing_changed_sets_no_part() {
         for table in TABLES.into_iter().chain([TableId::StabilityParts, TableId::StabilityPartKeys]) {
             store.index(table.index());
         }
-        let mut rows = Rows::logging(&store);
+        let mut rows = testing::logging(&store, writer.tables());
         {
             let hour = Hour::new(&store, 1, at, at == 0, at == 0, &[]);
             if at == 2 {
