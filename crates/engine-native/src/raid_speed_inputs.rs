@@ -1,12 +1,22 @@
 
 use crate::{
-    Memory, cace, cair_wing, ccountry, ccountry_raid_status, cequipment_variant,
-    cequipment_variant_pool, cgame_state,
+    Memory,
+    cace,
+    cair_wing,
+    ccountry,
+    ccountry_raid_status,
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
     cpdx_array::Array,
-    cproduction_status, craid_instance, craid_system, creference_registry, cunit,
+    cproduction_status,
+    craid_instance,
+    craid_system,
+    creference_registry,
+    cunit,
     modifier_accumulator,
     modifier_definition::{DefinitionMemo, effective_memo},
-    modifier_keys, read,
+    modifier_keys,
+    read,
     walk::Outcome,
 };
 

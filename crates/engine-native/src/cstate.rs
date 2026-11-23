@@ -376,7 +376,12 @@ fn movement_infrastructure_shared(
     state: usize,
     shared: &mut Option<InfrastructureInputs>,
 ) -> Result<i64, &'static str> {
-    use crate::{cbuilding, cbuilding_database, cbuilding_status, cbuilding_template};
+    use crate::{
+        cbuilding,
+        cbuilding_database,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+    };
     enum Lookup {
         Known(u8),
         Gathered(FieldBatch<2>),

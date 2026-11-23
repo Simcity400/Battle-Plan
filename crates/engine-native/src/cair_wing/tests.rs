@@ -1508,7 +1508,7 @@ fn equipment_extension_preserves_duplicate_variants_zero_and_signed_amounts() {
     p64(
         &mut bytes,
         WING_A + EQUIPMENT_POOL,
-        crate::cequipment_variant_pool::VTABLE_RVA.0 as u64,
+        crate::cequipment_variant::pool::VTABLE_RVA.0 as u64,
     );
     array(&mut bytes, WING_A + EQUIPMENT_BANK, ENTRIES, 3);
     p64(

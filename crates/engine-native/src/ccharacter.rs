@@ -1,6 +1,13 @@
+pub mod template;
+pub mod manager;
+pub use engine_native_memory::msvc_string::{Literal};
 
 use crate::{
-    Memory, ccharacter_manager, ccharacter_template, msvc_string, read, read_slice, walk::Outcome,
+    Memory,
+    ccharacter::{manager as ccharacter_manager, template as ccharacter_template},
+    read,
+    read_slice,
+    walk::Outcome,
 };
 use engine_sites::Rva;
 
@@ -511,7 +518,7 @@ pub(crate) fn identity_header(
     identity_from_header(base, header)
 }
 
-pub(crate) fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32, &'static str> {
+pub fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64
         || u32::from_le_bytes(header[TYPE..ID].try_into().unwrap()) != REFERENCE_TYPE
@@ -521,119 +528,14 @@ pub(crate) fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32,
     Ok(u32::from_le_bytes(header[ID..16].try_into().unwrap()))
 }
 
-pub struct Literal {
-    header: [u8; 32],
-    source: usize,
-    pub len: usize,
-    inline: bool,
-}
 
-impl Literal {
-    pub(crate) fn read(memory: &impl Memory, pointer: usize) -> Result<Self, &'static str> {
-        let header =
-            read::<[u8; 32]>(memory, pointer).ok_or("character string header unreadable")?;
-        Self::from_header(pointer, header)
-    }
-
-    pub fn from_header(pointer: usize, header: [u8; 32]) -> Result<Self, &'static str> {
-        let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
-        let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
-        if capacity < msvc_string::INLINE_CAPACITY || len > capacity {
-            return Err("character string header invalid");
-        }
-        let len = usize::try_from(len).map_err(|_| "character string length overflow")?;
-        let inline = capacity == msvc_string::INLINE_CAPACITY;
-        let source = if inline {
-            pointer
-        } else {
-            usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
-                .ok()
-                .filter(|&p| p != 0)
-                .ok_or("character string pointer invalid")?
-        };
-        if inline && header[len] != 0 {
-            return Err("character string terminator invalid");
-        }
-        Ok(Self {
-            header,
-            source,
-            len,
-            inline,
-        })
-    }
-
-    pub fn source(&self) -> usize {
-        self.source
-    }
-
-    pub fn validate<const N: usize>(
-        memory: &impl Memory,
-        literals: [&Self; N],
-    ) -> Result<(), &'static str> {
-        let mut terminators = [0; N];
-        let mut addresses = [0; N];
-        let mut destinations = terminators.each_mut().map(std::slice::from_mut);
-        let mut heap = false;
-        for (index, literal) in literals.iter().enumerate() {
-            if literal.inline {
-                destinations[index] = &mut [];
-            } else {
-                heap = true;
-                addresses[index] = at(literal.source, literal.len)?;
-            }
-        }
-        if heap && memory.copy_scattered(addresses, &mut destinations) != N {
-            return Err("character string terminator unreadable or invalid");
-        }
-        if terminators.iter().any(|&value| value != 0) {
-            return Err("character string terminator unreadable or invalid");
-        }
-        Ok(())
-    }
-
-    pub fn copy_all<const N: usize>(
-        memory: &impl Memory,
-        literals: [&Self; N],
-        output: &mut [u8],
-    ) -> Result<(), &'static str> {
-        let len = literals
-            .iter()
-            .try_fold(0_usize, |len, literal| len.checked_add(literal.len));
-        if len != Some(output.len()) {
-            return Err("character string destination length mismatch");
-        }
-        let mut remaining = output;
-        let mut destinations = std::array::from_fn(|index| {
-            let (destination, rest) =
-                std::mem::take(&mut remaining).split_at_mut(literals[index].len);
-            remaining = rest;
-            destination
-        });
-        let mut heap = false;
-        for (literal, destination) in literals.iter().zip(destinations.iter_mut()) {
-            if literal.inline {
-                destination.copy_from_slice(&literal.header[..literal.len]);
-                *destination = &mut [];
-            } else if literal.len != 0 {
-                heap = true;
-            }
-        }
-        if heap
-            && memory.copy_scattered(literals.map(|literal| literal.source), &mut destinations) != N
-        {
-            return Err("character string bytes unreadable");
-        }
-        Ok(())
-    }
-}
 
 #[cfg(test)]
 mod tests;
 
-mod portraits;
-pub use portraits::{PortraitRow, PortraitWalk, count_portraits, walk_portraits};
+pub use crate::character_portraits::{PortraitRow, PortraitWalk, count_portraits, walk_portraits};
 
-fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'static str> {
+pub fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'static str> {
     let country_at = at(pointer, COUNTRY)?;
     let header_at = pointer.checked_add(PORTRAIT_DATA);
     if country_at.checked_add(4).is_some()

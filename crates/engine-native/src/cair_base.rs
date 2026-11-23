@@ -1,3 +1,4 @@
+pub use engine_native_parts::cair_base_layout::{HANDLE, HOST_REFERENCE, TYPE, VTABLE_RVA};
 
 use crate::{
     Memory, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,
@@ -14,7 +15,7 @@ mod carrier_capture;
 mod demand;
 mod reuse;
 mod state_summary;
-use crate::cair_wing_pool::fuel;
+use crate::air_fuel_inputs as fuel;
 pub use carrier_capture::{
     CarrierAceSlot, CarrierBase, CarrierBuffers, CarrierCapture, CarrierCountryTerms,
     CarrierDemand, CarrierForecastSlot, CarrierIndexedCertificate, CarrierLengths, CarrierPool,
@@ -65,15 +66,11 @@ pub fn carrier_host_name_demand(
     carrier::host_name_demand(memory, image, source, &mut resolver)
 }
 
-pub const VTABLE_RVA: Rva = Rva(0x029d_50a0);
 pub const SIZE: usize = 0x90;
-pub const TYPE: u32 = 65;
-pub const HANDLE: usize = 0x08;
 pub const INCOMING_WINGS: usize = 0x18;
 pub const COUNTRY_CONTAINERS: usize = 0x30;
 pub const COUNTRY_CONTAINERS_COUNT: usize = 0x3c;
 pub const REGISTERED_CONTAINERS: usize = 0x48;
-pub const HOST_REFERENCE: usize = 0x60;
 pub const STATE: usize = 0x68;
 pub const PROVINCE: usize = 0x70;
 pub const CAPACITY: usize = 0x78;

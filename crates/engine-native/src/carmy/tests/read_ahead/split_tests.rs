@@ -469,10 +469,10 @@ fn status_split_organisation_geography_memos_and_route_faults_match_serial() {
     for address in [
         None,
         Some(P1 + cprovince::ID),
-        Some(0x12000 + crate::province_definition::TERRAIN_FLAGS),
+        Some(0x12000 + crate::cprovince::definition::TERRAIN_FLAGS),
         Some(GS + cgame_state::PROVINCES),
         Some(PROVINCES + 2 * 8),
-        Some(0x18600 + crate::province_definition::ID),
+        Some(0x18600 + crate::cprovince::definition::ID),
         Some(carmy::organisation_movement::LOW_ORGANISATION_FOR_ATTACK_RVA.0),
     ] {
         assert_same(

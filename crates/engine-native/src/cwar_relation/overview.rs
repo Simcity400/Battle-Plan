@@ -1,10 +1,14 @@
+use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 #[cfg(test)]
 #[path = "overview_tests.rs"]
 mod tests;
 use crate::{
-    Memory, ccountry, cdiplomacy_status,
-    cpdx_array::Array,
-    crelation, crelation_status, csubject_relation, cwar_goal, read,
+    Memory,
+    ccountry,
+     cpdx_array::Array,
+    crelation::{self, status as crelation_status, subject as csubject_relation},
+    cwar_relation::goals as cwar_goal,
+    read,
     walk::{Buffer, Outcome},
 };
 use engine_sites::Rva;

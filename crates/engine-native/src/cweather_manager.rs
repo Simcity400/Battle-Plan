@@ -1,9 +1,16 @@
+pub mod region_weather;
+pub mod province_weather;
 
 use crate::{
-    Memory, cgame_state,
+    Memory,
+    cgame_state,
     cpdx_array::Array,
     memory::{FieldBatch, RecordField, RecordLayout, RecordSources},
-    read, sweather_per_province, sweather_per_region,
+    read,
+    cweather_manager::{
+        province_weather as sweather_per_province,
+        region_weather as sweather_per_region,
+    },
     walk::Outcome,
 };
 use engine_sites::Rva;

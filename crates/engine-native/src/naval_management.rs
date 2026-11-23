@@ -1,12 +1,7 @@
+pub use crate::cfleet::{CensusVisit};
 use crate::{Memory, cpdx_array::Array, read};
 use engine_sites::Rva;
 
-#[derive(Clone, Copy, Debug)]
-pub enum CensusVisit {
-    Country(crate::ccountry::Country),
-    Fleet { pointer: usize, handle: u64 },
-    TaskForce { pointer: usize, handle: u64 },
-}
 
 pub const REPAIR_MODE: usize = 0x464;
 pub const REPAIR_CHILDREN: usize = 0x498;

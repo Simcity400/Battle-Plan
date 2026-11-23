@@ -337,7 +337,11 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
     }
 
     fn building(&self, index: u32, state: u32) -> Result<Option<u32>, &'static str> {
-        use crate::{cbuilding, cbuilding_database as database, cbuilding_status as status};
+        use crate::{
+            cbuilding,
+            cbuilding_database as database,
+            cprovince::buildings as status,
+        };
         if field::<u64>(self.memory, global(self.base, database::SINGLETON_RVA)?, 0)? as usize
             != self.inputs.building_database
             || field::<[u8; 16]>(
@@ -431,7 +435,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
         let count = field::<u32>(
             self.memory,
             side,
-            crate::naval_combat_summary_inputs::COUNTRY_COUNT,
+            engine_native_parts::naval_side_layout::COUNTRY_COUNT,
         )?;
         if count > slots {
             return Err("command combat country count invalid");
@@ -445,7 +449,7 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
         let mut node = field::<u64>(
             self.memory,
             side,
-            crate::naval_combat_summary_inputs::COUNTRIES,
+            engine_native_parts::naval_side_layout::COUNTRIES,
         )? as usize;
         for _ in 0..count {
             let country = field::<u32>(self.memory, node, 0)?;
@@ -897,19 +901,19 @@ mod tests {
         let status = 0x8000 + crate::cstate::BUILDING_STATUS;
         memory.put(
             status,
-            &((base + crate::cbuilding_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((base + crate::cprovince::buildings::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         header.clear();
         header.extend_from_slice(&0x9000u64.to_le_bytes());
         header.extend_from_slice(&6u32.to_le_bytes());
         header.extend_from_slice(&6u32.to_le_bytes());
-        memory.put(status + crate::cbuilding_status::BUILDING_INDICES, &header);
+        memory.put(status + crate::cprovince::buildings::BUILDING_INDICES, &header);
         memory.put(0x9000 + 5 * 4, &0i32.to_le_bytes());
         header.clear();
         header.extend_from_slice(&0xa000u64.to_le_bytes());
         header.extend_from_slice(&1u32.to_le_bytes());
         header.extend_from_slice(&1u32.to_le_bytes());
-        memory.put(status + crate::cbuilding_status::BUILDINGS, &header);
+        memory.put(status + crate::cprovince::buildings::BUILDINGS, &header);
         memory.put(0xa000, &0xb000u64.to_le_bytes());
         memory.put(
             0xb000,
@@ -924,7 +928,7 @@ mod tests {
             &0x5000u64.to_le_bytes(),
         );
         memory.put(
-            status + crate::cbuilding_status::COUNTRY,
+            status + crate::cprovince::buildings::COUNTRY,
             &7u32.to_le_bytes(),
         );
         let reader = Reader {

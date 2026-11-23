@@ -1,5 +1,5 @@
 
-use crate::cland_combat::{CommanderLearningTrait, CommanderTrait};
+use crate::cunit_leader::{CommanderLearningTrait, CommanderTrait};
 use crate::memory::Raw;
 use crate::{
     Memory, ccharacter, cnavy_leader, cpdx_array::Array, cunit_leader, cunit_leader_skill,
@@ -397,7 +397,7 @@ impl<M: Memory> Reader<'_, M> {
                 cunit_leader::VTABLE_RVA,
                 crate::carmy_leader::VTABLE_RVA,
                 cnavy_leader::VTABLE_RVA,
-                crate::coperative_leader::VTABLE_RVA,
+                engine_native_parts::coperative_leader_layout::VTABLE_RVA,
             ],
         )
         .is_none()

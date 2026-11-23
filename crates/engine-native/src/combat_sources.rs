@@ -5,8 +5,7 @@ use crate::{
     read,
 };
 use std::{
-    collections::HashMap,
-    hash::{BuildHasherDefault, Hash, Hasher},
+    hash::Hash,
     io,
 };
 
@@ -15,30 +14,7 @@ mod main_combat;
 #[cfg(test)]
 mod main_reinforcement;
 
-#[derive(Default)]
-pub struct KeyHasher(u64);
-
-impl Hasher for KeyHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.write_u64(u64::from(*byte));
-        }
-    }
-    fn write_u64(&mut self, value: u64) {
-        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-    fn write_u32(&mut self, value: u32) {
-        self.write_u64(u64::from(value));
-    }
-    fn write_usize(&mut self, value: usize) {
-        self.write_u64(value as u64);
-    }
-}
-
-pub type Map<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
+pub use engine_native_parts::keyed_map::{KeyHasher, Map};
 pub(crate) type Shared<K, V> = Map<K, Result<V, &'static str>>;
 type LeaderChain = Result<Option<usize>, &'static str>;
 
@@ -75,11 +51,11 @@ pub struct Sources {
     pub(crate) transport_owners: Shared<usize, crate::land_reinforcement_inputs::TransportOwner>,
     pub(crate) transport_enemies: Vec<crate::land_reinforcement_inputs::TransportEnemy>,
     pub(crate) regional: Shared<(usize, u32), i64>,
-    pub(crate) widths: Shared<usize, crate::carmy_combat_inputs::TemplateWidth>,
-    pub(crate) width_arena: Vec<crate::carmy_combat_inputs::WidthTerm>,
+    pub(crate) widths: Shared<usize, crate::division_combat_inputs::TemplateWidth>,
+    pub(crate) width_arena: Vec<crate::division_combat_inputs::WidthTerm>,
     pub(crate) context_metadata:
-        Option<Result<crate::carmy_combat_inputs::ContextMetadata, &'static str>>,
-    pub(crate) context_modifiers: Shared<usize, [crate::carmy_combat_inputs::ContextModifier; 3]>,
+        Option<Result<crate::division_combat_inputs::ContextMetadata, &'static str>>,
+    pub(crate) context_modifiers: Shared<usize, [crate::division_combat_inputs::ContextModifier; 3]>,
     pub(crate) verified: Option<(usize, u64, usize)>,
     leader: Option<(usize, u64, LeaderChain)>,
 }

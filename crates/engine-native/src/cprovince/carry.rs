@@ -1,5 +1,5 @@
 use super::*;
-use crate::controller_areas::Pointers;
+use crate::cprovince::controller_areas::Pointers;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Held {

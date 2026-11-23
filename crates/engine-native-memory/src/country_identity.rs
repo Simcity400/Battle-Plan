@@ -66,3 +66,9 @@ impl<'a> AuthenticatedRoster<'a> {
         self.arrays
     }
 }
+
+pub const MODIFIER_ACCUMULATOR: usize = 0x5b8;
+
+pub const PREFERRED_TACTIC: usize = 0x15d0;
+
+pub const MANPOWER: usize = 0x328;

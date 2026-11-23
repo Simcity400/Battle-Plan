@@ -50,7 +50,7 @@ pub struct HullVariantInputs {
 #[derive(Default)]
 pub(super) struct Memo {
     last: Option<(Key, Option<HullVariantInputs>)>,
-    complete: crate::combat_sources::Map<Key, HullVariantInputs>,
+    complete: engine_native_parts::keyed_map::Map<Key, HullVariantInputs>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

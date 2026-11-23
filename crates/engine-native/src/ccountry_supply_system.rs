@@ -1,7 +1,15 @@
+pub mod train_entry;
+pub mod world;
 
 use crate::{
-    Memory, cpdx_array::Array, csupply_system, hub_motorization_entry, memory::Raw, read,
-    supply_node, supply_node_record, walk::Outcome,
+    Memory,
+    cpdx_array::Array,
+    ccountry_supply_system::world as csupply_system,
+    hub_motorization_entry,
+    memory::Raw,
+    read,
+    supply_node_record,
+    walk::Outcome,
 };
 use engine_sites::Rva;
 
@@ -501,7 +509,7 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
         my_slot: u32,
         default_level: u8,
     ) -> Result<u8, &'static str> {
-        let overrides = array(self.memory, node, supply_node::MOTORIZATION_OVERRIDES, 8)
+        let overrides = array(self.memory, node, engine_native_parts::supply_node_layout::MOTORIZATION_OVERRIDES, 8)
             .map_err(|_| "supply node motorization override array unreadable")?;
         for index in 0..overrides.count {
             let entry = overrides
@@ -567,7 +575,7 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
                 self.memory,
                 rel_system.companion,
                 crate::supply_companion::NODES,
-                supply_node::STRIDE,
+                engine_native_parts::supply_node_layout::STRIDE,
             )
             .map_err(|_| "supply truck witness related nodes unreadable")?;
             let rel_settings = array(
@@ -579,15 +587,15 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
             .map_err(|_| "supply truck witness related hub settings unreadable")?;
             for node_index in 0..rel_nodes.count {
                 let node = rel_nodes
-                    .element(node_index, supply_node::STRIDE)
+                    .element(node_index, engine_native_parts::supply_node_layout::STRIDE)
                     .ok_or("supply truck witness node overflow")?;
                 let header_bytes = node
-                    .checked_add(supply_node::PROVINCE)
+                    .checked_add(engine_native_parts::supply_node_layout::PROVINCE)
                     .and_then(|at| read::<[u8; 8]>(self.memory, at))
                     .ok_or("supply truck witness node header unreadable")?;
                 let province = i32::from_le_bytes(header_bytes[..4].try_into().unwrap());
                 let kind = u32::from_le_bytes(header_bytes[4..].try_into().unwrap());
-                if kind != supply_node::KIND_SUPPLY_HUB && kind != supply_node::KIND_NAVAL_BASE {
+                if kind != engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB && kind != engine_native_parts::supply_node_layout::KIND_NAVAL_BASE {
                     continue;
                 }
                 let controller = self.province_controller(province)?;
@@ -723,7 +731,7 @@ pub fn walk_trains(
     base: usize,
     state: usize,
     output: &mut Vec<TrainRow>,
-    entries: &mut Vec<crate::supply_train_entry::Row>,
+    entries: &mut Vec<crate::ccountry_supply_system::train_entry::Row>,
     access: &mut Vec<u8>,
     runs: &mut Vec<[u32; 2]>,
 ) -> TrainReport {
@@ -745,7 +753,7 @@ pub fn walk_trains_selected(
     base: usize,
     state: usize,
     output: &mut Vec<TrainRow>,
-    entries: &mut Vec<crate::supply_train_entry::Row>,
+    entries: &mut Vec<crate::ccountry_supply_system::train_entry::Row>,
     access: &mut Vec<u8>,
     runs: &mut Vec<[u32; 2]>,
     select: &dyn Fn(u32) -> bool,
@@ -768,7 +776,7 @@ pub fn walk_trains_buffer(
     base: usize,
     state: usize,
     mut output: crate::walk::Buffer<'_, TrainRow>,
-    mut entries: crate::walk::Buffer<'_, crate::supply_train_entry::Row>,
+    mut entries: crate::walk::Buffer<'_, crate::ccountry_supply_system::train_entry::Row>,
     mut access: crate::walk::Buffer<'_, u8>,
     mut runs: crate::walk::Buffer<'_, [u32; 2]>,
     select: Option<&dyn Fn(u32) -> bool>,
@@ -784,7 +792,8 @@ pub fn walk_trains_buffer(
     let result = (|| {
         use crate::{
             memory::{RecordField, RecordLayout, RecordSources},
-            supply_companion, supply_train_entry,
+            supply_companion,
+            ccountry_supply_system::train_entry as supply_train_entry,
         };
         const FIELDS: [RecordField; 1] = [RecordField {
             source_offset: 0,
@@ -826,7 +835,7 @@ pub fn walk_trains_buffer(
                 memory,
                 system.companion,
                 supply_companion::NODES,
-                crate::supply_node::STRIDE,
+                engine_native_parts::supply_node_layout::STRIDE,
             )?;
 
             required_entries = required_entries
@@ -968,7 +977,7 @@ pub fn train_storage_demand(
             memory,
             system.pointer,
             ALLOCATED_TRAINS,
-            crate::supply_train_entry::STRIDE,
+            crate::ccountry_supply_system::train_entry::STRIDE,
         )?;
         let access = array(
             memory,

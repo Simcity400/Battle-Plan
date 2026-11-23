@@ -17,7 +17,7 @@ fn experience_pending_conversion_reads_full_template_handle_and_null_absence() {
 fn icon_inputs_keep_raw_byte_and_full_alternate_template_handle() {
     use super::*;
     let mut bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -49,7 +49,7 @@ fn icon_inputs_keep_raw_byte_and_full_alternate_template_handle() {
 #[test]
 fn icon_inputs_reject_stale_army_sources_and_bad_nonnull_templates() {
     use super::*;
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -89,7 +89,7 @@ fn icon_inputs_reject_stale_army_sources_and_bad_nonnull_templates() {
 fn icon_inputs_unreadable_byte_and_bad_pointer_never_become_zero() {
     use super::*;
     let mut bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -126,7 +126,7 @@ fn icon_inputs_unreadable_byte_and_bad_pointer_never_become_zero() {
 fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
     use super::*;
     let mut bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 25,
@@ -179,7 +179,7 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
         read_icon_inputs(
             &owned,
             0,
-            crate::cequipment_variant_pool::DivisionSource {
+            crate::cequipment_variant::pool::DivisionSource {
                 country: 3,
                 ..source
             },
@@ -194,7 +194,7 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
 fn seeded_icons_keep_failed_fields_and_source_keys_without_retry() {
     use super::*;
     let bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -1009,7 +1009,10 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
 
 fn presentation_fixture() -> PresentationMemory {
     use crate::{
-        cgame_state, csub_unit_definition as stats, cunit, province_definition as definition,
+        cgame_state,
+        csub_unit_definition as stats,
+        cunit,
+        cprovince::definition as definition,
     };
     let mut bytes = fixture();
     bytes.resize(0x20000, 0);
@@ -1106,9 +1109,9 @@ fn normal_route_fixture() -> PresentationMemory {
         p64(b, province, cprovince::VTABLE_RVA.0 as u64);
         p32(b, province + cprovince::ID, id);
         p64(b, province + cprovince::DEFINITION, definition as u64);
-        p32(b, definition + crate::province_definition::ID, id);
+        p32(b, definition + crate::cprovince::definition::ID, id);
         p64(b, definition + 0xa8, terrain as u64);
-        b[definition + crate::province_definition::TERRAIN_FLAGS] = 1;
+        b[definition + crate::cprovince::definition::TERRAIN_FLAGS] = 1;
     }
     array(b, A1 + crate::cunit::ORDINARY_ROUTE_DATA, 0x1f000, 2);
     p32(b, 0x1f000, 2);
@@ -1278,7 +1281,7 @@ fn embark_define_refreshes_without_a_session_or_province_census_change() {
 #[test]
 fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
     let mut memory = normal_route_fixture();
-    let header = 0x12000 + crate::province_definition::NEIGHBOURS;
+    let header = 0x12000 + crate::cprovince::definition::NEIGHBOURS;
     let stride = crate::province_neighbour::STRIDE;
     let id = crate::province_neighbour::PROVINCE_ID;
     let distance = crate::province_neighbour::MOVEMENT_DISTANCE;
@@ -1318,8 +1321,8 @@ fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
     assert!(unreadable.reads.borrow().contains(&(0x1e100 + id)));
 }
 
-fn presentation_source() -> [crate::cequipment_variant_pool::DivisionSource; 1] {
-    [crate::cequipment_variant_pool::DivisionSource {
+fn presentation_source() -> [crate::cequipment_variant::pool::DivisionSource; 1] {
+    [crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         template: handle(0, 52),
@@ -1392,7 +1395,7 @@ fn shared_geometry_fixture() -> PresentationMemory {
     p32(&mut memory.bytes, 0x16004, 1);
     array(
         &mut memory.bytes,
-        0x12000 + crate::province_definition::NEIGHBOURS,
+        0x12000 + crate::cprovince::definition::NEIGHBOURS,
         0x18000,
         3,
     );
@@ -1415,7 +1418,7 @@ fn shared_geometry_fixture() -> PresentationMemory {
 
 fn owned_movement_fixture_run(
     memory: &impl crate::Memory,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     output: &mut [super::MovementRow],
     paths: &mut [u32],
 ) -> super::MovementWalk {
@@ -1450,7 +1453,7 @@ fn owned_movement_fixture_run(
 
 fn movement_combat_fixture() -> (
     PresentationMemory,
-    [crate::cequipment_variant_pool::DivisionSource; 3],
+    [crate::cequipment_variant::pool::DivisionSource; 3],
 ) {
     use crate::{cland_combat as combat, cland_combatant as side, cunit};
     let mut source = presentation_fixture();
@@ -1471,7 +1474,7 @@ fn movement_combat_fixture() -> (
             1,
         );
         p64(&mut source.bytes, references, 0x16000);
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer,
             division,
             ..presentation_source()[0]
@@ -2062,7 +2065,7 @@ fn owned_movement_admits_every_route_and_ignores_private_status_fault() {
     );
     let sources = [
         presentation_source()[0],
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer: A2,
             division: handle(10, 9000),
             ..presentation_source()[0]
@@ -2137,7 +2140,7 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
         0,
     );
     let sources = [(A1, 9), (A2, 10), (A3, 11), (STATIONARY, 12)].map(|(pointer, id)| {
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer,
             division: handle(id, 9000),
             ..presentation_source()[0]
@@ -2471,7 +2474,11 @@ fn shared_movement_geometry_preserves_first_faults_and_unvisited_neighbor_suffix
 
 #[test]
 fn movement_routes_are_whole_and_keep_whole_row_capacity() {
-    use crate::{cunit, province_definition as definition, province_neighbour as neighbor};
+    use crate::{
+        cunit,
+        cprovince::definition as definition,
+        province_neighbour as neighbor,
+    };
     let mut memory = presentation_fixture();
     let b = &mut memory.bytes;
     array(b, A1 + cunit::ORDINARY_ROUTE_DATA, 0x16000, 300);
@@ -4293,7 +4300,7 @@ fn seeded_icon_inputs_read_no_division_field() {
         (seeds[0].separate_counter, seeds[0].alternate_template),
         (Some(7), Some(0))
     );
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer,
         division,
         country: 25,
@@ -4569,7 +4576,7 @@ fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order()
 #[test]
 fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_refusals() {
     use super::*;
-    use crate::{cdiplomacy_status as diplomacy, crelation_status as relation};
+    use crate::{cdiplomacy_status as diplomacy, crelation::status as relation};
     const LAST: usize = 0x2e000;
     const DEFINITION: usize = 0x2e200;
     const DIPLOMACY: usize = 0x2d000;
@@ -4583,9 +4590,9 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     p64(b, LAST, cprovince::VTABLE_RVA.0 as u64);
     p32(b, LAST + cprovince::ID, 4);
     p64(b, LAST + cprovince::DEFINITION, DEFINITION as u64);
-    p32(b, DEFINITION + crate::province_definition::ID, 4);
-    b[DEFINITION + crate::province_definition::TERRAIN_FLAGS] = 1;
-    b[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    p32(b, DEFINITION + crate::cprovince::definition::ID, 4);
+    b[DEFINITION + crate::cprovince::definition::TERRAIN_FLAGS] = 1;
+    b[0x18600 + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
     p32(b, LAST + cprovince::CONTROLLER, 2);
     p64(b, C2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
     p64(b, DIPLOMACY, diplomacy::VTABLE_RVA.0 as u64);
@@ -4634,10 +4641,10 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         packet.units[0].movement_organisation,
         Some(Some([0, 1_000_000]))
     );
-    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAKE_FLAG;
-    source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAND_FLAG;
+    source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAKE_FLAG;
+    source.bytes[0x18600 + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAND_FLAG;
     assert_eq!(
         packet.capture_movement_organisation(&source, 0, GS, &[seed]),
         0
@@ -4646,8 +4653,8 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         packet.units[0].movement_organisation,
         Some(Some([0, 1_000_000]))
     );
-    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAND_FLAG;
+    source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAND_FLAG;
     p32(&mut source.bytes, 0x1f000, 99);
     assert_eq!(
         packet.capture_movement_organisation(&source, 0, GS, &[seed]),
@@ -4668,8 +4675,8 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         0
     );
     assert_eq!(packet.units[0].movement_organisation, Some(None));
-    source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
-    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    source.bytes[0x18600 + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
+    source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
     p32(&mut source.bytes, 0x1f000, 2);
     let mut sea_header = header;
     sea_header[12..16].copy_from_slice(&1_u32.to_le_bytes());
@@ -4688,7 +4695,7 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
 
 fn model_inputs_test_capture(
     memory: &impl crate::Memory,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
 ) -> (super::ModelInputsReport, Vec<super::ModelInputsRow>) {
     let mut seeds: Vec<_> = sources
         .iter()
@@ -4855,7 +4862,7 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
 
     let sources = [
         presentation_source()[0],
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer: A2,
             division: handle(9, 51),
             template: handle(0, 52),

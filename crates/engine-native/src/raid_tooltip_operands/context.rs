@@ -2,8 +2,17 @@ use super::*;
 use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::modifier_keys as keys;
 use crate::{
-    cair_base, cair_wing_pool, cbuilding, cbuilding_database, cbuilding_status, cbuilding_template,
-    cgame_state, cprovince, cstate, cstrategic_air, cstrategic_air_manager, cstrategic_region,
+    cair_base,
+    cair_wing_pool,
+    cbuilding,
+    cbuilding_database,
+    cprovince::{buildings as cbuilding_status, self},
+    cbuilding_template,
+    cgame_state,
+    cstate,
+    cstrategic_air,
+    cstrategic_air_manager,
+    cstrategic_region,
 };
 use engine_sites::Rva;
 

@@ -1,3 +1,6 @@
+pub mod definition;
+pub mod controller_areas;
+pub mod buildings;
 use engine_sites::Rva;
 use crate::{
     Memory, cgame_state,
@@ -598,7 +601,7 @@ pub const BORDER_CONFLICT_NONZERO_QWORD: usize = 0xb0;
 pub const OWNER_AREA: usize = 0xd8;
 pub const BORDER_WAR_SIDE_GROUP: usize = 0x4e8;
 
-pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS;
+pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cprovince::buildings::ACTIVE_BUILDINGS;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -653,9 +656,9 @@ pub struct Capture {
     pub conflicts: Vec<ConflictRow>,
     pub groups: Vec<u64>,
     pub conflict_walk: ConflictWalk,
-    pub areas: Vec<crate::controller_areas::Pointers>,
-    pub area_nodes: crate::controller_areas::Output,
-    pub area_store: Option<Box<crate::controller_areas::Store>>,
+    pub areas: Vec<crate::cprovince::controller_areas::Pointers>,
+    pub area_nodes: crate::cprovince::controller_areas::Output,
+    pub area_store: Option<Box<crate::cprovince::controller_areas::Store>>,
     pub province_store: Option<Box<carry::RowStore>>,
 }
 
@@ -670,8 +673,8 @@ impl Capture {
             conflicts: crate::allocation::filled(conflicts, ConflictRow::default())?,
             groups: crate::allocation::filled(groups, 0)?,
             conflict_walk: ConflictWalk::default(),
-            areas: crate::allocation::filled(rows, crate::controller_areas::Pointers::default())?,
-            area_nodes: crate::controller_areas::Output::default(),
+            areas: crate::allocation::filled(rows, crate::cprovince::controller_areas::Pointers::default())?,
+            area_nodes: crate::cprovince::controller_areas::Output::default(),
             area_store: None,
             province_store: None,
         })
@@ -687,7 +690,7 @@ impl Capture {
         self.rows.capacity() * size_of::<Row>()
             + self.conflicts.capacity() * size_of::<ConflictRow>()
             + self.groups.capacity() * size_of::<u64>()
-            + self.areas.capacity() * size_of::<crate::controller_areas::Pointers>()
+            + self.areas.capacity() * size_of::<crate::cprovince::controller_areas::Pointers>()
             + self.area_nodes.allocated_bytes()
     }
 
@@ -1319,17 +1322,17 @@ const MOVEMENT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_FIELDS, MOVEMENT_BYTES).expect("valid record layout");
 const DEFINITION_FIELDS: [RecordField; 3] = [
     RecordField {
-        source_offset: crate::province_definition::ID,
+        source_offset: crate::cprovince::definition::ID,
         destination_offset: 0,
         len: 4,
     },
     RecordField {
-        source_offset: crate::province_definition::TERRAIN_FLAGS,
+        source_offset: crate::cprovince::definition::TERRAIN_FLAGS,
         destination_offset: 16,
         len: 1,
     },
     RecordField {
-        source_offset: crate::province_definition::PORT_SEA,
+        source_offset: crate::cprovince::definition::PORT_SEA,
         destination_offset: 20,
         len: 4,
     },
@@ -1532,7 +1535,7 @@ fn walk_with_conflicts_buffer(
     game_state: usize,
     output: crate::walk::Buffer<'_, Row>,
     mut conflicts: ConflictBuffers<'_>,
-    mut areas: crate::walk::Buffer<'_, crate::controller_areas::Pointers>,
+    mut areas: crate::walk::Buffer<'_, crate::cprovince::controller_areas::Pointers>,
     carry: Option<&mut carry::Hour<'_>>,
 ) -> (Outcome, ConflictWalk) {
     let mut conflict = ConflictState::default();
@@ -1801,7 +1804,7 @@ fn walk_rows(
     base: usize,
     game_state: usize,
     mut output: crate::walk::Buffer<'_, Row>,
-    areas: &mut crate::walk::Buffer<'_, crate::controller_areas::Pointers>,
+    areas: &mut crate::walk::Buffer<'_, crate::cprovince::controller_areas::Pointers>,
     conflicts: &mut ConflictBuffers<'_>,
     conflict: &mut ConflictState,
     carry: Option<&mut carry::Hour<'_>>,
@@ -1864,7 +1867,7 @@ fn read_rows(
     game_state: usize,
     array: Array,
     output: &mut [Row],
-    areas: &mut [crate::controller_areas::Pointers],
+    areas: &mut [crate::cprovince::controller_areas::Pointers],
     conflicts: &mut ConflictBuffers<'_>,
     conflict: &mut ConflictState,
     states: &mut StateCache,
@@ -1933,7 +1936,7 @@ fn read_rows(
             row.move_gate = fields.move_gate;
             row.port_sea = fields.port_sea;
             if let Some(slot) = areas.get_mut(admitted + index) {
-                *slot = crate::controller_areas::Pointers {
+                *slot = crate::cprovince::controller_areas::Pointers {
                     province: pointer,
                     definition: fields.definition,
                     controller: fields.controller_area,
@@ -1977,7 +1980,7 @@ struct GeometryProvince {
     definition: Option<Result<usize, &'static str>>,
     authenticated_id: Option<u32>,
     validated_definition: Option<usize>,
-    fields: crate::province_definition::GeometryFields,
+    fields: crate::cprovince::definition::GeometryFields,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2460,7 +2463,7 @@ impl GeometryPacket {
         let definition_id = geometry_memo(
             &mut self.counters,
             &mut self.provinces[index].fields.id,
-            || geometry_field(memory, definition, crate::province_definition::ID),
+            || geometry_field(memory, definition, crate::cprovince::definition::ID),
         )?;
         if definition_id != id {
             return Err("unit geometry province definition mismatch");
@@ -2479,7 +2482,7 @@ impl GeometryPacket {
                 geometry_field(
                     memory,
                     definition,
-                    crate::province_definition::TERRAIN_FLAGS,
+                    crate::cprovince::definition::TERRAIN_FLAGS,
                 )
             },
         )
@@ -2490,7 +2493,7 @@ impl GeometryPacket {
         let header = geometry_memo(
             &mut self.counters,
             &mut self.provinces[index].fields.neighbours,
-            || geometry_field(memory, definition, crate::province_definition::NEIGHBOURS),
+            || geometry_field(memory, definition, crate::cprovince::definition::NEIGHBOURS),
         )?;
         let array = Array::from_header(header, crate::province_neighbour::STRIDE)
             .ok_or("unit geometry adjacency header invalid")?;
@@ -2623,14 +2626,14 @@ impl Default for MovementProvince {
             controller: Ok(0),
             controller_area: Ok(0),
             strategic_region: Ok(0),
-            terrain_flags: Ok(crate::province_definition::LAND_FLAG),
+            terrain_flags: Ok(crate::cprovince::definition::LAND_FLAG),
         }
     }
 }
 impl MovementProvince {
     pub fn land(self) -> Result<bool, &'static str> {
         self.terrain_flags
-            .map(|flags| flags & crate::province_definition::LAND_FLAG != 0)
+            .map(|flags| flags & crate::cprovince::definition::LAND_FLAG != 0)
     }
 }
 
@@ -2663,7 +2666,7 @@ pub fn movement_province(
     }
     let terrain_flags = field(DEFINITION).and_then(|definition| {
         (definition as usize)
-            .checked_add(crate::province_definition::TERRAIN_FLAGS)
+            .checked_add(crate::cprovince::definition::TERRAIN_FLAGS)
             .filter(|_| definition != 0)
             .and_then(|address| crate::read::<u8>(memory, address))
             .ok_or("movement province definition flags unreadable")
@@ -2719,7 +2722,7 @@ const MOVEMENT_PROVINCE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_PROVINCE_FIELDS, MOVEMENT_PROVINCE_BYTES)
         .expect("valid record layout");
 const TERRAIN_FLAG_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: crate::province_definition::TERRAIN_FLAGS,
+    source_offset: crate::cprovince::definition::TERRAIN_FLAGS,
     destination_offset: 0,
     len: 1,
 }];
@@ -2911,3 +2914,10 @@ mod direct_combat_tests;
 
 #[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
 mod bench;
+
+pub fn invasion_provinces(memory: &impl Memory, game_state: usize) -> Result<Array, &'static str> {
+    game_state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|address| Array::read(memory, address, 8))
+        .ok_or("invasion preparation array unreadable or invalid")
+}

@@ -38,7 +38,7 @@ pub fn definitions_demand(
     game_state: usize,
 ) -> Result<[DefinitionDemand; 2], &'static str> {
     let mut demand = [DefinitionDemand::default(); 2];
-    crate::ccharacter_manager::visit(memory, base, game_state, |entry| {
+    crate::ccharacter::manager::visit(memory, base, game_state, |entry| {
         let total = &mut demand[entry.roster as usize];
         total.characters = total
             .characters
@@ -85,7 +85,7 @@ pub fn modifier_demand(
 ) -> Result<ModifierDemand, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
     let mut demand = ModifierDemand::default();
-    crate::ccharacter_manager::visit(memory, base, game_state, |entry| {
+    crate::ccharacter::manager::visit(memory, base, game_state, |entry| {
         let mut tree = crate::msvc_tree_node::Cursor::read(
             memory,
             entry.pointer,
@@ -395,7 +395,7 @@ pub struct Row {
 pub fn walk_prefix_entry(
     memory: &impl crate::Memory,
     base: usize,
-    entry: crate::ccharacter_manager::Entry,
+    entry: crate::ccharacter::manager::Entry,
     output: crate::walk::Buffer<'_, Row>,
     bytes: crate::walk::Buffer<'_, u8>,
 ) -> crate::ccharacter::NameWalk {
@@ -405,7 +405,7 @@ pub fn walk_prefix_entry(
 pub fn walk_definitions_entry_buffer(
     memory: &impl crate::Memory,
     base: usize,
-    entry: crate::ccharacter_manager::Entry,
+    entry: crate::ccharacter::manager::Entry,
     output: crate::walk::Buffer<'_, Row>,
     bytes: crate::walk::Buffer<'_, u8>,
 ) -> crate::ccharacter::NameWalk {
@@ -415,7 +415,7 @@ pub fn walk_definitions_entry_buffer(
 fn walk_entry_inner_buffer(
     memory: &impl crate::Memory,
     base: usize,
-    entry: crate::ccharacter_manager::Entry,
+    entry: crate::ccharacter::manager::Entry,
     mut output: crate::walk::Buffer<'_, Row>,
     mut bytes: crate::walk::Buffer<'_, u8>,
     capture_cache: bool,
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn modifier_demand_sums_live_headers_and_propagates_faults() {
-        use crate::{ccharacter, ccharacter_manager, cgame_state};
+        use crate::{ccharacter::{self, manager as ccharacter_manager}, cgame_state};
         const STATE: usize = 0x100;
         const MANAGER: usize = 0x1000;
         const ROSTER: usize = 0x2000;

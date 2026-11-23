@@ -1,6 +1,7 @@
+pub use crate::cair_wing::{WingMembership, read_wing_membership};
 
 use crate::{
-    Memory, cair_group, cair_theatre, cair_wing, carmy, carmy_group, ccontroller_area, ccountry,
+    Memory, cair_group, cair_theatre,  carmy, carmy_group, ccontroller_area, ccountry,
     corders_group,
     cpdx_array::Array,
     cprovince, ctask_force, ctheater_group, cunit,
@@ -138,11 +139,6 @@ pub struct OrdersMembership {
     pub theater_group: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct WingMembership {
-    pub wing: u64,
-    pub group: u64,
-}
 
 const NOT_ROSTER_THEATRE: &str = "unit theatre is not one of its roster country's theatres";
 
@@ -247,21 +243,6 @@ pub fn read_orders_membership(
     Ok(OrdersMembership {
         orders_group: root.handle,
         theater_group,
-    })
-}
-
-pub fn read_wing_membership(
-    memory: &impl Memory,
-    pointer: usize,
-    wing: &cair_wing::Row,
-) -> Result<WingMembership, &'static str> {
-    let group = pointer
-        .checked_add(cair_wing::GROUP_HANDLE)
-        .and_then(|address| read::<u64>(memory, address))
-        .ok_or("air wing theatre group reference unreadable")?;
-    Ok(WingMembership {
-        wing: wing.id,
-        group,
     })
 }
 
@@ -687,7 +668,7 @@ impl<M: Memory> Reader<'_, M> {
                         .ok_or("air wing reference address overflow")?;
                     let wing =
                         read::<u64>(self.memory, address).ok_or("air wing reference unreadable")?;
-                    if wing as u32 != cair_wing::TYPE {
+                    if wing as u32 != engine_native_parts::cair_wing_layout::TYPE {
                         return Err("air group member reference is not an air wing");
                     }
                     counts[5].push(

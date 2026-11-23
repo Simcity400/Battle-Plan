@@ -1,4 +1,5 @@
 use super::*;
+use crate::cship::modifier_sources::terrain_from_template_with_policy;
 use std::cell::{Cell, RefCell};
 const IMAGE: usize = 0x1000_0000;
 struct Fixture {

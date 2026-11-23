@@ -10,7 +10,13 @@ pub const NAME_GROUP_MEMBER: usize = 0x340;
 pub const DIRECTION_GROUP: usize = 0x4a8;
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [0xfb, 0x10f, 0x250];
 
-pub use crate::carmy_combat_inputs::{ContextModifier, ContextRow, Modifier, Row, WidthTerm};
+pub use crate::division_combat_inputs::{
+    ContextModifier,
+    ContextRow,
+    Modifier,
+    Row,
+    WidthTerm,
+};
 
 fn bytes<const N: usize>(
     memory: &impl Memory,

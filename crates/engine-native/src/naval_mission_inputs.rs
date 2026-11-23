@@ -1,16 +1,26 @@
+pub use crate::ctask_force::mission_layout::{CHARACTER_UNIT_LEADER, CHARACTER_UNIT_LEADER_REFERENCE, COMMANDER_CHARACTER, FUEL, HEADQUARTERS_COMMANDER, LEADER_MODIFIERS, LOCAL_MODIFIERS, REPLENISHMENT, SOURCE_MODIFIERS, STAT_RANGE, UNDERWAY, UNIT_LEADER_KIND, UNIT_LEADER_SOURCES};
+pub use crate::ctask_force::targeted_spotting;
 
 use crate::{
-    Memory, ccharacter, cfleet, cnaval_mission, cnavy_leader,
+    Memory,
+    ccharacter,
+    cfleet,
+    cnaval_mission,
+    cnavy_leader,
     cpdx_array::Array,
-    cprovince, cstrategic_navy, ctask_force, cunit, cweather_manager,
+    cprovince,
+    cstrategic_navy,
+    ctask_force,
+    cunit,
+    cweather_manager::{self, region_weather as sweather_per_region},
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     modifier_accumulator::{self as accumulator, Value},
-    modifier_keys as keys, read, sweather_per_region,
+    modifier_keys as keys,
+    read,
 };
 use engine_sites::Rva;
 
 mod convoy_targets;
-pub mod targeted_spotting;
 pub use convoy_targets::{
     ConvoyDesign, ConvoyDesigns, SourceSpeed, TargetOperands, read_source_speed,
 };
@@ -45,26 +55,13 @@ pub const RAIDING: u32 = 3;
 pub const ESCORT: u32 = 4;
 pub const MISSION_KINDS: [u32; 4] = [2, RAIDING, ESCORT, 9];
 
-pub const UNDERWAY: usize = 0x468;
-pub const REPLENISHMENT: usize = 0x478;
-pub const FUEL: usize = 0x4f8;
-pub const STAT_RANGE: usize = 0x1b0;
 pub const HUBS: usize = 0x170;
 
-pub const LOCAL_MODIFIERS: usize = 0x668;
 pub const STAT_RAIDING: usize = 0x1f8;
 
 #[cfg(any(test, feature = "test-support"))]
 pub const FLEET_LEADER: usize = cfleet::LEADER;
-pub const LEADER_MODIFIERS: usize = 0x418;
 
-pub const HEADQUARTERS_COMMANDER: usize = 0x40;
-pub const COMMANDER_CHARACTER: usize = 0x08;
-pub const CHARACTER_UNIT_LEADER: usize = 0xa8;
-pub const CHARACTER_UNIT_LEADER_REFERENCE: usize = 0xc8;
-pub const UNIT_LEADER_KIND: usize = 0xe7c;
-pub const UNIT_LEADER_SOURCES: [usize; 4] = [0xf70, 0xf80, 0xfa0, 0xf90];
-pub const SOURCE_MODIFIERS: usize = 0xe0;
 
 pub const MISSION_OWNER: usize = 0x10;
 pub const MISSION_CONVOYS: usize = 0x40;

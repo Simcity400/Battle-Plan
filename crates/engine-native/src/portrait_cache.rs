@@ -257,7 +257,7 @@ impl Cache {
                 .all(|key| key.revision.is_some())
     }
 
-    pub fn matches_census(&self, rows: &[crate::ccharacter_manager::PortraitIdentity]) -> bool {
+    pub fn matches_census(&self, rows: &[crate::ccharacter::manager::PortraitIdentity]) -> bool {
         self.valid
             && self.used == rows.len()
             && self.keys[..self.used]
@@ -332,7 +332,7 @@ mod tests {
         cache.finish(1);
         cache.grow(8).unwrap();
         assert_eq!(cache.keys.len(), 8);
-        let row = crate::ccharacter_manager::PortraitIdentity {
+        let row = crate::ccharacter::manager::PortraitIdentity {
             pointer: key.pointer,
             character: key.character,
         };
@@ -368,7 +368,7 @@ mod tests {
         };
         cache.begin(scope);
         cache.remember(0, key);
-        let row = crate::ccharacter_manager::PortraitIdentity {
+        let row = crate::ccharacter::manager::PortraitIdentity {
             pointer: key.pointer,
             character: key.character,
         };
@@ -376,13 +376,13 @@ mod tests {
         assert!(!cache.matches_census(&[]));
         assert!(!cache.matches_census(&[row, row]));
         assert!(
-            !cache.matches_census(&[crate::ccharacter_manager::PortraitIdentity {
+            !cache.matches_census(&[crate::ccharacter::manager::PortraitIdentity {
                 pointer: 200,
                 ..row
             }])
         );
         assert!(
-            !cache.matches_census(&[crate::ccharacter_manager::PortraitIdentity {
+            !cache.matches_census(&[crate::ccharacter::manager::PortraitIdentity {
                 character: 99,
                 ..row
             }])

@@ -1159,7 +1159,7 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
     let bytes = train_fixture();
     let memory = TrainMemory::new(&bytes);
     let mut rows = vec![TrainRow::default(); 2];
-    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut access = vec![0; 3];
     let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(
@@ -1362,7 +1362,7 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
         0,
         GAME,
         &mut vec![TrainRow::default(); 2],
-        &mut vec![crate::supply_train_entry::Row::default(); 2],
+        &mut vec![crate::ccountry_supply_system::train_entry::Row::default(); 2],
         &mut vec![0; 3],
         &mut vec![[0; 2]; 2],
     );
@@ -1383,7 +1383,7 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
 fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
     let bytes = train_fixture();
     let mut baseline = vec![TrainRow::default(); 2];
-    let mut baseline_entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut baseline_entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut baseline_access = vec![0; 3];
     let mut baseline_runs = vec![[0; 2]; 2];
     assert_eq!(
@@ -1411,7 +1411,7 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
         let mut memory = TrainMemory::new(&bytes);
         memory.reject = Some(address + 1);
         let mut rows = vec![TrainRow::default(); 2];
-        let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+        let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
         let mut access = vec![0; 3];
         let mut runs = vec![[0; 2]; 2];
         let report = walk_trains(
@@ -1486,7 +1486,7 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
         &0x15000_u64.to_le_bytes(),
     );
     let mut rows = vec![TrainRow::default(); 2];
-    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut access = vec![0; 3];
     let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(
@@ -1825,7 +1825,7 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
 
     let run = |memory: &TrainMemory<'_>| {
         let mut rows = vec![TrainRow::default(); 2];
-        let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+        let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
         let mut access = vec![0; 3];
         let mut runs = vec![[0; 2]; 2];
         let report = walk_trains(memory, 0, GAME, &mut rows, &mut entries, &mut access, &mut runs);
@@ -1934,7 +1934,7 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
     }
     let _ = engine_sites::take_taint();
     let mut rows = vec![TrainRow::default(); 2];
-    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut access = vec![0; 3];
     let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(

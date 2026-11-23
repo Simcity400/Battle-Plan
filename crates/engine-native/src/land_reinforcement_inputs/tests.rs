@@ -315,7 +315,7 @@ fn transport_without_static_feature_preserves_branch_without_normal_dependencies
     put(0x3000, cprovince::VTABLE_RVA.0 as u64);
     put(0x3000 + cprovince::DEFINITION, 0x3800);
     put(0x3000 + cprovince::ID, 14);
-    put(0x3800 + crate::province_definition::ID, 14);
+    put(0x3800 + crate::cprovince::definition::ID, 14);
     put(0x3000 + cprovince::STRATEGIC_REGION, 0x4000);
     put(0x4000, crate::cstrategic_region::VTABLE_RVA.0 as u64);
     put(0x4000 + crate::cstrategic_region::ID, 22);
@@ -578,9 +578,16 @@ fn diplomacy_at(slot: usize) -> usize {
 
 fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
     use crate::{
-        ccountry_intel, cdiplomacy_status, country_intel_row, cstatic_modifier, cstrategic_navy,
-        cstrategic_navy_manager, cstrategic_region, cweather_manager,
-        modifier_definition as metadata, province_definition,
+        ccountry_intel,
+        cdiplomacy_status,
+        country_intel_row,
+        cstatic_modifier,
+        cstrategic_navy,
+        cstrategic_navy_manager,
+        cstrategic_region,
+        cweather_manager,
+        modifier_definition as metadata,
+        cprovince::definition as province_definition,
     };
     const STATS: usize = 0x21_0000;
     const LOCATION: usize = 0x22_0000;

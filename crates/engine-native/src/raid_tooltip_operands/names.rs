@@ -278,7 +278,7 @@ fn member(
                     return Ok(());
                 }
                 context::authenticate(m, base, ship, crate::cship::VTABLE_RVA)?;
-                let entries = crate::cequipment_variant_pool::entries(m, base, ship + 0x40)?;
+                let entries = crate::cequipment_variant::pool::entries(m, base, ship + 0x40)?;
                 let mut best = None;
                 for i in 0..entries.count {
                     let at = entries

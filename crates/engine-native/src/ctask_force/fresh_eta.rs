@@ -7,7 +7,7 @@ use crate::{
     memory::{FieldBatch, Raw, RecordField, RecordLayout, gather_records_once, scalar_from_bytes},
     modifier_accumulator::{self as accumulator, Value},
     modifier_definition::{self as metadata, Operands},
-    modifier_keys as keys, naval_mission_inputs as mission, naval_ship_modifier_inputs as naval,
+    modifier_keys as keys, ctask_force::{mission_layout as mission, targeted_spotting}, cship::modifier_sources as naval,
     read,
     recent::Recent,
 };
@@ -118,7 +118,7 @@ pub struct MissionRiskInputs {
     pub speed_base: Result<Option<i64>, &'static str>,
     pub speed_modifier: Result<Option<i64>, &'static str>,
     pub terrain_class: Result<Option<i32>, &'static str>,
-    pub stats: Result<Option<crate::transport_spotting_graph::TaskForceStats>, &'static str>,
+    pub stats: Result<Option<TaskForceStats>, &'static str>,
     pub roster_owner: Result<Option<u32>, &'static str>,
     pub location: Result<Option<u32>, &'static str>,
     pub region: Result<Option<u32>, &'static str>,
@@ -810,7 +810,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 };
                 if record != 0 {
                     let mut weather = self.terms(
-                        add(record, crate::sweather_per_region::MODIFIERS)?,
+                        add(record, crate::cweather_manager::region_weather::MODIFIERS)?,
                         eta,
                         risk,
                     )?;
@@ -1166,7 +1166,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             .as_ref()
             .map_err(|reason| *reason)?;
         let value =
-            mission::targeted_spotting::raw(self.memory, self.base, countries, roster, raw)?;
+            targeted_spotting::raw(self.memory, self.base, countries, roster, raw)?;
         self.effective(TARGETED_INDEX, value)
     }
     fn stats(&mut self, task: usize) -> Result<usize, &'static str> {
@@ -1274,12 +1274,12 @@ impl<'a, M: Memory> Reader<'a, M> {
             stats: contribution.map(|contribution| {
                 if contribution {
                     Some(if reached == Ok(true) {
-                        crate::transport_spotting_graph::TaskForceStats::capture(
+                        TaskForceStats::capture(
                             self.memory,
                             source.stats,
                         )
                     } else {
-                        crate::transport_spotting_graph::TaskForceStats::capture_detection(
+                        TaskForceStats::capture_detection(
                             self.memory,
                             source.stats,
                         )
@@ -1523,3 +1523,53 @@ impl<'a, M: Memory> Reader<'a, M> {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskForceStats {
+    pub detection_138: ResultWord<i64>,
+    pub visibility_148: ResultWord<i64>,
+    pub visibility_150: ResultWord<i64>,
+    pub carrier_detection_160: ResultWord<i64>,
+}
+
+impl TaskForceStats {
+    pub fn capture(memory: &impl Memory, original: ResultWord<usize>) -> Self {
+        Self::capture_with_visibility(memory, original, true)
+    }
+
+    pub fn capture_detection(memory: &impl Memory, original: ResultWord<usize>) -> Self {
+        Self::capture_with_visibility(memory, original, false)
+    }
+
+    fn capture_with_visibility(
+        memory: &impl Memory,
+        original: ResultWord<usize>,
+        visibility: bool,
+    ) -> Self {
+        let word = |offset| {
+            original.and_then(|stats| {
+                stats
+                    .checked_add(offset)
+                    .filter(|_| stats != 0)
+                    .and_then(|at| read::<i64>(memory, at))
+                    .ok_or("selected transport task-force stat word unreadable")
+            })
+        };
+        Self {
+            detection_138: word(0x138),
+            visibility_148: if visibility {
+                word(0x148)
+            } else {
+                Err("selected transport visibility stat query unreached")
+            },
+            visibility_150: if visibility {
+                word(0x150)
+            } else {
+                Err("selected transport visibility stat query unreached")
+            },
+            carrier_detection_160: word(0x160),
+        }
+    }
+}
+
+type ResultWord<T> = Result<T, &'static str>;

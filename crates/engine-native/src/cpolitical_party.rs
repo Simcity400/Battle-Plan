@@ -1,17 +1,12 @@
+pub use engine_native_parts::cpolitical_party_layout::{COUNTRY_LEADERS, COUNTRY_LEADER_COUNT, ID, IDEOLOGY_GROUP, VTABLE_RVA, identity};
 
-use crate::{Memory, cideology_group, read};
-use engine_sites::Rva;
+use crate::Memory;
 
-pub const VTABLE_RVA: Rva = Rva(0x02a1_a6e0);
-pub const ID: usize = 0x08;
-pub const IDEOLOGY_GROUP: usize = 0x18;
 pub const TAG: usize = 0x20;
 pub const NAME: usize = 0x28;
 pub const LONG_NAME: usize = 0x48;
 pub const NAME_DEFAULT: usize = 0x68;
-pub const COUNTRY_LEADERS: usize = 0x70;
 pub const COUNTRY_LEADER_CAPACITY: usize = 0x78;
-pub const COUNTRY_LEADER_COUNT: usize = 0x7c;
 pub const POPULARITY: usize = 0x88;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -66,37 +61,4 @@ pub fn demand(memory: &impl Memory, base: usize, country: usize) -> Result<Deman
         rows,
         bytes: walked.required_bytes,
     })
-}
-
-pub fn identity(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-) -> Result<(u32, usize), &'static str> {
-    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
-    let header = read::<[u8; 12]>(memory, pointer).ok_or("political party identity unreadable")?;
-    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
-        return Err("political party vtable mismatch");
-    }
-    let at = |offset| {
-        pointer
-            .checked_add(offset)
-            .ok_or("political party address overflow")
-    };
-    let id = u32::from_le_bytes(header[ID..].try_into().unwrap());
-    let ideology = read::<u64>(memory, at(IDEOLOGY_GROUP)?)
-        .and_then(|p| usize::try_from(p).ok())
-        .filter(|&p| p != 0)
-        .ok_or("political party ideology pointer unreadable or null")?;
-    let expected =
-        engine_sites::at(base, cideology_group::VTABLE_RVA).ok_or("module address overflow")?;
-    let header = read::<[u8; 12]>(memory, ideology).ok_or("ideology identity unreadable")?;
-    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64 {
-        return Err("political party ideology vtable mismatch");
-    }
-    let ideology_id = u32::from_le_bytes(header[cideology_group::ID..].try_into().unwrap());
-    if ideology_id != id {
-        return Err("political party and ideology ids differ");
-    }
-    Ok((id, ideology))
 }

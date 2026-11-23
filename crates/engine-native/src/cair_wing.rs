@@ -1,3 +1,5 @@
+pub use engine_native_parts::cair_wing_layout::{TYPE, GROUP_HANDLE};
+pub use engine_native_parts::cair_wing_layout::{POOL, REFERENCE_TYPE, SECONDARY, SECONDARY_VTABLE_RVA, VTABLE_RVA};
 
 use crate::{
     Memory, air_mission, cair_wing_pool, ccountry, cgame_state, corders_group,
@@ -13,14 +15,7 @@ pub mod fuel_inputs;
 pub mod replacement;
 pub mod transport_operands;
 
-pub const VTABLE_RVA: Rva = Rva(0x029f_7748);
-pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029f_7780);
-pub const SECONDARY: usize = 0x10;
-pub const TYPE: u32 = 69;
-pub const REFERENCE_TYPE: usize = 0x18;
 pub const ID: usize = 0x1c;
-pub const POOL: usize = 0x38;
-pub const GROUP_HANDLE: usize = 0x40;
 pub const PLANE_COUNT: usize = 0x7c;
 pub const ACQUIRED_MANPOWER: usize = 0x80;
 pub const AIR_ACCIDENTS: usize = 0x84;
@@ -373,7 +368,7 @@ pub fn equipment_pool(
     let pool = pointer
         .checked_add(EQUIPMENT_POOL)
         .ok_or("air wing equipment pool address overflow")?;
-    crate::cequipment_variant_pool::entries(memory, base, pool)
+    crate::cequipment_variant::pool::entries(memory, base, pool)
 }
 
 pub fn read_equipment(
@@ -1510,3 +1505,24 @@ pub fn strategic_bombing_stat(memory: &impl Memory, wing: usize) -> Result<i64, 
 mod serial_reference;
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WingMembership {
+    pub wing: u64,
+    pub group: u64,
+}
+
+pub fn read_wing_membership(
+    memory: &impl Memory,
+    pointer: usize,
+    wing: &Row,
+) -> Result<WingMembership, &'static str> {
+    let group = pointer
+        .checked_add(GROUP_HANDLE)
+        .and_then(|address| read::<u64>(memory, address))
+        .ok_or("air wing theatre group reference unreadable")?;
+    Ok(WingMembership {
+        wing: wing.id,
+        group,
+    })
+}

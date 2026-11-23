@@ -1,3 +1,4 @@
+pub use engine_native_parts::cpolitical_status_layout::{COUNTRY, POLITICAL_POWER, RULING_PARTY, VTABLE_RVA};
 
 use crate::{
     Memory, ccharacter, ccountry, ccountry_leader, cidea, cideology_group, cpdx_array::Array,
@@ -5,9 +6,6 @@ use crate::{
 };
 use engine_sites::Rva;
 
-pub const VTABLE_RVA: Rva = Rva(0x029c_cb08);
-pub const COUNTRY: usize = 0xc8;
-pub const POLITICAL_POWER: usize = 0xe0;
 
 pub const PARTIES: usize = 0x20;
 pub const PARTY_COUNT: usize = 0x2c;
@@ -22,7 +20,6 @@ pub const RESET_LAST_ELECTION: i32 = 43_800_000 - 365 * 24;
 pub fn needs_election_cache(last: i32) -> bool {
     matches!(last, crate::cgame_date::NULL_RAW_HOUR | RESET_LAST_ELECTION)
 }
-pub const RULING_PARTY: usize = 0xd0;
 pub const ELECTION_FREQUENCY: usize = 0xe8;
 pub const ELECTIONS_ALLOWED: usize = 0xec;
 const RULING_SPAN: usize = ELECTIONS_ALLOWED + 1 - RULING_PARTY;

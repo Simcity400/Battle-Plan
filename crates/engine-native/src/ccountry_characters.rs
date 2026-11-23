@@ -1,3 +1,4 @@
+pub use crate::ccountry::rosters::{OWNER, VTABLE_RVA, characters_object};
 
 use crate::{
     Memory, cadvisor,
@@ -9,8 +10,6 @@ use crate::{
 };
 use engine_sites::Rva;
 
-pub const VTABLE_RVA: Rva = Rva(0x02a0_6b48);
-pub const OWNER: usize = 0x08;
 pub const APPOINTED_ADVISORS: usize = 0x58;
 pub const AVAILABLE_ADVISORS: usize = 0x40;
 
@@ -37,29 +36,6 @@ pub struct ActiveRow {
     pub character: Option<u32>,
 }
 
-pub(crate) fn characters_object(
-    memory: &impl Memory,
-    country: &ccountry::Country,
-    vtable: u64,
-) -> Result<Option<usize>, &'static str> {
-    let object = country
-        .pointer
-        .checked_add(ccountry::CHARACTERS)
-        .and_then(|address| read::<u64>(memory, address))
-        .ok_or("country characters pointer unreadable")?;
-    let object = usize::try_from(object).map_err(|_| "country characters pointer overflow")?;
-    if object == 0 {
-        return Ok(None);
-    }
-    let head = read::<[u8; 16]>(memory, object).ok_or("country characters unreadable")?;
-    if u64::from_le_bytes(head[..8].try_into().unwrap()) != vtable {
-        return Err("country characters vtable mismatch");
-    }
-    if u64::from_le_bytes(head[OWNER..OWNER + 8].try_into().unwrap()) != country.pointer as u64 {
-        return Err("country characters owner is another country");
-    }
-    Ok(Some(object))
-}
 
 pub const RETIRED_CHARACTERS: usize = 0x28;
 

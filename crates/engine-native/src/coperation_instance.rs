@@ -1,8 +1,15 @@
 
 use engine_sites::Rva;
 use crate::{
-    Memory, ccharacter::Literal, cequipment_type, cequipment_variant_pool, coperation,
-    cpdx_array::Array, cprovince, csubject_relation::Name, read,
+    Memory,
+    ccharacter::Literal,
+    cequipment_type,
+    cequipment_variant::pool as cequipment_variant_pool,
+    coperation,
+    cpdx_array::Array,
+    cprovince,
+    crelation::subject::Name,
+    read,
 };
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_8fc0);

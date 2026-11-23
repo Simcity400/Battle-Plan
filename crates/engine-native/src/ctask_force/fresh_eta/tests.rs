@@ -282,7 +282,7 @@ impl<M: Memory> Reader<'_, M> {
                 };
                 if record != 0 {
                     let mut weather = self.terms(
-                        add(record, crate::sweather_per_region::MODIFIERS)?,
+                        add(record, crate::cweather_manager::region_weather::MODIFIERS)?,
                         eta,
                         risk,
                     )?;
@@ -1451,7 +1451,7 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
 const RISK_LOCATION: usize = 0x30000;
 const RISK_TERRAIN: usize = 0x33000;
 const RISK_CLASS_TREE: usize = 0x34138;
-const RISK_WEATHER_RECORD: usize = 0x39000 + 3 * crate::sweather_per_region::STRIDE;
+const RISK_WEATHER_RECORD: usize = 0x39000 + 3 * crate::cweather_manager::region_weather::STRIDE;
 const RISK_COMBINED: i64 = -116_351;
 const RISK_METADATA_ROOT: usize = TERRAIN_IMAGE + metadata::TABLE_RVA.0;
 
@@ -1562,11 +1562,11 @@ fn mission_risk_fixture() -> Fixture {
     memory.array(manager + cweather_manager::REGIONS, 0x39000, 4);
     memory.u64(
         RISK_WEATHER_RECORD,
-        (TERRAIN_IMAGE + crate::sweather_per_region::VTABLE_RVA.0) as u64,
+        (TERRAIN_IMAGE + crate::cweather_manager::region_weather::VTABLE_RVA.0) as u64,
     );
-    memory.u32(RISK_WEATHER_RECORD + crate::sweather_per_region::ID, 3);
+    memory.u32(RISK_WEATHER_RECORD + crate::cweather_manager::region_weather::ID, 3);
     memory.accumulator(
-        RISK_WEATHER_RECORD + crate::sweather_per_region::MODIFIERS,
+        RISK_WEATHER_RECORD + crate::cweather_manager::region_weather::MODIFIERS,
         0x3a000,
         &[(KEYS[0], 80), (keys::NAVAL_DETECTION, -80), (KEYS[1], 80)],
     );
@@ -1932,15 +1932,15 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
         memory.u64(0x45000, status as u64);
         memory.u64(
             status,
-            (TERRAIN_IMAGE + crate::crelation_status::VTABLE_RVA.0) as u64,
+            (TERRAIN_IMAGE + crate::crelation::status::VTABLE_RVA.0) as u64,
         );
         memory.u64(
-            status + crate::crelation_status::DIPLOMACY_STATUS,
+            status + crate::crelation::status::DIPLOMACY_STATUS,
             diplomacy as u64,
         );
-        memory.u32(status + crate::crelation_status::TARGET_COUNTRY, 0);
+        memory.u32(status + crate::crelation::status::TARGET_COUNTRY, 0);
         memory.accumulator(
-            status + crate::crelation_status::MODIFIER + 0x10,
+            status + crate::crelation::status::MODIFIER + 0x10,
             0x46000,
             &[(TARGETED_SPOTTING_KEY, -17_001)],
         );
@@ -1952,7 +1952,7 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
             1
         );
         assert_eq!(
-            memory.calls(status + crate::crelation_status::MODIFIER + 0x10),
+            memory.calls(status + crate::crelation::status::MODIFIER + 0x10),
             1
         );
         if controller == 0 {
@@ -1978,7 +1978,7 @@ fn assert_mission_risk_graph_read_once(memory: &Fixture) {
         RISK_CLASS_TREE,
         RISK_TERRAIN + 0xb8,
         STATE + crate::cgame_state::WEATHER_MANAGER,
-        RISK_WEATHER_RECORD + crate::sweather_per_region::MODIFIERS,
+        RISK_WEATHER_RECORD + crate::cweather_manager::region_weather::MODIFIERS,
         TASK + mission::LOCAL_MODIFIERS,
         0x8000 + mission::LEADER_MODIFIERS,
         TASK + ctask_force::ATTACHED_HEADQUARTERS,

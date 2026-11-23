@@ -1,11 +1,26 @@
+pub mod subject;
+pub mod status;
 
 use crate::{
-    cair_base_access_relation, cattache_relation, cboost_party_popularity_relation,
-    cdocking_rights_relation, cembargo_relation, cequipment_purchase_relation, cguarantee_relation,
-    cimprove_relations_relation, clend_lease_relation, clicence_production_access_relation,
-    cmarket_access_rights_relation, cmilitary_access_relation, cnaval_blockade_relation,
-    cnon_aggression_pact_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
-    coffer_military_access_relation, csubject_relation, cwar_relation,
+    cair_base_access_relation,
+    cattache_relation,
+    cboost_party_popularity_relation,
+    cdocking_rights_relation,
+    cembargo_relation,
+    cequipment_purchase_relation,
+    cguarantee_relation,
+    cimprove_relations_relation,
+    clend_lease_relation,
+    clicence_production_access_relation,
+    cmarket_access_rights_relation,
+    cmilitary_access_relation,
+    cnaval_blockade_relation,
+    cnon_aggression_pact_relation,
+    coffer_air_base_access_relation,
+    coffer_docking_rights_relation,
+    coffer_military_access_relation,
+    crelation::subject as csubject_relation,
+    cwar_relation,
 };
 use engine_sites::Rva;
 

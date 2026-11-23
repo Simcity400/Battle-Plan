@@ -1,21 +1,23 @@
+pub use engine_native_parts::supply_node_layout::{STRIDE, PROVINCE, MOTORIZATION_OVERRIDES, KIND_SUPPLY_HUB, KIND_NAVAL_BASE};
 
 use engine_sites::Rva;
-pub const STRIDE: usize = 0xe8;
 pub const INDEX: usize = 0;
-pub const PROVINCE: usize = 4;
 pub const KIND: usize = 0x08;
 pub const FLAG: usize = 0x0c;
 pub const AVAILABLE: usize = 0x38;
 pub const CONSUMED: usize = 0x40;
-pub const MOTORIZATION_OVERRIDES: usize = 0x60;
 pub const ROUTE_VALUE: usize = 0x78;
-pub const KIND_SUPPLY_HUB: u32 = 2;
-pub const KIND_NAVAL_BASE: u32 = 3;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x012a_6a60);
 
 use crate::{
-    Memory, cpdx_array::Array, csupply_system, read, supply_companion, supply_parent_map,
-    supply_route, walk::Outcome,
+    Memory,
+    cpdx_array::Array,
+    ccountry_supply_system::world as csupply_system,
+    read,
+    supply_companion,
+    supply_parent_map,
+    supply_route,
+    walk::Outcome,
 };
 
 pub const VERTEX: u32 = 1 << 31;

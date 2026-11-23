@@ -1,30 +1,22 @@
+#[cfg(any(test, feature = "test-support"))]
+pub use engine_native_parts::cdiplomacy_status_layout::{RELATION_COUNT, RELATION_CAPACITY, OWNED_RELATION_COUNT, OWNED_RELATION_CAPACITY};
+pub use engine_native_parts::cdiplomacy_status_layout::{OWNED_RELATIONS, OWNED_WARGOALS, ENEMY_COUNTRIES, WARTIME_ALLIES};
+pub use engine_native_parts::cdiplomacy_status_layout::{VTABLE_RVA, COUNTRY, FACTION, OVERLORD, CURRENT_AUTONOMY_STATUS, SUBJECTS, RELATIONS};
 
-use crate::{Memory, ccountry, cpdx_array::Array, cwar_goal, read, walk::Outcome};
+use crate::{
+    Memory,
+    ccountry,
+    cpdx_array::Array,
+    cwar_relation::goals as cwar_goal,
+    read,
+    walk::Outcome,
+};
 use engine_sites::Rva;
 
-pub const VTABLE_RVA: Rva = Rva(0x029d_e5e8);
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d9_6000);
-pub const RELATIONS: usize = 0x08;
-#[cfg(test)]
-pub const RELATION_CAPACITY: usize = 0x10;
-#[cfg(test)]
-pub const RELATION_COUNT: usize = 0x14;
-pub const OWNED_RELATIONS: usize = 0x20;
-#[cfg(test)]
-pub const OWNED_RELATION_CAPACITY: usize = 0x28;
-#[cfg(test)]
-pub const OWNED_RELATION_COUNT: usize = 0x2c;
-pub const OWNED_WARGOALS: usize = 0x68;
-pub const ENEMY_COUNTRIES: usize = 0x98;
 pub const ENEMY_COUNTRY_COUNT: usize = ENEMY_COUNTRIES + 0xc;
-pub const WARTIME_ALLIES: usize = 0xb0;
-pub const SUBJECTS: usize = 0x170;
-pub const OVERLORD: usize = 0x188;
-pub const COUNTRY: usize = 0x2d0;
-pub const FACTION: usize = 0x2d8;
 pub const CAPITULATED: usize = 0x328;
 pub const CAPITULATED_HOUR: usize = 0x338;
-pub const CURRENT_AUTONOMY_STATUS: usize = 0x3b8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CapitulationRow {

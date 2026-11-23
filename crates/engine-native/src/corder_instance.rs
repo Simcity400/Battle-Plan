@@ -33,7 +33,7 @@ pub struct PlanRow {
     pub child_fronts: Option<child_fronts::Inputs>,
     pub owner_override: u64,
     pub invasion_transports: Option<i32>,
-    pub execution: Option<crate::order_execution::OrderExecutionInputs>,
+    pub execution: Option<OrderExecutionInputs>,
     pub assigned_start: usize,
     pub assigned_len: usize,
     pub predecessors_start: usize,
@@ -2529,3 +2529,37 @@ fn copy_words(
 mod plan_batch_tests;
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrderExecutionInputs {
+    pub route_is_ok: Option<u8>,
+    pub paradrop: Option<ParadropPreparationInputs>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParadropPreparationInputs {
+    pub progress: i64,
+    pub terms: Option<ParadropPreparationTerms>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParadropPreparationTerms {
+    pub target: u32,
+    pub country_term: i64,
+    pub relation_term: Option<i64>,
+    pub leader_term: Option<i64>,
+    pub days_term: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DivisionOrderTransportInputs {
+    pub naval_weight: Option<i64>,
+    pub paradrop_eligible: Option<u8>,
+    pub paradrop_modifiers: Option<ParadropTransportModifiers>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParadropTransportModifiers {
+    pub country_term: i64,
+    pub commander_term: Option<i64>,
+}

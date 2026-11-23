@@ -55,9 +55,9 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
         world.u64(owner + crate::ccountry::CHARACTERS, characters as u64);
         world.u64(
             characters,
-            (world.module + ccountry_characters::VTABLE_RVA.0) as u64,
+            (world.module + VTABLE_RVA.0) as u64,
         );
-        world.u64(characters + ccountry_characters::OWNER, owner as u64);
+        world.u64(characters + OWNER, owner as u64);
         let leader = world.alloc(0x10);
         world.u64(leader, (world.module + cunit_leader::VTABLE_RVA.0) as u64);
         world.u64(

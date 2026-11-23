@@ -1,6 +1,7 @@
+use engine_native_parts::coperative_leader_layout as operative_layout;
 
 use crate::{
-    Memory, carmy_leader, ccharacter, cnavy_leader, coperative_leader, cpdx_array::Array,
+    Memory, carmy_leader, ccharacter, cnavy_leader, cpdx_array::Array,
     cunit_leader_skill, cunit_leader_trait, msvc_string, read as read_native, read_slice,
     unit_leader_trait_experience_entry, walk::Outcome,
 };
@@ -441,7 +442,7 @@ pub fn read_codename_buffer(
     let result = crate::cname_group_member::codename_inputs_buffer(
         memory,
         base,
-        at(pointer, coperative_leader::CODENAME)?,
+        at(pointer, operative_layout::CODENAME)?,
         bytes,
         len,
         required,
@@ -465,7 +466,7 @@ pub fn read_codename_into(
     crate::cname_group_member::codename_inputs_into(
         memory,
         base,
-        at(pointer, coperative_leader::CODENAME)?,
+        at(pointer, operative_layout::CODENAME)?,
         bytes,
         from,
         len,
@@ -482,7 +483,7 @@ pub fn text_demand(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    let roster = crate::ccharacter_manager::Roster::read(memory, base, game_state)?;
+    let roster = crate::ccharacter::manager::Roster::read(memory, base, game_state)?;
     let mut cursor = roster.cursor();
     let mut required = 0_usize;
     while let Some(view) = cursor.next(memory, [false, false, true, false])? {
@@ -880,14 +881,14 @@ fn identity_from_header(base: usize, header: [u8; 16]) -> Result<(u8, u32, u32),
             VTABLE_RVA,
             carmy_leader::VTABLE_RVA,
             cnavy_leader::VTABLE_RVA,
-            coperative_leader::VTABLE_RVA,
+            operative_layout::VTABLE_RVA,
         ],
     );
     let kind = match relative {
         Some(VTABLE_RVA) => KIND_BASE,
         Some(carmy_leader::VTABLE_RVA) => KIND_ARMY,
         Some(cnavy_leader::VTABLE_RVA) => KIND_NAVY,
-        Some(coperative_leader::VTABLE_RVA) => KIND_OPERATIVE,
+        Some(operative_layout::VTABLE_RVA) => KIND_OPERATIVE,
         _ => return Err("unit leader vtable mismatch"),
     };
     let reference_type = u32::from_le_bytes(header[TYPE..ID].try_into().unwrap());
@@ -1334,4 +1335,24 @@ fn walk_portrait_paths_memo_buffer<T: crate::capture_text::Value>(
             unread_rows: (sources.len() - len) as u32,
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CommanderTrait {
+    pub token_id: i32,
+    pub definition_ordinal: i32,
+    pub kind: u32,
+    pub relevant: u8,
+    pub token_start: usize,
+    pub token_len: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CommanderLearningTrait {
+    pub token_id: i32,
+    pub definition_ordinal: i32,
+    pub required_experience: i32,
+    pub experience: i64,
+    pub token_start: usize,
+    pub token_len: usize,
 }

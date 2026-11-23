@@ -1,5 +1,5 @@
 use super::*;
-use crate::crelation_status::bench::{Arena, Counting, report};
+use crate::crelation::status::bench::{Arena, Counting, report};
 
 #[test]
 fn a_task_force_row_keeps_its_signed_route_count() {

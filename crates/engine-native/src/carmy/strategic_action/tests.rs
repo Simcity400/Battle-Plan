@@ -203,13 +203,13 @@ fn strategic_action_friendly_gate_skips_controller_modifier_in_active_war() {
         3,
     );
     image.u64(RELATIONS + 8, TUPLE as u64);
-    image.u64(TUPLE, crate::crelation_status::VTABLE_RVA.0 as u64);
+    image.u64(TUPLE, crate::crelation::status::VTABLE_RVA.0 as u64);
     image.u64(
-        TUPLE + crate::crelation_status::DIPLOMACY_STATUS,
+        TUPLE + crate::crelation::status::DIPLOMACY_STATUS,
         DIPLOMACY as u64,
     );
-    image.u32(TUPLE + crate::crelation_status::TARGET_COUNTRY, 1);
-    image.u64(TUPLE + crate::crelation_status::WAR_RELATION, WAR as u64);
+    image.u32(TUPLE + crate::crelation::status::TARGET_COUNTRY, 1);
+    image.u64(TUPLE + crate::crelation::status::WAR_RELATION, WAR as u64);
     image.u64(WAR, crate::cwar_relation::VTABLE_RVA.0 as u64);
     image.u32(WAR + crate::crelation::TYPE_ID, crate::cwar_relation::TYPE);
     image.put(WAR + crate::crelation::RETIRED, &[0]);

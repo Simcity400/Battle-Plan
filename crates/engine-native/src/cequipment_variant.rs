@@ -1,3 +1,6 @@
+pub use engine_native_parts::equipment_variant_identity::{VTABLE_RVA, identity, identity_from_header};
+use engine_native_parts::equipment_variant_identity::identity_header;
+pub mod pool;
 
 use engine_sites::Rva;
 mod design;
@@ -13,7 +16,6 @@ use crate::{
     walk::Outcome,
 };
 
-pub const VTABLE_RVA: Rva = Rva(0x029c_e250);
 pub use engine_executable::native_values::equipment_variant::REFERENCE_TYPE;
 pub const TYPE: usize = 0x08;
 pub const ID: usize = 0x0c;
@@ -134,26 +136,6 @@ pub const ICON_OVERRIDE_KIND: usize = 0x454;
 pub const ICON_OVERRIDE_TOKEN: usize = 0x458;
 pub const ICON_ENTRY_RECORDED: usize = 0x28;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c2_6060);
-
-pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
-    let expected = engine_sites::at(base, VTABLE_RVA)
-        .ok_or("variant module address overflow")?;
-    let bytes = read::<[u8; 16]>(memory, pointer).ok_or("variant identity unreadable")?;
-    identity_header(expected, bytes)
-}
-
-pub fn identity_from_header(expected: usize, bytes: [u8; 16]) -> Result<u64, &'static str> {
-    identity_header(expected, bytes)
-}
-
-fn identity_header(expected: usize, bytes: [u8; 16]) -> Result<u64, &'static str> {
-    let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-    let handle = u64::from_le_bytes(bytes[8..].try_into().unwrap());
-    if vtable != expected as u64 || handle as u32 != REFERENCE_TYPE {
-        return Err("variant vtable or reference type mismatch");
-    }
-    Ok(handle)
-}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryRow {

@@ -1,6 +1,10 @@
 
 use crate::{
-    Memory, cbuilding, cbuilding_status, cprovince, cstate, raid_location_scope_layout as scope,
+    Memory,
+    cbuilding,
+    cprovince::{buildings as cbuilding_status, self},
+    cstate,
+    raid_location_scope_layout as scope,
     read,
 };
 
@@ -375,7 +379,7 @@ mod tests {
         assert_eq!((row.leader_country, row.leader_refused), (Some(12), false));
         for vtable in [
             crate::cnavy_leader::VTABLE_RVA,
-            crate::coperative_leader::VTABLE_RVA,
+            engine_native_parts::coperative_leader_layout::VTABLE_RVA,
             crate::cunit_leader::VTABLE_RVA,
         ] {
             let row = read_row(&leader_scope(vtable.0, false), 0, SCOPE).unwrap();

@@ -1,15 +1,12 @@
+pub use engine_native_parts::cnaval_base_layout::{HOLDER, HOLDER_COUNTRY, PROVINCE_ID, VTABLE_RVA};
 
 use engine_sites::Rva;
 pub const CONSTRUCT_RVA: Rva = Rva(0x00f1_2e40);
 pub const SIZE: usize = 0x58;
-pub const HOLDER: usize = 0x08;
-pub const PROVINCE_ID: usize = 0x10;
 pub const HEALTHY_LEVEL: usize = 0x14;
 pub const LEVEL: usize = 0x18;
 
-pub const VTABLE_RVA: Rva = Rva(0x029e_f8b0);
 pub const COUNTRY_LIST: usize = 0x40;
-pub const HOLDER_COUNTRY: usize = 0x10;
 
 use crate::{
     Memory, cgame_state,

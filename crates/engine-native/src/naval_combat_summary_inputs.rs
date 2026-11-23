@@ -1,3 +1,4 @@
+pub use engine_native_parts::naval_side_layout::{COUNTRIES, COUNTRY_COUNT};
 use crate::{
     Memory, ccountry, cnaval_combatant, cpdx_array::Array, modifier_accumulator as accumulator,
     modifier_definition as metadata,
@@ -5,8 +6,6 @@ use crate::{
 use cnaval_combatant::field;
 use engine_sites::Rva;
 
-pub const COUNTRIES: usize = 0x38;
-pub const COUNTRY_COUNT: usize = 0x48;
 pub const SECONDARY_COUNTRIES: usize = 0x50;
 const LIST_COUNT: usize = COUNTRY_COUNT - COUNTRIES;
 pub const NODE_TAG: usize = 0;

@@ -1,6 +1,12 @@
 use crate::{
-    Memory, allocation, cequipment_type, cequipment_variant_pool, corders_group, cpdx_array::Array,
-    equipment_entry, read,
+    Memory,
+    allocation,
+    cequipment_type,
+    cequipment_variant::pool as cequipment_variant_pool,
+    corders_group,
+    cpdx_array::Array,
+    equipment_entry,
+    read,
 };
 use engine_sites::Rva;
 

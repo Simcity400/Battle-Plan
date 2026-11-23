@@ -2,19 +2,35 @@
 use crate::{
     Memory,
     ccharacter::Literal,
-    ccountry, cideology_group, cintelligence_agency,
+    ccountry,
+    cideology_group,
+    cintelligence_agency,
     coperative_leader::{
-        ACTION, ASSIGNMENT, COOLDOWN_ASSIGNMENT, COOLDOWN_END_HOUR, COOLDOWN_KIND,
-        COOLDOWN_START_HOUR, IDENTITY, MODIFIER_ACCUMULATOR, NAME_MAX_LENGTH, NATIONALITIES,
-        OWNER_COUNTRY, PENDING_MISSION, PENDING_MISSION_PRESENT, PORTRAIT_GFX, VTABLE_RVA,
+        ACTION,
+        ASSIGNMENT,
+        COOLDOWN_ASSIGNMENT,
+        COOLDOWN_END_HOUR,
+        COOLDOWN_KIND,
+        COOLDOWN_START_HOUR,
+        IDENTITY,
+        MODIFIER_ACCUMULATOR,
+        NAME_MAX_LENGTH,
+        NATIONALITIES,
+        OWNER_COUNTRY,
+        PENDING_MISSION,
+        PENDING_MISSION_PRESENT,
+        PORTRAIT_GFX,
+        VTABLE_RVA,
     },
     cpdx_array::Array,
     cstate,
-    csubject_relation::{Name, NameWalk},
+    crelation::subject::{Name, NameWalk},
     memory::Raw,
     modifier_accumulator,
     modifier_definition::NamedKey,
-    operative_action, operative_action_implementation, read,
+    operative_action,
+    operative_action_implementation,
+    read,
     walk::Outcome,
 };
 use engine_sites::Rva;
@@ -261,7 +277,7 @@ fn walk_keyed(
             required_bytes,
         })
     })();
-    let read = result.unwrap_or_else(crate::csubject_relation::unavailable);
+    let read = result.unwrap_or_else(crate::crelation::subject::unavailable);
     Walk {
         outcome: read.outcome,
         bytes_len: read.bytes_len,

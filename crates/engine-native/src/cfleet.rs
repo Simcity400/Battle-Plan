@@ -397,7 +397,7 @@ pub fn walk_timed_with_management(
     now: impl FnMut(usize) -> u64,
     visit: impl FnMut(usize, &mut cship::Row),
     names: &mut Vec<u8>,
-    management: impl FnMut(crate::naval_management::CensusVisit),
+    management: impl FnMut(CensusVisit),
 ) -> TimedCapture {
     walk_named_observed(
         memory,
@@ -426,7 +426,7 @@ fn walk_named_observed(
     mut visit: impl FnMut(usize, &mut cship::Row),
     mut names: Option<&mut Vec<u8>>,
     batched: bool,
-    mut management: impl FnMut(crate::naval_management::CensusVisit),
+    mut management: impl FnMut(CensusVisit),
 ) -> TimedCapture {
     let mut names_used = 0;
     let invalid_reference = if names.is_some() {
@@ -465,7 +465,7 @@ fn walk_named_observed(
                 continue;
             };
             found_country = true;
-            management(crate::naval_management::CensusVisit::Country(country));
+            management(CensusVisit::Country(country));
             let fleet_roster = country
                 .pointer
                 .checked_add(ccountry::FLEETS)
@@ -493,7 +493,7 @@ fn walk_named_observed(
                 if owner_pointer != country.pointer {
                     return Err("fleet owner differs from country roster");
                 }
-                management(crate::naval_management::CensusVisit::Fleet {
+                management(CensusVisit::Fleet {
                     pointer: fleet,
                     handle: id,
                 });
@@ -544,7 +544,7 @@ fn walk_named_observed(
                             }
                         }
                         let task_id = task_reader.identity(task, fleet)?;
-                        management(crate::naval_management::CensusVisit::TaskForce {
+                        management(CensusVisit::TaskForce {
                             pointer: task,
                             handle: task_id,
                         });
@@ -1283,4 +1283,11 @@ pub fn read_mission_regions(
     }
     output.sort_unstable();
     Ok(output)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CensusVisit {
+    Country(crate::ccountry::Country),
+    Fleet { pointer: usize, handle: u64 },
+    TaskForce { pointer: usize, handle: u64 },
 }

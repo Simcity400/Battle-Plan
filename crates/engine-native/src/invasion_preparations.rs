@@ -1,9 +1,20 @@
+use crate::cprovince::invasion_provinces;
 
 use crate::{
-    Memory, carmy_leader, ccountry, cdiplomacy_status, cgame_state, corder_instance, corders_group,
+    Memory,
+    carmy_leader,
+    ccountry,
+    cdiplomacy_status,
+    corder_instance,
+    corders_group,
     corders_group_member,
     cpdx_array::Array,
-    cprovince, crelation_status, cstate, ctheatre, cunit, modifier_accumulator,
+    cprovince,
+    crelation::status as crelation_status,
+    cstate,
+    ctheatre,
+    cunit,
+    modifier_accumulator,
     modifier_definition::{DefinitionMemo, effective_memo},
     modifier_keys,
     walk::Outcome,
@@ -88,9 +99,6 @@ fn effective(
     effective_memo(memory, base, key, value.raw, memo)
 }
 
-pub fn provinces(memory: &impl Memory, game_state: usize) -> Result<Array, &'static str> {
-    array(memory, game_state, cgame_state::PROVINCES, 8)
-}
 
 fn target(
     memory: &impl Memory,
@@ -392,7 +400,7 @@ fn walk_buffer(
                 continue;
             }
             if context.is_none() {
-                context = Some(provinces(memory, game_state)?);
+                context = Some(invasion_provinces(memory, game_state)?);
             }
             let Some(table) = context else {
                 unreachable!("the context was just read");

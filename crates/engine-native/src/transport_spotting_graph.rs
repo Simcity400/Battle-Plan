@@ -1,55 +1,9 @@
 
 use crate::{Memory, read};
 
+pub use crate::ctask_force::TaskForceStats;
+
 pub type Fact<T> = Result<T, &'static str>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TaskForceStats {
-    pub detection_138: Fact<i64>,
-    pub visibility_148: Fact<i64>,
-    pub visibility_150: Fact<i64>,
-    pub carrier_detection_160: Fact<i64>,
-}
-
-impl TaskForceStats {
-    pub fn capture(memory: &impl Memory, original: Fact<usize>) -> Self {
-        Self::capture_with_visibility(memory, original, true)
-    }
-
-    pub fn capture_detection(memory: &impl Memory, original: Fact<usize>) -> Self {
-        Self::capture_with_visibility(memory, original, false)
-    }
-
-    fn capture_with_visibility(
-        memory: &impl Memory,
-        original: Fact<usize>,
-        visibility: bool,
-    ) -> Self {
-        let word = |offset| {
-            original.and_then(|stats| {
-                stats
-                    .checked_add(offset)
-                    .filter(|_| stats != 0)
-                    .and_then(|at| read::<i64>(memory, at))
-                    .ok_or("selected transport task-force stat word unreadable")
-            })
-        };
-        Self {
-            detection_138: word(0x138),
-            visibility_148: if visibility {
-                word(0x148)
-            } else {
-                Err("selected transport visibility stat query unreached")
-            },
-            visibility_150: if visibility {
-                word(0x150)
-            } else {
-                Err("selected transport visibility stat query unreached")
-            },
-            carrier_detection_160: word(0x160),
-        }
-    }
-}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AirMissionWords {

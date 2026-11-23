@@ -1,20 +1,18 @@
+pub use engine_native_parts::ccurrent_autonomy_status_layout::{VTABLE_RVA, SUBJECT_COUNTRY, STATE};
 
 use crate::{
-    Memory, cdiplomacy_status,
-    csubject_relation::{self, Name, NameWalk, Reader},
+    Memory,
+    cdiplomacy_status,
+    crelation::subject::{self as csubject_relation, Name, NameWalk, Reader},
     read_slice,
     walk::Outcome,
 };
-use engine_sites::Rva;
 
-pub const VTABLE_RVA: Rva = Rva(0x0286_1030);
 pub const SCORE: usize = 0x08;
-pub const STATE: usize = 0x28;
 pub const PREVIOUS_STATE: usize = 0x30;
 pub const LOWER_SCORE: usize = 0x38;
 pub const NEXT_STATE: usize = 0x40;
 pub const UPPER_SCORE: usize = 0x48;
-pub const SUBJECT_COUNTRY: usize = 0x50;
 pub const LAST_MODIFIED_HOUR: usize = 0x60;
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x006c_2010;

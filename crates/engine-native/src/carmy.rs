@@ -81,7 +81,7 @@ pub struct IconInputsRow {
 pub fn read_icon_inputs(
     memory: &impl Memory,
     base: usize,
-    source: crate::cequipment_variant_pool::DivisionSource,
+    source: crate::cequipment_variant::pool::DivisionSource,
     seed: Option<&DivisionSeed>,
 ) -> Result<IconInputsRow, &'static str> {
     let at = |offset| {
@@ -855,7 +855,7 @@ pub fn movement_definition(
     }
     let definition = movement_pointer(memory, province, cprovince::DEFINITION)?;
     if definition == 0
-        || presentation_field::<u32>(memory, definition, crate::province_definition::ID)?
+        || presentation_field::<u32>(memory, definition, crate::cprovince::definition::ID)?
             != presentation_field::<u32>(memory, province, cprovince::ID)?
     {
         return Err("movement province definition mismatch");
@@ -3396,7 +3396,7 @@ pub fn walk_status(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [StatusRow],
 ) -> Outcome {
@@ -3418,7 +3418,7 @@ fn status_test_capture(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [StatusRow],
     packet: &mut StatusPacket,
@@ -3463,7 +3463,7 @@ pub fn walk_status_with_membership(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [StatusRow],
     membership: &mut MembershipPacket,

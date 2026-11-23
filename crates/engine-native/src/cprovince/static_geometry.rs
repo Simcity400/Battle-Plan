@@ -195,13 +195,13 @@ impl StaticGeometry {
         let (mut definition_id, mut flags, mut terrain) = ([0_u8; 4], [0_u8; 1], [0_u8; 8]);
         let fields = [
             definition
-                .checked_add(crate::province_definition::ID)
+                .checked_add(crate::cprovince::definition::ID)
                 .ok_or("province address overflow")?,
             definition
-                .checked_add(crate::province_definition::TERRAIN_FLAGS)
+                .checked_add(crate::cprovince::definition::TERRAIN_FLAGS)
                 .ok_or("province address overflow")?,
             definition
-                .checked_add(crate::province_definition::TERRAIN)
+                .checked_add(crate::cprovince::definition::TERRAIN)
                 .ok_or("province address overflow")?,
         ];
         if definition == 0
@@ -239,7 +239,7 @@ impl StaticGeometry {
         }
         self.counters.misses = self.counters.misses.saturating_add(1);
         let definition = self.province(memory, base, from)?.definition;
-        let header = geometry_field(memory, definition, crate::province_definition::NEIGHBOURS)?;
+        let header = geometry_field(memory, definition, crate::cprovince::definition::NEIGHBOURS)?;
         let neighbours = Array::from_header(header, crate::province_neighbour::STRIDE)
             .ok_or("static geometry adjacency header invalid")?;
         let mut edge = StaticEdge {

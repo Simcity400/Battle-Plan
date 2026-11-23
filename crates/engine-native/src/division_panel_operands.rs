@@ -1,6 +1,13 @@
 use crate::{
-    Memory, carmy, carmy::DivisionSeed, cequipment_variant, cequipment_variant_pool, cgame_state,
-    cpdx_array::Array, cprovince, cstate, equipment_entry, read,
+    Memory,
+    carmy::{self, DivisionSeed},
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
+    cpdx_array::Array,
+    cprovince,
+    cstate,
+    equipment_entry,
+    read,
 };
 pub const VARIANT_TERRAIN_ATTRITION: usize = 0x3a0;
 pub fn held_variants(

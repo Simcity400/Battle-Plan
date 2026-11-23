@@ -1,9 +1,14 @@
 use super::*;
 use crate::{
-    cland_border_war_combat, cland_border_war_combatant, cland_combat, corders_group,
+    cland_border_war_combat,
+    cland_border_war_combatant,
+    cland_combat,
+    corders_group,
     creference_registry as registry,
-    crelation_status::bench::{Arena, Counting, report},
-    cterrain_type, msvc_tree_node as node, province_definition as definition,
+    crelation::status::bench::{Arena, Counting, report},
+    cterrain_type,
+    msvc_tree_node as node,
+    cprovince::definition as definition,
     reference_bucket as bucket,
 };
 

@@ -6,7 +6,7 @@ pub(super) fn walk(
     game_state: usize,
     output: &mut Vec<Row>,
     names: &mut Vec<u8>,
-) -> crate::csubject_relation::NameWalk {
+) -> crate::crelation::subject::NameWalk {
     walk_shared(
         memory,
         base,
@@ -24,11 +24,8 @@ pub(super) fn walk_shared(
     mut output: crate::walk::Buffer<'_, Row>,
     mut names: crate::walk::Buffer<'_, u8>,
     mut each: impl FnMut(u32, usize),
-) -> crate::csubject_relation::NameWalk {
-    use crate::{
-        ccharacter::Literal,
-        csubject_relation::{Name, NameWalk},
-    };
+) -> crate::crelation::subject::NameWalk {
+    use crate::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
@@ -83,7 +80,7 @@ pub(super) fn walk_shared(
             required_bytes,
         })
     })();
-    result.unwrap_or_else(crate::csubject_relation::unavailable)
+    result.unwrap_or_else(crate::crelation::subject::unavailable)
 }
 
 fn root(

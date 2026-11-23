@@ -1,9 +1,14 @@
+pub mod system;
 
 use engine_sites::Rva;
 use crate::{
-    Memory, cfaction_system, cfaction_template,
+    Memory,
+    cfaction::system as cfaction_system,
+    cfaction_template,
     memory::{RecordField, RecordLayout, RecordSources},
-    msvc_string, read, read_slice,
+    msvc_string,
+    read,
+    read_slice,
     walk::Outcome,
 };
 

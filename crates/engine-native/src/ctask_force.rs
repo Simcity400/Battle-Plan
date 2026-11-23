@@ -1,3 +1,5 @@
+pub mod mission_layout;
+pub mod targeted_spotting;
 
 use crate::{
     Memory, ccountry, cfleet,
@@ -8,6 +10,7 @@ use crate::{
 use engine_sites::Rva;
 
 mod fresh_eta;
+pub use fresh_eta::TaskForceStats;
 pub use fresh_eta::{
     CENSUS_KEYS, CensusIdentity, Censuses, Certificate, FreshEtaInputs, HeldCensus,
     MissionRiskInputs, OriginalRiskShips,

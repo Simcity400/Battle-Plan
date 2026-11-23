@@ -1,3 +1,4 @@
+use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::*;
 use crate::{cgame_state, memory::SliceMemory};
 use std::cell::{Cell, RefCell};

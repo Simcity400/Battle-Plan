@@ -37,15 +37,15 @@ pub struct Row {
     pub admission_ceiling: i32,
     pub unknown_f0: u32,
     pub created: u8,
-    pub name: crate::csubject_relation::Name,
+    pub name: crate::crelation::subject::Name,
 }
 
-pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> crate::csubject_relation::NameWalk {
+pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> crate::crelation::subject::NameWalk {
     walk_shared(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_, _| {})
 }
 
 pub struct UpgradeWalk {
-    pub agencies: crate::csubject_relation::NameWalk,
+    pub agencies: crate::crelation::subject::NameWalk,
     pub upgrades: crate::agency_upgrade_levels::Walk,
 }
 
@@ -105,11 +105,8 @@ fn walk_shared(
     mut output: crate::walk::Buffer<'_, Row>,
     mut names: crate::walk::Buffer<'_, u8>,
     mut each: impl FnMut(u32, usize),
-) -> crate::csubject_relation::NameWalk {
-    use crate::{
-        ccharacter::Literal,
-        csubject_relation::{Name, NameWalk},
-    };
+) -> crate::crelation::subject::NameWalk {
+    use crate::{ccharacter::Literal, crelation::subject::{Name, NameWalk}};
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
@@ -191,7 +188,7 @@ fn walk_shared(
             required_bytes,
         })
     })();
-    result.unwrap_or_else(crate::csubject_relation::unavailable)
+    result.unwrap_or_else(crate::crelation::subject::unavailable)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -511,15 +508,15 @@ pub(crate) mod test_support {
     }
 
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    impl Image for crate::crelation_status::bench::Arena {
+    impl Image for crate::crelation::status::bench::Arena {
         fn alloc(&mut self, len: usize) -> usize {
-            crate::crelation_status::bench::Arena::alloc(self, len)
+            crate::crelation::status::bench::Arena::alloc(self, len)
         }
         fn u64(&mut self, address: usize, value: u64) {
-            crate::crelation_status::bench::Arena::u64(self, address, value);
+            crate::crelation::status::bench::Arena::u64(self, address, value);
         }
         fn u32(&mut self, address: usize, value: u32) {
-            crate::crelation_status::bench::Arena::u32(self, address, value);
+            crate::crelation::status::bench::Arena::u32(self, address, value);
         }
         fn array(&mut self, header: usize, data: usize, count: u32) {
             self.vector(header, data, count);
@@ -574,8 +571,8 @@ pub(crate) mod test_support {
     pub(crate) fn intel_arena(
         countries: usize,
         states: u32,
-    ) -> (crate::crelation_status::bench::Arena, usize) {
-        use crate::crelation_status::bench::{Arena, countries as census};
+    ) -> (crate::crelation::status::bench::Arena, usize) {
+        use crate::crelation::status::bench::{Arena, countries as census};
         let object = ccountry::INTELLIGENCE_AGENCY + 8;
         let per_country = 12 + object + 16 + 0x160 + 0x40 + states as usize * state::STRIDE + 48;
         let mut arena = Arena::new(0x10_0000 + (countries + 1) * per_country);
@@ -600,7 +597,7 @@ mod tests {
         w: &crate::ccountry::synthetic::World,
         rows: usize,
         names: usize,
-    ) -> [(crate::csubject_relation::NameWalk, Vec<Row>, Vec<u8>); 2] {
+    ) -> [(crate::crelation::subject::NameWalk, Vec<Row>, Vec<u8>); 2] {
         let mut walks = [(); 2].map(|_| (vec![Row::default(); rows], vec![0; names]));
         let [(new_rows, new_names), (old_rows, old_names)] = &mut walks;
         let new = super::walk_shared(memory, 0, w.game_state(), crate::walk::Buffer::Growing(new_rows), crate::walk::Buffer::Growing(new_names), |_, _| {});

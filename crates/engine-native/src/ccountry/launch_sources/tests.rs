@@ -74,11 +74,11 @@ fn image() -> Image {
         pointer(&mut image, 0x3000 + ordinal * 8, object);
     }
     header(&mut image, NAVY + 0x18, 0x6000, 3);
-    word(&mut image, NAVY + cnaval_base::HOLDER_COUNTRY, 999);
+    word(&mut image, NAVY + naval_base_layout::HOLDER_COUNTRY, 999);
     for (object, province) in [(0x7000, (-3_i32) as u32), (0x7100, 0)] {
-        pointer(&mut image, object, cnaval_base::VTABLE_RVA.0);
-        pointer(&mut image, object + cnaval_base::HOLDER, NAVY);
-        word(&mut image, object + cnaval_base::PROVINCE_ID, province);
+        pointer(&mut image, object, naval_base_layout::VTABLE_RVA.0);
+        pointer(&mut image, object + naval_base_layout::HOLDER, NAVY);
+        word(&mut image, object + naval_base_layout::PROVINCE_ID, province);
     }
     for (ordinal, object) in [0x7000, 0x7100, 0x7000].into_iter().enumerate() {
         pointer(&mut image, 0x6000 + ordinal * 8, object);
@@ -151,14 +151,14 @@ fn naval_order_repeats_and_signed_words_survive_without_country_resolution() {
     assert_eq!(
         calls
             .iter()
-            .filter(|&&(at, _)| at == NAVY + cnaval_base::HOLDER_COUNTRY)
+            .filter(|&&(at, _)| at == NAVY + naval_base_layout::HOLDER_COUNTRY)
             .count(),
         1
     );
     assert_eq!(
         calls
             .iter()
-            .filter(|&&(at, _)| at == 0x7000 + cnaval_base::PROVINCE_ID)
+            .filter(|&&(at, _)| at == 0x7000 + naval_base_layout::PROVINCE_ID)
             .count(),
         1
     );
@@ -257,7 +257,7 @@ fn state_body_and_selector_failures_are_atomic_for_repeated_objects() {
 fn empty_navy_and_native_null_are_distinct_without_owner_reads() {
     let mut image = image();
     header(&mut image, NAVY + NAVAL_BASES, 0, 0);
-    image.fault_once = Some(NAVY + cnaval_base::HOLDER_COUNTRY);
+    image.fault_once = Some(NAVY + naval_base_layout::HOLDER_COUNTRY);
     assert_eq!(
         capture_naval(&image, 0, NAVY, &mut Vec::new(), &mut Vec::new()).provider,
         Ok(NavalProvider::Bases(0))
@@ -276,7 +276,7 @@ fn empty_navy_and_native_null_are_distinct_without_owner_reads() {
 fn naval_repeated_body_failure_keeps_demand_and_clears_scratch() {
     let mut image = image();
     let mut output = vec![LaunchNavalBase::default(); 3];
-    image.fault_once = Some(0x7000 + cnaval_base::PROVINCE_ID);
+    image.fault_once = Some(0x7000 + naval_base_layout::PROVINCE_ID);
     let mut scratch = vec![Occurrence::default(); 3];
     output.fill(LaunchNavalBase {
         base_province: 77,
@@ -293,7 +293,7 @@ fn naval_repeated_body_failure_keeps_demand_and_clears_scratch() {
             .calls
             .borrow()
             .iter()
-            .filter(|&&(at, _)| at == 0x7000 + cnaval_base::PROVINCE_ID)
+            .filter(|&&(at, _)| at == 0x7000 + naval_base_layout::PROVINCE_ID)
             .count(),
         1
     );
@@ -307,7 +307,7 @@ fn null_list_objects_and_foreign_holders_never_publish_an_empty_or_prefix() {
         if null_object {
             pointer(&mut image, 0x6008, 0);
         } else {
-            pointer(&mut image, 0x7000 + cnaval_base::HOLDER, NAVY + 0x200);
+            pointer(&mut image, 0x7000 + naval_base_layout::HOLDER, NAVY + 0x200);
         }
         let mut scratch = vec![Occurrence::default(); 3];
         let mut output = vec![LaunchNavalBase::default(); 3];

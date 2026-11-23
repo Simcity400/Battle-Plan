@@ -367,7 +367,13 @@ fn infrastructure(
     state: usize,
     row: &mut ContextRow,
 ) -> Result<(), &'static str> {
-    use crate::{cbuilding, cbuilding_database, cbuilding_status, cbuilding_template, cstate};
+    use crate::{
+        cbuilding,
+        cbuilding_database,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+        cstate,
+    };
     if state == 0 {
         return Ok(());
     }
@@ -846,8 +852,11 @@ fn transport_context(
     start: usize,
 ) -> Result<ContextRow, &'static str> {
     use crate::{
-        cstatic_modifier, cstrategic_navy_manager, cstrategic_region, cweather_manager,
-        modifier_definition as metadata, sweather_per_region,
+        cstatic_modifier,
+        cstrategic_navy_manager,
+        cstrategic_region,
+        cweather_manager::{self, region_weather as sweather_per_region},
+        modifier_definition as metadata,
     };
     let mut row = ContextRow::default();
     row.flags[11] = 2;

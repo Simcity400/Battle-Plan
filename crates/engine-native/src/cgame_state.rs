@@ -1,3 +1,4 @@
+use engine_native_parts::chuman_layout as chuman;
 
 use engine_sites::Rva;
 use crate::{
@@ -102,7 +103,7 @@ impl AiControl {
         raw: u32,
         canonical: u32,
     ) -> Result<bool, &'static str> {
-        use crate::{chuman, cpdx_array::Array};
+        use crate::cpdx_array::Array;
         if canonical < self.counts.count {
             if let Some(reason) = self.failed {
                 return Err(reason);

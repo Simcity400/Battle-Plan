@@ -4,9 +4,13 @@ use super::{
     FORMATION_FLAGS, MODEL_NUMBER, SUBUNIT_DEFINITION, SUBUNIT_INDEX, TASK_FORCE,
 };
 use crate::{
-    Memory, cequipment_variant, cequipment_variant_pool, cgame_state,
+    Memory,
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
     cpdx_array::Array,
-    ctask_force, cunit, equipment_entry,
+    ctask_force,
+    cunit,
+    equipment_entry,
     memory::{Raw, RecordLayout, RecordSources, scalar_from_bytes},
     msvc_string,
 };

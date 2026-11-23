@@ -1,7 +1,6 @@
+pub use engine_native_parts::ccountry_leader_layout::{CHARACTER, VTABLE_RVA};
 
 use engine_sites::Rva;
-pub const VTABLE_RVA: Rva = Rva(0x029f_d8b0);
-pub const CHARACTER: usize = 0x08;
 pub const LEADER_ID: usize = 0x148;
 pub const TRAITS: usize = 0x50;
 pub const TRAIT_VTABLE_RVA: Rva = Rva(0x0286_78c8);
@@ -82,7 +81,7 @@ pub fn walk(
     game_state: usize,
     mut output: crate::walk::Buffer<'_, Row>,
 ) -> crate::walk::Outcome {
-    use crate::{ccharacter_manager, walk::Outcome};
+    use crate::{ccharacter::manager as ccharacter_manager, walk::Outcome};
     let result = (|| {
         let mut len = 0;
         let mut unread_rows = 0_u32;
@@ -114,7 +113,7 @@ pub fn walk(
 pub fn walk_entry(
     memory: &impl crate::Memory,
     base: usize,
-    entry: crate::ccharacter_manager::Entry,
+    entry: crate::ccharacter::manager::Entry,
     mut output: crate::walk::Buffer<'_, Row>,
 ) -> crate::walk::Outcome {
     use crate::{
@@ -198,7 +197,11 @@ mod tests {
 
     #[test]
     fn unreadable_current_ideology_keeps_the_existing_role_row() {
-        use crate::{ccharacter, ccharacter_manager::Entry, character_leader_node, msvc_tree_node};
+        use crate::{
+            ccharacter::{self, manager::Entry},
+            character_leader_node,
+            msvc_tree_node,
+        };
         let mut bytes = vec![0; 0x400];
         let word = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());

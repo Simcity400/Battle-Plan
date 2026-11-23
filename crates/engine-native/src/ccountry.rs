@@ -1,9 +1,15 @@
+use engine_native_parts::cpolitical_party_layout as political_party_layout;
+use engine_native_parts::ccountry_leader_layout as country_leader_layout;
+use engine_native_parts::cpolitical_status_layout as political_status_layout;
+pub use engine_native_memory::country_identity::{MANPOWER};
+pub use engine_native_memory::country_identity::{PREFERRED_TACTIC};
+pub use engine_native_memory::country_identity::{MODIFIER_ACCUMULATOR};
 pub use engine_native_memory::country_identity::{AuthenticatedRoster, Country, ReservedCountryObservation};
 
 use crate::{
-    Memory, carmy, ccharacter, cconvoys, ccountry_leader, cgame_state,
+    Memory, carmy, ccharacter, cconvoys, cgame_state,
     cpdx_array::{Array, copy_u32s},
-    cpolitical_party, cpolitical_status, cradars_pool, cunit,
+    cradars_pool, cunit,
     msvc_string::{STRIDE, Text, read_text_prefetched},
     read,
     walk::{Buffer, Outcome},
@@ -14,7 +20,7 @@ mod ahead;
 pub use ahead::Ahead;
 pub mod launch_sources;
 mod native_reference;
-mod rosters;
+pub mod rosters;
 pub use native_reference::{NativeReferenceContext, NativeReferenceMemo};
 pub use rosters::{
     CarriedRosters, CarriedSpans, CounterRosters, EffectRosterDemand, EffectRosters, NEIGHBORS,
@@ -44,11 +50,9 @@ pub const FLEETS: usize = 0x278;
 pub const DIVISIONS: usize = 0x290;
 pub const WAR_OVERVIEW_CORE_STATES: usize = 0x4a8;
 pub const WAR_OVERVIEW_OFFSITE: usize = 0x1350;
-pub const MANPOWER: usize = 0x328;
 pub const CURRENT_PRIMARY_COLOR: usize = 0x370;
 pub const CURRENT_UI_COLOR: usize = 0x390;
 pub const CONTROLLED_STATES: usize = 0x460;
-pub const MODIFIER_ACCUMULATOR: usize = 0x5b8;
 pub const DYNAMIC_MODIFIERS: usize = 0xe58;
 pub const TECHNOLOGY_STATUS: usize = 0xf60;
 pub const PRODUCTION_STATUS: usize = 0xf68;
@@ -88,7 +92,6 @@ pub const FUEL_STATUS: usize = 0x1580;
 pub const EXPERIENCE_STATUS: usize = 0x1588;
 pub const OPERATION_MANAGER: usize = 0x15a8;
 pub const ACTIVE_COMMAND_ABILITIES: usize = 0x15b8;
-pub const PREFERRED_TACTIC: usize = 0x15d0;
 
 pub const LOCK_ALL_TEMPLATES: usize = 0x1b4;
 pub const DIVISION_TEMPLATES: usize = 0x1b8;
@@ -158,7 +161,7 @@ pub struct Row {
 
 const GATHERED: [(usize, usize); 8] = [
     (POLITICAL_STATUS, 8),
-    (MANPOWER + crate::ccountry_manpower::RESIDUAL, 4),
+    (MANPOWER + engine_native_parts::ccountry_manpower_layout::RESIDUAL, 4),
     (COMMAND_POWER, 8),
     (STABILITY, 8),
     (WAR_SUPPORT, 8),
@@ -278,7 +281,7 @@ pub struct AppearanceRow<T = Text<256>, G = Text<8>, I = Text<128>> {
     pub old_names: Option<[T; 3]>,
     pub original_tag_reference: i32,
     original_tag_is_name_tag: bool,
-    pub original_tag: Option<crate::csubject_relation::Name>,
+    pub original_tag: Option<crate::crelation::subject::Name>,
     pub original_tag_failure: Option<&'static str>,
 }
 
@@ -330,12 +333,12 @@ fn ruling_party(
     if politics == 0 {
         return Ok(None);
     }
-    object(politics, cpolitical_status::VTABLE_RVA)?;
-    let party = pointer(at(politics, cpolitical_status::RULING_PARTY)?)?;
+    object(politics, political_status_layout::VTABLE_RVA)?;
+    let party = pointer(at(politics, political_status_layout::RULING_PARTY)?)?;
     if party == 0 {
         return Ok(None);
     }
-    object(party, cpolitical_party::VTABLE_RVA)?;
+    object(party, political_party_layout::VTABLE_RVA)?;
     Ok(Some(party))
 }
 
@@ -349,7 +352,7 @@ fn first_party_leader(
             .checked_add(offset)
             .ok_or("country naming address overflow")
     };
-    let count = read::<u32>(memory, at(cpolitical_party::COUNTRY_LEADER_COUNT)?)
+    let count = read::<u32>(memory, at(political_party_layout::COUNTRY_LEADER_COUNT)?)
         .ok_or("country leader count unreadable")?;
     if count == 0 {
         return Ok(None);
@@ -359,9 +362,9 @@ fn first_party_leader(
             .and_then(|value| usize::try_from(value).ok())
             .ok_or("country naming pointer unreadable")
     };
-    let leader = pointer(pointer(at(cpolitical_party::COUNTRY_LEADERS)?)?)?;
+    let leader = pointer(pointer(at(political_party_layout::COUNTRY_LEADERS)?)?)?;
     if read::<u64>(memory, leader)
-        != engine_sites::at(base, ccountry_leader::VTABLE_RVA).map(|v| v as u64)
+        != engine_sites::at(base, country_leader_layout::VTABLE_RVA).map(|v| v as u64)
     {
         return Err("country naming object identity mismatch");
     }
@@ -400,7 +403,7 @@ fn ruling_leader<I: crate::capture_text::Value>(
             "country leader ideology unreadable or too long"
         }
     })?;
-    let character = at(leader, ccountry_leader::CHARACTER)
+    let character = at(leader, country_leader_layout::CHARACTER)
         .ok()
         .and_then(|address| pointer(address).ok())
         .filter(|&character| character != 0)
@@ -430,15 +433,15 @@ fn name_tag_for_original(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReservedNamingRow {
-    pub tag: crate::csubject_relation::Name,
-    pub name_tag: crate::csubject_relation::Name,
-    pub cosmetic_tag: crate::csubject_relation::Name,
-    pub leader_ideology: crate::csubject_relation::Name,
-    pub group: Option<crate::csubject_relation::Name>,
+    pub tag: crate::crelation::subject::Name,
+    pub name_tag: crate::crelation::subject::Name,
+    pub cosmetic_tag: crate::crelation::subject::Name,
+    pub leader_ideology: crate::crelation::subject::Name,
+    pub group: Option<crate::crelation::subject::Name>,
     pub overlord: i32,
-    pub autonomy: Option<crate::csubject_relation::Name>,
+    pub autonomy: Option<crate::crelation::subject::Name>,
     pub built: u8,
-    pub original_tag: Option<crate::csubject_relation::Name>,
+    pub original_tag: Option<crate::crelation::subject::Name>,
     pub original_tag_failure: Option<&'static str>,
     pub original_tag_reference: i32,
     pub dynamic_tag_boundary: i32,
@@ -494,7 +497,7 @@ impl ReservedVisibilityObservation {
             observed.faction = Some(Err("reserved faction diplomacy is null"));
             return observed;
         }
-        let identity = engine_sites::at(base, crate::cdiplomacy_status::VTABLE_RVA)
+        let identity = engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
             .ok_or("reserved naming module address overflow")
             .and_then(|expected| {
                 (read::<u64>(memory, diplomacy) == Some(expected as u64))
@@ -506,7 +509,7 @@ impl ReservedVisibilityObservation {
             return observed;
         }
         let backlink = diplomacy
-            .checked_add(crate::cdiplomacy_status::COUNTRY)
+            .checked_add(engine_native_parts::cdiplomacy_status_layout::COUNTRY)
             .and_then(|at| read::<u64>(memory, at))
             .ok_or("reserved faction diplomacy backlink unreadable")
             .and_then(|backlink| {
@@ -520,7 +523,7 @@ impl ReservedVisibilityObservation {
         }
         observed.faction = Some((|| {
             let pointer = diplomacy
-                .checked_add(crate::cdiplomacy_status::FACTION)
+                .checked_add(engine_native_parts::cdiplomacy_status_layout::FACTION)
                 .and_then(|at| read::<u64>(memory, at))
                 .ok_or("reserved faction pointer unreadable")?;
             if pointer == 0 {
@@ -882,7 +885,7 @@ fn reserved_naming_sources_from_root(
     let cosmetic = Descriptor::read(memory, at(country, COSMETIC_TAG)?)?;
     let party = ruling_party(memory, base, country)?;
     let (ideology, group) = if let Some(party) = party {
-        let group = pointer(at(party, cpolitical_party::IDEOLOGY_GROUP)?)?;
+        let group = pointer(at(party, political_party_layout::IDEOLOGY_GROUP)?)?;
         object(group, crate::cideology_group::VTABLE_RVA)?;
         let group = Descriptor::read(memory, at(group, crate::cideology_group::TOKEN)?)?;
         let ideology = first_party_leader(memory, base, party)?
@@ -906,26 +909,26 @@ fn reserved_naming_sources_from_root(
         (0, None)
     } else {
         if visibility.is_none() {
-            object(diplomacy, crate::cdiplomacy_status::VTABLE_RVA)?;
+            object(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
         }
-        let overlord = read::<i32>(memory, at(diplomacy, crate::cdiplomacy_status::OVERLORD)?)
+        let overlord = read::<i32>(memory, at(diplomacy, engine_native_parts::cdiplomacy_status_layout::OVERLORD)?)
             .ok_or("reserved naming overlord unreadable")?;
         let status = pointer(at(
             diplomacy,
-            crate::cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
+            engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS,
         )?)?;
         let autonomy = if status == 0 {
             None
         } else {
-            object(status, crate::ccurrent_autonomy_status::VTABLE_RVA)?;
+            object(status, engine_native_parts::ccurrent_autonomy_status_layout::VTABLE_RVA)?;
             if pointer(at(
                 status,
-                crate::ccurrent_autonomy_status::SUBJECT_COUNTRY,
+                engine_native_parts::ccurrent_autonomy_status_layout::SUBJECT_COUNTRY,
             )?)? != country
             {
                 return Err("reserved autonomy subject country mismatch");
             }
-            let definition = pointer(at(status, crate::ccurrent_autonomy_status::STATE)?)?;
+            let definition = pointer(at(status, engine_native_parts::ccurrent_autonomy_status_layout::STATE)?)?;
             if definition == 0 {
                 return Err("reserved autonomy definition is null");
             }
@@ -1094,7 +1097,7 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
                     Some(journal) => source.copy_observed(memory, &mut names[used..end], journal),
                     None => source.copy(memory, &mut names[used..end]),
                 }?;
-                spans[index] = Some(crate::csubject_relation::Name {
+                spans[index] = Some(crate::crelation::subject::Name {
                     start: used,
                     len: source.len,
                 });
@@ -1110,7 +1113,7 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
                 let span = if sources.original > 0 {
                     spans[1].expect("selected prefix tag was acquired")
                 } else {
-                    crate::csubject_relation::Name {
+                    crate::crelation::subject::Name {
                         start: used,
                         len: 0,
                     }
@@ -1131,7 +1134,7 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
                 Some(journal) => source.copy_observed(memory, output, journal),
                 None => source.copy(memory, output),
             }?;
-            let span = crate::csubject_relation::Name {
+            let span = crate::crelation::subject::Name {
                 start: used,
                 len: source.len,
             };
@@ -1276,15 +1279,15 @@ fn read_appearance_observed_inner<
         .and_then(|value| usize::try_from(value).ok())
         .ok_or("country diplomacy pointer unreadable")?;
     if read::<u64>(memory, diplomacy)
-        != engine_sites::at(base, crate::cdiplomacy_status::VTABLE_RVA).map(|v| v as u64)
+        != engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).map(|v| v as u64)
     {
         return Err("country diplomacy vtable mismatch");
     }
-    const SUBJECTS: usize = crate::cdiplomacy_status::SUBJECTS;
-    const OVERLORD: usize = crate::cdiplomacy_status::OVERLORD;
+    const SUBJECTS: usize = engine_native_parts::cdiplomacy_status_layout::SUBJECTS;
+    const OVERLORD: usize = engine_native_parts::cdiplomacy_status_layout::OVERLORD;
     const _: () = assert!(OVERLORD == SUBJECTS + 0x18);
     let diplomacy = diplomacy
-        .checked_add(crate::cdiplomacy_status::SUBJECTS)
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::SUBJECTS)
         .and_then(|address| read::<[u8; 0x1c]>(memory, address))
         .ok_or("country subjects and overlord unreadable")?;
     let overlord = i32::from_le_bytes(diplomacy[0x18..].try_into().unwrap());
@@ -1378,7 +1381,7 @@ fn capture_appearance_original_tags_observed_inner<
     for row in rows {
         let result = (|| {
             if row.original_tag_reference <= 0 {
-                return Ok(crate::csubject_relation::Name {
+                return Ok(crate::crelation::subject::Name {
                     start: *used,
                     len: 0,
                 });
@@ -1434,7 +1437,7 @@ fn capture_appearance_original_tags_observed_inner<
             } else {
                 destination.copy_from_slice(row.name_tag.as_bytes());
             }
-            let span = crate::csubject_relation::Name { start: *used, len };
+            let span = crate::crelation::subject::Name { start: *used, len };
             *used = end;
             Ok::<_, &'static str>(span)
         })();
@@ -2036,9 +2039,9 @@ fn movement_diplomacy(
         memory,
         base,
         diplomacy,
-        crate::cdiplomacy_status::VTABLE_RVA,
+        engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
     )?;
-    if movement_pointer(memory, diplomacy, crate::cdiplomacy_status::COUNTRY)? != country {
+    if movement_pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country {
         return Err("movement diplomacy owner mismatch");
     }
     Ok(diplomacy)
@@ -2058,15 +2061,15 @@ fn movement_tuple(
     };
     let tuple = movement_element(
         memory,
-        movement_array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS)?,
+        movement_array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?,
         slot,
     )?;
     if tuple != 0 {
-        movement_auth(memory, base, tuple, crate::crelation_status::VTABLE_RVA)?;
-        if movement_pointer(memory, tuple, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy
+        movement_auth(memory, base, tuple, crate::crelation::status::VTABLE_RVA)?;
+        if movement_pointer(memory, tuple, crate::crelation::status::DIPLOMACY_STATUS)? != diplomacy
             || !movement_equal(
                 countries,
-                movement_field(memory, tuple, crate::crelation_status::TARGET_COUNTRY)?,
+                movement_field(memory, tuple, crate::crelation::status::TARGET_COUNTRY)?,
                 target,
             )?
         {
@@ -2081,7 +2084,7 @@ fn movement_active_war(
     base: usize,
     tuple: usize,
 ) -> Result<bool, &'static str> {
-    let war = movement_pointer(memory, tuple, crate::crelation_status::WAR_RELATION)?;
+    let war = movement_pointer(memory, tuple, crate::crelation::status::WAR_RELATION)?;
     if war == 0 {
         return Ok(false);
     }
@@ -2116,7 +2119,7 @@ pub fn movement_friendly(
     if movement_pointer(memory, tuple, 0x2a0)? != 0 {
         return Ok(true);
     }
-    let faction = movement_pointer(memory, diplomacy, crate::cdiplomacy_status::FACTION)?;
+    let faction = movement_pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?;
     if faction != 0 {
         let target = if target_raw == 0 {
             let sentinel = countries.pointer_at(0)?;
@@ -2129,29 +2132,29 @@ pub fn movement_friendly(
             countries.resolve(target_raw)?.pointer
         };
         let target_diplomacy = movement_diplomacy(memory, base, target)?;
-        if faction == movement_pointer(memory, target_diplomacy, crate::cdiplomacy_status::FACTION)?
+        if faction == movement_pointer(memory, target_diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?
         {
             return Ok(true);
         }
     }
-    let subject = movement_pointer(memory, tuple, crate::crelation_status::SUBJECT_RELATION)?;
+    let subject = movement_pointer(memory, tuple, crate::crelation::status::SUBJECT_RELATION)?;
     if subject == 0 {
         return Ok(false);
     }
-    if movement_field::<u32>(memory, subject, crate::csubject_relation::TYPE_ID)?
-        != crate::csubject_relation::TYPE_VALUE
+    if movement_field::<u32>(memory, subject, crate::crelation::subject::TYPE_ID)?
+        != crate::crelation::subject::TYPE_VALUE
     {
         return Ok(false);
     }
-    movement_auth(memory, base, subject, crate::csubject_relation::VTABLE_RVA)?;
-    let target = movement_field(memory, tuple, crate::crelation_status::TARGET_COUNTRY)?;
+    movement_auth(memory, base, subject, crate::crelation::subject::VTABLE_RVA)?;
+    let target = movement_field(memory, tuple, crate::crelation::status::TARGET_COUNTRY)?;
     Ok(movement_equal(
         &countries,
-        movement_field(memory, subject, crate::csubject_relation::OVERLORD)?,
+        movement_field(memory, subject, crate::crelation::subject::OVERLORD)?,
         target,
     )? || movement_equal(
         &countries,
-        movement_field(memory, subject, crate::csubject_relation::SUBJECT)?,
+        movement_field(memory, subject, crate::crelation::subject::SUBJECT)?,
         target,
     )?)
 }
@@ -2183,7 +2186,7 @@ pub fn river_crossing_against_with(
         memory,
         base,
         diplomacy,
-        crate::cdiplomacy_status::VTABLE_RVA,
+        engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
     )?;
     let slot = if (target_raw as i32) <= 0 {
         0
@@ -2192,18 +2195,18 @@ pub fn river_crossing_against_with(
     };
     let relation = movement_element(
         memory,
-        movement_array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS)?,
+        movement_array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?,
         slot,
     )?;
     if relation == 0 {
         return Ok(None);
     }
-    movement_auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
-    if movement_pointer(memory, relation, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy {
+    movement_auth(memory, base, relation, crate::crelation::status::VTABLE_RVA)?;
+    if movement_pointer(memory, relation, crate::crelation::status::DIPLOMACY_STATUS)? != diplomacy {
         return Err("movement relation matrix identity mismatch");
     }
     let accumulator = relation
-        .checked_add(crate::crelation_status::MODIFIER_ACCUMULATOR)
+        .checked_add(crate::crelation::status::MODIFIER_ACCUMULATOR)
         .ok_or("movement relation accumulator overflow")?;
     let value = crate::modifier_accumulator::lookup_requested_at(
         memory,
@@ -2386,7 +2389,7 @@ pub fn has_core_supply_access_direct(
         return Ok(false);
     }
     movement_auth(memory, base, area, crate::ccontroller_area::VTABLE_RVA)?;
-    let systems = crate::csupply_system::Reader::new(memory, base, state)?;
+    let systems = crate::ccountry_supply_system::world::Reader::new(memory, base, state)?;
     let system = systems
         .at(owner.canonical_slot)?
         .ok_or("movement country supply is absent")?;
@@ -2623,13 +2626,13 @@ fn walk_observed_inner<M: Memory>(
         } else {
             let status =
                 usize::try_from(status).map_err(|_| "political status address overflow")?;
-            let vtable = engine_sites::at(base, cpolitical_status::VTABLE_RVA)
+            let vtable = engine_sites::at(base, political_status_layout::VTABLE_RVA)
                 .ok_or("module address overflow")?;
             if read::<u64>(memory, status) != Some(vtable as u64) {
                 return Err("political status vtable mismatch");
             }
             if status
-                .checked_add(cpolitical_status::COUNTRY)
+                .checked_add(political_status_layout::COUNTRY)
                 .and_then(|p| read::<u64>(memory, p))
                 != Some(pointer as u64)
             {
@@ -2637,7 +2640,7 @@ fn walk_observed_inner<M: Memory>(
             }
             Some(
                 status
-                    .checked_add(cpolitical_status::POLITICAL_POWER)
+                    .checked_add(political_status_layout::POLITICAL_POWER)
                     .and_then(|p| read::<i64>(memory, p))
                     .ok_or("political power unreadable")?,
             )
@@ -2656,12 +2659,12 @@ fn walk_observed_inner<M: Memory>(
                 } else {
                     let pointer = read::<u64>(
                         memory,
-                        (status as usize).checked_add(cpolitical_status::RULING_PARTY)?,
+                        (status as usize).checked_add(political_status_layout::RULING_PARTY)?,
                     )? as usize;
                     if pointer == 0 {
                         None
                     } else {
-                        Some(cpolitical_party::identity(memory, base, pointer).ok()?.0)
+                        Some(political_party_layout::identity(memory, base, pointer).ok()?.0)
                     }
                 };
                 Some((instance, party))
@@ -2999,16 +3002,16 @@ fn volunteer_air_modifier(
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("volunteer diplomacy unavailable")?;
     if read::<u64>(memory, diplomacy)
-        != engine_sites::at(base, crate::cdiplomacy_status::VTABLE_RVA).map(|p| p as u64)
+        != engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("volunteer diplomacy identity mismatch");
     }
-    if read::<u64>(memory, diplomacy + crate::cdiplomacy_status::COUNTRY)
+    if read::<u64>(memory, diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY)
         != Some(sender.pointer as u64)
     {
         return Err("volunteer diplomacy owner mismatch");
     }
-    let relations = Array::read(memory, diplomacy + crate::cdiplomacy_status::RELATIONS, 8)
+    let relations = Array::read(memory, diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)
         .ok_or("volunteer relation matrix unavailable")?;
     let relation = relations
         .element(slot, 8)
@@ -3016,16 +3019,16 @@ fn volunteer_air_modifier(
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("volunteer relation unavailable")?;
     if read::<u64>(memory, relation)
-        != engine_sites::at(base, crate::crelation_status::VTABLE_RVA).map(|p| p as u64)
+        != engine_sites::at(base, crate::crelation::status::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("volunteer relation identity mismatch");
     }
-    if read::<u64>(memory, relation + crate::crelation_status::DIPLOMACY_STATUS)
+    if read::<u64>(memory, relation + crate::crelation::status::DIPLOMACY_STATUS)
         != Some(diplomacy as u64)
     {
         return Err("volunteer relation owner mismatch");
     }
-    let target = read::<u32>(memory, relation + crate::crelation_status::TARGET_COUNTRY)
+    let target = read::<u32>(memory, relation + crate::crelation::status::TARGET_COUNTRY)
         .ok_or("volunteer relation target unreadable")?;
     let target_slot = if target == 0 {
         0
@@ -3036,7 +3039,7 @@ fn volunteer_air_modifier(
         return Err("volunteer relation target mismatch");
     }
     let accumulator = relation
-        .checked_add(crate::crelation_status::MODIFIER_ACCUMULATOR)
+        .checked_add(crate::crelation::status::MODIFIER_ACCUMULATOR)
         .ok_or("volunteer relation modifier address overflow")?;
     crate::modifier_accumulator::requested_effective_at(
         memory,
@@ -3993,11 +3996,11 @@ mod tests {
         put(
             &mut bytes,
             DIPLOMACY,
-            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             &0x11000_u64.to_le_bytes(),
         );
         struct Once<'a> {
@@ -4025,12 +4028,12 @@ mod tests {
             ),
             (DIPLOMACY, "reserved naming object identity mismatch", false),
             (
-                DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
+                DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 "reserved faction diplomacy backlink unreadable",
                 true,
             ),
             (
-                DIPLOMACY + crate::cdiplomacy_status::FACTION,
+                DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION,
                 "reserved faction pointer unreadable",
                 true,
             ),
@@ -4090,11 +4093,11 @@ mod tests {
         put(
             &mut bytes,
             DIPLOMACY,
-            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             &0x11000_u64.to_le_bytes(),
         );
         let captured = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Count, None);
@@ -4127,11 +4130,11 @@ mod tests {
         put(
             &mut bytes,
             DIPLOMACY,
-            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
+            DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             &0x11000_u64.to_le_bytes(),
         );
         put(
@@ -4148,7 +4151,7 @@ mod tests {
         for (pointer, expected) in [(0_u64, 0), (FACTION as u64, handle)] {
             put(
                 &mut bytes,
-                DIPLOMACY + crate::cdiplomacy_status::FACTION,
+                DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION,
                 &pointer.to_le_bytes(),
             );
             let mut names = vec![0; 11];
@@ -4161,7 +4164,7 @@ mod tests {
         struct FactionFault<'a>(&'a [u8]);
         impl Memory for FactionFault<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                address != DIPLOMACY + crate::cdiplomacy_status::FACTION
+                address != DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION
                     && ReservedMemory { bytes: self.0 }.copy(address, output)
             }
         }
@@ -4581,7 +4584,7 @@ mod tests {
         );
         put(
             &mut bytes,
-            0xa400 + cpolitical_party::IDEOLOGY_GROUP,
+            0xa400 + political_party_layout::IDEOLOGY_GROUP,
             &0xb000_u64.to_le_bytes(),
         );
         put(
@@ -4601,22 +4604,22 @@ mod tests {
         );
         put(
             &mut bytes,
-            0x8000 + crate::cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
+            0x8000 + engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS,
             &0xb100_u64.to_le_bytes(),
         );
         put(
             &mut bytes,
             0xb100,
-            &(crate::ccurrent_autonomy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::ccurrent_autonomy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            0xb100 + crate::ccurrent_autonomy_status::SUBJECT_COUNTRY,
+            0xb100 + engine_native_parts::ccurrent_autonomy_status_layout::SUBJECT_COUNTRY,
             &0x11000_u64.to_le_bytes(),
         );
         put(
             &mut bytes,
-            0xb100 + crate::ccurrent_autonomy_status::STATE,
+            0xb100 + engine_native_parts::ccurrent_autonomy_status_layout::STATE,
             &0xb200_u64.to_le_bytes(),
         );
         short_string(
@@ -4627,14 +4630,14 @@ mod tests {
         let mut names = vec![0; 128];
         let read = read_reserved_naming_observed_inner(&ReservedMemory { bytes: &bytes }, 0, 0x1000, crate::walk::Buffer::Growing(&mut names), None);
         assert_eq!(read.outcome, Outcome::Rows { len: 1 });
-        let text = |name: crate::csubject_relation::Name| &names[name.start..name.start + name.len];
+        let text = |name: crate::crelation::subject::Name| &names[name.start..name.start + name.len];
         assert_eq!(text(read.row.leader_ideology), b"despotism");
         assert_eq!(text(read.row.group.unwrap()), b"mod_group");
         assert_eq!(text(read.row.autonomy.unwrap()), b"mod_subject");
         assert_eq!(read.row.overlord, 1);
         put(
             &mut bytes,
-            0xb100 + crate::ccurrent_autonomy_status::STATE,
+            0xb100 + engine_native_parts::ccurrent_autonomy_status_layout::STATE,
             &0_u64.to_le_bytes(),
         );
         assert_eq!(
@@ -4678,7 +4681,7 @@ mod tests {
         movement_test_array(&mut bytes, 0x1000 + cgame_state::COUNTRY_TAGS, 0xc000, 4);
         put(
             &mut bytes,
-            0x8000 + crate::cdiplomacy_status::OVERLORD,
+            0x8000 + engine_native_parts::cdiplomacy_status_layout::OVERLORD,
             &1_i32.to_le_bytes(),
         );
         short_string(&mut bytes, 0xc000 + 2 * STRIDE, b"GER");
@@ -4689,20 +4692,20 @@ mod tests {
             &0xa000_u64.to_le_bytes(),
         );
         for (object, vtable) in [
-            (0xa000, cpolitical_status::VTABLE_RVA.0),
-            (0xa400, cpolitical_party::VTABLE_RVA.0),
-            (0xa900, ccountry_leader::VTABLE_RVA.0),
+            (0xa000, political_status_layout::VTABLE_RVA.0),
+            (0xa400, political_party_layout::VTABLE_RVA.0),
+            (0xa900, country_leader_layout::VTABLE_RVA.0),
         ] {
             put(&mut bytes, object, &(vtable as u64).to_le_bytes());
         }
         put(
             &mut bytes,
-            0xa000 + cpolitical_status::RULING_PARTY,
+            0xa000 + political_status_layout::RULING_PARTY,
             &0xa400_u64.to_le_bytes(),
         );
         movement_test_array(
             &mut bytes,
-            0xa400 + cpolitical_party::COUNTRY_LEADERS,
+            0xa400 + political_party_layout::COUNTRY_LEADERS,
             0xa800,
             1,
         );
@@ -4715,7 +4718,7 @@ mod tests {
         short_string(&mut bytes, 0xaa00 + IDEOLOGY_TOKEN, b"despotism");
         put(
             &mut bytes,
-            0xa900 + ccountry_leader::CHARACTER,
+            0xa900 + country_leader_layout::CHARACTER,
             &0xab00_u64.to_le_bytes(),
         );
         put(
@@ -4909,18 +4912,18 @@ mod tests {
             0xab00,
             &(ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        let parent = 0xa900 + ccountry_leader::CHARACTER;
+        let parent = 0xa900 + country_leader_layout::CHARACTER;
         put(&mut bytes, parent, &0_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((despotism, None)));
         put(&mut bytes, parent, &0xffff_0000_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((despotism, None)));
         put(&mut bytes, parent, &0xab00_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((despotism, Some(777))));
-        let count = 0xa400 + cpolitical_party::COUNTRY_LEADER_COUNT;
+        let count = 0xa400 + political_party_layout::COUNTRY_LEADER_COUNT;
         put(&mut bytes, count, &0_u32.to_le_bytes());
         assert_eq!(run(&bytes), Ok((Text::default(), None)));
         put(&mut bytes, count, &1_u32.to_le_bytes());
-        let ruling = 0xa000 + cpolitical_status::RULING_PARTY;
+        let ruling = 0xa000 + political_status_layout::RULING_PARTY;
         put(&mut bytes, ruling, &0_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((Text::default(), None)));
         put(&mut bytes, ruling, &0xa400_u64.to_le_bytes());
@@ -5031,16 +5034,16 @@ mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             put(
                 &mut bytes,
-                diplomacy + crate::cdiplomacy_status::COUNTRY,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 &(country as u64).to_le_bytes(),
             );
             movement_test_array(
                 &mut bytes,
-                diplomacy + crate::cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
                 matrix,
                 4,
             );
@@ -5049,7 +5052,7 @@ mod tests {
         put(
             &mut bytes,
             0x9000,
-            &(crate::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(crate::crelation::status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(&mut bytes, 0x9050, &3_u32.to_le_bytes());
         put(&mut bytes, 0x91f0, &0x7000_u64.to_le_bytes());
@@ -5065,7 +5068,7 @@ mod tests {
     #[test]
     fn movement_river_relation_resolves_aliases_and_reserved_targets_without_requiring_a_relation()
     {
-        use crate::{crelation_status as relation, modifier_keys};
+        use crate::{crelation::status as relation, modifier_keys};
         let mut bytes = movement_fixture();
         let run = |bytes: &[u8], target| {
             river_crossing_against(&SliceMemory { base: 0, bytes }, 0, 0x1000, 1, target)
@@ -5137,12 +5140,12 @@ mod tests {
         put(
             &mut bytes,
             0xb000,
-            &(crate::csubject_relation::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(crate::crelation::subject::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             0xb008,
-            &crate::csubject_relation::TYPE_VALUE.to_le_bytes(),
+            &crate::crelation::subject::TYPE_VALUE.to_le_bytes(),
         );
         put(&mut bytes, 0xb010, &1_u32.to_le_bytes());
         put(&mut bytes, 0xb014, &2_u32.to_le_bytes());
@@ -5205,12 +5208,12 @@ mod tests {
         put(
             &mut bytes,
             0x16000,
-            &(crate::csupply_system::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(crate::ccountry_supply_system::world::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             0x16008,
-            &(crate::csupply_system::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(crate::ccountry_supply_system::world::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         movement_test_array(&mut bytes, 0x16108, 0x17000, 4);
         movement_test_array(&mut bytes, 0x16120, 0x18000, 4);
@@ -5606,35 +5609,35 @@ mod tests {
         at(0x3000 + DIPLOMACY_STATUS, &0x7000_u64.to_le_bytes());
         at(
             0x7000,
-            &(crate::cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         at(
-            0x7000 + crate::cdiplomacy_status::COUNTRY,
+            0x7000 + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             &0x3000_u64.to_le_bytes(),
         );
         at(
-            0x7000 + crate::cdiplomacy_status::RELATIONS,
+            0x7000 + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             &0x8200_u64.to_le_bytes(),
         );
         at(
-            0x7000 + crate::cdiplomacy_status::RELATION_CAPACITY,
+            0x7000 + engine_native_parts::cdiplomacy_status_layout::RELATION_CAPACITY,
             &2_u32.to_le_bytes(),
         );
         at(
-            0x7000 + crate::cdiplomacy_status::RELATION_COUNT,
+            0x7000 + engine_native_parts::cdiplomacy_status_layout::RELATION_COUNT,
             &2_u32.to_le_bytes(),
         );
         at(0x8208, &0x7400_u64.to_le_bytes());
         at(
             0x7400,
-            &(crate::crelation_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(crate::crelation::status::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         at(
-            0x7400 + crate::crelation_status::DIPLOMACY_STATUS,
+            0x7400 + crate::crelation::status::DIPLOMACY_STATUS,
             &0x7000_u64.to_le_bytes(),
         );
         at(
-            0x7400 + crate::crelation_status::TARGET_COUNTRY,
+            0x7400 + crate::crelation::status::TARGET_COUNTRY,
             &1_u32.to_le_bytes(),
         );
         let memory = SliceMemory {
@@ -5788,16 +5791,16 @@ mod tests {
         put(
             &mut bytes,
             0x3000,
-            &(cpolitical_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(political_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            0x3000 + cpolitical_status::COUNTRY,
+            0x3000 + political_status_layout::COUNTRY,
             &0x2000_u64.to_le_bytes(),
         );
         put(
             &mut bytes,
-            0x3000 + cpolitical_status::POLITICAL_POWER,
+            0x3000 + political_status_layout::POLITICAL_POWER,
             &(-4_294_967_301_i64).to_le_bytes(),
         );
         bytes
@@ -6082,7 +6085,7 @@ mod tests {
             }
         );
         put(&mut bytes, 0x708, &1_u32.to_le_bytes());
-        bytes[0x3000 + cpolitical_status::COUNTRY] = 1;
+        bytes[0x3000 + political_status_layout::COUNTRY] = 1;
         let memory = SliceMemory {
             base: 0x1000,
             bytes: &bytes,

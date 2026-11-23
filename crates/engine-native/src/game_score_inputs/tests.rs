@@ -1074,7 +1074,7 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
 #[test]
 #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
 fn bench_first_site_batches() {
-    use crate::crelation_status::bench::{Arena, Counting, RUNS};
+    use crate::crelation::status::bench::{Arena, Counting, RUNS};
     const OWNERS: usize = 440;
     const SITES: usize = 5_906;
     const BASES: usize = 2_000;

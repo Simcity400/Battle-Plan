@@ -1,6 +1,11 @@
 use crate::{
-    Memory, allocation, cconvoys, ccountry, cequipment_variant, cequipment_variant_pool,
-    equipment_entry, read,
+    Memory,
+    allocation,
+    cconvoys,
+    ccountry,
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    equipment_entry,
+    read,
 };
 
 const TRADE_COUNTRY: usize = 0x18;

@@ -691,7 +691,7 @@ fn naval_stat_fault_preserves_para_sibling_and_seed_fields_are_not_reread() {
     image.word(PROVINCE + cprovince::DEFINITION, DEFINITION as u64);
     image.put(PROVINCE + cprovince::ID, &7_u32.to_le_bytes());
     image.put(
-        DEFINITION + crate::province_definition::ID,
+        DEFINITION + crate::cprovince::definition::ID,
         &7_u32.to_le_bytes(),
     );
     image.put(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, &[0; 16]);

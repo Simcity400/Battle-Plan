@@ -1,8 +1,11 @@
+use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
+pub mod goals;
 
 use crate::{
-    Memory, ccountry, cdiplomacy_status,
-    cpdx_array::Array,
-    crelation, crelation_status,
+    Memory,
+    ccountry,
+     cpdx_array::Array,
+    crelation::{self, status as crelation_status},
     memory::{Raw, RecordField, RecordLayout, RecordSources},
     read,
     walk::Outcome,

@@ -492,7 +492,11 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
 
 #[test]
 fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
-    use crate::{cbuilding_database, cbuilding_status, cbuilding_template};
+    use crate::{
+        cbuilding_database,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+    };
     use std::cell::RefCell;
     struct Traced<'a> {
         memory: &'a MapMemory,

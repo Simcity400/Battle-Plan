@@ -1,15 +1,13 @@
+pub use engine_native_parts::chuman_layout::{VTABLE_RVA, STRIDE, COUNTRY_TAG};
 
 use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,
 };
 
-pub const VTABLE_RVA: Rva = Rva(0x0279_edb8);
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c1_0190);
-pub const STRIDE: usize = 0xa0;
 pub const FIRST_STRING: usize = 0x20;
 pub const NAME: usize = 0x40;
-pub const COUNTRY_TAG: usize = 0x70;
 pub const DATE: usize = 0x78;
 pub const FLAGS: usize = 0x94;
 pub const PLAYER_KEY: usize = 0x98;

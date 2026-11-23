@@ -1,7 +1,15 @@
+pub mod modifier_sources;
 
 use crate::{
-    Memory, cequipment_type, cequipment_variant, cequipment_variant_pool, cname_group_member,
-    ctask_force, cunit, msvc_string::Descriptor, read, recent::Recent,
+    Memory,
+    cequipment_type,
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cname_group_member,
+    ctask_force,
+    cunit,
+    msvc_string::Descriptor,
+    read,
+    recent::Recent,
 };
 use engine_sites::Rva;
 
@@ -197,7 +205,7 @@ impl ModelText {
 
 #[derive(Default)]
 pub struct ModelMemo {
-    hulls: crate::combat_sources::Map<HullKey, ModelHull>,
+    hulls: engine_native_parts::keyed_map::Map<HullKey, ModelHull>,
     hull_variant: hull_variant::Memo,
 }
 
@@ -533,18 +541,18 @@ fn transport_carrier_base(
     }
     let air = usize::try_from(raw).map_err(|_| "ship carrier air base pointer overflow")?;
     if read::<u64>(memory, air)
-        != engine_sites::at(base, crate::cair_base::VTABLE_RVA).map(|n| n as u64)
+        != engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA).map(|n| n as u64)
     {
         return Err("ship carrier air base identity invalid");
     }
     let handle = air
-        .checked_add(crate::cair_base::HANDLE)
+        .checked_add(engine_native_parts::cair_base_layout::HANDLE)
         .and_then(|at| read::<u64>(memory, at))
         .ok_or("ship air base handle unreadable")?;
     if handle >> 32 == 0
-        || handle as u32 != crate::cair_base::TYPE
+        || handle as u32 != engine_native_parts::cair_base_layout::TYPE
         || air
-            .checked_add(crate::cair_base::HOST_REFERENCE)
+            .checked_add(engine_native_parts::cair_base_layout::HOST_REFERENCE)
             .and_then(|at| read::<u64>(memory, at))
             != Some(ship)
     {
@@ -752,7 +760,7 @@ pub struct OrganisationMemo {
     terrain_class: Recent<(usize, u32), [i64; 4], RECENT>,
     fleet: Option<(usize, Option<usize>, [i64; 4])>,
     leader_class: Recent<(usize, u32), [i64; 4], RECENT>,
-    doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
+    doctrine_keys: modifier_sources::DoctrineKeys,
     weather: Option<OrganisationWeather>,
     definitions: crate::modifier_definition::DefinitionMemo,
     own: Option<(usize, OrganisationOperands)>,
@@ -1063,9 +1071,9 @@ fn doctrine_contribution(
     task: usize,
     country: usize,
     definitions: &crate::modifier_definition::DefinitionMemo,
-    keys: &mut crate::naval_ship_modifier_inputs::DoctrineKeys,
+    keys: &mut modifier_sources::DoctrineKeys,
 ) -> Result<[i64; 4], &'static str> {
-    use crate::{cnaval_combatant::field, naval_ship_modifier_inputs as sources};
+    use crate::{cnaval_combatant::field, cship::modifier_sources as sources};
     let add = |p: usize, o: usize| {
         p.checked_add(o)
             .filter(|_| p != 0)
@@ -1170,7 +1178,7 @@ pub fn read_task_terms(
     memo: &mut OrganisationMemo,
 ) -> Result<Option<TaskTerms>, &'static str> {
     use crate::{
-        cnaval_combatant::field, cpdx_array::Array, naval_ship_modifier_inputs as sources,
+        cnaval_combatant::field, cpdx_array::Array, cship::modifier_sources as sources,
     };
     let definitions = &memo.definitions;
     let add = |p: usize, o: usize| {
@@ -1368,7 +1376,7 @@ fn read_organisation_observation(
     memo: &mut OrganisationMemo,
 ) -> Result<i64, &'static str> {
     use crate::{
-        cnaval_combatant::field, cpdx_array::Array, naval_ship_modifier_inputs as sources,
+        cnaval_combatant::field, cpdx_array::Array, cship::modifier_sources as sources,
     };
     let definitions = &memo.definitions;
     let add = |p: usize, o: usize| {
@@ -1625,7 +1633,7 @@ pub fn read_maximum_organisation_from_terms(
     terms: &TaskTerms,
     memo: &mut OrganisationMemo,
 ) -> Result<Option<i64>, &'static str> {
-    use crate::{cnaval_combatant::field, naval_ship_modifier_inputs as sources};
+    use crate::{cnaval_combatant::field, cship::modifier_sources as sources};
     memo.own = None;
     if operands.ship != ship
         || terms.location.is_some()

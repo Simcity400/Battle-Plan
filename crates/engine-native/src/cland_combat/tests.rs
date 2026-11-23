@@ -1,4 +1,4 @@
-use super::details::{copy_detail_spans, push};
+use crate::land_combat_details::details::{copy_detail_spans, push};
 use super::*;
 use crate::memory::SliceMemory;
 use std::cell::RefCell;
@@ -145,7 +145,7 @@ fn scalar_details(
         ..DetailsRow::default()
     };
     if border {
-        row.border_war = Some(super::details::read_border_war(&reader, source, arenas)?);
+        row.border_war = Some(crate::land_combat_details::details::read_border_war(&reader, source, arenas)?);
     }
     let stored_terrain = reader.pointer(source.pointer, STORED_TERRAIN)?;
     let stored_vtable = reader.field::<u64>(stored_terrain, 0)?;
@@ -1923,7 +1923,7 @@ fn border_width_fault_stops_before_side_payloads() {
         provinces: source.provinces,
     };
     assert_eq!(
-        super::details::read_border_war(&reader, source, &mut Arenas::new().view()),
+        crate::land_combat_details::details::read_border_war(&reader, source, &mut Arenas::new().view()),
         Err("land combat field unreadable or address overflow")
     );
     assert_eq!(

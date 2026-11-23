@@ -1,13 +1,24 @@
+pub use crate::corder_instance::{DivisionOrderTransportInputs, OrderExecutionInputs, ParadropPreparationInputs, ParadropPreparationTerms, ParadropTransportModifiers};
 
 use crate::{
-    Memory, carmy, carmy_leader, ccountry, cdiplomacy_status,
+    Memory,
+    carmy,
+    carmy_leader,
+    ccountry,
+    cdiplomacy_status,
     corder_instance::{self as order, AssignedSources, PlanRow},
-    corders_group, corders_group_member as member,
+    corders_group,
+    corders_group_member as member,
     cpdx_array::Array,
-    cprovince, crelation_status, cstate, csub_unit_definition, cunit,
+    cprovince,
+    crelation::status as crelation_status,
+    cstate,
+    csub_unit_definition,
+    cunit,
     modifier_accumulator::{SnapshotArena, SnapshotCapacity},
     modifier_definition::{self, DefinitionMemo},
-    modifier_keys, read,
+    modifier_keys,
+    read,
     walk::Outcome,
 };
 use engine_sites::Rva;
@@ -30,35 +41,6 @@ pub const STAT_REFUSALS: [&str; 5] = [
     "execution paradrop eligibility unreadable",
 ];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OrderExecutionInputs {
-    pub route_is_ok: Option<u8>,
-    pub paradrop: Option<ParadropPreparationInputs>,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ParadropPreparationInputs {
-    pub progress: i64,
-    pub terms: Option<ParadropPreparationTerms>,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ParadropPreparationTerms {
-    pub target: u32,
-    pub country_term: i64,
-    pub relation_term: Option<i64>,
-    pub leader_term: Option<i64>,
-    pub days_term: i64,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DivisionOrderTransportInputs {
-    pub naval_weight: Option<i64>,
-    pub paradrop_eligible: Option<u8>,
-    pub paradrop_modifiers: Option<ParadropTransportModifiers>,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ParadropTransportModifiers {
-    pub country_term: i64,
-    pub commander_term: Option<i64>,
-}
 
 #[derive(Clone, Copy)]
 pub struct Orders<'a> {

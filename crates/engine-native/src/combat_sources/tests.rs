@@ -1,12 +1,24 @@
+use std::collections::HashMap;
 use super::*;
 use crate::{
-    carmy, carmy_combat_inputs as inputs, cbuilding_database, ccountry, cgame_state, corders_group,
+    carmy,
+    division_combat_inputs as inputs,
+    cbuilding_database,
+    ccountry,
+    cgame_state,
+    corders_group,
     cpdx_array::Array,
-    cprovince, creferenced_division_template as template, cstate, cstrategic_region,
-    csub_unit_definition, cunit, cunit_leader, cweather_manager,
+    cprovince::{self, definition as province_definition},
+    creferenced_division_template as template,
+    cstate,
+    cstrategic_region,
+    csub_unit_definition,
+    cunit,
+    cunit_leader,
+    cweather_manager::{self, region_weather as sweather_per_region},
     land_reinforcement_inputs as reinforcement,
     memory::{RecordLayout, RecordSources},
-    modifier_definition, province_definition, sweather_per_region,
+    modifier_definition,
 };
 use std::cell::{Cell, RefCell};
 
@@ -371,12 +383,12 @@ fn world(shape: &Shape) -> Built {
             if to == from {
                 continue;
             }
-            let tuple = w.object(0x300, crate::crelation_status::VTABLE_RVA.0);
+            let tuple = w.object(0x300, crate::crelation::status::VTABLE_RVA.0);
             w.u64(
-                tuple + crate::crelation_status::DIPLOMACY_STATUS,
+                tuple + crate::crelation::status::DIPLOMACY_STATUS,
                 diplomacy as u64,
             );
-            w.u32(tuple + crate::crelation_status::TARGET_COUNTRY, target);
+            w.u32(tuple + crate::crelation::status::TARGET_COUNTRY, target);
             w.u64(tuple + 0x2a0, u64::from((from + to) % 2 == 0));
             w.u64(row + target as usize * 8, tuple as u64);
         }

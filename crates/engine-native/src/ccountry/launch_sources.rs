@@ -1,7 +1,7 @@
+use engine_native_parts::cnaval_base_layout as naval_base_layout;
 
 use crate::{
-    Memory, cgame_state, cnaval_base,
-    cpdx_array::Array,
+    Memory, cgame_state, cpdx_array::Array,
     cstate,
     memory::{RecordField, RecordLayout, RecordSources},
     read, read_slice,
@@ -37,12 +37,12 @@ const BASE_FIELDS: [RecordField; 3] = [
         len: 8,
     },
     RecordField {
-        source_offset: cnaval_base::HOLDER,
+        source_offset: naval_base_layout::HOLDER,
         destination_offset: 8,
         len: 8,
     },
     RecordField {
-        source_offset: cnaval_base::PROVINCE_ID,
+        source_offset: naval_base_layout::PROVINCE_ID,
         destination_offset: 16,
         len: 4,
     },
@@ -358,11 +358,11 @@ pub fn capture_naval_buffer(
             return Err("reserved launch naval base arena exhausted");
         }
         let country = navy
-            .checked_add(cnaval_base::HOLDER_COUNTRY)
+            .checked_add(naval_base_layout::HOLDER_COUNTRY)
             .and_then(|address| read::<u32>(memory, address))
             .ok_or("reserved launch naval holder country unreadable")?;
         copy_roster(memory, source, &mut scratch[..required])?;
-        let expected = engine_sites::at(base, cnaval_base::VTABLE_RVA)
+        let expected = engine_sites::at(base, naval_base_layout::VTABLE_RVA)
             .ok_or("reserved launch module address overflow")? as u64;
         let mut next = 0;
         while next < required {

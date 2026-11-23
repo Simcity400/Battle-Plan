@@ -62,7 +62,7 @@ impl Memory for TracedMemory<'_> {
 }
 
 fn put_movement(bytes: &mut [u8], province: usize, id: u32, definition: usize, terrain: usize) {
-    use crate::{cterrain_type, province_definition as definition_layout};
+    use crate::{cterrain_type, cprovince::definition as definition_layout};
     put(
         bytes,
         province + DEFINITION,
@@ -634,13 +634,13 @@ fn the_walk_gathers_both_area_pointers_with_the_movement_fields() {
     assert_eq!(
         capture.areas[..2],
         [
-            crate::controller_areas::Pointers {
+            crate::cprovince::controller_areas::Pointers {
                 province: 0x1400,
                 definition: 0x1800,
                 controller: 0x5000,
                 owner: 0x6000,
             },
-            crate::controller_areas::Pointers {
+            crate::cprovince::controller_areas::Pointers {
                 province: 0x1600,
                 definition: 0x1900,
                 controller: 0,
@@ -1256,8 +1256,13 @@ impl Memory for ConflictMemory {
 
 fn conflict_fixture() -> ConflictMemory {
     use crate::{
-        cland_border_war_combat, cland_border_war_combatant, cland_combat, corders_group,
-        creference_registry as registry, msvc_tree_node as node, province_definition,
+        cland_border_war_combat,
+        cland_border_war_combatant,
+        cland_combat,
+        corders_group,
+        creference_registry as registry,
+        msvc_tree_node as node,
+        cprovince::definition as province_definition,
         reference_bucket as bucket,
     };
     let mut bytes = many_provinces(3);
@@ -1455,9 +1460,9 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
             (0x2000, 8),
             (0x2000 + ID, 4),
             (0x2000 + DEFINITION, 8),
-            (0xb000 + crate::province_definition::ID, 4),
-            (0xb000 + crate::province_definition::TERRAIN_FLAGS, 1),
-            (0xb000 + crate::province_definition::NEIGHBOURS, 16),
+            (0xb000 + crate::cprovince::definition::ID, 4),
+            (0xb000 + crate::cprovince::definition::TERRAIN_FLAGS, 1),
+            (0xb000 + crate::cprovince::definition::NEIGHBOURS, 16),
         ]
     );
 
@@ -1777,7 +1782,7 @@ fn allocation_capacity_overflow_owned_capture_buffers() {
         oom
     );
     assert_eq!(
-        crate::ccharacter_manager::PortraitCensus::try_new(usize::MAX)
+        crate::ccharacter::manager::PortraitCensus::try_new(usize::MAX)
             .err()
             .unwrap()
             .kind(),
@@ -2242,8 +2247,8 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
     put(&mut bytes, PROVINCE + CONTROLLER_AREA, 0x5200);
     put(&mut bytes, PROVINCE + STRATEGIC_REGION, 0x5300);
     put(&mut bytes, PROVINCE + DEFINITION, DEFINITION_AT as u64);
-    bytes[DEFINITION_AT + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAND_FLAG;
+    bytes[DEFINITION_AT + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAND_FLAG;
     let provinces = Array {
         data: ARRAY,
         count: 3,
@@ -2256,10 +2261,10 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
         controller: Ok(7),
         controller_area: Ok(0x5200),
         strategic_region: Ok(0x5300),
-        terrain_flags: Ok(crate::province_definition::LAND_FLAG),
+        terrain_flags: Ok(crate::cprovince::definition::LAND_FLAG),
     };
     assert_eq!(read(&bytes, 2), Ok(land));
-    bytes[DEFINITION_AT + crate::province_definition::TERRAIN_FLAGS] = 0;
+    bytes[DEFINITION_AT + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
     assert_eq!(
         read(&bytes, 2),
         Ok(MovementProvince {
@@ -2314,7 +2319,7 @@ fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
     const PROVINCES: usize = 0x4000;
     const DEFINITION_STRIDE: usize = 0x100;
     const DEFINITIONS: usize = PROVINCES + COUNT as usize * STRIDE;
-    const _: () = assert!(crate::province_definition::TERRAIN_FLAGS < DEFINITION_STRIDE);
+    const _: () = assert!(crate::cprovince::definition::TERRAIN_FLAGS < DEFINITION_STRIDE);
     let mut bytes = vec![0_u8; DEFINITIONS + COUNT as usize * DEFINITION_STRIDE];
     let put = |bytes: &mut [u8], at: usize, value: u64| {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -2346,7 +2351,7 @@ fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
         );
         let definition_word = if id % 10 == 6 { 0 } else { definition as u64 };
         put(&mut bytes, province + DEFINITION, definition_word);
-        bytes[definition + crate::province_definition::TERRAIN_FLAGS] = id as u8;
+        bytes[definition + crate::cprovince::definition::TERRAIN_FLAGS] = id as u8;
     }
     let provinces = Array {
         data: ARRAY,

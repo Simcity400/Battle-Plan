@@ -411,7 +411,7 @@ fn native_widths_and_four_class_layouts_remain_distinct() {
         (VTABLE_RVA, KIND_BASE),
         (carmy_leader::VTABLE_RVA, KIND_ARMY),
         (cnavy_leader::VTABLE_RVA, KIND_NAVY),
-        (coperative_leader::VTABLE_RVA, KIND_OPERATIVE),
+        (engine_native_parts::coperative_leader_layout::VTABLE_RVA, KIND_OPERATIVE),
     ] {
         let bytes = fixture(vtable);
         let row = read(&memory(&bytes), IMAGE, ADDRESS, 0xf000_0001).unwrap();
@@ -595,7 +595,7 @@ fn assigned_traits_preserve_order_and_report_both_capacities_exactly() {
 
 #[test]
 fn trait_experience_is_independent_ordered_native_state() {
-    let bytes = fixture(coperative_leader::VTABLE_RVA);
+    let bytes = fixture(engine_native_parts::coperative_leader_layout::VTABLE_RVA);
     let mut rows = [TraitExperienceRow::default(); 2];
     let mut arena = [0; 10];
     let result = walk_trait_experience(

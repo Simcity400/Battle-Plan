@@ -1,4 +1,5 @@
 use super::*;
+use crate::cgame_state;
 use crate::modifier_definition;
 use std::collections::BTreeMap;
 
@@ -141,7 +142,7 @@ fn run(memory: &Image, order: usize) -> Result<Option<Row>, &'static str> {
     let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
     country_memo.reset(0, GS);
     let countries = country_memo.view(memory, 0, GS);
-    let provinces = provinces(memory, GS)?;
+    let provinces = invasion_provinces(memory, GS)?;
     read(
         memory,
         0,

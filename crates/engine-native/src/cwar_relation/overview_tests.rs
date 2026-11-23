@@ -1,3 +1,4 @@
+use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 #[path = "overview_cost_baseline.rs"]
 mod baseline;
 use super::*;
@@ -54,7 +55,7 @@ fn fixture(count: u32) -> World {
             world.object(slot) as u64,
         );
         let offsite = world.alloc(0x80);
-        world.u64(offsite, crate::cbuilding_status::VTABLE_RVA.0 as u64);
+        world.u64(offsite, crate::cprovince::buildings::VTABLE_RVA.0 as u64);
         world.u64(
             world.object(slot) + ccountry::WAR_OVERVIEW_OFFSITE,
             offsite as u64,
@@ -188,7 +189,12 @@ fn bad_owned_identity_and_short_goal_arrays_are_unavailable() {
 }
 
 fn cost_fixture(count: u32) -> World {
-    use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
+    use crate::{
+        cbuilding,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+        cstate,
+    };
     let mut w = fixture(count);
     let template = w.alloc(cbuilding_template::SIZE);
     w.u64(template, cbuilding_template::VTABLE_RVA.0 as u64);
@@ -312,7 +318,12 @@ fn hourly_cost_at_1500_and_5000_countries() {
 
 #[test]
 fn shared_templates_keep_every_factory_score_native() {
-    use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
+    use crate::{
+        cbuilding,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+        cstate,
+    };
     let mut w = cost_fixture(4);
     let words: [[u32; 2]; 4] = [[1, 0], [0, 0], [0, (-5_i32) as u32], [i32::MAX as u32, 1]];
     let templates = words.map(|[first, second]| {
@@ -510,7 +521,7 @@ fn template_and_subject_failures_are_scores_only_and_unreachable_factories_are_n
     let state = read::<u64>(&w.memory(), core).unwrap() as usize;
     let vector = read::<u64>(
         &w.memory(),
-        state + crate::cstate::BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS,
+        state + crate::cstate::BUILDING_STATUS + crate::cprovince::buildings::ACTIVE_BUILDINGS,
     )
     .unwrap() as usize;
     let building = read::<u64>(&w.memory(), vector).unwrap() as usize;

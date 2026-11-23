@@ -249,7 +249,7 @@ pub fn append_kills(
     memory: &impl Memory,
     base: usize,
     plane: usize,
-    buffers: &mut crate::cfex_member::DetailBuffers<'_>,
+    buffers: &mut crate::naval_member_details::DetailBuffers<'_>,
 ) -> Result<[usize; 2], &'static str> {
     capture_kills_buffer(
         memory,
@@ -295,7 +295,7 @@ fn capture_kills_buffer(
         .checked_add(required)
         .ok_or("naval air kill length overflow")?;
     if !output.ensure(end)? {
-        return Err(crate::cfex_member::DETAIL_ARENA_CAPACITY);
+        return Err(crate::naval_member_details::DETAIL_ARENA_CAPACITY);
     }
     let mut length = start;
     let mut bytes = [0u8; 64 * 16];
@@ -458,7 +458,7 @@ mod tests {
         let (mut used, mut required) = (0, 0);
         assert_eq!(
             capture_kills_buffer(&census, 0, PLANE, crate::walk::Buffer::Count, &mut used, &mut required),
-            Err(crate::cfex_member::DETAIL_ARENA_CAPACITY)
+            Err(crate::naval_member_details::DETAIL_ARENA_CAPACITY)
         );
         assert_eq!((used, required), (0, 2));
         assert_eq!((census.calls(), census.bytes()), (11, 122));

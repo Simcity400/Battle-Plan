@@ -460,7 +460,7 @@ mod bench {
     use super::*;
     use crate::{
         cgame_state,
-        crelation_status::bench::{Arena, Counting, countries, report},
+        crelation::status::bench::{Arena, Counting, countries, report},
         cstrategic_navy_manager as manager,
     };
 

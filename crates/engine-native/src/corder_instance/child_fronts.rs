@@ -335,7 +335,7 @@ pub fn walk_areas(
             continue;
         };
         let province_table = *provinces
-            .get_or_insert_with(|| crate::invasion_preparations::provinces(memory, game_state));
+            .get_or_insert_with(|| crate::cprovince::invasion_provinces(memory, game_state));
         let Ok(area) =
             province_table.and_then(|provinces| area_count(memory, base, provinces, first))
         else {

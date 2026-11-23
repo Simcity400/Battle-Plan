@@ -1,11 +1,18 @@
+pub mod equipment_license;
+pub mod equipment_line;
 
 use crate::{
-    Memory, ccountry, cequipment_production_license, cequipment_variant, civ_factory_consumer,
+    Memory,
+    ccountry,
+    cproduction_status::equipment_license as cequipment_production_license,
+    cequipment_variant,
+    civ_factory_consumer,
     clicensed_production_status,
     cpdx_array::Array,
     factory_group,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
 use engine_sites::Rva;
@@ -14,7 +21,7 @@ pub mod design_templates;
 
 pub use cequipment_production_license::Row as LicenseRecordRow;
 
-pub use crate::cequipment_production_line::Row as LineRow;
+pub use crate::cproduction_status::equipment_line::Row as LineRow;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LicenseRow {
@@ -600,7 +607,7 @@ pub fn walk_lines_buffer(
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
-        let mut defines = crate::cequipment_production_line::Defines::default();
+        let mut defines = crate::cproduction_status::equipment_line::Defines::default();
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -628,7 +635,7 @@ pub fn walk_lines_buffer(
                     .and_then(|pointer| usize::try_from(pointer).ok())
                     .filter(|&pointer| pointer != 0)
                     .ok_or("production line pointer unreadable or null")?;
-                output[len] = crate::cequipment_production_line::read_row(
+                output[len] = crate::cproduction_status::equipment_line::read_row(
                     memory,
                     base,
                     status,
@@ -812,8 +819,12 @@ pub fn walk_license_records_buffer(
 mod tests {
     use super::*;
     use crate::{
-        cequipment_production_line as equipment, cgame_state, cmilitary_production_line,
-        cnaval_production_line, cproduction_line, memory::SliceMemory,
+        cproduction_status::equipment_line as equipment,
+        cgame_state,
+        cmilitary_production_line,
+        cnaval_production_line,
+        cproduction_line,
+        memory::SliceMemory,
     };
 
     const BASE: usize = 0x1000;
@@ -1584,7 +1595,13 @@ pub fn war_overview_factories(
     templates: &mut WarFactoryTemplates,
 ) -> Result<i32, &'static str> {
     use crate::{
-        cbuilding, cbuilding_status, cbuilding_template, ccountry, cpdx_array::Array, cstate, read,
+        cbuilding,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+        ccountry,
+        cpdx_array::Array,
+        cstate,
+        read,
     };
     fn field<T: crate::memory::Raw>(
         memory: &impl crate::Memory,
@@ -1772,7 +1789,11 @@ pub fn war_overview_factories(
 mod war_overview_tests {
     use super::*;
     use crate::{
-        cbuilding, cbuilding_status, cbuilding_template, ccountry::synthetic::World, cstate,
+        cbuilding,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+        ccountry::synthetic::World,
+        cstate,
     };
 
     #[test]

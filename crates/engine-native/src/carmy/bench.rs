@@ -1,8 +1,12 @@
 use super::*;
 use crate::{
     carmy_leader,
-    crelation_status::bench::{Arena, Counting, RUNS, report},
-    csub_unit_definition as stats, cunit, cunit_leader, modifier_definition, modifier_entry,
+    crelation::status::bench::{Arena, Counting, RUNS, report},
+    csub_unit_definition as stats,
+    cunit,
+    cunit_leader,
+    modifier_definition,
+    modifier_entry,
 };
 
 fn division_world(n: usize) -> (Arena, Vec<DivisionSeed>) {
@@ -206,7 +210,7 @@ fn bench_army_icon_inputs_from_seeds() {
                 arena.u64(army + cunit::HANDLE, division);
                 arena.u32(army + cunit::ROSTER_OWNER, 1);
                 arena.u8(army + SEPARATE_COUNTER, (index % 2) as u8);
-                sources.push(crate::cequipment_variant_pool::DivisionSource {
+                sources.push(crate::cequipment_variant::pool::DivisionSource {
                     pointer: army,
                     division,
                     country: 1,

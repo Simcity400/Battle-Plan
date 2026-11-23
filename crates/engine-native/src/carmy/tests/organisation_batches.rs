@@ -25,7 +25,7 @@ fn land_province(
         presentation_field::<u8>(
             memory,
             definition,
-            crate::province_definition::TERRAIN_FLAGS,
+            crate::cprovince::definition::TERRAIN_FLAGS,
         )?,
     ))
 }
@@ -209,7 +209,7 @@ fn compare(
 #[test]
 fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() {
     let (mut source, mut seeds) = fixture(3);
-    use crate::{cdiplomacy_status as diplomacy, crelation_status as relation};
+    use crate::{cdiplomacy_status as diplomacy, crelation::status as relation};
     const DIPLOMACY: usize = 0x2d000;
     const RELATIONS: usize = 0x2d200;
     const RELATION: usize = 0x2d300;
@@ -261,10 +261,10 @@ fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() 
     }
     for flags in [
         0,
-        crate::province_definition::LAND_FLAG,
-        crate::province_definition::LAKE_FLAG,
+        crate::cprovince::definition::LAND_FLAG,
+        crate::cprovince::definition::LAKE_FLAG,
     ] {
-        source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = flags;
+        source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] = flags;
         for first in [2, 99] {
             p32(&mut source.bytes, 0x1f000, first);
             compare(&source, &seeds, None);
@@ -292,14 +292,14 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
         (P1, 0),
         (P1 + cprovince::DEFINITION, 0),
         (P1 + cprovince::ID, 9),
-        (0x12000 + crate::province_definition::ID, 9),
+        (0x12000 + crate::cprovince::definition::ID, 9),
     ] {
         let old = source.bytes[at..at + 8].to_vec();
         p64(&mut source.bytes, at, value);
         compare(
             &source,
             &seeds,
-            Some(0x12000 + crate::province_definition::TERRAIN_FLAGS),
+            Some(0x12000 + crate::cprovince::definition::TERRAIN_FLAGS),
         );
         source.bytes[at..at + 8].copy_from_slice(&old);
     }
@@ -307,7 +307,7 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
     compare(
         &source,
         &seeds,
-        Some(0x12000 + crate::province_definition::TERRAIN_FLAGS),
+        Some(0x12000 + crate::cprovince::definition::TERRAIN_FLAGS),
     );
 }
 
@@ -422,11 +422,11 @@ fn division_status_organisation_memo_pressure_and_new_pass_preserve_rows() {
         actual.organisation_memo = organisation_movement::OrganisationMemo::new(capacity).unwrap();
         let allocated = actual.allocated_bytes();
         for flags in [
-            crate::province_definition::LAND_FLAG,
+            crate::cprovince::definition::LAND_FLAG,
             0,
-            crate::province_definition::LAKE_FLAG,
+            crate::cprovince::definition::LAKE_FLAG,
         ] {
-            source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = flags;
+            source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] = flags;
             let old = capture_serial(&mut expected, &source, 0, GS, &seeds);
             let new = actual.capture_movement_organisation(&source, 0, GS, &seeds);
             assert_eq!(new, old);
@@ -457,8 +457,8 @@ fn division_status_organisation_transient_faults_do_not_poison_later_divisions()
         P1,
         P1 + cprovince::DEFINITION,
         P1 + cprovince::ID,
-        0x12000 + crate::province_definition::ID,
-        0x12000 + crate::province_definition::TERRAIN_FLAGS,
+        0x12000 + crate::cprovince::definition::ID,
+        0x12000 + crate::cprovince::definition::TERRAIN_FLAGS,
         GS + cgame_state::PROVINCES,
     ] {
         let mut expected = packet(&source, &seeds);

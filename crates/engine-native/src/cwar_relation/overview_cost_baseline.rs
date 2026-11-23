@@ -1,3 +1,4 @@
+use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
 use super::super::*;
 pub fn walk(
     memory: &impl Memory,
@@ -141,7 +142,13 @@ fn factories(
     country: crate::ccountry::Country,
 ) -> Result<i32, &'static str> {
     use crate::{
-        cbuilding, cbuilding_status, cbuilding_template, ccountry, cpdx_array::Array, cstate, read,
+        cbuilding,
+        cprovince::buildings as cbuilding_status,
+        cbuilding_template,
+        ccountry,
+        cpdx_array::Array,
+        cstate,
+        read,
     };
     fn field<T: crate::memory::Raw>(
         memory: &impl crate::Memory,

@@ -7,14 +7,11 @@ use crate::{
 };
 
 mod country_sets;
-mod demand;
-mod details;
-
 pub use country_sets::{
     CountrySetError, CountrySetsRow, read_country_sets_buffer,
 };
-pub use demand::{DetailDemand, detail_demand};
-pub use details::{
+pub use crate::land_combat_details::{DetailDemand, detail_demand};
+pub use crate::land_combat_details::{
     BorderWarInputs, CommanderLearningTrait, CommanderSource, CommanderTimedTrait, CommanderTrait,
     Commanders, DetailArenas, DetailCounts, DetailsRow, Leaders, SKILL_HOVER_KEYS, SideDetails,
     Span, commander_sources, read_details, read_details_sharing,
@@ -612,14 +609,14 @@ fn walk_members_buffer(
     })
 }
 
-struct Reader<'a, M> {
-    memory: &'a M,
-    base: usize,
-    provinces: Array,
+pub struct Reader<'a, M> {
+    pub memory: &'a M,
+    pub base: usize,
+    pub provinces: Array,
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn participant(
+    pub fn participant(
         &self,
         members: &Members<'_>,
         side: usize,
@@ -633,7 +630,7 @@ impl<M: Memory> Reader<'_, M> {
         Ok((unit, self.division(unit)?))
     }
 
-    fn known_unit(
+    pub fn known_unit(
         &self,
         members: &Members<'_>,
         side: usize,
@@ -646,14 +643,14 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn array(&self, pointer: usize, offset: usize, stride: usize) -> Result<Array, &'static str> {
+    pub fn array(&self, pointer: usize, offset: usize, stride: usize) -> Result<Array, &'static str> {
         pointer
             .checked_add(offset)
             .and_then(|address| Array::read(self.memory, address, stride))
             .ok_or("land detail array unreadable or invalid")
     }
 
-    fn province_id(&self, pointer: usize) -> Result<u32, &'static str> {
+    pub fn province_id(&self, pointer: usize) -> Result<u32, &'static str> {
         self.vtable(pointer, 0, cprovince::VTABLE_RVA)?;
         let id = self.field(pointer, cprovince::ID)?;
         if id == 0 || self.element(self.provinces, id)? != pointer {
@@ -661,19 +658,19 @@ impl<M: Memory> Reader<'_, M> {
         }
         Ok(id)
     }
-    fn field<T: Raw>(&self, pointer: usize, offset: usize) -> Result<T, &'static str> {
+    pub fn field<T: Raw>(&self, pointer: usize, offset: usize) -> Result<T, &'static str> {
         pointer
             .checked_add(offset)
             .and_then(|address| read(self.memory, address))
             .ok_or("land combat field unreadable or address overflow")
     }
 
-    fn pointer(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pub fn pointer(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
         usize::try_from(self.field::<u64>(pointer, offset)?)
             .map_err(|_| "land combat pointer overflow")
     }
 
-    fn element(&self, array: Array, index: u32) -> Result<usize, &'static str> {
+    pub fn element(&self, array: Array, index: u32) -> Result<usize, &'static str> {
         array
             .element(index, 8)
             .and_then(|address| read::<u64>(self.memory, address))
@@ -682,7 +679,7 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("combat roster pointer unreadable or null")
     }
 
-    fn vtable(&self, pointer: usize, offset: usize, key: Rva) -> Result<(), &'static str> {
+    pub fn vtable(&self, pointer: usize, offset: usize, key: Rva) -> Result<(), &'static str> {
         let expected = engine_sites::at(self.base, key).ok_or("module address overflow")?;
         if self.field::<u64>(pointer, offset)? == expected as u64 {
             Ok(())
@@ -691,7 +688,7 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn class(&self, pointer: usize) -> Result<Option<bool>, &'static str> {
+    pub fn class(&self, pointer: usize) -> Result<Option<bool>, &'static str> {
         let vtable = self.field::<u64>(pointer, 0)?;
         let vtable =
             usize::try_from(vtable).map_err(|_| "combat registry object vtable mismatch")?;
@@ -708,7 +705,7 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn header(
+    pub fn header(
         &self,
         pointer: usize,
         border_war: bool,
@@ -717,7 +714,7 @@ impl<M: Memory> Reader<'_, M> {
             .map(|(id, a, d, _)| (id, a, d))
     }
 
-    fn header_with_sides(
+    pub fn header_with_sides(
         &self,
         pointer: usize,
         border_war: bool,
@@ -756,7 +753,7 @@ impl<M: Memory> Reader<'_, M> {
         ))
     }
 
-    fn row(&self, pointer: usize, id: u64) -> Result<Row, &'static str> {
+    pub fn row(&self, pointer: usize, id: u64) -> Result<Row, &'static str> {
         let fields = self.field::<[u8; 16]>(pointer, PROVINCE)?;
         let province = usize::try_from(u64::from_le_bytes(fields[..8].try_into().unwrap()))
             .map_err(|_| "land combat pointer overflow")?;
@@ -774,7 +771,7 @@ impl<M: Memory> Reader<'_, M> {
         })
     }
 
-    fn side(
+    pub fn side(
         &self,
         pointer: usize,
         combat: usize,

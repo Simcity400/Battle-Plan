@@ -1,6 +1,9 @@
 
 use crate::{
-    Memory, allocation_equipment_row, cequipment_type, cequipment_variant, cequipment_variant_pool,
+    Memory,
+    allocation_equipment_row,
+    cequipment_type,
+    cequipment_variant::{self, pool as cequipment_variant_pool},
     cpdx_array::Array,
     craid_instance,
     raid_speed_inputs::{self, Raid},

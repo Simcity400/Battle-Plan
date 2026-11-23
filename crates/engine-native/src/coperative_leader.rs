@@ -1,19 +1,25 @@
+pub use engine_native_parts::coperative_leader_layout::{CODENAME, VTABLE_RVA};
 
 use engine_sites::Rva;
 use crate::{
     Memory,
     ccharacter::Literal,
-    ccountry, cintelligence_agency, coperation_instance, coperative_recruitment,
+    ccountry,
+    cintelligence_agency,
+    coperation_instance,
+    coperative_recruitment,
     cpdx_array::Array,
     creference_registry,
-    csubject_relation::{Name, NameWalk},
+    crelation::subject::{Name, NameWalk},
     cunit_leader_skill,
     memory::Raw,
-    null_unit_leader_skill, operative_action, operative_action_implementation, read,
+    null_unit_leader_skill,
+    operative_action,
+    operative_action_implementation,
+    read,
     walk::Outcome,
 };
 
-pub const VTABLE_RVA: Rva = Rva(0x029d_28a0);
 pub const IDENTITY: usize = 0x08;
 pub const TYPE: usize = 0x08;
 pub const ID: usize = 0x0c;
@@ -47,7 +53,6 @@ pub const OPERATION_ASSIGNMENT: u32 = 4;
 pub const SET_OWNER_RVA: Rva = Rva(0x00c7_bc30);
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c7_ebf0;
-pub const CODENAME: usize = 0xfd0;
 pub const TOKEN_ASSIGNMENT: u32 = 0x01b7;
 pub const ASSIGNMENT_LITERAL_IDLE: u32 = 0x4a51;
 pub const ASSIGNMENT_LITERAL_TRAINING: u32 = 0x4a52;
@@ -267,7 +272,7 @@ pub fn walk_buffer(
             required_bytes,
         })
     })();
-    let names = result.unwrap_or_else(crate::csubject_relation::unavailable);
+    let names = result.unwrap_or_else(crate::crelation::subject::unavailable);
     Walk {
         outcome: names.outcome,
         bytes_len: names.bytes_len,
