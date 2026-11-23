@@ -263,6 +263,15 @@ class Resolve(unittest.TestCase):
         self.assertEqual(self.resolve(whole_run_state=broken)["due"], "false")
         self.assertEqual(self.resolve(draft=True, whole_run_state=broken)["due"], "true")
 
+    def test_a_scheduled_nightly_waits_for_a_change_besides_a_stable_releases_version_bump(self):
+        bump = f"{release.BUMP_AUTHOR}\x00Release: v1.4.3 is the workspace version"
+        landed = lambda *lines: mock.Mock(side_effect=lambda *args: "\n".join(lines) if args[0] == "log" else "")
+        self.assertEqual(self.resolve(git=landed(bump))["due"], "false")
+        self.assertEqual(self.resolve(git=landed(bump, f"{release.BUMP_AUTHOR}\x00Map: fog of war (#280)"))["due"], "true")
+        self.assertEqual(self.resolve(git=landed("Someone\x00Release: v1.4.3 is the workspace version"))["due"], "true",
+                         "only the release's own commit is passed over")
+        self.assertEqual(self.resolve(scheduled=False, git=landed(bump))["due"], "true", "a nightly asked for by hand releases the bump")
+
     def test_a_failed_or_running_whole_workspace_run_bars_nightlies_until_one_passes(self):
         def listed(*conclusions):
             return json.dumps({"workflow_runs": [{"conclusion": found, "status": "in_progress" if found is None else "completed",
