@@ -1,5 +1,6 @@
 
-use crate::{Memory, cscript_flag, memory::RecordSources, read, walk::Outcome};
+use engine_native_memory::{Memory, memory::RecordSources, read, walk::Outcome};
+use crate::cscript_flag;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_9d98);
@@ -15,7 +16,7 @@ pub fn walk(
     manager: usize,
     output: &mut Vec<cscript_flag::Row>,
 ) -> Outcome {
-    walk_buffer(memory, base, manager, crate::walk::Buffer::Growing(output))
+    walk_buffer(memory, base, manager, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 pub const HEADER: usize = 24;
@@ -50,7 +51,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     manager: usize,
-    output: crate::walk::Buffer<'_, cscript_flag::Row>,
+    output: engine_native_memory::walk::Buffer<'_, cscript_flag::Row>,
 ) -> Outcome {
     walk_header_buffer(memory, base, read_header(memory, manager), output)
 }
@@ -59,7 +60,7 @@ pub fn walk_header_buffer(
     memory: &impl Memory,
     base: usize,
     head: Option<[u8; HEADER]>,
-    mut output: crate::walk::Buffer<'_, cscript_flag::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, cscript_flag::Row>,
 ) -> Outcome {
     let result = (|| {
         let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
@@ -147,7 +148,7 @@ fn read_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1000_0000;
     const MANAGER: usize = 0x2000;
@@ -315,7 +316,7 @@ mod tests {
             base: MANAGER,
             bytes: &bytes,
         };
-        let census = crate::read_census::ReadCensus::new(&source);
+        let census = engine_native_memory::read_census::ReadCensus::new(&source);
         let mut rows = vec![cscript_flag::Row::default(); ROWS];
         assert_eq!(
             walk(&census, BASE, MANAGER, &mut rows),

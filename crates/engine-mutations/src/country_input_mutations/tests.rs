@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 const START: usize = 0x1000_0000;
 const BASE: usize = START - cgame_state::SINGLETON_RVA.0;
@@ -53,7 +53,7 @@ fn world() -> Vec<u8> {
     }
     put_u64(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::COUNTRY,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
         COUNTRY[0] as u64,
     );
     put_u64(
@@ -65,12 +65,12 @@ fn world() -> Vec<u8> {
     put_u32(&mut bytes, START + 0x7400 + crelation::SECOND_COUNTRY, 30);
     put_u64(
         &mut bytes,
-        START + 0x7800 + ccountry_characters::OWNER,
+        START + 0x7800 + engine_native::ccountry::rosters::OWNER,
         COUNTRY[1] as u64,
     );
     put_u64(
         &mut bytes,
-        START + 0x7a00 + cpolitical_status::COUNTRY,
+        START + 0x7a00 + engine_native_parts::cpolitical_status_layout::COUNTRY,
         COUNTRY[0] as u64,
     );
     put_u32(&mut bytes, START + 0x7c00 + cpolitical_party::TAG, 30);
@@ -108,7 +108,7 @@ fn world() -> Vec<u8> {
     put_u32(&mut bytes, START + 0x8c00 + nproject_cproject::OWNER, 30);
     put_u32(
         &mut bytes,
-        START + 0x8e00 + crate::cequipment_production_license::OWNER,
+        START + 0x8e00 + engine_native::cproduction_status::equipment_license::OWNER,
         30,
     );
     bytes
@@ -389,19 +389,19 @@ fn diplomacy_state_and_tag_receivers_name_their_countries() {
         named(&bytes, Receiver::Subjects, DIPLOMACY[0], 0),
         (true, vec![7])
     );
-    put_u32(&mut bytes, DIPLOMACY[0] + cdiplomacy_status::OVERLORD, 30);
+    put_u32(&mut bytes, DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::OVERLORD, 30);
     assert_eq!(
         named(&bytes, Receiver::Subjects, DIPLOMACY[0], 0),
         (true, vec![7, 9])
     );
-    put_u32(&mut bytes, DIPLOMACY[0] + cdiplomacy_status::OVERLORD, 31);
+    put_u32(&mut bytes, DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::OVERLORD, 31);
     assert_eq!(
         named(&bytes, Receiver::Subjects, DIPLOMACY[0], 0),
         (false, vec![7])
     );
     put_u32(
         &mut bytes,
-        DIPLOMACY[0] + cdiplomacy_status::OVERLORD,
+        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::OVERLORD,
         u32::MAX,
     );
     assert_eq!(
@@ -504,7 +504,7 @@ fn shared_levels_name_every_country_sharing_research() {
     put_array(&mut bytes, START + 0x9100 + GROUP_MEMBERS, 0, 0);
     put_u64(
         &mut bytes,
-        DIPLOMACY[1] + cdiplomacy_status::FACTION,
+        DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::FACTION,
         (START + 0x9400) as u64,
     );
     put_array(
@@ -826,7 +826,7 @@ fn manpower_setters_name_only_the_embedded_owner_and_keep_crew_sites_separate() 
     let embedded = START + 0x9000;
     put_u32(
         &mut bytes,
-        embedded + engine_native::ccountry_manpower::COUNTRY,
+        embedded + engine_native_parts::ccountry_manpower::COUNTRY,
         30,
     );
     assert_eq!(

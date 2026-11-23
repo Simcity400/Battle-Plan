@@ -1,5 +1,6 @@
 use engine_sites::Rva;
-use crate::{Memory, read, research_inputs::Text};
+use engine_native_memory::{Memory, read};
+use crate::research_inputs::Text;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_1918);
 pub const NAME: usize = 0x10;
@@ -24,7 +25,7 @@ pub(crate) fn value(
     pointer: usize,
     id: i32,
 ) -> Result<Value, &'static str> {
-    let descriptor = crate::msvc_string::Descriptor::read(
+    let descriptor = engine_native_memory::msvc_string::Descriptor::read(
         memory,
         pointer.checked_add(NAME).ok_or("bonus address overflow")?,
     )?;

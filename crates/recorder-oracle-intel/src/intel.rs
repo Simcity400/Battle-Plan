@@ -542,7 +542,7 @@ fn compare_operative_memberships(
     }
     let assignment_names = assignment_literals(tokens);
     let nationalities_key = token(tokens, 0x3d12);
-    let assignment_key = token(tokens, engine_native::coperative_leader::TOKEN_ASSIGNMENT);
+    let assignment_key = token(tokens, engine_native_intelligence::coperative_leader::TOKEN_ASSIGNMENT);
     let literals = || OperativeLiterals {
         assignment_names: assignment_names.as_ref(),
         nationalities_key,
@@ -708,7 +708,7 @@ fn compare_operative_row(
         literals.assignment_names,
         literals.assignment_key,
     );
-    if actual.assignment == engine_native::coperative_leader::COOLDOWN_ASSIGNMENT {
+    if actual.assignment == engine_native_intelligence::coperative_leader::COOLDOWN_ASSIGNMENT {
         compare_cooldown(
             report,
             label,
@@ -757,7 +757,7 @@ fn compare_operative_placement(
     if let Some(variant) = actual.action_variant {
         let id = variant
             .checked_sub(1)
-            .and_then(|index| engine_native::operative_action::SAVE_TOKENS.get(index as usize))
+            .and_then(|index| engine_native_intelligence::operative_action::SAVE_TOKENS.get(index as usize))
             .ok_or_else(|| invalid("recorded operative mission variant is unsupported"))?;
         if let Some(name) = token(literals.tokens, *id).filter(|name| !name.contains(&0)) {
             equal(
@@ -852,7 +852,7 @@ fn compare_operative_placement(
 }
 
 fn assignment_literals<'a>(tokens: &TokenNames<'a>) -> Option<BTreeMap<u32, &'a [u8]>> {
-    use engine_native::coperative_leader as leader;
+    use engine_native_intelligence::coperative_leader as leader;
     let names: BTreeMap<u32, &[u8]> = [
         (0, leader::ASSIGNMENT_LITERAL_IDLE),
         (1, leader::ASSIGNMENT_LITERAL_TRAINING),
@@ -938,7 +938,7 @@ fn compare_operative_missions(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let handle_type = u64::from(engine_native::coperative_leader::HANDLE_TYPE);
+    let handle_type = u64::from(engine_native_intelligence::coperative_leader::HANDLE_TYPE);
     type SavedActive<'a> = BTreeMap<(u64, Vec<u8>), Vec<(u32, &'a saved::OperativeEntry)>>;
     let mut saved_active = SavedActive::new();
     for (owner, country) in report.canonical_countries(&save.countries) {
@@ -973,7 +973,7 @@ fn compare_operative_missions(
         }
     }
     let assignment_names = assignment_literals(tokens);
-    let assignment_key = token(tokens, engine_native::coperative_leader::TOKEN_ASSIGNMENT);
+    let assignment_key = token(tokens, engine_native_intelligence::coperative_leader::TOKEN_ASSIGNMENT);
     let target_key = token(tokens, 0x6b) == Some(b"target".as_slice());
     let mut matched = 0;
     for ((id, owner), entries) in saved_active {
@@ -996,7 +996,7 @@ fn compare_operative_missions(
             assignment_names.as_ref(),
             assignment_key,
         );
-        if actual.assignment == engine_native::coperative_leader::COOLDOWN_ASSIGNMENT {
+        if actual.assignment == engine_native_intelligence::coperative_leader::COOLDOWN_ASSIGNMENT {
             compare_cooldown(
                 report,
                 &label,
@@ -1025,7 +1025,7 @@ fn compare_operative_missions(
         };
         let definition = variant
             .checked_sub(1)
-            .and_then(|index| engine_native::operative_action::SAVE_TOKENS.get(index as usize))
+            .and_then(|index| engine_native_intelligence::operative_action::SAVE_TOKENS.get(index as usize))
             .ok_or_else(|| invalid("recorded operative mission variant is unsupported"))?;
         match token(tokens, *definition).filter(|name| !name.contains(&0)) {
             Some(name) => equal(
@@ -1973,7 +1973,7 @@ fn compare_agency_upgrade_levels(
                 "{}.upgrades[{}] {}, definition {:#x}, branch {:#x}, level {}",
                 text(tag),
                 row.ordinal,
-                engine_native::agency_upgrade_levels::status_name(row.identity_status),
+                engine_native_intelligence::agency_upgrade_levels::status_name(row.identity_status),
                 row.definition_pointer,
                 row.branch_pointer,
                 row.level
@@ -2104,7 +2104,7 @@ fn compare_agency_upgrade_identities(
         if row.identity_status != 0 {
             return Err(invalid(format!(
                 "{label} {} is refused",
-                engine_native::agency_upgrade_levels::status_name(row.identity_status)
+                engine_native_intelligence::agency_upgrade_levels::status_name(row.identity_status)
             )));
         }
         let upgrade = name(row.upgrade_token, "upgrade")?;
@@ -4224,7 +4224,7 @@ mod tests {
         );
         let mut partial_refused = acquired_upgrade_frame(vec![]);
         let mut partial_rows = acquired_upgrade_rows();
-        partial_rows[0].identity_status = engine_native::agency_upgrade_levels::NULL_DEFINITION;
+        partial_rows[0].identity_status = engine_native_intelligence::agency_upgrade_levels::NULL_DEFINITION;
         *partial_refused.tables[TableId::AgencyUpgradeLevels.index()] = TableView::Truncated {
             rows: TableRows::AgencyUpgradeLevels(partial_rows),
             missing: 1,
@@ -6531,7 +6531,7 @@ mod tests {
         let owned = countries.iter().map(|(id, row)| (*id, row)).collect();
         let definitions: [&[u8]; 8] = [b"m1", b"m2", b"m3", b"m4", b"m5", b"m6", b"m7", b"m8"];
         let mut tokens = operative_tokens();
-        for (id, name) in engine_native::operative_action::SAVE_TOKENS
+        for (id, name) in engine_native_intelligence::operative_action::SAVE_TOKENS
             .into_iter()
             .zip(definitions)
         {
@@ -6643,7 +6643,7 @@ mod tests {
     fn mission_tokens() -> TokenNames<'static> {
         let mut tokens = operative_tokens();
         let definitions: [&[u8]; 8] = [b"m1", b"m2", b"m3", b"m4", b"m5", b"m6", b"m7", b"m8"];
-        for (id, name) in engine_native::operative_action::SAVE_TOKENS
+        for (id, name) in engine_native_intelligence::operative_action::SAVE_TOKENS
             .into_iter()
             .zip(definitions)
         {
@@ -6664,11 +6664,11 @@ mod tests {
                 id: (9831 << 32) | 4713,
                 ordinal: 0,
                 assignment: 3,
-                variant: Some(engine_native::operative_action::BOOST_IDEOLOGY),
+                variant: Some(engine_native_intelligence::operative_action::BOOST_IDEOLOGY),
                 target_country: Some(102),
                 target_state: Some(219),
                 ideology: b"fascism".to_vec(),
-                pending_variant: Some(engine_native::operative_action::BUILD_NETWORK),
+                pending_variant: Some(engine_native_intelligence::operative_action::BUILD_NETWORK),
                 pending_country: Some(101),
                 pending_state: Some(7),
                 portrait: b"GFX_spy".to_vec(),
@@ -6678,7 +6678,7 @@ mod tests {
                 roster_country: 101,
                 id: (1043 << 32) | 4713,
                 ordinal: 1,
-                assignment: engine_native::coperative_leader::COOLDOWN_ASSIGNMENT,
+                assignment: engine_native_intelligence::coperative_leader::COOLDOWN_ASSIGNMENT,
                 cooldown_kind: Some(2),
                 cooldown_start_hour: saved_hour(saved.cooldown_start_date).unwrap(),
                 cooldown_end_hour: saved_hour(saved.cooldown_end_date).unwrap(),
@@ -6739,7 +6739,7 @@ mod tests {
             }),
             (0, "mission_present", |rows| rows[0].variant = None),
             (0, "mission_name", |rows| {
-                rows[0].variant = Some(engine_native::operative_action::PROPAGANDA)
+                rows[0].variant = Some(engine_native_intelligence::operative_action::PROPAGANDA)
             }),
             (0, "mission_target", |rows| {
                 rows[0].target_country = Some(101)
@@ -6792,7 +6792,7 @@ mod tests {
                 .as_bytes(),
         );
         let mut rows = mission_rows(&pack);
-        rows[0].variant = Some(engine_native::operative_action::ROOT_OUT_RESISTANCE);
+        rows[0].variant = Some(engine_native_intelligence::operative_action::ROOT_OUT_RESISTANCE);
         rows[0].ideology = Vec::new();
         for (country, operative, nationality) in [
             (Some(25_000), Some(-7_000), Some(1)),
@@ -6846,7 +6846,7 @@ mod tests {
                 .as_bytes(),
         );
         let mut rows = mission_rows(&country);
-        rows[0].variant = Some(engine_native::operative_action::COUNTER_INTELLIGENCE);
+        rows[0].variant = Some(engine_native_intelligence::operative_action::COUNTER_INTELLIGENCE);
         rows[0].target_state = None;
         rows[0].ideology = Vec::new();
         assert!(

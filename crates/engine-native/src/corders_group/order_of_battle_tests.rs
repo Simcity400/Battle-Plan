@@ -1,5 +1,7 @@
 use super::*;
-use crate::{carmy, carmy_group, ctheater_group, ctheatre, cunit, memory::SliceMemory};
+use crate::{carmy, ctheatre, cunit};
+use engine_native_parts::{carmy_group, ctheater_group};
+use engine_native_memory::memory::SliceMemory;
 
 const ARMY: usize = 0x1000;
 const GROUP: usize = 0x2000;
@@ -761,10 +763,10 @@ fn worker_order_of_battle_grows_original_nested_members_and_children_before_publ
             0,
             &roots(),
             &mut OrderOfBattleStorage {
-                groups: crate::walk::Buffer::Growing(&mut groups),
-                members: crate::walk::Buffer::Growing(&mut members),
-                children: crate::walk::Buffer::Growing(&mut children),
-                roster_scratch: crate::walk::Buffer::Growing(&mut scratch),
+                groups: engine_native_memory::walk::Buffer::Growing(&mut groups),
+                members: engine_native_memory::walk::Buffer::Growing(&mut members),
+                children: engine_native_memory::walk::Buffer::Growing(&mut children),
+                roster_scratch: engine_native_memory::walk::Buffer::Growing(&mut scratch),
             },
         );
         assert_eq!(walked.groups, Outcome::Rows { len: 2 });

@@ -1,6 +1,6 @@
-use crate::{
-    Memory, ccountry, cideology_group, cpolitical_party, cpolitical_status, msvc_string, read,
-};
+use engine_native_memory::{Memory, msvc_string, read};
+use engine_native::ccountry;
+use engine_native_parts::cideology_group;
 use engine_sites::Rva;
 
 #[derive(Debug, Clone, Copy)]
@@ -205,13 +205,13 @@ pub fn country_owner(
     let status = usize::try_from(u64::from_le_bytes(status))
         .map_err(|_| "politics status pointer overflow")?;
     if status != 0 {
-        let vtable = engine_sites::at(base, cpolitical_status::VTABLE_RVA)
+        let vtable = engine_sites::at(base, engine_native_parts::cpolitical_status_layout::VTABLE_RVA)
             .ok_or("politics status vtable mismatch")?;
         if read::<u64>(memory, status) != Some(vtable as u64) {
             return Err("politics status vtable mismatch");
         }
         if status
-            .checked_add(cpolitical_status::COUNTRY)
+            .checked_add(engine_native_parts::cpolitical_status_layout::COUNTRY)
             .and_then(|p| read::<u64>(memory, p))
             != Some(pointer as u64)
         {
@@ -228,7 +228,7 @@ pub fn status_owner(
     status: usize,
 ) -> Result<Owner, &'static str> {
     let pointer = status
-        .checked_add(cpolitical_status::COUNTRY)
+        .checked_add(engine_native_parts::cpolitical_status_layout::COUNTRY)
         .and_then(|p| read::<u64>(memory, p))
         .filter(|p| *p != 0)
         .ok_or("politics owner pointer unreadable or null")? as usize;
@@ -242,7 +242,7 @@ pub fn status_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     const BASE: usize = 0x140000000;
     const COUNTRY: usize = 0x100;
     const STATUS: usize = 0x1800;
@@ -257,11 +257,11 @@ mod tests {
             (COUNTRY, BASE + ccountry::VTABLE_RVA.0),
             (COUNTRY + ccountry::ID, 5001),
             (COUNTRY + ccountry::POLITICAL_STATUS, STATUS),
-            (STATUS, BASE + cpolitical_status::VTABLE_RVA.0),
-            (STATUS + cpolitical_status::COUNTRY, COUNTRY),
-            (PARTY, BASE + cpolitical_party::VTABLE_RVA.0),
-            (PARTY + cpolitical_party::ID, 37),
-            (PARTY + cpolitical_party::IDEOLOGY_GROUP, IDEOLOGY),
+            (STATUS, BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0),
+            (STATUS + engine_native_parts::cpolitical_status_layout::COUNTRY, COUNTRY),
+            (PARTY, BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0),
+            (PARTY + engine_native_parts::cpolitical_party_layout::ID, 37),
+            (PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, IDEOLOGY),
             (IDEOLOGY, BASE + cideology_group::VTABLE_RVA.0),
             (IDEOLOGY + cideology_group::ID, 37),
         ] {
@@ -372,7 +372,7 @@ mod tests {
             COUNTRY,
             COUNTRY + ccountry::ID,
             STATUS,
-            STATUS + cpolitical_status::COUNTRY,
+            STATUS + engine_native_parts::cpolitical_status_layout::COUNTRY,
         ] {
             let mut bytes = fixture();
             put(&mut bytes, at, 0);
@@ -393,7 +393,7 @@ mod tests {
             COUNTRY + 15,
             COUNTRY + ccountry::POLITICAL_STATUS + 7,
             STATUS + 7,
-            STATUS + cpolitical_status::COUNTRY + 7,
+            STATUS + engine_native_parts::cpolitical_status_layout::COUNTRY + 7,
         ] {
             assert!(
                 country_owner(
@@ -432,7 +432,7 @@ mod tests {
         literal.copy(&memory, &mut token).unwrap();
         assert_eq!(&token, b"mod_party");
         assert!(literal.copy(&memory, &mut [0; 8]).is_err());
-        put(&mut bytes, PARTY + cpolitical_party::ID, 38);
+        put(&mut bytes, PARTY + engine_native_parts::cpolitical_party_layout::ID, 38);
         assert!(
             party_literal(
                 &SliceMemory {
@@ -698,7 +698,7 @@ pub fn party_literal(
     if pointer == 0 {
         return Ok(None);
     }
-    let (id, ideology) = cpolitical_party::identity(memory, base, pointer)?;
+    let (id, ideology) = engine_native_parts::cpolitical_party_layout::identity(memory, base, pointer)?;
     Ok(Some((
         id,
         literal(
@@ -735,21 +735,21 @@ pub fn balances(
         let pp = read::<i64>(
             memory,
             status
-                .checked_add(cpolitical_status::POLITICAL_POWER)
+                .checked_add(engine_native_parts::cpolitical_status_layout::POLITICAL_POWER)
                 .ok_or("PP address overflow")?,
         )
         .ok_or("PP balance unreadable")?;
         let pointer = read::<u64>(
             memory,
             status
-                .checked_add(cpolitical_status::RULING_PARTY)
+                .checked_add(engine_native_parts::cpolitical_status_layout::RULING_PARTY)
                 .ok_or("party address overflow")?,
         )
         .ok_or("ruling pointer unreadable")? as usize;
         let party = if pointer == 0 {
             None
         } else {
-            Some(cpolitical_party::identity(memory, base, pointer)?.0)
+            Some(engine_native_parts::cpolitical_party_layout::identity(memory, base, pointer)?.0)
         };
         (Some(pp), party)
     } else {
@@ -779,7 +779,8 @@ pub fn daily_record_demand(
     base: usize,
     state: usize,
 ) -> Result<usize, &'static str> {
-    use crate::{cpdx_array::Array, nindustrial_organisation_corganisation as organisation};
+    use engine_native_memory::cpdx_array::Array;
+    use crate::nindustrial_organisation_corganisation as organisation;
 
     let countries = ccountry::Reader::new(memory, base, state)?;
     let headers = countries.arrays();
@@ -818,15 +819,15 @@ pub fn daily_record_demand(
         for (offset, vtable, backlink, roster) in [
             (
                 ccountry::DIPLOMACY_STATUS,
-                crate::cdiplomacy_status::VTABLE_RVA,
-                crate::cdiplomacy_status::COUNTRY,
-                crate::cdiplomacy_status::OWNED_RELATIONS,
+                engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
+                engine_native_parts::cdiplomacy_status_layout::COUNTRY,
+                engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             ),
             (
                 ccountry::PRODUCTION_STATUS,
-                crate::cproduction_status::VTABLE_RVA,
-                crate::cproduction_status::COUNTRY,
-                crate::cproduction_status::ORGANISATIONS,
+                engine_native::cproduction_status::VTABLE_RVA,
+                engine_native::cproduction_status::COUNTRY,
+                engine_native::cproduction_status::ORGANISATIONS,
             ),
         ] {
             let pointer = country
@@ -850,7 +851,7 @@ pub fn daily_record_demand(
             let mut extra = roster.count as usize;
             if offset == ccountry::PRODUCTION_STATUS {
                 extra = 0;
-                crate::cpdx_array::pointers(
+                engine_native_memory::cpdx_array::pointers(
                     memory,
                     roster,
                     "politics staging organisation unreadable",
@@ -892,16 +893,16 @@ pub fn daily_record_demand(
 }
 
 pub fn lexical_key_demand(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    let address = crate::cpdx_lexer::witness_address(base)?;
+    let address = engine_native_memory::cpdx_lexer::witness_address(base)?;
     let header = read::<[u8; 64]>(memory, address).ok_or("lexer witness unreadable")?;
-    let witness = crate::cpdx_lexer::PreparedWitness::from_header(header)?;
+    let witness = engine_native_memory::cpdx_lexer::PreparedWitness::from_header(header)?;
     let mut longest = 0;
     for token in 0..=witness.maximum() {
         let address = witness
             .table()
             .checked_add(
                 (token as usize)
-                    .checked_mul(crate::cpdx_lexer::TOKEN_NAME_STRIDE)
+                    .checked_mul(engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE)
                     .ok_or("lexer key index overflow")?,
             )
             .ok_or("lexer key address overflow")?;
@@ -921,7 +922,8 @@ mod capture_tests {
 
     #[test]
     fn politics_staging_demand_counts_daily_rosters() {
-        use crate::{cpdx_array, nindustrial_organisation_corganisation as organisation};
+        use engine_native_memory::cpdx_array;
+        use crate::nindustrial_organisation_corganisation as organisation;
 
         for countries in [1, 2] {
             let mut world = ccountry::synthetic::World::new(0x4000_0000, countries, 0x1700);
@@ -931,24 +933,24 @@ mod capture_tests {
                 world.u64(country + ccountry::POLITICAL_STATUS, status as u64);
                 world.u64(
                     status,
-                    (world.module + cpolitical_status::VTABLE_RVA.0) as u64,
+                    (world.module + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64,
                 );
-                world.u64(status + cpolitical_status::COUNTRY, country as u64);
+                world.u64(status + engine_native_parts::cpolitical_status_layout::COUNTRY, country as u64);
                 world.array(status + 8, country, 2);
                 world.array(country + ccountry::ACTIVE_COMMAND_ABILITIES, country, 3);
                 for (offset, vtable, backlink, roster, count) in [
                     (
                         ccountry::DIPLOMACY_STATUS,
-                        crate::cdiplomacy_status::VTABLE_RVA,
-                        crate::cdiplomacy_status::COUNTRY,
-                        crate::cdiplomacy_status::OWNED_RELATIONS,
+                        engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
+                        engine_native_parts::cdiplomacy_status_layout::COUNTRY,
+                        engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                         4,
                     ),
                     (
                         ccountry::PRODUCTION_STATUS,
-                        crate::cproduction_status::VTABLE_RVA,
-                        crate::cproduction_status::COUNTRY,
-                        crate::cproduction_status::ORGANISATIONS,
+                        engine_native::cproduction_status::VTABLE_RVA,
+                        engine_native::cproduction_status::COUNTRY,
+                        engine_native::cproduction_status::ORGANISATIONS,
                         1,
                     ),
                 ] {
@@ -1030,14 +1032,14 @@ mod capture_tests {
     }
 }
 
-pub struct NativeOperands(crate::memory::LiveMemory);
+pub struct NativeOperands(engine_native_memory::memory::LiveMemory);
 impl NativeOperands {
     /// # Safety
     /// As `LiveMemory::new`: the reads are of foreign game memory under the caller's consistency
     /// protocol, or of immutable synthetic storage. SEH guards only against invalid addresses.
     #[inline(always)]
     pub unsafe fn new() -> Self {
-        Self(unsafe { crate::memory::LiveMemory::new() })
+        Self(unsafe { engine_native_memory::memory::LiveMemory::new() })
     }
 }
 impl Memory for NativeOperands {
@@ -1046,7 +1048,7 @@ impl Memory for NativeOperands {
         self.0.copy(address, output)
     }
     #[inline(always)]
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         self.0.read_scalar(address)
     }
 }

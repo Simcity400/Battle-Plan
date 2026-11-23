@@ -57,7 +57,7 @@ fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("variant address overflow")
 }
 
-fn word<T: crate::memory::Raw>(
+fn word<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -99,7 +99,7 @@ fn entries_with_layout(
                 .ok_or("variant design address overflow")?,
         )
         .ok_or("variant stat entry unreadable")?;
-        crate::allocation::reserve(&mut result, 1)
+        engine_allocation::reserve(&mut result, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.push(VariantStatEntry {
             index: u32::from_le_bytes(
@@ -144,7 +144,7 @@ pub(super) fn read_design(
         base,
         object,
         &bytes,
-        &mut crate::creference_registry::ScopedResolver::new(base),
+        &mut engine_native_parts::creference_registry::ScopedResolver::new(base),
     )
     .map(|(state, _, _)| state)
 }
@@ -193,7 +193,7 @@ pub(super) fn read_design_prefetched(
     base: usize,
     object: usize,
     bytes: &[u8],
-    references: &mut crate::creference_registry::ScopedResolver,
+    references: &mut engine_native_parts::creference_registry::ScopedResolver,
 ) -> Result<(VariantDesignState, Option<usize>, DesignSourceLinks), &'static str> {
     struct FieldsMemory<'a, M> {
         source: &'a M,
@@ -230,7 +230,7 @@ fn read_design_fields(
     memory: &impl Memory,
     base: usize,
     object: usize,
-    references: &mut crate::creference_registry::ScopedResolver,
+    references: &mut engine_native_parts::creference_registry::ScopedResolver,
 ) -> Result<(VariantDesignState, Option<usize>, DesignSourceLinks), &'static str> {
     let parent = word::<u64>(memory, object, PARENT)? as usize;
     let group = word::<u64>(memory, object, DIVISION_NAMES_GROUP)? as usize;
@@ -290,7 +290,7 @@ fn read_design_fields(
                 .ok_or("variant design address overflow")?,
         )
         .ok_or("variant named bonus unreadable")?;
-        crate::allocation::reserve(&mut result.named_bonuses, 1)
+        engine_allocation::reserve(&mut result.named_bonuses, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.named_bonuses.push(value);
     }
@@ -301,7 +301,7 @@ fn read_design_fields(
                 continue;
             }
             let value = i64::from_le_bytes(cache[index * 8..index * 8 + 8].try_into().unwrap());
-            crate::allocation::reserve(&mut result.unresolved_stats, 1)
+            engine_allocation::reserve(&mut result.unresolved_stats, 1)
                 .map_err(|_| "variant design allocation failed")?;
             result.unresolved_stats.push(VariantStatEntry {
                 index: index as u32,
@@ -320,16 +320,16 @@ fn read_design_fields(
         )
         .ok_or("variant bonus source unreadable")? as usize;
         let source = read_bonus_source(memory, base, pointer)?;
-        crate::allocation::reserve(&mut source_links, 1)
+        engine_allocation::reserve(&mut source_links, 1)
             .map_err(|_| "variant source binding allocation failed")?;
         source_links.push(pointer);
-        crate::allocation::reserve(&mut result.bonus_sources, 1)
+        engine_allocation::reserve(&mut result.bonus_sources, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.bonus_sources.push(source);
     }
     let provider = visit_named_sources(memory, base, object, |pointer, owner, handle| {
         let source = read_named_bonus_source(memory, base, pointer, owner, handle)?;
-        crate::allocation::reserve(&mut result.named_sources, 1)
+        engine_allocation::reserve(&mut result.named_sources, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.named_sources.push(source);
         Ok(())
@@ -343,7 +343,7 @@ fn read_design_fields(
             mask: word(memory, pointer, 0)?,
             stats: entries(memory, pointer, 16)?,
         };
-        crate::allocation::reserve(&mut result.mission_stats, 1)
+        engine_allocation::reserve(&mut result.mission_stats, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.mission_stats.push(mission);
     }
@@ -382,10 +382,10 @@ pub fn read_bonus_source(
     let idea = if idea == 0 {
         None
     } else {
-        if word::<u64>(memory, idea, 0)? != site(base, crate::cidea::VTABLE_RVA)? as u64 {
+        if word::<u64>(memory, idea, 0)? != site(base, engine_native_parts::cidea::VTABLE_RVA)? as u64 {
             return Err("variant bonus idea identity mismatch");
         }
-        let header = word(memory, idea, crate::cidea::TOKEN)?;
+        let header = word(memory, idea, engine_native_parts::cidea::TOKEN)?;
         let literal = Literal::from_header(header)?;
         let mut bytes = Vec::new();
         literal.copy_growing(memory, &mut bytes, 0, "variant design allocation failed")?;
@@ -406,7 +406,7 @@ pub fn read_bonus_source(
                 .ok_or("variant design address overflow")?,
         )
         .ok_or("variant terrain bonus unreadable")?;
-        crate::allocation::reserve(&mut source.terrain_attrition, 1)
+        engine_allocation::reserve(&mut source.terrain_attrition, 1)
             .map_err(|_| "variant design allocation failed")?;
         source.terrain_attrition.push(value);
     }
@@ -496,7 +496,7 @@ pub fn visit_named_sources(
     Ok(Some((owner, status)))
 }
 
-fn scalar_array<T: crate::memory::Raw>(
+fn scalar_array<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -511,7 +511,7 @@ fn scalar_array<T: crate::memory::Raw>(
                 .ok_or("variant design address overflow")?,
         )
         .ok_or("variant design array entry unreadable")?;
-        crate::allocation::reserve(&mut result, 1)
+        engine_allocation::reserve(&mut result, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.push(value);
     }
@@ -532,13 +532,13 @@ fn module_exclusions(
         let module = word::<u64>(memory, entry, 0)? as usize;
         let header = word::<[u8; 12]>(memory, module, 0)?;
         if u64::from_le_bytes(header[..8].try_into().unwrap())
-            != site(base, crate::cequipment_module::VTABLE_RVA)? as u64
+            != site(base, engine_native_parts::cequipment_module::VTABLE_RVA)? as u64
         {
             return Err("variant excluded module identity mismatch");
         }
         let token = u32::from_le_bytes(header[8..].try_into().unwrap());
         let mask = word(memory, entry, 8)?;
-        crate::allocation::reserve(&mut result, 1)
+        engine_allocation::reserve(&mut result, 1)
             .map_err(|_| "variant design allocation failed")?;
         result.push(VariantModuleMissionExclusion {
             module_token: token,

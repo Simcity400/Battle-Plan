@@ -1,9 +1,10 @@
-use engine_native::{Memory, ccountry};
+use engine_native_memory::Memory;
+use engine_native::ccountry;
 
 pub struct RosterReplay<'a, M> {
     pub inner: &'a M,
-    pub roster: Option<(usize, usize, ccountry::AuthenticatedRoster<'a>)>,
-    pub reserved: Option<(usize, usize, ccountry::ReservedCountryObservation)>,
+    pub roster: Option<(usize, usize, engine_native_memory::country_identity::AuthenticatedRoster<'a>)>,
+    pub reserved: Option<(usize, usize, engine_native_memory::country_identity::ReservedCountryObservation)>,
 }
 
 impl<'a, M> RosterReplay<'a, M> {
@@ -30,16 +31,16 @@ impl<M: Memory> Memory for RosterReplay<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.authenticated_reserved_country_observation(base, game_state)
-            .map(ccountry::ReservedCountryObservation::result)
+            .map(engine_native_memory::country_identity::ReservedCountryObservation::result)
     }
 
     fn authenticated_reserved_country_observation(
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.reserved
             .filter(|(module, state, _)| (*module, *state) == (base, game_state))
             .map(|(_, _, root)| root)
@@ -54,7 +55,7 @@ impl<M: Memory> Memory for RosterReplay<'_, M> {
         &self,
         address: usize,
         len: usize,
-    ) -> Option<engine_native::memory::SliceMemory<'_>> {
+    ) -> Option<engine_native_memory::memory::SliceMemory<'_>> {
         self.inner.immutable_view(address, len)
     }
 
@@ -62,7 +63,7 @@ impl<M: Memory> Memory for RosterReplay<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.roster
             .filter(|(module, state, _)| (*module, *state) == (base, game_state))
             .map(|(_, _, roster)| roster)

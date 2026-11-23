@@ -5,7 +5,7 @@ use crate::{
     table_conversion::{table_iter, unavailable},
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_production::{attrition_modifier_breakdown as tree, production_modifiers as native};
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows, rows::TableId, rows::tables,
@@ -208,19 +208,19 @@ impl Part {
                 return Ok(());
             }
             let mut trees = tree::Buffers {
-                requests: engine_native::walk::Buffer::Growing(&mut self.requests.first),
+                requests: engine_native_memory::walk::Buffer::Growing(&mut self.requests.first),
                 request_len: self.requests.len,
                 request_required: self.requests.required,
-                roots: engine_native::walk::Buffer::Growing(&mut self.roots.first),
+                roots: engine_native_memory::walk::Buffer::Growing(&mut self.roots.first),
                 root_len: 0,
                 root_required: 0,
-                nodes: engine_native::walk::Buffer::Growing(&mut self.nodes.first),
+                nodes: engine_native_memory::walk::Buffer::Growing(&mut self.nodes.first),
                 node_len: 0,
                 node_required: 0,
-                text: engine_native::walk::Buffer::Growing(&mut self.text.first),
+                text: engine_native_memory::walk::Buffer::Growing(&mut self.text.first),
                 text_len: 0,
                 text_required: 0,
-                stack: engine_native::walk::Buffer::Growing(&mut self.stack.first),
+                stack: engine_native_memory::walk::Buffer::Growing(&mut self.stack.first),
                 stack_required: 0,
                 repeats: Some(&mut self.repeats),
             };

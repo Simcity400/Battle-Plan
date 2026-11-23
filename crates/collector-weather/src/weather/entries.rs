@@ -1,4 +1,6 @@
-use engine_native::{Memory, modifier_accumulator, sweather_per_province};
+use engine_native_memory::Memory;
+use engine_native_parts::modifier_accumulator;
+use engine_native::cweather_manager::province_weather as sweather_per_province;
 
 pub type Entry = (u32, i64);
 
@@ -91,7 +93,7 @@ impl<T: Copy> Spans<T> {
 
 pub fn read(
     memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
+    array: engine_native_memory::cpdx_array::Array,
     slot: u32,
     out: &mut Vec<Entry>,
 ) -> bool {

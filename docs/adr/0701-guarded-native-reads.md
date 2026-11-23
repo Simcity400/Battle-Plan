@@ -1,6 +1,6 @@
 # 0701. Compile and retry guarded native reads
 
-The engine-native build links one guarded copy helper for Windows MSVC targets. Clang must use its MSVC driver and asynchronous exception handling. Otherwise it can discard the structured exception handler around a plain load, which turns an unreadable page into a crash in the game process. Unsupported Clang driver configurations fail the build. The crate's test support installs the denying allocator so allocation pressure can exercise the same readers.
+The engine-native-memory build links one guarded copy helper for Windows MSVC targets. Clang must use its MSVC driver and asynchronous exception handling. Otherwise it can discard the structured exception handler around a plain load, which turns an unreadable page into a crash in the game process. Unsupported Clang driver configurations fail the build. The crate's test support installs the denying allocator so allocation pressure can exercise the same readers.
 
 Native readers copy bounded groups to reduce the number of guarded reads. If a grouped copy fails, each reader may retry that group once in its original serial order. A persistent fault therefore reaches the same outcome as the serial reader. A transient fault can recover without dropping any member. Naval order-of-battle is an exception because its read can continue past a bad span. Count each fallback when it starts, even if the retry fails, and retain thread-local counts in consuming-crate tests where the engine is a dependency.
 
@@ -8,4 +8,4 @@ Read-ahead records a census slot and one link for use at that slot's normal turn
 
 The fallback counters distinguish the gathering boundary that failed. Resource and agency readers group per owning object. Cryptology, the air wing census, ship census and nested naval entries group contiguous runs. Unit intelligence, air-base witnesses, mission operands, pool definitions and ship or task-force records group scattered fields. Factory and relation readers gather pointers or cells before reading associated status records. Subject relations group the entries, their type words and their subject heads by owner. A failed ship-organisation guard restores the original reader path for that one ship.
 
-[Native build](../../crates/engine-native/build.rs) · [Bounded fallback and read-ahead](../../crates/engine-native/src/batch_fallback.rs)
+[Native build](../../crates/engine-native-memory/build.rs) · [Bounded fallback and read-ahead](../../crates/engine-native-memory/src/batch_fallback.rs)

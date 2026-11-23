@@ -1,8 +1,11 @@
 use super::*;
 use crate::party_changes::{Counts, Watches};
-use engine_native::{
-    ccountry, cidea, cideology_group, cpolitical_party, cpolitical_status::FreshIdeas,
-    cpolitical_status::FreshParties, cpolitical_status::IdeaRow, memory::SliceMemory, msvc_string,
+use engine_native::ccountry;
+use engine_native_parts::{cidea, cideology_group};
+use engine_native_memory::{memory::SliceMemory, msvc_string};
+use engine_native_politics::{
+    cpolitical_party,
+    cpolitical_status::{FreshIdeas, FreshParties, IdeaRow},
 };
 use std::cell::RefCell;
 
@@ -54,10 +57,10 @@ fn world() -> Vec<u8> {
             at + 0x100 + ccountry::POLITICAL_STATUS,
             status(index) as u64,
         );
-        word(b, status(index), cpolitical_status::VTABLE_RVA.0 as u64);
+        word(b, status(index), engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64);
         word(
             b,
-            status(index) + cpolitical_status::COUNTRY,
+            status(index) + engine_native_parts::cpolitical_status_layout::COUNTRY,
             (at + 0x100) as u64,
         );
         word(
@@ -72,7 +75,7 @@ fn world() -> Vec<u8> {
         );
         word(
             b,
-            status(index) + cpolitical_status::RULING_PARTY,
+            status(index) + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
             party(index, 0) as u64,
         );
         word(
@@ -89,9 +92,9 @@ fn world() -> Vec<u8> {
             let party = party(index, which);
             let ideology = at + 0x700 + which * 0x80;
             word(b, at + 0x400 + which * 8, party as u64);
-            word(b, party, cpolitical_party::VTABLE_RVA.0 as u64);
-            word(b, party + cpolitical_party::ID, id);
-            word(b, party + cpolitical_party::IDEOLOGY_GROUP, ideology as u64);
+            word(b, party, engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0 as u64);
+            word(b, party + engine_native_parts::cpolitical_party_layout::ID, id);
+            word(b, party + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, ideology as u64);
             word(b, ideology, cideology_group::VTABLE_RVA.0 as u64);
             word(b, ideology + cideology_group::ID, id);
             string(
@@ -162,9 +165,9 @@ fn walk(bytes: &[u8], store: &mut PartyStore, watches: &Watches) -> Hour {
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.parties_carried(
             country,
-            engine_native::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
             0,
-            engine_native::walk::Buffer::Growing(&mut text),
+            engine_native_memory::walk::Buffer::Growing(&mut text),
             0,
             &mut reuse,
         );
@@ -178,8 +181,8 @@ fn walk(bytes: &[u8], store: &mut PartyStore, watches: &Watches) -> Hour {
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.ideas_carried(
             country,
-            engine_native::walk::Buffer::Growing(&mut rows),
-            engine_native::walk::Buffer::Growing(&mut text),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut text),
             &mut reuse,
         );
         complete_ideas &= matches!(walked.outcome, Outcome::Rows { .. });
@@ -218,9 +221,9 @@ fn fresh(bytes: &[u8]) -> Hour {
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.parties_carried(
             country,
-            engine_native::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
             0,
-            engine_native::walk::Buffer::Growing(&mut text),
+            engine_native_memory::walk::Buffer::Growing(&mut text),
             0,
             &mut FreshParties,
         );
@@ -233,8 +236,8 @@ fn fresh(bytes: &[u8]) -> Hour {
         let (mut rows, mut text) = (Vec::new(), Vec::new());
         let walked = reader.ideas_carried(
             country,
-            engine_native::walk::Buffer::Growing(&mut rows),
-            engine_native::walk::Buffer::Growing(&mut text),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut text),
             &mut FreshIdeas,
         );
         for row in &rows[..walked.outcome.len()] {
@@ -275,7 +278,7 @@ fn quiet_hours_read_no_party_content_and_publish_fresh_rows() {
         set_popularity(&mut bytes, 1, 1, 70_000 + hour);
         word(
             &mut bytes,
-            status(0) + cpolitical_status::RULING_PARTY,
+            status(0) + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
             party(0, (hour % 2) as usize) as u64,
         );
         let quiet = walk(&bytes, &mut store, &watches);
@@ -380,7 +383,7 @@ fn a_failed_walk_holds_nothing() {
     let mut broken = bytes.clone();
     word(
         &mut broken,
-        status(1) + cpolitical_status::RULING_PARTY,
+        status(1) + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
         0x1234,
     );
     let failed = walk(&broken, &mut store, &watches);

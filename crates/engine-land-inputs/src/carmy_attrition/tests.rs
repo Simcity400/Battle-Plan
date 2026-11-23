@@ -1,5 +1,6 @@
 use super::*;
-use crate::{memory::SliceMemory, modifier_definition};
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::modifier_definition;
 use std::cell::RefCell;
 
 struct Fixture {
@@ -246,7 +247,7 @@ fn fresh_attrition_acclimatization_keeps_first_maximum_and_refuses_foreign_embed
     fixture.word(0x2018, 50_000);
     fixture.word(0x3030, 80_000);
     let mut header = [0; 0x40];
-    header[..8].copy_from_slice(&(crate::acclimatization_data::VTABLE_RVA.0 as u64).to_le_bytes());
+    header[..8].copy_from_slice(&(engine_native_parts::acclimatization_data::VTABLE_RVA.0 as u64).to_le_bytes());
     header[8..16].copy_from_slice(&0x2000_u64.to_le_bytes());
     header[16..24].copy_from_slice(&0x2_0000_0002_u64.to_le_bytes());
     header[0x20..0x28].copy_from_slice(&0x3000_u64.to_le_bytes());

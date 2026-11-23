@@ -3,7 +3,7 @@ use crate::{
     hook::Hook,
 };
 use engine_events::{building_damage_sites, nuclear_strike_sites as native};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use replay_data::rows::NuclearStrikePart as Part;
 use std::{
     ops::Range,
@@ -202,13 +202,13 @@ fn refuse(part: Part, reason: &'static str) {
 
 fn game_operands(memory: &impl Memory, base: usize) -> Result<(usize, i32), &'static str> {
     let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|game| usize::try_from(game).ok())
         .filter(|game| *game != 0)
         .ok_or("nuclear strike game state unreadable")?;
     let hour = game
         .checked_add(engine_native::cgame_state::CURRENT_HOUR)
-        .and_then(|at| engine_native::read::<i32>(memory, at))
+        .and_then(|at| engine_native_memory::read::<i32>(memory, at))
         .ok_or("nuclear strike clock unreadable")?;
     Ok((game, hour))
 }
@@ -226,7 +226,7 @@ fn open(nuke: usize, province: usize) {
         if crate::world_lifetime::invalidating() {
             return Err("nuclear strike native world awaits hourly boundary");
         }
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let (game, hour) = game_operands(&memory, base)?;
         Ok((
@@ -280,26 +280,26 @@ pub struct WarSupportWatch {
 fn war_support_field(memory: &impl Memory, country: usize) -> Result<i64, &'static str> {
     country
         .checked_add(engine_native::ccountry::WAR_SUPPORT)
-        .and_then(|at| engine_native::read(memory, at))
+        .and_then(|at| engine_native_memory::read(memory, at))
         .ok_or("nuclear strike war support unreadable")
 }
 pub fn war_support(country: usize) -> Option<WarSupportWatch> {
     if !current() {
         return None;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let read = (|| {
         let vtable = engine_sites::at(
             BASE.load(Ordering::Relaxed),
             engine_native::ccountry::VTABLE_RVA,
         )
         .ok_or("nuclear strike war support country unauthenticated")?;
-        if engine_native::read::<u64>(&memory, country) != Some(vtable as u64) {
+        if engine_native_memory::read::<u64>(&memory, country) != Some(vtable as u64) {
             return Err("nuclear strike war support country unauthenticated");
         }
         let tag = country
             .checked_add(engine_native::ccountry::ID)
-            .and_then(|at| engine_native::read(&memory, at))
+            .and_then(|at| engine_native_memory::read(&memory, at))
             .ok_or("nuclear strike war support country unreadable")?;
         Ok((tag, war_support_field(&memory, country)?))
     })();
@@ -317,7 +317,7 @@ pub fn war_support(country: usize) -> Option<WarSupportWatch> {
 }
 impl Drop for WarSupportWatch {
     fn drop(&mut self) {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         match war_support_field(&memory, self.country) {
             Ok(after) => record(Item::WarSupport {
                 country: self.tag,
@@ -337,7 +337,7 @@ pub fn building(building: usize, source: usize) -> Option<BuildingWatch> {
     if !current() {
         return None;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match building_damage_sites::snapshot(
         &memory,
         BASE.load(Ordering::Relaxed),
@@ -356,7 +356,7 @@ pub fn building(building: usize, source: usize) -> Option<BuildingWatch> {
 }
 impl Drop for BuildingWatch {
     fn drop(&mut self) {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let measured =
             building_damage_sites::applied_damage(&memory, base, &self.before).and_then(|amount| {
@@ -390,18 +390,18 @@ struct Crew {
     before: i32,
 }
 fn crew_manpower(memory: &impl Memory, wing: usize) -> Result<i32, &'static str> {
-    wing.checked_add(engine_native::cair_wing::ACQUIRED_MANPOWER)
-        .and_then(|at| engine_native::read(memory, at))
+    wing.checked_add(engine_native_air::cair_wing::ACQUIRED_MANPOWER)
+        .and_then(|at| engine_native_memory::read(memory, at))
         .ok_or("nuclear strike wing manpower unreadable")
 }
 fn crew(wing: usize) -> Result<Crew, &'static str> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let vtable = engine_sites::at(
         BASE.load(Ordering::Relaxed),
-        engine_native::cair_wing::VTABLE_RVA,
+        engine_native_parts::cair_wing_layout::VTABLE_RVA,
     )
     .ok_or("nuclear strike wing unauthenticated")?;
-    if engine_native::read::<u64>(&memory, wing) != Some(vtable as u64) {
+    if engine_native_memory::read::<u64>(&memory, wing) != Some(vtable as u64) {
         return Err("nuclear strike wing unauthenticated");
     }
     Ok(Crew {
@@ -431,7 +431,7 @@ impl Drop for EquipmentCall {
             );
         }
         if let Some(crew) = &self.crew {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             match crew_manpower(&memory, crew.wing) {
                 Ok(after) => record(Item::Crew {
                     country: crew.country,
@@ -460,7 +460,7 @@ pub fn equipment_observed() {
 }
 
 fn units(province: usize, phase: Phase, call: u32) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let walked = native::units(
         &memory,
         BASE.load(Ordering::Relaxed),

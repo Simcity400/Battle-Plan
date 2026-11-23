@@ -1,12 +1,11 @@
 
-use crate::{
-    Memory, ccountry, cequipment_variant,
-    cequipment_variant::TextSpan,
-    cproduction_status,
+use engine_native_memory::{
+    Memory,
     msvc_string::Descriptor,
     read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native::{ccountry, cequipment_variant::{self, TextSpan}, cproduction_status};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_4568);
@@ -84,7 +83,7 @@ pub fn walk(
 }
 
 pub trait Visitor {
-    fn country(&mut self, _country: &ccountry::Country, _status: usize) {}
+    fn country(&mut self, _country: &engine_native_memory::country_identity::Country, _status: usize) {}
     fn organisation(&mut self, _pointer: usize, _row: &Row) {}
 }
 impl Visitor for () {}
@@ -129,9 +128,9 @@ pub fn demand(
         let status = cproduction_status::manager(memory, base, country)?;
         let array = status
             .checked_add(cproduction_status::ORGANISATIONS)
-            .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
+            .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
             .ok_or("organisation array unreadable or invalid")?;
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             array,
             "organisation pointers unreadable",
@@ -189,7 +188,7 @@ fn walk_inner(
         visitor.country(&country, status);
         let array = status
             .checked_add(cproduction_status::ORGANISATIONS)
-            .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
+            .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
             .ok_or("organisation array unreadable or invalid")?;
         'batches: for first in (0..array.count).step_by(32) {
             let count = ((array.count - first) as usize).min(32);
@@ -440,7 +439,9 @@ fn read_history(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory, mio_history_entry as entry};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
+    use crate::mio_history_entry as entry;
 
     const BASE: usize = 0x1000;
     const COUNTRY: usize = 0x3000;

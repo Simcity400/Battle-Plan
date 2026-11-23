@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{cgame_state, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const GAME: usize = 0x1000;
@@ -34,7 +35,7 @@ impl World {
             world.u32(LINKS + owner * 4, owner as u32);
             world.u64(country, ccountry::VTABLE_RVA.0 as u64);
             world.u32(country + ccountry::ID, owner as u32);
-            world.header(country + ccountry::MODIFIER_ACCUMULATOR, country + 0x700, 1);
+            world.header(country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, country + 0x700, 1);
             world.u32(country + 0x700, SPEED_KEY);
             world.u64(country + 0x708, 10_000);
         }
@@ -285,7 +286,7 @@ fn core_supply_access_is_read_once_per_owner_area_and_not_for_bypassed_movers() 
                     controller: Ok(1),
                     controller_area: Ok(0x8000),
                     strategic_region: Ok(0),
-                    terrain_flags: Ok(engine_native::province_definition::LAND_FLAG),
+                    terrain_flags: Ok(engine_native::cprovince::definition::LAND_FLAG),
                 }),
             )
         })
@@ -406,7 +407,7 @@ fn transfer_demands_no_land_families_but_shared_land_keys_remain() {
         !world
             .reads
             .borrow()
-            .contains(&(COUNTRY + 2 * BLOCK + ccountry::MODIFIER_ACCUMULATOR))
+            .contains(&(COUNTRY + 2 * BLOCK + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR))
     );
     capture.movers[0].land = Ok(false);
     capture.counts = [[0; 3]; FAMILIES];
@@ -444,7 +445,7 @@ fn land_only_transport_demand_never_allocates_and_later_refusals_keep_sources() 
                     terrain_flags: Ok(if id == 3 {
                         0
                     } else {
-                        engine_native::province_definition::LAND_FLAG
+                        engine_native::cprovince::definition::LAND_FLAG
                     }),
                 }),
             )
@@ -574,7 +575,7 @@ fn route_facts(sea: bool) -> Result<cprovince::MovementProvince, &'static str> {
         terrain_flags: Ok(if sea {
             0
         } else {
-            engine_native::province_definition::LAND_FLAG
+            engine_native::cprovince::definition::LAND_FLAG
         }),
         ..Default::default()
     })
@@ -756,7 +757,8 @@ fn river_demand_is_only_inside_native_crossing_kinds_and_survives_later_refusal(
 
 #[test]
 fn river_crossing_answers_follow_work_across_threads() {
-    use engine_native::{province_definition, province_neighbour};
+    use engine_native::cprovince::definition as province_definition;
+    use engine_native_parts::province_neighbour;
 
     let slots = 0x12000;
     let province = 0x13000;
@@ -902,7 +904,7 @@ fn known_sea_transport_demand_does_not_require_transfer_membership() {
                     terrain_flags: Ok(if id == 1 {
                         0
                     } else {
-                        engine_native::province_definition::LAND_FLAG
+                        engine_native::cprovince::definition::LAND_FLAG
                     }),
                     strategic_region: Ok(id as usize * 16),
                     ..Default::default()
@@ -1282,8 +1284,12 @@ const HOSTILITY_ARMIES: [(&[u32], u32); 9] = [
 ];
 
 fn hostility_world() -> World {
+    use engine_native_politics::cdiplomacy_status;
     use engine_native::{
-        cdiplomacy_status, crelation, crelation_status, cunit, cwar_relation, province_definition,
+        crelation::{self, status as crelation_status},
+        cunit,
+        cwar_relation,
+        cprovince::definition as province_definition,
     };
     let mut world = World::new(3);
     world.bytes.resize(0x60000, 0);
@@ -1325,9 +1331,9 @@ fn hostility_world() -> World {
         let relations = diplomacy + 0x800;
         let tuple = 0x54000 + index * 0x400;
         world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
-        world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
-        world.header(diplomacy + cdiplomacy_status::RELATIONS, relations, 4);
+        world.u64(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+        world.u64(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
+        world.header(diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS, relations, 4);
         world.u64(relations + target * 8, tuple as u64);
         world.u64(tuple, crelation_status::VTABLE_RVA.0 as u64);
         world.u64(tuple + crelation_status::DIPLOMACY_STATUS, diplomacy as u64);
@@ -1355,7 +1361,7 @@ fn shared_hostility(
                 .and_then(|path| copy_route(memory, path, &mut arena, &mut values))
                 .and_then(|(start, len)| arena[start + len - 1]);
             let logical =
-                engine_native::read::<u32>(memory, army + engine_native::cunit::LOGICAL_OWNER);
+                engine_native_memory::read::<u32>(memory, army + engine_native::cunit::LOGICAL_OWNER);
             hostility.attacking(memory, 0, GAME, last, logical)
         })
         .collect()

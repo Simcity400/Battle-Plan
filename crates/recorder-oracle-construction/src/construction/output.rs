@@ -349,7 +349,7 @@ impl OutputCheck {
                 {
                     if let (Some(old), Some(new)) = (&was.building, &now.building) {
                         let gain = (i128::from(new.healthy_level) - i128::from(old.healthy_level))
-                            * i128::from(engine_native::cbuilding::PARTIAL_HEALTH_PER_LEVEL)
+                            * i128::from(engine_native_parts::cbuilding::PARTIAL_HEALTH_PER_LEVEL)
                             + i128::from(new.partial_health)
                             - i128::from(old.partial_health);
                         if gain > 0 && new.level == old.level {

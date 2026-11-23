@@ -14,7 +14,7 @@ fn retained_portrait_order_keeps_frame_bytes() {
             share.rows.outcome = Outcome::Rows { len: 10 };
             share.arena.len = 10;
             for index in 0..10 {
-                share.rows.rows[index] = ccharacter::PortraitRow {
+                share.rows.rows[index] = engine_native_politics::character_portraits::PortraitRow {
                     character: (index * PARTS + part + 1) as u32,
                     portraits: [index, 1],
                 };

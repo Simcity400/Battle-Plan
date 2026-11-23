@@ -1138,7 +1138,7 @@ fn compare_traits(
             continue;
         };
         count += 1;
-        if row.token_id == engine_native::cpdx_lexer::FIXED15_TOKEN as i32 {
+        if row.token_id == engine_native_memory::cpdx_lexer::FIXED15_TOKEN as i32 {
             formatted_tokens.push(key);
         } else {
             trait_token_value(

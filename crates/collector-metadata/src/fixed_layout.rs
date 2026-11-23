@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use engine_executable::modifier_keys;
     use engine_fixed_layout::{fixed_layout::GAP, fixed_layout::TOKEN_IDS};
-    use engine_native::cpdx_lexer;
+    use engine_native_memory::cpdx_lexer;
     use engine_research::cresearch_slot;
     use replay_data::{rows::TableId, rows::TableRows};
     use replay_derive::fixed_layout::RESEARCH_IDLE;

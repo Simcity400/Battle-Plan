@@ -1203,7 +1203,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .localise_with(&definition.name_key, &[("ARG", Argument::Text(&argument))])
                 .map_err(|why| why.to_string())?;
             let effective =
-                if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
+                if definition.flags & engine_native_parts::modifier_definition::CLAMP_MAXIMUM != 0 {
                     modifier.value.clamp(0, 100_000)
                 } else {
                     modifier.value
@@ -1408,7 +1408,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 continue;
             }
             let effective =
-                if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
+                if definition.flags & engine_native_parts::modifier_definition::CLAMP_MAXIMUM != 0 {
                     raw_value.clamp(0, 100_000)
                 } else {
                     raw_value

@@ -6,7 +6,7 @@ use crate::{
 use collector_primitives::spill_stack::SpillStack;
 use engine_allocation as allocation;
 use engine_events::politics_sites as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use replay_data::{
     rows::GovernmentCause, rows::PowerAction, rows::PowerCause, rows::PowerCurrency,
     rows::PowerDailyCostKind, rows::PowerObjectKind, rows::PowerOperation, rows::PowerOriginKind,
@@ -596,8 +596,8 @@ fn failed(reason: &'static str) {
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
     invalidate_epoch();
 }
-fn memory() -> engine_native::memory::LiveMemory {
-    unsafe { engine_native::memory::LiveMemory::new() }
+fn memory() -> engine_native_memory::memory::LiveMemory {
+    unsafe { engine_native_memory::memory::LiveMemory::new() }
 }
 fn base() -> usize {
     BASE.load(Ordering::Relaxed)
@@ -606,16 +606,16 @@ fn base() -> usize {
 fn daily_cost_caller(caller: Option<u64>) -> bool {
     caller.is_some_and(|caller| engine_sites::at(base(), DAILY_COST_RETURN) == Some(caller as usize))
 }
-fn read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
-    engine_native::read::<T>(&memory(), address)
+fn read<T: engine_native_memory::memory::Raw>(address: usize) -> Option<T> {
+    engine_native_memory::read::<T>(&memory(), address)
 }
 fn operand_memory() -> native::NativeOperands {
     // SAFETY: callers below read only the supported synchronous native operands.
     unsafe { native::NativeOperands::new() }
 }
 #[inline(always)]
-fn operand<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
-    engine_native::read::<T>(&operand_memory(), address)
+fn operand<T: engine_native_memory::memory::Raw>(address: usize) -> Option<T> {
+    engine_native_memory::read::<T>(&operand_memory(), address)
 }
 fn operand_hour() -> Option<i32> {
     let state =
@@ -1105,10 +1105,10 @@ pub struct Handoff {
     shared_rejected: u64,
 }
 pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
-    handoff_buffer(engine_native::walk::Buffer::Growing(cursors))
+    handoff_buffer(engine_native_memory::walk::Buffer::Growing(cursors))
 }
 fn handoff_buffer(
-    mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
+    mut cursors: engine_native_memory::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("politics hooks unavailable");
@@ -1154,7 +1154,7 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
 }
 fn handoff_from_buffer(
     log: &Log,
-    mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
+    mut cursors: engine_native_memory::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
     let count = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     if !cursors.ensure(count)? {
@@ -1488,7 +1488,7 @@ fn observed_balance(
     let (address, reason) = match currency {
         PowerCurrency::Political => (
             owner.politics.and_then(|pointer| {
-                pointer.checked_add(engine_native::cpolitical_status::POLITICAL_POWER)
+                pointer.checked_add(engine_native_parts::cpolitical_status_layout::POLITICAL_POWER)
             }),
             "politics political power balance unreadable, absent or overflowed",
         ),
@@ -1499,7 +1499,7 @@ fn observed_balance(
             "politics command power balance unreadable or overflowed",
         ),
     };
-    match address.and_then(|address| engine_native::read(memory, address)) {
+    match address.and_then(|address| engine_native_memory::read(memory, address)) {
         Some(value) => Some(value),
         None => {
             failed(reason);
@@ -1917,7 +1917,7 @@ fn key(pointer: usize, offset: usize) -> native::Literal {
         })
 }
 #[inline(always)]
-fn item_read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
+fn item_read<T: engine_native_memory::memory::Raw>(address: usize) -> Option<T> {
     read(address).or_else(|| {
         COUNTERS[4].fetch_add(1, Ordering::Relaxed);
         None
@@ -1934,7 +1934,7 @@ fn reference_with(
     offset: usize,
     expected_type: u32,
 ) -> Option<u64> {
-    let value = engine_native::read::<u64>(memory, at(pointer, offset)?).or_else(|| {
+    let value = engine_native_memory::read::<u64>(memory, at(pointer, offset)?).or_else(|| {
         COUNTERS[4].fetch_add(1, Ordering::Relaxed);
         None
     })?;
@@ -1963,7 +1963,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 0x30
             };
             if let Some(idea) = at(a, offset).and_then(item_read::<u64>) {
-                identity.keys[0] = key(idea as usize, engine_native::cidea::TOKEN);
+                identity.keys[0] = key(idea as usize, engine_native_parts::cidea::TOKEN);
             }
             identity.action = match scope {
                 Scope::AddIdea => PowerAction::Add,
@@ -2090,7 +2090,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                     0,
                     at(
                         definition as usize,
-                        engine_native::cunit_leader_trait::TOKEN_ID,
+                        engine_native_parts::cunit_leader_trait::TOKEN_ID,
                     )
                     .and_then(item_read::<u32>),
                 );
@@ -2153,7 +2153,7 @@ fn government_with_old(
         }
     };
     let Some(old_party) = observed_old.map(|p| p as u64).or_else(|| {
-        at(status, engine_native::cpolitical_status::RULING_PARTY).and_then(read::<u64>)
+        at(status, engine_native_parts::cpolitical_status_layout::RULING_PARTY).and_then(read::<u64>)
     }) else {
         failed("politics ruling party pointer unreadable or overflowed");
         return;
@@ -2396,12 +2396,12 @@ fn relation_identity_with(memory: &impl Memory, relation: usize) -> Identity {
     identity.set(
         0,
         at(relation, engine_native::crelation::TYPE_ID)
-            .and_then(|p| engine_native::read::<u32>(memory, p)),
+            .and_then(|p| engine_native_memory::read::<u32>(memory, p)),
     );
     identity.set(
         2,
         at(relation, engine_native::crelation::SECOND_COUNTRY)
-            .and_then(|p| engine_native::read::<u32>(memory, p))
+            .and_then(|p| engine_native_memory::read::<u32>(memory, p))
             .filter(|id| *id != 0),
     );
     identity
@@ -2431,7 +2431,7 @@ fn mio_identity_with(memory: &impl Memory, organisation: usize) -> Identity {
             organisation,
             engine_production::nindustrial_organisation_corganisation::TOKEN,
         )
-        .and_then(|p| engine_native::read::<u32>(memory, p)),
+        .and_then(|p| engine_native_memory::read::<u32>(memory, p)),
     );
     identity
 }
@@ -2449,7 +2449,7 @@ fn upkeep_identity_with(memory: &impl Memory, record: usize) -> Identity {
         record,
         engine_land_inputs::active_ability_record::DEFINITION,
     )
-    .and_then(|p| engine_native::read::<u64>(memory, p))
+    .and_then(|p| engine_native_memory::read::<u64>(memory, p))
     {
         identity.keys[0] = native::literal(
             memory,
@@ -2461,7 +2461,7 @@ fn upkeep_identity_with(memory: &impl Memory, record: usize) -> Identity {
         });
     }
     if let Some(leader) = at(record, engine_land_inputs::active_ability_record::CASTER)
-        .and_then(|p| engine_native::read::<u64>(memory, p))
+        .and_then(|p| engine_native_memory::read::<u64>(memory, p))
         .filter(|p| *p != 0)
     {
         identity.set_reference(reference_with(
@@ -2614,7 +2614,7 @@ unsafe fn writer(
         cause = PowerCause::AirAction;
         identity.set(
             4,
-            at(b, engine_native::cstrategic_region::ID).and_then(read::<u32>),
+            at(b, engine_native_parts::cstrategic_region::ID).and_then(read::<u32>),
         );
         identity.action = if d as i64 > 0 {
             PowerAction::Start
@@ -2782,7 +2782,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             if registers.flags & (1 << 6) != 0 {
                 if let Some(party) = at(
                     registers.r14,
-                    engine_native::cpolitical_status::RULING_PARTY,
+                    engine_native_parts::cpolitical_status_layout::RULING_PARTY,
                 )
                 .and_then(read::<u64>)
                 {
@@ -3277,7 +3277,7 @@ impl StagingFixture {
     /// Keep `self` alive and unmoved at its current address for every subsequent call on the
     /// returned [`Handoff`].
     pub unsafe fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
-        handoff_from_buffer(&self.0, engine_native::walk::Buffer::Growing(cursors))
+        handoff_from_buffer(&self.0, engine_native_memory::walk::Buffer::Growing(cursors))
     }
     pub fn registered_lanes(&self) -> usize {
         self.0.registered.load(Ordering::Acquire)
@@ -3303,7 +3303,7 @@ pub(crate) unsafe fn bench_begin(base: usize, entries: usize, keys: usize) {
     unsafe { resize(entries, keys) };
     ENABLED.store(true, Ordering::SeqCst);
     let mut cursors = vec![LaneCursor::default(); thread_slots()];
-    let _ = handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors));
+    let _ = handoff_buffer(engine_native_memory::walk::Buffer::Growing(&mut cursors));
     let log = log().unwrap();
     for lane in &log.lanes {
         lane.consumed
@@ -3684,7 +3684,7 @@ mod tests {
                 country: 5000,
                 ..Default::default()
             },
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -3716,7 +3716,7 @@ mod tests {
             vec![LaneCursor::default(); log().unwrap().lanes.len().max(thread_slots())];
         let enabled = ENABLED.swap(true, Ordering::SeqCst);
         let sealed = crate::test_support::with_allocations_denied(|| {
-            handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors))
+            handoff_buffer(engine_native_memory::walk::Buffer::Growing(&mut cursors))
         });
         ENABLED.store(enabled, Ordering::SeqCst);
         (sealed.unwrap(), cursors)
@@ -3732,7 +3732,7 @@ mod tests {
     #[test]
     fn balance_faults_name_each_native_read_and_withdraw_coverage_without_allocation() {
         let _guard = staging_test();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3833,7 +3833,7 @@ mod tests {
     fn a_burst_past_one_lane_spills_whole_and_sizes_only_that_lane_for_the_next_generation() {
         let _guard = staging_test();
         let log = Log::with_lanes(16, 1, 4);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3873,7 +3873,7 @@ mod tests {
         resize_checked(16, 1).unwrap();
         let before = log().unwrap();
         let capacity = before.lanes[0].slots.len();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -3927,7 +3927,7 @@ mod tests {
             ..Default::default()
         };
         {
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &source,
             };
@@ -3937,7 +3937,7 @@ mod tests {
         }
         let (first, first_cursors) = seal_staging();
         {
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &source,
             };
@@ -3954,7 +3954,7 @@ mod tests {
             append_to(
                 fresh,
                 event(2 * HALF + 1),
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &source,
                 },
@@ -4019,7 +4019,7 @@ mod tests {
         let _guard = staging_test();
         let old = Log::new(4, 1);
         let fresh = Log::new(8, 1);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4112,7 +4112,7 @@ mod tests {
         let mut small = vec![LaneCursor::default(); old.lanes.len()];
         ENABLED.store(true, Ordering::SeqCst);
         let refused = crate::test_support::with_allocations_denied(|| {
-            handoff_buffer(engine_native::walk::Buffer::Growing(&mut small)).err()
+            handoff_buffer(engine_native_memory::walk::Buffer::Growing(&mut small)).err()
         });
         ENABLED.store(false, Ordering::SeqCst);
         assert_eq!(refused, Some("capture buffer allocation failed"));
@@ -4133,7 +4133,7 @@ mod tests {
         append_to(
             old,
             Event::default(),
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -4152,7 +4152,7 @@ mod tests {
         append_to(
             fresh,
             Event::default(),
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -4288,7 +4288,7 @@ mod tests {
     fn staging_shortage_retains_events_and_epoch_loss_recovers_past_holes() {
         let _guard = staging_test();
         let log = Log::new(2, 1);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4350,7 +4350,7 @@ mod tests {
         source[..9].copy_from_slice(b"mod_itemx");
         source[16..24].copy_from_slice(&9u64.to_le_bytes());
         source[24..32].copy_from_slice(&15u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &source,
         };
@@ -4385,7 +4385,7 @@ mod tests {
             for country in [5001, 5002] {
                 let log = &log;
                 scope.spawn(move || {
-                    let memory = engine_native::memory::SliceMemory {
+                    let memory = engine_native_memory::memory::SliceMemory {
                         base: 0,
                         bytes: &[],
                     };
@@ -4412,7 +4412,7 @@ mod tests {
         );
         assert_eq!(output.iter().filter(|e| e.country == 5001).count(), 4);
         let log = Log::with_lanes(2, 1, 2);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4671,7 +4671,7 @@ mod tests {
             for country in 1..=5_u32 {
                 let (log, source) = (&log, &source);
                 scope.spawn(move || {
-                    let memory = engine_native::memory::SliceMemory {
+                    let memory = engine_native_memory::memory::SliceMemory {
                         base: 0x1000,
                         bytes: source,
                     };
@@ -4703,7 +4703,7 @@ mod tests {
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
         let mut cursors = vec![LaneCursor::default(); 2];
-        let handoff = handoff_from_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff = handoff_from_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)).unwrap();
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];
@@ -4733,7 +4733,7 @@ mod tests {
     fn shared_records_merge_by_sequence_and_wait_for_an_unpublished_predecessor() {
         let _guard = staging_test();
         let log = Log::with_lanes(8, 1, 1);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -4837,7 +4837,7 @@ mod tests {
         source[..4].copy_from_slice(b"name");
         source[16..24].copy_from_slice(&4u64.to_le_bytes());
         source[24..32].copy_from_slice(&15u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &source,
         };
@@ -4888,7 +4888,7 @@ mod tests {
         source[..7].copy_from_slice(&name);
         source[16..24].copy_from_slice(&7u64.to_le_bytes());
         source[24..32].copy_from_slice(&15u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &source,
         };
@@ -4931,7 +4931,7 @@ mod tests {
         source[..7].copy_from_slice(&name);
         source[16..24].copy_from_slice(&7u64.to_le_bytes());
         source[24..32].copy_from_slice(&15u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &source,
         };

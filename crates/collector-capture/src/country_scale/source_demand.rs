@@ -1,6 +1,7 @@
 use super::{Sizing, demand_game_state, raise, table_demand};
 use crate::extended;
-use engine_native::{Memory, cgame_state, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::cgame_state;
 
 pub struct Demand {
     countries: Result<usize, &'static str>,
@@ -50,7 +51,7 @@ impl Demand {
         let factions = engine_native::cfaction::count(memory, base, state);
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
-        if let Ok(accounts) = engine_native::cfaction_system::accounts(memory, base, state) {
+        if let Ok(accounts) = engine_native::cfaction::system::accounts(memory, base, state) {
             // SAFETY: Sizing census records measured faction-account demand for the active session.
             unsafe {
                 collector_factions::faction_companion_changes::demand_accounts(
@@ -76,7 +77,7 @@ impl Demand {
                 .then(|| engine_native::cstate::name_demand(memory, base, state)),
             factions: faction_rows,
             faction_members: capacity_census.then(|| {
-                table_demand::rows(engine_native::cfaction_system::count_members(
+                table_demand::rows(engine_native::cfaction::system::count_members(
                     memory, base, state,
                 ))
             }),

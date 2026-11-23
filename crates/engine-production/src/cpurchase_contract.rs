@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, cequipment_market_status, market_contract_manager::Contracts, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{cequipment_market_status, market_contract_manager::Contracts};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29e83d0);
@@ -49,7 +48,7 @@ pub struct Membership {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -63,8 +62,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(scratch),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(scratch),
     )
 }
 
@@ -72,8 +71,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    scratch: crate::walk::Buffer<'_, Membership>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    scratch: engine_native_memory::walk::Buffer<'_, Membership>,
 ) -> Outcome {
     match walk_inner(memory, base, game_state, output, scratch) {
         Ok(outcome) => outcome,
@@ -85,8 +84,8 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut scratch: crate::walk::Buffer<'_, Membership>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut scratch: engine_native_memory::walk::Buffer<'_, Membership>,
 ) -> Result<Outcome, &'static str> {
     let contracts = Contracts::read(memory, game_state)?;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -149,7 +148,7 @@ fn walk_inner(
 
 fn verify_memberships(
     memory: &impl Memory,
-    outer: crate::cpdx_array::Array,
+    outer: engine_native_memory::cpdx_array::Array,
     scratch: &mut [Membership],
     sellers: bool,
 ) -> Result<(), &'static str> {
@@ -249,7 +248,8 @@ fn read_row(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const COUNTRY1: usize = 0x4000;

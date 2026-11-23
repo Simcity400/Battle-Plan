@@ -1,7 +1,7 @@
 use collector_certificates::watch_registry::{Notification, WatchRegistry};
 use collector_hooks::hook::Hook;
 use engine_mutations::regional_mission_mutations::MUTATIONS;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},

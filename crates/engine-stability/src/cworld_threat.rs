@@ -1,11 +1,7 @@
 
-use crate::{
-    Memory, cgame_state,
-    cpdx_array::Array,
-    cthreat_source::{self, Row as SourceRow},
-    read,
-    walk::{Buffer, Outcome},
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use engine_native::cgame_state;
+use crate::cthreat_source::{self, Row as SourceRow};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_3048);
@@ -224,7 +220,7 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory::SliceMemory, msvc_string};
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
 
     const BASE: usize = 0x1000;
     const MANAGER: usize = 0x2000;

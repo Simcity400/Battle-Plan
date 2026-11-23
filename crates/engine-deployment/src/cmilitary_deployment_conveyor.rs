@@ -1,7 +1,6 @@
 
-use crate::{
-    Memory, cpdx_array::Array, creferenced_division_template, msvc_string, read, read_slice,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read, read_slice};
+use engine_native::creferenced_division_template;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29daa08);
@@ -50,7 +49,7 @@ pub(crate) fn read_row_buffer(
     country: u32,
     ordinal: u32,
     pointer: usize,
-    names: &mut crate::walk::Buffer<'_, u8>,
+    names: &mut engine_native_memory::walk::Buffer<'_, u8>,
     used: usize,
 ) -> Result<Read, &'static str> {
     let expected =

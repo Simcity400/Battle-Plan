@@ -7,7 +7,7 @@ pub fn walk_country<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: &Context,
     scratch: &mut Scratch,
     input: &mut InputRow,
@@ -34,7 +34,7 @@ pub fn walk_country_growing<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: &Context,
     scratch: &mut Scratch,
     input: &mut InputRow,
@@ -63,7 +63,7 @@ fn walk_country_buffers<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: &Context,
     scratch: &mut Scratch,
     input: &mut InputRow,
@@ -88,7 +88,7 @@ fn inputs<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: &Context,
 ) -> Result<(InputRow, StaticWitnesses), &'static str> {
     phase!(Fields);
@@ -118,10 +118,10 @@ fn inputs<M: Memory>(
     phase!(Totals);
     let mut totals = [None; TOTALS];
     let (sorted, len) = context.keys.sorted_totals();
-    let mut values = [modifier_accumulator::Value::default(); TRACKED];
+    let mut values = [engine_native_memory::modifier_cache::Value::default(); TRACKED];
     modifier_accumulator::lookup_many_at(
         memory,
-        at(c, ccountry::MODIFIER_ACCUMULATOR)?,
+        at(c, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
         &sorted[..len],
         &mut values[..len],
     )?;
@@ -143,7 +143,7 @@ fn inputs<M: Memory>(
         InputRow {
             country: country.id,
             manpower: if context.manpower_enabled {
-                crate::ccountry_manpower::read_authenticated(memory, c, wars.diplomacy)
+                engine_native_parts::ccountry_manpower::read_authenticated(memory, c, wars.diplomacy)
             } else {
                 Default::default()
             },
@@ -175,11 +175,11 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
     phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
     let head = read::<[u8; 8]>(memory, status).ok_or("political status unreadable")?;
-    if u64::from_le_bytes(head) != site(base, cpolitical_status::VTABLE_RVA)? as u64 {
+    if u64::from_le_bytes(head) != site(base, engine_native_parts::cpolitical_status_layout::VTABLE_RVA)? as u64 {
         return Err("political status vtable mismatch");
     }
-    let party = pointer(memory, at(status, cpolitical_status::RULING_PARTY)?)?;
-    if read::<u64>(memory, party) != Some(site(base, cpolitical_party::VTABLE_RVA)? as u64) {
+    let party = pointer(memory, at(status, engine_native_parts::cpolitical_status_layout::RULING_PARTY)?)?;
+    if read::<u64>(memory, party) != Some(site(base, engine_native_parts::cpolitical_party_layout::VTABLE_RVA)? as u64) {
         return Err("ruling party vtable mismatch");
     }
     read::<i64>(memory, at(party, cpolitical_party::POPULARITY)?)
@@ -190,7 +190,7 @@ fn war_flags<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<WarFlags, &'static str> {
     phase!(Wars);
     let diplomacy = pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
@@ -200,15 +200,15 @@ fn war_flags<M: Memory>(
     if memory.copy_scattered(
         [
             diplomacy,
-            at(diplomacy, cdiplomacy_status::OWNED_RELATIONS)?,
-            at(diplomacy, cdiplomacy_status::COUNTRY)?,
+            at(diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)?,
+            at(diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?,
         ],
         &mut [&mut head, &mut owned, &mut owner],
     ) != 3
     {
         return Err("country diplomacy unreadable");
     }
-    if u64::from_le_bytes(head) != site(base, cdiplomacy_status::VTABLE_RVA)? as u64 {
+    if u64::from_le_bytes(head) != site(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)? as u64 {
         return Err("country diplomacy vtable mismatch");
     }
     if pointer_from(&owner)? != country.pointer {
@@ -574,7 +574,7 @@ fn signature(
 fn candidates(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: &Context,
     witnesses: StaticWitnesses,
     scratch: &mut Scratch,
@@ -611,13 +611,13 @@ fn candidates(
         Ok(())
     })?;
     phase!(Leader);
-    let party = pointer(memory, at(status, cpolitical_status::RULING_PARTY)?)?;
+    let party = pointer(memory, at(status, engine_native_parts::cpolitical_status_layout::RULING_PARTY)?)?;
     let mut leaders = [0_u8; 16];
     let mut group = [0_u8; 8];
     if memory.copy_scattered(
         [
-            at(party, cpolitical_party::COUNTRY_LEADERS)?,
-            at(party, cpolitical_party::IDEOLOGY_GROUP)?,
+            at(party, engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS)?,
+            at(party, engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP)?,
         ],
         &mut [&mut leaders, &mut group],
     ) != 2
@@ -630,7 +630,7 @@ fn candidates(
         let mut head = [0_u8; 16];
         if !read_slice(memory, leader, &mut head)
             || u64::from_le_bytes(head[..8].try_into().unwrap())
-                != site(base, ccountry_leader::VTABLE_RVA)? as u64
+                != site(base, engine_native_parts::ccountry_leader_layout::VTABLE_RVA)? as u64
         {
             return Err("country leader unreadable or vtable mismatch");
         }
@@ -662,7 +662,7 @@ fn candidates(
         let object = usize::try_from(object).map_err(|_| "country characters overflow")?;
         let head = read::<[u8; 16]>(memory, object).ok_or("country characters unreadable")?;
         if u64::from_le_bytes(head[..8].try_into().unwrap())
-            != site(base, ccountry_characters::VTABLE_RVA)? as u64
+            != site(base, engine_native::ccountry::rosters::VTABLE_RVA)? as u64
             || pointer_from(&head[8..])? != c
         {
             return Err("country characters vtable or owner mismatch");

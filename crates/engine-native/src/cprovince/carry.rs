@@ -1,5 +1,5 @@
 use super::*;
-use crate::controller_areas::Pointers;
+use crate::cprovince::controller_areas::Pointers;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Held {
@@ -207,7 +207,7 @@ pub(super) fn walk(
         && store.held.len() == array.count as usize
         && output.len() >= required
         && areas.len() >= required
-        && crate::allocation::advisory(|| crate::allocation::reserve(&mut store.carried, required))
+        && engine_allocation::advisory(|| engine_allocation::reserve(&mut store.carried, required))
             .is_ok();
     let outcome = if eligible {
         carry(
@@ -251,8 +251,8 @@ pub(super) fn walk(
 
 fn hold(store: &mut RowStore, array: Array, rows: &[Row], areas: &[Pointers]) -> bool {
     store.held.clear();
-    if crate::allocation::advisory(|| {
-        crate::allocation::resize_default(&mut store.held, array.count as usize)
+    if engine_allocation::advisory(|| {
+        engine_allocation::resize_default(&mut store.held, array.count as usize)
     })
     .is_err()
     {

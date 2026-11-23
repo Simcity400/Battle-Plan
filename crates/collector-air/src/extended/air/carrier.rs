@@ -1,9 +1,15 @@
 use super::*;
-use engine_native::{
-    cair_base::CarrierAceSlot, cair_base::CarrierBase,
-    cair_base::CarrierCountryTerms, cair_base::CarrierDemand, cair_base::CarrierForecastSlot,
-    cair_base::CarrierIndexedCertificate, cair_base::CarrierLengths, cair_base::CarrierPool,
-    cair_base::CarrierRegistration, cair_base::CountryOccurrence,
+use engine_native_air::cair_base::{
+    CarrierAceSlot,
+    CarrierBase,
+    CarrierCountryTerms,
+    CarrierDemand,
+    CarrierForecastSlot,
+    CarrierIndexedCertificate,
+    CarrierLengths,
+    CarrierPool,
+    CarrierRegistration,
+    CountryOccurrence,
 };
 use std::cell::RefCell;
 
@@ -50,7 +56,7 @@ impl Bases {
             .iter()
             .try_fold(0_usize, |sum, segment| {
                 sum.checked_add(
-                    engine_native::cair_base::state_country_order_demand(
+                    engine_native_air::cair_base::state_country_order_demand(
                         &recorded,
                         segment.pointer,
                     )
@@ -83,8 +89,8 @@ impl Bases {
         &mut self,
         job: &super::AirBasesJob,
         image: usize,
-        source: &[engine_native::cair_base::Row],
-        resolved: &mut [engine_native::cair_base::ResolvedLink],
+        source: &[engine_native_air::cair_base::Row],
+        resolved: &mut [engine_native_air::cair_base::ResolvedLink],
     ) -> Result<(), &'static str> {
         let log = collector_raw::raw::Recorded::build(&job.log)?;
         let recorded = crate::extended::roster_replay::RosterReplay::new(
@@ -113,7 +119,7 @@ impl Bases {
             };
             {
                 let start = self.countries_len;
-                row.countries = engine_native::cair_base::state_country_order(
+                row.countries = engine_native_air::cair_base::state_country_order(
                     &recorded,
                     image,
                     pointer,

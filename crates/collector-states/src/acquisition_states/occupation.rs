@@ -1,6 +1,7 @@
 use collector_observers::occupation_changes as changes;
 use engine_allocation as allocation;
-use engine_native::{Memory, cstate, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cstate;
 use engine_occupation::cresistance;
 use replay_data::rows::{self, Recorded, RowCodec};
 use std::{
@@ -45,7 +46,7 @@ trait CertificatesSource {
     }
 }
 struct NativeCertificates<'a> {
-    countries: Option<&'a engine_native::country_memory::Cache>,
+    countries: Option<&'a engine_native_intelligence::country_memory::Cache>,
     base: usize,
     state: usize,
 }
@@ -61,7 +62,7 @@ impl CertificatesSource for NativeCertificates<'_> {
     }
     fn quiet(&self) -> Option<(u64, u64)> {
         let cache = self.countries?;
-        if cache.view(&CacheOnly).seed_status() != engine_native::country_memory::SeedStatus::Ready
+        if cache.view(&CacheOnly).seed_status() != engine_native_intelligence::country_memory::SeedStatus::Ready
         {
             return None;
         }
@@ -182,14 +183,14 @@ impl SourceCache {
             let total = if root == 0 {
                 Ok(0)
             } else {
-                engine_native::modifier_accumulator::requested_effective_at(memory, base, root, key)
+                engine_native_parts::modifier_accumulator::requested_effective_at(memory, base, root, key)
             };
             if total.is_ok_and(|value| value != 0) && tree_demand(key) {
                 printed.push(key);
             }
             missing.push((key, total));
         }
-        let trees = engine_native::modifier_breakdown::printed_keys(memory, base, root, &printed);
+        let trees = engine_native_politics::modifier_breakdown::printed_keys(memory, base, root, &printed);
         let (mut trees, shared_failure) = match trees {
             Ok(trees) => (trees.into_iter(), None),
             Err(reason) => (Vec::new().into_iter(), Some(reason)),
@@ -328,7 +329,7 @@ impl Store {
         state: usize,
         sources: &[cstate::Source],
         outcome: Outcome,
-        countries: Option<&engine_native::country_memory::Cache>,
+        countries: Option<&engine_native_intelligence::country_memory::Cache>,
     ) {
         self.acquire_observed(
             memory,
@@ -764,8 +765,8 @@ mod tests {
 
     fn marker_fixture() -> Vec<u8> {
         use cresistance::map_icons as map;
-        use engine_native::{ccountry, cdiplomacy_status, cgame_state};
-        use engine_occupation::{
+        use engine_native::{ccountry, cgame_state};
+                use engine_occupation::{
             ccountry_occupation_data as group, ccountry_occupation_status as holder,
             pdx_robin_hood_bucket as bucket,
         };
@@ -793,17 +794,17 @@ mod tests {
             marker_put(
                 &mut bytes,
                 diplomacy,
-                (cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+                (engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             marker_put(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::COUNTRY,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 (country as u64).to_le_bytes(),
             );
         }
         marker_array(
             &mut bytes,
-            0x9000 + cdiplomacy_status::RELATIONS,
+            0x9000 + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             0x11200,
             3,
         );
@@ -1004,7 +1005,7 @@ mod tests {
         let mut store = Store::default();
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1046,7 +1047,7 @@ mod tests {
 
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1076,7 +1077,7 @@ mod tests {
         let mut store = Store::default();
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1106,7 +1107,7 @@ mod tests {
         drop(running);
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1135,7 +1136,7 @@ mod tests {
         observer.0.set_enabled(true);
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1152,7 +1153,7 @@ mod tests {
         let mut store = Store::default();
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1174,7 +1175,7 @@ mod tests {
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1203,7 +1204,7 @@ mod tests {
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1227,7 +1228,7 @@ mod tests {
         let mut store = Store::default();
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1245,7 +1246,7 @@ mod tests {
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1263,7 +1264,7 @@ mod tests {
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1277,7 +1278,7 @@ mod tests {
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1306,7 +1307,7 @@ mod tests {
         let mut store = Store::default();
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1334,7 +1335,7 @@ mod tests {
         drop(running);
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1361,7 +1362,7 @@ mod tests {
         observer.0.set_enabled(true);
         acquire_markers(
             &mut store,
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1375,7 +1376,7 @@ mod tests {
         let observer = Observer(Cell::new(1));
         let mut store = Store::default();
         store.acquire_observed(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1421,7 +1422,7 @@ mod tests {
         let mut store = Store::default();
         let mut frames: [Occupation; 4] = std::array::from_fn(|_| Occupation::default());
         store.acquire_observed(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1439,7 +1440,7 @@ mod tests {
         bytes[at..at + 8].copy_from_slice(&234_567_i64.to_le_bytes());
         observer.0.set(2);
         store.acquire_observed(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1477,7 +1478,7 @@ mod tests {
         let mut store = Store::default();
         let acquire = |store: &mut Store, bytes: &[u8], outcome| {
             store.acquire_observed(
-                &engine_native::memory::SliceMemory { base: 0, bytes },
+                &engine_native_memory::memory::SliceMemory { base: 0, bytes },
                 0,
                 0,
                 &[source],
@@ -1551,7 +1552,7 @@ mod tests {
                 observer.0.set(2);
             }
             store.acquire_observed(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 },
@@ -1587,7 +1588,7 @@ mod tests {
         let observer = Observer(Cell::new(1));
         let mut store = Store::default();
         store.acquire_observed(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1604,7 +1605,7 @@ mod tests {
         assert!(Arc::ptr_eq(store.entries[0].row.as_ref().unwrap(), &row));
         assert_eq!(store.bytes(), bytes_before);
         store.acquire_observed(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },
@@ -1785,7 +1786,7 @@ mod tests {
             {
                 return false;
             }
-            if address == engine_native::modifier_definition::TABLE_RVA.0 {
+            if address == engine_native_parts::modifier_definition::TABLE_RVA.0 {
                 out.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
                 return true;
             }
@@ -1793,7 +1794,7 @@ mod tests {
                 out.fill(0);
                 return true;
             }
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &self.bytes,
             }
@@ -2018,7 +2019,7 @@ mod tests {
         let mut captured = Store::default();
         let read = |captured: &mut Store, bytes: &[u8]| {
             captured.acquire_observed(
-                &engine_native::memory::SliceMemory { base: 0, bytes },
+                &engine_native_memory::memory::SliceMemory { base: 0, bytes },
                 0,
                 0,
                 &[source],
@@ -2057,7 +2058,7 @@ mod tests {
         impl Memory for Changed<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 self.observer.0.set(self.observer.0.get() + 1);
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: self.bytes,
                 }
@@ -2092,7 +2093,7 @@ mod tests {
         let observer = Observer(Cell::new(1));
         let mut captured = Store::default();
         captured.acquire_observed(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             },

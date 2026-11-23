@@ -1,7 +1,7 @@
 use collector_certificates::watch_registry::WatchRegistry;
 use collector_hooks::hook::{Hook, Registers, Tap};
 use collector_timing::hook_timing::{self, Family};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_sites::Rva;
 use std::{
     ops::Range,
@@ -91,27 +91,27 @@ fn census(
     }
     let manager = state
         .checked_add(engine_native::cgame_state::STRATEGIC_NAVY_MANAGER)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|value| usize::try_from(value).ok())
         .ok_or("naval repair base map unreadable")?;
     if manager == 0 {
         return Ok(None);
     }
     let countries = engine_native::ccountry::Reader::new(memory, base, state)?.count() as usize;
-    let fleets = engine_native::creference_registry::entry_count(
+    let fleets = engine_native_parts::creference_registry::entry_count(
         memory,
         base,
         engine_native::cfleet::HANDLE_TYPE,
     )?;
-    let ships = engine_native::creference_registry::entry_count(
+    let ships = engine_native_parts::creference_registry::entry_count(
         memory,
         base,
         engine_native::cship::HANDLE_TYPE,
     )?;
-    let refits = engine_native::creference_registry::entry_count(
+    let refits = engine_native_parts::creference_registry::entry_count(
         memory,
         base,
-        engine_native::cship_refit_production_line::REFERENCE_TYPE,
+        engine_native_parts::cship_refit_production_line::REFERENCE_TYPE,
     )?;
     let receivers = countries
         .checked_mul(3)
@@ -125,8 +125,8 @@ fn census(
         .and_then(|value| value.checked_mul(2))
         .ok_or("naval repair watch demand overflow")?;
     let buckets = manager
-        .checked_add(engine_native::rail_anchor_selector::MASK)
-        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .checked_add(engine_native_parts::rail_anchor_selector::MASK)
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
         .and_then(|mask| (mask as usize).checked_add(1))
         .ok_or("naval repair base demand unreadable or overflow")?;
     Ok(Some((receivers, buckets)))
@@ -146,7 +146,7 @@ pub unsafe fn presize(memory: &impl Memory, base: usize) {
         return;
     }
     let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|value| usize::try_from(value).ok());
     if let Some(state) = state
         && let Ok(Some((receivers, buckets))) = census(memory, base, state)
@@ -213,11 +213,11 @@ unsafe extern "system-unwind" fn changed(registers: &Registers, tag: usize) {
         };
         // SAFETY: the pinned native store is about to access this live object. Copies remain
         // guarded; an unreadable comparison invalidates the hold rather than hiding the write.
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let same = match write.bytes {
-            1 => engine_native::read::<u8>(&memory, address).map(|old| old == value as u8),
-            4 => engine_native::read::<u32>(&memory, address).map(|old| old == value as u32),
-            8 => engine_native::read::<u64>(&memory, address).map(|old| old == value),
+            1 => engine_native_memory::read::<u8>(&memory, address).map(|old| old == value as u8),
+            4 => engine_native_memory::read::<u32>(&memory, address).map(|old| old == value as u32),
+            8 => engine_native_memory::read::<u64>(&memory, address).map(|old| old == value),
             _ => None,
         };
         if same == Some(true) {

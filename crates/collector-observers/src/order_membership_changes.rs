@@ -3,7 +3,7 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::order_membership_mutations::{MUTATIONS, Receiver};
-use engine_native::{Memory, memory::LiveMemory};
+use engine_native_memory::{Memory, memory::LiveMemory};
 use std::{
     mem::ManuallyDrop,
     ops::Range,
@@ -177,7 +177,7 @@ fn mark(index: usize, first: usize, _second: usize) -> Notification<'static> {
     match receiver_group(MUTATIONS[index].1, first, |address| {
         #[cfg(feature = "order_membership_oracle")]
         HOOK_READS.fetch_add(1, Ordering::Relaxed);
-        engine_native::read::<u64>(&memory, address)
+        engine_native_memory::read::<u64>(&memory, address)
     }) {
         Some(group) => GROUPS.notify(group),
         None => {

@@ -1,4 +1,5 @@
-use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, cunit, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccountry, cgame_state, cprovince, cstate, cunit};
 use engine_sites::Rva;
 
 pub const SCRIPTED_REFRESH_CALL_RVA: Rva = Rva(0x0036_fe21);
@@ -52,7 +53,7 @@ fn at(object: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("map event address overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -141,7 +142,7 @@ pub fn intel_entries(
             .and_then(|offset| intel.data.checked_add(offset))
             .ok_or("map event intel address overflow")?;
         let bytes = &mut bytes[..out.len() * INTEL_STRIDE];
-        if !crate::read_slice(memory, address, bytes) {
+        if !engine_native_memory::read_slice(memory, address, bytes) {
             return Err("map event intel entries unreadable");
         }
         for (entry, raw) in out.iter_mut().zip(bytes.chunks_exact(INTEL_STRIDE)) {
@@ -204,7 +205,7 @@ pub fn unit_province(
         field(
             memory,
             definition,
-            engine_native::province_definition::TERRAIN_FLAGS,
+            engine_native::cprovince::definition::TERRAIN_FLAGS,
             "map event province terrain unreadable",
         )
     };
@@ -344,7 +345,7 @@ pub fn resistance(
 }
 
 pub fn string(memory: &impl Memory, at_: usize) -> Result<(usize, usize), &'static str> {
-    use crate::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH, STRIDE};
+    use engine_native_memory::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH, STRIDE};
     let header = read::<[u8; STRIDE]>(memory, at_).ok_or("map event string unreadable")?;
     let len = u64::from_le_bytes(header[LENGTH..CAPACITY].try_into().unwrap());
     let capacity = u64::from_le_bytes(header[CAPACITY..STRIDE].try_into().unwrap());

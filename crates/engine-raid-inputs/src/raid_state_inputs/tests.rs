@@ -1,7 +1,8 @@
 use super::*;
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-use crate::raid_launch_inputs::test_support::Counted;
-use crate::{cstrategic_resource_database, modifier_definition};
+use engine_native_air::raid_launch_inputs::test_support::Counted;
+use crate::cstrategic_resource_database;
+use engine_native_parts::modifier_definition;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
@@ -348,8 +349,8 @@ fn fixture() -> Mem {
     for (index, province) in [7_u32, 9].into_iter().enumerate() {
         m.u32(0x4400_5000 + index * 8, province);
         m.u32(0x4400_5004 + index * 8, index as u32);
-        let node = 0x4400_6000 + index * supply_node::STRIDE;
-        m.put(node, &[0; supply_node::STRIDE]);
+        let node = 0x4400_6000 + index * engine_native_parts::supply_node_layout::STRIDE;
+        m.put(node, &[0; engine_native_parts::supply_node_layout::STRIDE]);
         m.u32(node, index as u32);
         m.u32(node + 4, province);
         m.u64(node + supply_node::ROUTE_VALUE, index as u64 * 5);
@@ -505,7 +506,7 @@ fn reads_every_stored_operand_and_the_state_container() {
 fn no_route_value_and_no_origin_leave_the_factors_unread() {
     let mut m = fixture();
     m.u64(
-        0x4400_6000 + supply_node::STRIDE + supply_node::ROUTE_VALUE,
+        0x4400_6000 + engine_native_parts::supply_node_layout::STRIDE + supply_node::ROUTE_VALUE,
         0,
     );
     let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
@@ -1065,7 +1066,7 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
         );
         let pairs = members.len() * PROVINCES_PER_STATE;
         let routes = m.alloc(8 * pairs);
-        let nodes = m.alloc(supply_node::STRIDE * pairs);
+        let nodes = m.alloc(engine_native_parts::supply_node_layout::STRIDE * pairs);
         m.array(
             companion + supply_companion::ROUTES_SUBTYPE_ZERO,
             routes,
@@ -1127,7 +1128,7 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
                 let pair = ordinal * PROVINCES_PER_STATE + index;
                 m.u32(routes + pair * 8, id);
                 m.u32(routes + pair * 8 + 4, pair as u32);
-                let node = nodes + pair * supply_node::STRIDE;
+                let node = nodes + pair * engine_native_parts::supply_node_layout::STRIDE;
                 m.u32(node, pair as u32);
                 m.u32(node + 4, id);
                 m.u64(node + supply_node::ROUTE_VALUE, (index / 3) as u64);
@@ -1160,7 +1161,7 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
 fn raid_state_inputs_bench() {
     for (countries, states) in [(1_500, 3_000), (5_000, 10_000)] {
         let (arena, game_state) = scaled(countries, states);
-        let memory = Counted::new(unsafe { crate::memory::LiveMemory::new() });
+        let memory = Counted::new(unsafe { engine_native_memory::memory::LiveMemory::new() });
         let mut capacity = fixture_capacity();
         let mut buffers = Buffers::new(&capacity).unwrap();
         loop {
@@ -1257,7 +1258,7 @@ fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers
 fn raid_state_hour_bench() {
     for (countries, states) in [(1_500, 3_000), (5_000, 10_000)] {
         let images = [scaled(countries, states), scaled(countries, states)];
-        let memory = Counted::new(unsafe { crate::memory::LiveMemory::new() });
+        let memory = Counted::new(unsafe { engine_native_memory::memory::LiveMemory::new() });
         let mut buffers = grown_walk(&memory, &images[0].0, images[0].1);
         let mut census = Vec::with_capacity(states + 1);
         let slice = |id: u32| id % 24 == 7;

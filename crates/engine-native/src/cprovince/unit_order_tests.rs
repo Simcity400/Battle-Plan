@@ -1,5 +1,7 @@
 use super::*;
-use crate::{creference_registry as registry, cunit, memory::SliceMemory, reference_bucket};
+use engine_native_parts::{creference_registry as registry, reference_bucket};
+use crate::cunit;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const STATE: usize = 0x1000;
@@ -57,7 +59,7 @@ fn fixture(counts: [usize; 2]) -> Vec<u8> {
     for (index, (class, vtable)) in [
         (0u32, crate::carmy::VTABLE_RVA),
         (1, crate::ctask_force::VTABLE_RVA),
-        (13, crate::crailway_gun::VTABLE_RVA),
+        (13, engine_native_parts::crailway_gun::VTABLE_RVA),
     ]
     .into_iter()
     .enumerate()

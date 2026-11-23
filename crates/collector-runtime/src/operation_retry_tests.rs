@@ -18,7 +18,7 @@ fn table_retry_preserves_admitted_operation_completion() {
     let mut cursors = vec![LaneCursor::default()];
     // SAFETY: `log` stays alive on the stack through the `handoff.drain` call below.
     let handoff =
-        unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }.unwrap();
+        unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }.unwrap();
     // SAFETY: The test owns the isolated fixture state required by this constructor.
     let shared = unsafe { collector_capture::sampling::Shared::new(0, 0, 1) };
     // SAFETY: The test exercises recovery after unpublished output on its isolated `Shared`.

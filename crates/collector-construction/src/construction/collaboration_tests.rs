@@ -1,5 +1,5 @@
 use super::{construction_rest_test_kit as kit, *};
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const SOURCE_STATUS: usize = 0x8000;

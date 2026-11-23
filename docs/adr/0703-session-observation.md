@@ -10,4 +10,4 @@ Use the independently validated country-object, reference-link, and raw-tag regi
 
 Country-link strings include released dynamic tags. The retained daily roster stores its own slot indices. Combat-log manager pointers use canonical country slot order with no manager at zero. The tick progress word stays independent of the speed index. Read embedded roots such as technology-sharing and combat state using their inline layout, and follow the other managers only through their own stored links.
 
-[Game state and tick boundary](../../crates/engine-native/src/cgame_state.rs) · [Date representation](../../crates/engine-native/src/cgame_date.rs) · [Player and controller walks](../../crates/engine-native/src/chuman.rs)
+[Game state and tick boundary](../../crates/engine-native/src/cgame_state.rs) · [Date representation](../../crates/engine-native-memory/src/cgame_date.rs) · [Player and controller walks](../../crates/engine-native-politics/src/chuman.rs)

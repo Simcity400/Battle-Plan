@@ -5,7 +5,8 @@ use crate::{
 };
 use collector_observers::province_combat_changes::{self, Changes, Counts};
 use engine_allocation::{copy_vec, owned_vec, resize_default};
-use engine_native::{Memory, cprovince, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cprovince;
 use engine_naval_history::naval_combat_transfers as transfers;
 use replay_data::{
     rows::NavalCombatTransferRow, rows::NavalProvinceCombatRow, rows::NavalTransferUnitRow,
@@ -274,9 +275,9 @@ impl Captured {
         let marked = self.listed.len();
         let header = state
             .checked_add(engine_native::cgame_state::PROVINCES)
-            .and_then(|root| engine_native::read::<[u8; 16]>(memory, root));
+            .and_then(|root| engine_native_memory::read::<[u8; 16]>(memory, root));
         let slots = header
-            .and_then(|header| engine_native::cpdx_array::Array::from_header(header, 8))
+            .and_then(|header| engine_native_memory::cpdx_array::Array::from_header(header, 8))
             .map(|array| array.count as usize);
         let carried = match (&held, epoch, header) {
             (Some(held), Some(epoch), Some(header))
@@ -443,7 +444,7 @@ mod tests {
     }
 
     fn hour(capture: &mut Captured, bytes: &[u8], changes: &dyn Changes) -> (Outcome, Vec<u32>) {
-        let memory = engine_native::memory::SliceMemory { base: 0, bytes };
+        let memory = engine_native_memory::memory::SliceMemory { base: 0, bytes };
         capture.reset();
         capture.capture_with(&memory, 0, STATE, Some(changes));
         let outcome = capture.provinces.outcome;

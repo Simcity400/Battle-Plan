@@ -31,7 +31,7 @@ fn packet(manpower: usize) -> carmy::StatusPacket {
         },
         manpower,
         thresholds: 3,
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: 2,
             entries: 1,
         },
@@ -253,7 +253,10 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
 
 #[test]
 fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
-    use crate::{acclimatization_category as category, acclimatization_data as data};
+    use engine_native_parts::{
+        acclimatization_category as category,
+        acclimatization_data as data,
+    };
     let mut growing = packet(0);
     for count in [50, 120] {
         growing.clear();
@@ -347,7 +350,7 @@ fn acquired_status_demand_excludes_allocator_spare_capacity() {
 
 #[test]
 fn carried_maxima_replace_the_stat_block_read() {
-    use crate::csub_unit_definition::DivisionMaxima;
+    use engine_native_parts::csub_unit_definition::DivisionMaxima;
     let source = manpower_fixture(&[1; 2]);
     let mut seeds = [carmy::DivisionSeed {
         pointer: A1,
@@ -382,7 +385,10 @@ fn carried_maxima_replace_the_stat_block_read() {
     let (carried_outcome, carried, reads) = capture(&[Some(held)]);
     assert_eq!(carried_outcome, outcome);
     assert_eq!(carried, Some(held));
-    use crate::csub_unit_definition::{CAN_EXFILTRATE_FROM_COAST, MAXIMUM_ORGANISATION};
+    use engine_native_parts::csub_unit_definition::{
+        CAN_EXFILTRATE_FROM_COAST,
+        MAXIMUM_ORGANISATION,
+    };
     for at in [
         stats,
         stats + MAXIMUM_ORGANISATION,

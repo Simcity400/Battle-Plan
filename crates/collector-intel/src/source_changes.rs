@@ -7,7 +7,7 @@ use crate::{
 use collector_primitives::{first_reason::FirstReason, shared_lane::SharedLane};
 use engine_allocation as allocation;
 use engine_intelligence::{intel_source_sites as sites, intel_sources as native};
-use engine_native::{Memory, read};
+use engine_native_memory::{Memory, read};
 use replay_data::{
     cadence::SKIPPED_REASON,
     rows::{IntelContributionRow, IntelSourceRow},
@@ -484,8 +484,8 @@ pub(crate) fn capture(
     contributions: &mut Vec<IntelContributionRow>,
     sources: &mut Vec<IntelSourceRow>,
     shared: &mut [Option<std::sync::Arc<crate::retained_snapshot::Snapshot>>],
-) -> (engine_native::walk::Outcome, engine_native::walk::Outcome) {
-    use engine_native::walk::Outcome;
+) -> (engine_native_memory::walk::Outcome, engine_native_memory::walk::Outcome) {
+    use engine_native_memory::walk::Outcome;
     let mut store = STORE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -576,7 +576,7 @@ unsafe extern "system-unwind" fn callback<const I: usize>(
     let mut flight = Flight::new();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::IntelSources);
     CALLS[I].fetch_add(1, Ordering::Relaxed);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let previous = CONTEXT.with(Cell::get);
     let setup = (|| {
         let context = match I {
@@ -774,7 +774,7 @@ impl Hooks {
         let countries = if game == 0 {
             0
         } else {
-            engine_native::cpdx_array::Array::read(
+            engine_native_memory::cpdx_array::Array::read(
                 memory,
                 game + engine_native::cgame_state::COUNTRIES,
                 8,

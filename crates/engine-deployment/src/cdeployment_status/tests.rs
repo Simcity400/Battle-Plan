@@ -1,9 +1,13 @@
 use super::*;
-use crate::{
-    carmy_manpower_values, cequipment_variant, cequipment_variant_pool, cgame_state,
-    cmilitary_deployment as deployment, cname_group_member, creferenced_division_template,
-    memory::SliceMemory,
+use engine_native_parts::carmy_manpower_values;
+use engine_native::{
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
+    cname_group_member,
+    creferenced_division_template,
 };
+use crate::cmilitary_deployment as deployment;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0x1000;
 const COUNTRY: usize = 0x3000;
@@ -80,12 +84,12 @@ fn fixture() -> Vec<u8> {
     );
     put(
         &mut bytes,
-        CONVEYOR + cmilitary_deployment_conveyor::NAME + crate::msvc_string::LENGTH,
+        CONVEYOR + cmilitary_deployment_conveyor::NAME + engine_native_memory::msvc_string::LENGTH,
         &6_u64.to_le_bytes(),
     );
     put(
         &mut bytes,
-        CONVEYOR + cmilitary_deployment_conveyor::NAME + crate::msvc_string::CAPACITY,
+        CONVEYOR + cmilitary_deployment_conveyor::NAME + engine_native_memory::msvc_string::CAPACITY,
         &15_u64.to_le_bytes(),
     );
     put(
@@ -174,13 +178,13 @@ fn fixture() -> Vec<u8> {
     );
     put(
         &mut bytes,
-        NAME_OBJECT + cname_group_member::OVERRIDE_NAME + crate::msvc_string::LENGTH,
+        NAME_OBJECT + cname_group_member::OVERRIDE_NAME + engine_native_memory::msvc_string::LENGTH,
         &0_u64.to_le_bytes(),
     );
     put(
         &mut bytes,
-        NAME_OBJECT + cname_group_member::OVERRIDE_NAME + crate::msvc_string::CAPACITY,
-        &crate::msvc_string::INLINE_CAPACITY.to_le_bytes(),
+        NAME_OBJECT + cname_group_member::OVERRIDE_NAME + engine_native_memory::msvc_string::CAPACITY,
+        &engine_native_memory::msvc_string::INLINE_CAPACITY.to_le_bytes(),
     );
     put(&mut bytes, NAME_OBJECT + cname_group_member::FLAG_A, &[1]);
     put(&mut bytes, NAME_OBJECT + cname_group_member::FLAG_B, &[0]);
@@ -258,7 +262,7 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         VARIANT,
-        &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -605,7 +609,7 @@ fn template_configuration_authenticates_manager_and_retains_raw_selection_and_lo
     );
     put(&mut bytes, COUNTRY + ccountry::LOCK_ALL_TEMPLATES, &[7]);
     put(&mut bytes, STATUS + NEXT_HQ_ORDER, &(-19_i32).to_le_bytes());
-    let country = ccountry::Country {
+    let country = engine_native_memory::country_identity::Country {
         pointer: COUNTRY,
         id: 2,
         canonical_slot: 1,

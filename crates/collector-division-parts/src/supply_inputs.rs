@@ -1,8 +1,5 @@
 
-use engine_native::{
-    cunit_supply_inputs::Demand, cunit_supply_inputs::Failure, cunit_supply_inputs::Inputs,
-    cunit_supply_inputs::Origin,
-};
+use engine_native_parts::cunit_supply_inputs::{Demand, Failure, Inputs, Origin};
 use replay_data::{
     rows::DivisionSupplyFooter, rows::Recorded, rows::UnitSupplyDemand, rows::UnitSupplyInputs,
     rows::UnitSupplyOrigin,

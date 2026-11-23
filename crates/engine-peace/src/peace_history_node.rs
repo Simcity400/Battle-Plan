@@ -1,5 +1,5 @@
 
-use crate::{Memory, cpdx_array::Array, msvc_tree_node, read};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_tree_node, read};
 
 pub const COUNTRY: usize = 0x20;
 pub const TURNS: usize = 0x28;

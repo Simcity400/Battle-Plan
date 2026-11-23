@@ -46,7 +46,7 @@ pub struct AirStatsCopyContext {
 
 pub(super) fn sspan(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -64,7 +64,7 @@ fn stats_pool_u32(log: &RawLog<AIR_STATS_N>, start: usize) -> u32 {
 
 fn copy_stats_history(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     history: usize,
 ) -> bool {
@@ -265,7 +265,7 @@ fn copy_stats_history(
 
 pub(super) fn copy_stats_channels(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     values: Array,
 ) -> bool {
     let lengths = [32, 8, 8, 8, 72, 8, 8, 8, 40];
@@ -305,7 +305,7 @@ pub(super) fn copy_stats_channels(
 
 fn copy_stats_pass(
     job: &mut AirStatsJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
@@ -315,7 +315,7 @@ fn copy_stats_pass(
 
 fn copy_stats_pass_mode(
     job: &mut AirStatsJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; AIR_STATS_N],
@@ -331,11 +331,12 @@ fn copy_stats_pass_mode(
 
 fn copy_stats_owners(
     log: &mut RawLog<AIR_STATS_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) {
-    use engine_native::{ccountry, cstrategic_air, cstrategic_air_manager};
+    use engine_native::ccountry;
+    use engine_native_air::{cstrategic_air, cstrategic_air_manager};
     let countries = match sspan(
         log,
         memory,

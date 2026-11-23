@@ -1,5 +1,6 @@
 use crate::territory_changes::Changes;
-use engine_native::{cprovince::Capture, cprovince::carry::Counts, walk::Outcome};
+use engine_native::cprovince::{Capture, carry::Counts};
+use engine_native_memory::walk::Outcome;
 use std::{
     cell::Cell,
     sync::atomic::{AtomicU64, Ordering},
@@ -10,7 +11,7 @@ static ROWS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 pub fn walk(
     capture: &mut Capture,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
 ) -> Outcome {
@@ -116,7 +117,7 @@ fn record(counts: Counts) {
 mod tests {
     use super::*;
     use crate::territory_changes::Domain;
-    use engine_native::{controller_areas, cprovince::carry::RowStore};
+    use engine_native::cprovince::{controller_areas, carry::RowStore};
 
     fn stores(provinces: bool, areas: bool) -> Capture {
         let mut capture = Capture::try_with_capacity(2, 0, 0).unwrap();

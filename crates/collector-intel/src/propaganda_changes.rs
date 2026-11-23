@@ -7,7 +7,7 @@ use engine_intelligence::{
     propaganda_history::{self as native, Effort, Ring},
     strategic_operatives,
 };
-use engine_native::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
 use std::{
     ops::Range,
     ptr,
@@ -797,7 +797,7 @@ mod tests {
                 ..Append::default()
             });
         struct OnlyChanged<'a> {
-            memory: engine_native::memory::SliceMemory<'a>,
+            memory: engine_native_memory::memory::SliceMemory<'a>,
             header: usize,
             effort: usize,
         }

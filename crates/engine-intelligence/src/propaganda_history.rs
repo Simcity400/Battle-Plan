@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, memory::Raw, read};
+use engine_native_memory::{Memory, memory::Raw, read};
 
 pub const HISTORY: usize = 0xb8;
 pub const WEEKLY_DRIFT: usize = 0x130;

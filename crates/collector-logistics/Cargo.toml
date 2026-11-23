@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true
@@ -36,7 +37,7 @@ collector-primitives = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

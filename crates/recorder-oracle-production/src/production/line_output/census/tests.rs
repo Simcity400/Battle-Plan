@@ -106,8 +106,11 @@ fn restarted_observation_duplicates_and_unavailable_reads_are_not_passed() {
 
 #[test]
 fn live_row_purposes_follow_their_line_kind() {
-    use engine_native::cequipment_production_line::{
-        KIND_MILITARY, KIND_NAVAL, KIND_RAILWAY_GUN, KIND_SHIP_REFIT,
+    use engine_native::cproduction_status::equipment_line::{
+        KIND_MILITARY,
+        KIND_NAVAL,
+        KIND_RAILWAY_GUN,
+        KIND_SHIP_REFIT,
     };
     let with = |kind: u8, purpose: OutputPurpose| {
         let mut publication = frame(124, true, &[1], &[(1, false)]);

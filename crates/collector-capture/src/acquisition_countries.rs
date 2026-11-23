@@ -1,5 +1,7 @@
 use collector_states::acquisition_gather::{Report as GatherReport, Request as GatherRequest};
-use engine_native::{Memory, ccountry, country_memory::Cache, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
+use engine_native_intelligence::country_memory::Cache;
 
 pub(crate) struct Request {
     countries: engine_allocation::SharedBox<Cache>,
@@ -133,12 +135,12 @@ impl Request {
         let begin = collector_primitives::clock::qpc();
         if let Some(naming) = &mut self.naming {
             naming.appearance.raw.begin(naming.hour);
-            if let engine_native::country_memory::SeedStatus::Unavailable { reason } =
+            if let engine_native_intelligence::country_memory::SeedStatus::Unavailable { reason } =
                 cached.seed_status()
             {
                 naming.appearance.raw.link_controls(Err(reason));
                 naming.appearance.raw.table(
-                    engine_native::raw_country_observations::Source::Countries,
+                    engine_native_memory::raw_country_observations::Source::Countries,
                     Outcome::Unavailable { reason },
                 );
             }
@@ -176,7 +178,7 @@ impl Request {
         drop(_links_reads);
         if let Some(naming) = &mut self.naming {
             naming.appearance.raw.table(
-                engine_native::raw_country_observations::Source::Countries,
+                engine_native_memory::raw_country_observations::Source::Countries,
                 countries,
             );
             let carry = naming
@@ -282,9 +284,10 @@ impl TemplatesRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{
-        cconvoys, cgame_state, cpolitical_status, memory::SliceMemory, msvc_string,
-    };
+    use engine_native_parts::cconvoys;
+    use engine_native::cgame_state;
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
+    use engine_native_politics::cpolitical_status;
     use std::cell::RefCell;
 
     const STATE: usize = 0x1000;
@@ -351,16 +354,16 @@ mod tests {
         put(
             &mut bytes,
             STATUS,
-            &(cpolitical_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            STATUS + cpolitical_status::COUNTRY,
+            STATUS + engine_native_parts::cpolitical_status_layout::COUNTRY,
             &(COUNTRY as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            STATUS + cpolitical_status::POLITICAL_POWER,
+            STATUS + engine_native_parts::cpolitical_status_layout::POLITICAL_POWER,
             &(-4_294_967_301_i64).to_le_bytes(),
         );
         bytes
@@ -406,7 +409,7 @@ mod tests {
     #[test]
     fn accounting_charges_shared_seed_once_and_preserves_single_table_reads() {
         use collector_memory::read_accounting::{self, Capture};
-        use engine_native::{memory::CountedMemory, memory::ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, ReadCounts};
         use replay_data::rows::TableId;
 
         let bytes = fixture();

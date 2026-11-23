@@ -69,7 +69,7 @@ mod tests {
     use super::*;
     use crate::rows::{LexicalTokenRow, ModifierDefinitionRow};
 
-    const CLAMP_MAXIMUM: u32 = engine_native::modifier_definition::CLAMP_MAXIMUM;
+    const CLAMP_MAXIMUM: u32 = engine_native_parts::modifier_definition::CLAMP_MAXIMUM;
     const DAILY: u32 = engine_executable::modifier_keys::POWER_BALANCE_DAILY;
     const WEEKLY: u32 = engine_executable::modifier_keys::POWER_BALANCE_WEEKLY;
     const GATED: u32 = 0x400;

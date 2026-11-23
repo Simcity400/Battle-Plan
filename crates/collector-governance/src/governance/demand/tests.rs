@@ -1,9 +1,9 @@
 use super::*;
 use engine_decisions::cdecision;
-use engine_native::{
-    ccountry_leader, cdynamic_modifier, cgame_state, cidea, cideology_group, cpolitical_status,
-    memory::SliceMemory, walk::Outcome,
-};
+use engine_native_politics::{ccountry_leader, cpolitical_status};
+use engine_native_parts::{cdynamic_modifier, cidea, cideology_group};
+use engine_native::cgame_state;
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 use engine_stability::dynamic_modifier_entry;
 
 const BASE: usize = 0x1_4000_0000;
@@ -78,7 +78,7 @@ impl World {
             world.u32(entry + 16, [i32::MIN as u32, 17][ordinal]);
         }
         let leader = world.alloc(ccountry_leader::LEADER_ID + 4);
-        world.u64(leader, (BASE + ccountry_leader::VTABLE_RVA.0) as u64);
+        world.u64(leader, (BASE + engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0) as u64);
         world.u32(leader + ccountry_leader::LEADER_ID, (-17_i32) as u32);
         let leaders = world.alloc(2 * 8);
         world.u64(leaders, leader as u64);
@@ -107,8 +107,8 @@ impl World {
             world.u32(country + ccountry::ID, id as u32);
             let status = world.alloc(0x110);
             world.u64(country + ccountry::POLITICAL_STATUS, status as u64);
-            world.u64(status, (BASE + cpolitical_status::VTABLE_RVA.0) as u64);
-            world.u64(status + cpolitical_status::COUNTRY, country as u64);
+            world.u64(status, (BASE + engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0) as u64);
+            world.u64(status + engine_native_parts::cpolitical_status_layout::COUNTRY, country as u64);
             world.array(status + cpolitical_status::IDEAS, active_ideas, 2);
             world.array(status + cpolitical_status::TIMED_IDEAS, timed_ideas, 2);
             let parties = world.alloc(PARTIES * 8);
@@ -116,13 +116,13 @@ impl World {
             for (ordinal, &ideology) in ideologies.iter().enumerate() {
                 let party = world.alloc(0xa0);
                 world.u64(parties + ordinal * 8, party as u64);
-                world.u64(party, (BASE + cpolitical_party::VTABLE_RVA.0) as u64);
-                world.u32(party + cpolitical_party::ID, ordinal as u32);
-                world.u64(party + cpolitical_party::IDEOLOGY_GROUP, ideology as u64);
+                world.u64(party, (BASE + engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0) as u64);
+                world.u32(party + engine_native_parts::cpolitical_party_layout::ID, ordinal as u32);
+                world.u64(party + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, ideology as u64);
                 world.u32(party + cpolitical_party::TAG, id as u32);
                 world.text(party + cpolitical_party::NAME);
                 world.text(party + cpolitical_party::LONG_NAME);
-                world.array(party + cpolitical_party::COUNTRY_LEADERS, leaders, 2);
+                world.array(party + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS, leaders, 2);
             }
             let decisions = world.alloc(cdecision_status::RANDOM_ITEMS + 16);
             let random = world.alloc(cdecision_status::RANDOM_ITEM_STRIDE * 2);

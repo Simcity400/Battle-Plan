@@ -152,7 +152,7 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
             .flatten()
             .flat_map(u32::to_le_bytes)
             .collect();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000 + engine_native::cgame_state::LOCAL_PLAYER_COUNTRY,
             bytes: &bytes,
         };
@@ -362,7 +362,7 @@ fn quiet_region_access_hours_publish_the_held_read() {
             |rows| changes::assign(rows, &[row]),
         );
     }
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };

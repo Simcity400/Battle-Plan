@@ -20,7 +20,7 @@ pub struct NavalJob {
     pub(super) reserved_index: collector_raw::raw::RecordedCache,
     pub game_state: usize,
     pub(super) theatres_active: bool,
-    pub(super) wing_sources: Vec<ctheatre::WingMembership>,
+    pub(super) wing_sources: Vec<engine_native_air::cair_wing::WingMembership>,
     pub(super) wing_outcome: Option<Outcome>,
     pub(super) wing_required: usize,
     pub(super) wings_follow: bool,
@@ -274,7 +274,7 @@ fn npool_u32(log: &RawLog<NAVAL_PACK_N>, start: usize) -> u32 {
 
 fn nspan(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -284,7 +284,7 @@ fn nspan(
 
 fn theatre_link(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     links: &Array,
     countries: u32,
     raw: u32,
@@ -304,7 +304,7 @@ fn theatre_link(
 
 fn copy_naval_air_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     theatres: Array,
     links: &Array,
 ) {
@@ -419,7 +419,7 @@ fn copy_naval_air_theatres(
 pub fn copy_naval_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
     roster_snapshot: &mut engine_native::ccountry::RosterSnapshot,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     details_active: bool,
@@ -440,13 +440,14 @@ pub fn copy_naval_theatres(
 fn copy_naval_theatres_with_root(
     log: &mut RawLog<NAVAL_PACK_N>,
     roster_snapshot: &mut engine_native::ccountry::RosterSnapshot,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     details_active: bool,
-    reserved: engine_native::ccountry::ReservedCountryObservation,
+    reserved: engine_native_memory::country_identity::ReservedCountryObservation,
 ) {
-    use engine_native::{carmy_group, ccountry};
+    use engine_native_parts::carmy_group;
+    use engine_native::ccountry;
     let mask = if details_active {
         THEATRE_MASK
     } else {
@@ -604,14 +605,15 @@ fn copy_naval_theatres_with_root(
 #[allow(clippy::too_many_arguments)]
 fn copy_country_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     links_array: &Array,
-    roster: Option<&[Option<engine_native::ccountry::Country>]>,
+    roster: Option<&[Option<engine_native_memory::country_identity::Country>]>,
     details_active: bool,
     mask: u32,
 ) -> bool {
-    use engine_native::{ccountry, ctheater_group};
+    use engine_native::ccountry;
+    use engine_native_parts::ctheater_group;
     for theatres_off in [ccountry::THEATRES, ccountry::AIR_THEATRES] {
         if !details_active && theatres_off == ccountry::AIR_THEATRES {
             break;
@@ -793,11 +795,11 @@ fn copy_country_theatres(
 
 fn copy_theatre_name(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     name_address: Option<usize>,
     mask: u32,
 ) {
-    use engine_native::msvc_string;
+    use engine_native_memory::msvc_string;
     let header_addr = match name_address {
         Some(addr) => addr,
         None => return,
@@ -851,7 +853,7 @@ const OOB_ROOT_SPANS: [(usize, usize); 8] = [
 
 fn copy_oob_root_spans(
     log: &mut RawLog<NAVAL_PACK_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
 ) -> [Option<usize>; OOB_ROOT_SPANS.len()] {
     let mut starts = [None; OOB_ROOT_SPANS.len()];
@@ -883,7 +885,7 @@ fn copy_oob_root_spans(
 
 fn copy_oob_root(
     job: &mut NavalJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> bool {
@@ -996,7 +998,7 @@ fn copy_oob_root(
         let children_header = match nspan(
             log,
             memory,
-            pointer.checked_add(engine_native::carmy_group::MEMBER_DATA),
+            pointer.checked_add(engine_native_parts::carmy_group::MEMBER_DATA),
             16,
             OOB_MASK,
         ) {
@@ -1037,7 +1039,7 @@ fn copy_oob_root(
 
 const OOB_MEMBER_WORST: (usize, usize) = (2, 40);
 
-fn take_oob_entries<M: engine_native::Memory>(
+fn take_oob_entries<M: engine_native_memory::Memory>(
     log: &mut RawLog<NAVAL_PACK_N>,
     memory: &M,
     array: &Array,
@@ -1077,8 +1079,8 @@ fn take_oob_entries<M: engine_native::Memory>(
         }
         let stopped = completed < run;
         if stopped {
-            engine_native::batch_fallback::record(
-                engine_native::batch_fallback::Batch::OrderOfBattle,
+            engine_native_memory::batch_fallback::record(
+                engine_native_memory::batch_fallback::Batch::OrderOfBattle,
             );
         }
         for &pointer in &pointers[..completed] {
@@ -1091,7 +1093,7 @@ fn take_oob_entries<M: engine_native::Memory>(
     true
 }
 
-fn take_oob_member<M: engine_native::Memory>(
+fn take_oob_member<M: engine_native_memory::Memory>(
     log: &mut RawLog<NAVAL_PACK_N>,
     memory: &M,
     unit: usize,
@@ -1101,8 +1103,8 @@ fn take_oob_member<M: engine_native::Memory>(
         match log.take_scattered(memory, [unit, backlink], [32, 8], [OOB_MASK; 2]) {
             Some((_, 1..)) => return,
             Some(_) => {
-                engine_native::batch_fallback::record(
-                    engine_native::batch_fallback::Batch::OrderOfBattle,
+                engine_native_memory::batch_fallback::record(
+                    engine_native_memory::batch_fallback::Batch::OrderOfBattle,
                 );
                 let _ = nspan(log, memory, Some(backlink), 8, OOB_MASK);
                 return;
@@ -1114,8 +1116,11 @@ fn take_oob_member<M: engine_native::Memory>(
     let _ = nspan(log, memory, backlink, 8, OOB_MASK);
 }
 
-fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native::Memory, base: usize) -> bool {
-    use engine_native::{creference_registry as registry, reference_bucket as bucket};
+fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native_memory::Memory, base: usize) -> bool {
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
     let log = &mut job.log;
     let table = match nspan(
         log,
@@ -1170,7 +1175,7 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native::Memory, ba
         Some(v) => v as u64,
         None => return false,
     };
-    let army_group_vtable = match engine_sites::at(base, engine_native::carmy_group::VTABLE_RVA) {
+    let army_group_vtable = match engine_sites::at(base, engine_native_parts::carmy_group::VTABLE_RVA) {
         Some(v) => v as u64,
         None => return false,
     };
@@ -1245,7 +1250,7 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine_native::Memory, ba
     true
 }
 
-pub fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine_native::Memory, base: usize) {
+pub fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine_native_memory::Memory, base: usize) {
     job.oob_theatres.clear();
     job.oob_theatre_positions.clear();
     job.oob_theatres_required = 0;
@@ -1483,7 +1488,7 @@ fn copy_reserved_land_headers(job: &mut NavalJob, memory: &impl Memory, base: us
 
 fn copy_naval_pass(
     job: &mut NavalJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     ticks: &mut [u64; NAVAL_PACK_N],

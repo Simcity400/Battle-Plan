@@ -14,4 +14,4 @@ The character's role map supplies advisor occurrences, including idea and slot s
 
 Observe cached numeric modifiers and occupied tooltip keys independently of role definitions. Role rebuilds combine cleared trait-derived entries with independent blocks. Only the character's role-writer certificate permits carry-forward between hours. Sizing uses observed headers and never claims payload without reading it. A slot with its occupied byte clear contributes no tooltip key even if it retains stale text. Append tooltip keys only after the complete role and numeric-cache prefix fits, keeping accepted rows on optional extension failure.
 
-[Ace roster](../../crates/engine-native/src/cace.rs) · [Advisor role and cache readers](../../crates/engine-native/src/cadvisor.rs)
+[Ace roster](../../crates/engine-native-air/src/cace.rs) · [Advisor role and cache readers](../../crates/engine-native/src/cadvisor.rs)

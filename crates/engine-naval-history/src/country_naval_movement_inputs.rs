@@ -1,9 +1,8 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, cstrategic_navy_manager,
-    read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccountry, cgame_state};
+use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 
 pub const MANAGER: usize = 0x60;
 
@@ -196,8 +195,8 @@ impl NavyInputs {
         self.capture_launch_buffer(
             memory,
             base,
-            crate::walk::Buffer::Growing(scratch),
-            crate::walk::Buffer::Growing(output),
+            engine_native_memory::walk::Buffer::Growing(scratch),
+            engine_native_memory::walk::Buffer::Growing(output),
         )
     }
 
@@ -205,8 +204,8 @@ impl NavyInputs {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        scratch: crate::walk::Buffer<'_, ccountry::launch_sources::Occurrence>,
-        output: crate::walk::Buffer<'_, ccountry::launch_sources::LaunchNavalBase>,
+        scratch: engine_native_memory::walk::Buffer<'_, ccountry::launch_sources::Occurrence>,
+        output: engine_native_memory::walk::Buffer<'_, ccountry::launch_sources::LaunchNavalBase>,
     ) -> ccountry::launch_sources::NavalCapture {
         match self.launch_navy.take() {
             Some(navy) => {

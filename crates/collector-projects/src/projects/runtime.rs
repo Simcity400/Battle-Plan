@@ -182,7 +182,7 @@ impl Runtime {
                 {
                     let pending = pointer
                         .checked_add(nproject_cproject::PENDING_REWARD)
-                        .and_then(|address| engine_native::read::<u64>(memory, address))
+                        .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                         .and_then(|value| usize::try_from(value).ok());
                     held.pending_known = false;
                     if let Some(pending) = pending {
@@ -191,7 +191,7 @@ impl Runtime {
                             held.pending_ordinal = None;
                             held.pending_known = true;
                         } else if let Some(header) =
-                            engine_native::read::<[u8; 12]>(memory, pending).filter(|header| {
+                            engine_native_memory::read::<[u8; 12]>(memory, pending).filter(|header| {
                                 engine_sites::at(base, nproject_cproject::REWARD_VTABLE_RVA)
                                     .is_some_and(|expected| {
                                         u64::from_le_bytes(header[..8].try_into().unwrap())
@@ -234,8 +234,8 @@ impl Runtime {
                     base,
                     engine_scripts::cvariables::Scope::Global,
                     store,
-                    engine_native::walk::Buffer::Growing(&mut held.entries),
-                    engine_native::walk::Buffer::Growing(&mut held.names),
+                    engine_native_memory::walk::Buffer::Growing(&mut held.entries),
+                    engine_native_memory::walk::Buffer::Growing(&mut held.names),
                     &mut engine_scripts::cvariables::Fresh,
                 );
                 if let Ok((read, seed)) = read
@@ -710,7 +710,7 @@ mod tests {
             if address == 0x1000 + nproject_cproject::PENDING_REWARD {
                 self.pending_reads.set(self.pending_reads.get() + 1);
             }
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: self.bytes,
             }

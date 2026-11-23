@@ -1,7 +1,20 @@
-use crate::{
-    Memory, carmy, carmy_leader, ccountry, cgame_state, cland_border_war_combat,
-    cland_border_war_combatant, cland_combat as combat, cland_combatant as side, corders_group,
-    cpdx_array::Array, cprovince, cunit, cunit_leader, cunit_leader_skill, read,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
+    carmy,
+    carmy_leader,
+    ccountry,
+    cgame_state,
+    cland_combat as combat,
+    cland_combatant as side,
+    corders_group,
+    cprovince,
+    cunit,
+    cunit_leader,
+};
+use engine_native_parts::{
+    cland_border_war_combat,
+    cland_border_war_combatant,
+    cunit_leader_skill,
 };
 use engine_sites::Rva;
 
@@ -18,14 +31,14 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
         .ok_or("land event sizing address overflow")?;
     let registry =
         Array::read(memory, registry_at, 8).ok_or("combat registry unreadable or invalid")?;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         registry,
         "land event sizing combat pointer unreadable",
         |_, pointer| {
             let vtable = field::<u64>(memory, pointer, 0)?;
             if Some(vtable)
-                == engine_sites::at(base, crate::cnaval_combat::VTABLE_RVA).map(|p| p as u64)
+                == engine_sites::at(base, engine_native::cnaval_combat::VTABLE_RVA).map(|p| p as u64)
             {
                 return Ok(());
             }
@@ -56,7 +69,7 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
             .ok_or("land event sizing division address overflow")?;
         let divisions =
             Array::read(memory, roster_at, 8).ok_or("land event sizing division roster invalid")?;
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             divisions,
             "land event sizing division pointer unreadable",
@@ -103,9 +116,9 @@ const RESULT_SIDE_SPANS: [(usize, usize); 3] = [
     (side::PROGRESS, size_of::<i64>()),
     (side::OUTCOME_FLAGS, size_of::<u8>()),
 ];
-const RESULT_SIDE_FIELDS: [crate::memory::RecordField; 3] =
-    crate::memory::packed_fields(RESULT_SIDE_SPANS);
-const RESULT_SIDE_BYTES: usize = crate::memory::packed_stride(RESULT_SIDE_SPANS);
+const RESULT_SIDE_FIELDS: [engine_native_memory::memory::RecordField; 3] =
+    engine_native_memory::memory::packed_fields(RESULT_SIDE_SPANS);
+const RESULT_SIDE_BYTES: usize = engine_native_memory::memory::packed_stride(RESULT_SIDE_SPANS);
 const RESULT_PROGRESS: usize = RESULT_SIDE_FIELDS[1].destination_offset;
 const RESULT_FLAGS: usize = RESULT_SIDE_FIELDS[2].destination_offset;
 const _: () = {
@@ -274,14 +287,19 @@ pub fn final_inputs(
                 .unwrap(),
         ) as usize,
     ];
-    use crate::memory::{RecordLayout, RecordSources, packed_fields, packed_stride};
+    use engine_native_memory::memory::{
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+        packed_stride,
+    };
     const SPANS: [(usize, usize); 4] = [
         (0, size_of::<u64>()),
         (side::COMBAT, size_of::<u64>()),
         (side::PROGRESS, size_of::<i64>()),
         (side::OUTCOME_FLAGS, size_of::<u8>()),
     ];
-    const FIELDS: [crate::memory::RecordField; 4] = packed_fields(SPANS);
+    const FIELDS: [engine_native_memory::memory::RecordField; 4] = packed_fields(SPANS);
     const STRIDE: usize = packed_stride(SPANS);
     const BACKLINK: usize = FIELDS[1].destination_offset;
     const PROGRESS: usize = FIELDS[2].destination_offset;
@@ -323,7 +341,7 @@ pub fn final_inputs(
     Ok(out)
 }
 #[derive(Clone, Copy)]
-pub struct NullTagPlan(crate::msvc_string::Descriptor);
+pub struct NullTagPlan(engine_native_memory::msvc_string::Descriptor);
 impl NullTagPlan {
     pub fn country(memory: &impl Memory, base: usize, raw: u32) -> Result<Self, &'static str> {
         if raw == 0 {
@@ -333,28 +351,28 @@ impl NullTagPlan {
         let tags = Array::read(
             memory,
             state
-                .checked_add(crate::cgame_state::COUNTRY_TAGS)
+                .checked_add(engine_native::cgame_state::COUNTRY_TAGS)
                 .ok_or("history tags address overflow")?,
-            crate::msvc_string::STRIDE,
+            engine_native_memory::msvc_string::STRIDE,
         )
         .ok_or("history tag array invalid")?;
         let at = tags
-            .element(raw, crate::msvc_string::STRIDE)
+            .element(raw, engine_native_memory::msvc_string::STRIDE)
             .ok_or("history raw tag out of bounds")?;
-        Ok(Self(crate::msvc_string::Descriptor::read(memory, at)?))
+        Ok(Self(engine_native_memory::msvc_string::Descriptor::read(memory, at)?))
     }
     fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let db = field::<u64>(
             memory,
-            module(base, crate::ccountry_database::SINGLETON_RVA)?,
+            module(base, engine_native_parts::ccountry_database::SINGLETON_RVA)?,
             0,
         )? as usize;
-        let tags = Array::read(memory, db, crate::msvc_string::STRIDE)
+        let tags = Array::read(memory, db, engine_native_memory::msvc_string::STRIDE)
             .ok_or("null history tag array invalid")?;
         let at = tags
-            .element(0, crate::msvc_string::STRIDE)
+            .element(0, engine_native_memory::msvc_string::STRIDE)
             .ok_or("null history tag absent")?;
-        Ok(Self(crate::msvc_string::Descriptor::read(memory, at)?))
+        Ok(Self(engine_native_memory::msvc_string::Descriptor::read(memory, at)?))
     }
     pub fn words(&self) -> usize {
         1 + self.0.len.div_ceil(8)
@@ -441,7 +459,7 @@ pub const BORDER_FINALIZE_RVA: Rva = Rva(0x148a4b0);
 pub const BORDER_TERMINATE_RVA: Rva = Rva(0x148b950);
 pub const BORDER_TERMINATE_RETURNS: [Rva; 2] = [Rva(0x148a51d), Rva(0x148a52d)];
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -573,7 +591,7 @@ impl ResultPlan {
             qword(combat::ATTACKER) as usize,
             qword(combat::DEFENDER) as usize,
         ];
-        use crate::memory::{RecordLayout, RecordSources};
+        use engine_native_memory::memory::{RecordLayout, RecordSources};
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&RESULT_SIDE_FIELDS, RESULT_SIDE_BYTES).unwrap();
         let mut blocks = [0u8; 2 * RESULT_SIDE_BYTES];
@@ -764,14 +782,14 @@ impl DestructionPlan {
             false
         } else {
             let diplomacy =
-                field::<u64>(memory, victim.pointer, crate::ccountry::DIPLOMACY_STATUS)? as usize;
+                field::<u64>(memory, victim.pointer, engine_native::ccountry::DIPLOMACY_STATUS)? as usize;
             identity(
                 memory,
                 base,
                 diplomacy,
-                crate::cdiplomacy_status::VTABLE_RVA,
+                engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
             )?;
-            if field::<u64>(memory, diplomacy, crate::cdiplomacy_status::COUNTRY)?
+            if field::<u64>(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?
                 != victim.pointer as u64
             {
                 return Err("destruction diplomacy owner differs");
@@ -779,7 +797,7 @@ impl DestructionPlan {
             let statuses = Array::read(
                 memory,
                 diplomacy
-                    .checked_add(crate::cdiplomacy_status::RELATIONS)
+                    .checked_add(engine_native_parts::cdiplomacy_status_layout::RELATIONS)
                     .ok_or("destruction relation address overflow")?,
                 8,
             )
@@ -797,19 +815,19 @@ impl DestructionPlan {
             if status == 0 {
                 false
             } else {
-                identity(memory, base, status, crate::crelation_status::VTABLE_RVA)?;
-                if field::<u64>(memory, status, crate::crelation_status::DIPLOMACY_STATUS)?
+                identity(memory, base, status, engine_native::crelation::status::VTABLE_RVA)?;
+                if field::<u64>(memory, status, engine_native::crelation::status::DIPLOMACY_STATUS)?
                     != diplomacy as u64
                 {
                     return Err("destruction relation owner differs");
                 }
                 let war =
-                    field::<u64>(memory, status, crate::crelation_status::WAR_RELATION)? as usize;
+                    field::<u64>(memory, status, engine_native::crelation::status::WAR_RELATION)? as usize;
                 if war == 0 {
                     false
                 } else {
-                    identity(memory, base, war, crate::cwar_relation::VTABLE_RVA)?;
-                    field::<u8>(memory, war, crate::crelation::RETIRED)? == 0
+                    identity(memory, base, war, engine_native::cwar_relation::VTABLE_RVA)?;
+                    field::<u8>(memory, war, engine_native::crelation::RETIRED)? == 0
                 }
             }
         };
@@ -893,7 +911,7 @@ mod tests {
 
     #[test]
     fn word_demand_presizes_destroyed_divisions_and_grows_with_combat_references() {
-        let mut world = crate::ccountry::synthetic::World::new(0, 2, ccountry::DIVISIONS + 16);
+        let mut world = engine_native::ccountry::synthetic::World::new(0, 2, ccountry::DIVISIONS + 16);
         for slot in 1..=2 {
             let army = world.alloc(cunit::COMBAT_REFERENCE_DATA + 16);
             let roster = world.alloc(8);
@@ -907,7 +925,7 @@ mod tests {
         );
         let roster =
             Array::read(&world.memory(), world.object(1) + ccountry::DIVISIONS, 8).unwrap();
-        let army = crate::read::<u64>(&world.memory(), roster.data).unwrap() as usize;
+        let army = engine_native_memory::read::<u64>(&world.memory(), roster.data).unwrap() as usize;
         let combats = world.alloc(5 * 8);
         world.array(army + cunit::COMBAT_REFERENCE_DATA, combats, 5);
         assert_eq!(
@@ -974,8 +992,8 @@ mod tests {
                 &91i32.to_le_bytes(),
             );
             let pool = observer + crate::cstats_observer::EQUIPMENT_LOSSES;
-            f.q(pool, crate::cequipment_variant_pool::VTABLE_RVA.0 as u64);
-            f.array(pool + crate::cequipment_variant_pool::ITEMS, 0, 0);
+            f.q(pool, engine_native::cequipment_variant::pool::VTABLE_RVA.0 as u64);
+            f.array(pool + engine_native::cequipment_variant::pool::ITEMS, 0, 0);
         }
         let plan = LossesPlan::read(&f, 0, 0x2000).unwrap();
         let mut words = Vec::new();
@@ -991,14 +1009,14 @@ mod tests {
     #[test]
     fn native_result_plan_copies_transient_lists_and_refuses_first_fault() {
         let mut f = Fixture::default();
-        f.q(crate::ccountry_database::SINGLETON_RVA.0, 0xb000);
+        f.q(engine_native_parts::ccountry_database::SINGLETON_RVA.0, 0xb000);
         f.array(0xb000, 0xc000, 1);
         f.put(0xc000, &[0; 32]);
         f.put(0xc000 + 24, &15u64.to_le_bytes());
         f.q(cgame_state::SINGLETON_RVA.0, 0x1000);
         f.put(0x1000 + cgame_state::CURRENT_HOUR, &80i32.to_le_bytes());
-        f.array(0x1000 + crate::cgame_state::COUNTRIES, 0x9000, 3);
-        f.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0xa000, 3);
+        f.array(0x1000 + engine_native::cgame_state::COUNTRIES, 0x9000, 3);
+        f.array(0x1000 + engine_native::cgame_state::COUNTRY_LINKS, 0xa000, 3);
         f.q(0x2000, combat::VTABLE_RVA.0 as u64);
         f.put(0x2000 + combat::HANDLE, &[0; 0x30]);
         f.q(0x2000 + combat::HANDLE, 0x8000_0001_0000_003e);
@@ -1043,7 +1061,7 @@ mod tests {
         assert_eq!(words[6], 2);
         assert!(words.contains(&u64::from(0x8000_0001u32)));
         f.put(0x6000, &1u32.to_le_bytes());
-        f.array(0x1000 + crate::cgame_state::COUNTRY_TAGS, 0x18000, 3);
+        f.array(0x1000 + engine_native::cgame_state::COUNTRY_TAGS, 0x18000, 3);
         f.put(0x18020, &[0; 32]);
         f.put(0x18020, b"raw-alias");
         f.q(0x18030, 9);
@@ -1060,7 +1078,7 @@ mod tests {
         history.copy(&f, |v| end.push(v)).unwrap();
         assert_eq!(end.len() + 1, size);
         assert_eq!(&end[..4], &[5, 0x8000_0001_0000_003e, 0, 0]);
-        f.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0xa000, 6);
+        f.array(0x1000 + engine_native::cgame_state::COUNTRY_LINKS, 0xa000, 6);
         f.q(0x3000 + side::COUNTRIES, 0x1a000);
         f.q(0x3000 + side::COUNTRIES + 8, 0x1a080);
         f.put(0x3000 + side::COUNTRIES + 16, &5i32.to_le_bytes());
@@ -1090,8 +1108,8 @@ mod tests {
         let mut f = Fixture::default();
         f.q(cgame_state::SINGLETON_RVA.0, 0x1000);
         f.put(0x1000 + cgame_state::CURRENT_HOUR, &80i32.to_le_bytes());
-        f.array(0x1000 + crate::cgame_state::COUNTRIES, 0x9000, 3);
-        f.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0xa000, 3);
+        f.array(0x1000 + engine_native::cgame_state::COUNTRIES, 0x9000, 3);
+        f.array(0x1000 + engine_native::cgame_state::COUNTRY_LINKS, 0xa000, 3);
         for (slot, p) in [(1usize, 0xd000usize), (2, 0xe000)] {
             f.q(0x9000 + slot * 8, p as u64);
             f.put(0xa000 + slot * 4, &(slot as u32).to_le_bytes());
@@ -1110,15 +1128,15 @@ mod tests {
         f.q(0x5000, carmy::VTABLE_RVA.0 as u64);
         f.q(0x5000 + cunit::HANDLE, 0x8000_0002_0000_1269);
         f.q(0xd000 + ccountry::DIPLOMACY_STATUS, 0xf000);
-        f.q(0xf000, crate::cdiplomacy_status::VTABLE_RVA.0 as u64);
-        f.q(0xf000 + crate::cdiplomacy_status::COUNTRY, 0xd000);
-        f.array(0xf000 + crate::cdiplomacy_status::RELATIONS, 0x10000, 3);
+        f.q(0xf000, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+        f.q(0xf000 + engine_native_parts::cdiplomacy_status_layout::COUNTRY, 0xd000);
+        f.array(0xf000 + engine_native_parts::cdiplomacy_status_layout::RELATIONS, 0x10000, 3);
         f.q(0x10010, 0x11000);
-        f.q(0x11000, crate::crelation_status::VTABLE_RVA.0 as u64);
-        f.q(0x11000 + crate::crelation_status::DIPLOMACY_STATUS, 0xf000);
-        f.q(0x11000 + crate::crelation_status::WAR_RELATION, 0x12000);
-        f.q(0x12000, crate::cwar_relation::VTABLE_RVA.0 as u64);
-        f.put(0x12000 + crate::crelation::RETIRED, &[0]);
+        f.q(0x11000, engine_native::crelation::status::VTABLE_RVA.0 as u64);
+        f.q(0x11000 + engine_native::crelation::status::DIPLOMACY_STATUS, 0xf000);
+        f.q(0x11000 + engine_native::crelation::status::WAR_RELATION, 0x12000);
+        f.q(0x12000, engine_native::cwar_relation::VTABLE_RVA.0 as u64);
+        f.put(0x12000 + engine_native::crelation::RETIRED, &[0]);
         f.array(0x2000 + cunit::COMBAT_REFERENCE_DATA, 0x14000, 2);
         for (slot, p, vt, handle) in [
             (0, 0x13000, combat::VTABLE_RVA, 0x8000_0003_0000_003e),
@@ -1143,7 +1161,7 @@ mod tests {
         let words = capture(&f, 0x5000);
         assert_eq!(&words[2..8], &[2, 2, 0x8000_0002_0000_1269, 17, 18, 80]);
         assert_eq!(&words[9..], &[0x8000_0003_0000_003e, 0x8000_0004_0000_ffff]);
-        f.put(0x12000 + crate::crelation::RETIRED, &[1]);
+        f.put(0x12000 + engine_native::crelation::RETIRED, &[1]);
         let words = capture(&f, 0);
         assert_eq!(&words[3..5], &[1, 0]);
         f.0.remove(&0x15000);

@@ -4,10 +4,10 @@ use crate::{
     political_status_changes::{self, Counts},
 };
 use engine_mutations::political_status_mutations::Domain;
-use engine_native::{
-    ccharacter, ccountry, ccountry_leader, cgame_state, cidea, cideology_group, cpolitical_party,
-    memory::SliceMemory, msvc_string,
-};
+use engine_native::{ccharacter, ccountry, cgame_state};
+use engine_native_parts::{cidea, cideology_group};
+use engine_native_memory::{memory::SliceMemory, msvc_string};
+use engine_native_politics::{ccountry_leader, cpolitical_party};
 use std::cell::RefCell;
 
 const GS: usize = 0;
@@ -114,8 +114,8 @@ impl World {
         self.word(at + ccountry::POLITICAL_STATUS, status as u64);
         self.int(at + ccountry::CAPITAL, 100 + index as i32);
         self.int(at + ccountry::ORIGINAL_CAPITAL, 200 + index as i32);
-        self.word(status, cpolitical_status::VTABLE_RVA.0 as u64);
-        self.word(status + cpolitical_status::COUNTRY, at as u64);
+        self.word(status, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0 as u64);
+        self.word(status + engine_native_parts::cpolitical_status_layout::COUNTRY, at as u64);
         self.word(
             status + cpolitical_status::PARTIES,
             party_array(index) as u64,
@@ -124,7 +124,7 @@ impl World {
         self.word(status + cpolitical_status::IDEAS, idea_array(index) as u64);
         self.word(status + cpolitical_status::IDEAS + 8, (2 << 32) | 2);
         self.word(
-            status + cpolitical_status::RULING_PARTY,
+            status + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
             party(index, 0) as u64,
         );
         self.int(status + cpolitical_status::LAST_ELECTION, 1_000);
@@ -135,9 +135,9 @@ impl World {
             let party = party(index, which);
             let ideology = ideology(index, which);
             self.word(party_array(index) + which * 8, party as u64);
-            self.word(party, cpolitical_party::VTABLE_RVA.0 as u64);
-            self.word(party + cpolitical_party::ID, id);
-            self.word(party + cpolitical_party::IDEOLOGY_GROUP, ideology as u64);
+            self.word(party, engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0 as u64);
+            self.word(party + engine_native_parts::cpolitical_party_layout::ID, id);
+            self.word(party + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, ideology as u64);
             self.word(ideology, cideology_group::VTABLE_RVA.0 as u64);
             self.word(ideology + cideology_group::ID, id);
             self.string(
@@ -155,11 +155,11 @@ impl World {
                 character(index, which),
             );
             let (head, node) = (map(index, which), map(index, which) + 0x40);
-            self.word(party + cpolitical_party::COUNTRY_LEADERS, vector as u64);
-            self.word(party + cpolitical_party::COUNTRY_LEADERS + 8, (1 << 32) | 1);
+            self.word(party + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS, vector as u64);
+            self.word(party + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS + 8, (1 << 32) | 1);
             self.word(vector, leader as u64);
-            self.word(leader, ccountry_leader::VTABLE_RVA.0 as u64);
-            self.word(leader + ccountry_leader::CHARACTER, character as u64);
+            self.word(leader, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0 as u64);
+            self.word(leader + engine_native_parts::ccountry_leader_layout::CHARACTER, character as u64);
             self.word(leader + ccountry_leader::LEADER_ID, 12 + which as u64);
             self.word(character, ccharacter::VTABLE_RVA.0 as u64);
             self.word(
@@ -229,8 +229,8 @@ fn classify(reads: &[(usize, usize)]) -> (usize, usize) {
                 s + cpolitical_status::LAST_ELECTION + 4,
             )
             || overlaps(
-                s + cpolitical_status::RULING_PARTY,
-                s + cpolitical_status::RULING_PARTY + 8,
+                s + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
+                s + engine_native_parts::cpolitical_status_layout::RULING_PARTY + 8,
             )
             || overlaps(s + 0x100, REGION)
         {
@@ -463,7 +463,7 @@ fn each_hooked_structure_write_walks_and_publishes_its_value() {
         }),
         ("ruling party", |world| {
             world.word(
-                status(1) + cpolitical_status::RULING_PARTY,
+                status(1) + engine_native_parts::cpolitical_status_layout::RULING_PARTY,
                 party(1, 1) as u64,
             )
         }),

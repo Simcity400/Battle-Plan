@@ -1,9 +1,15 @@
 
-use crate::{
-    Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
-    cland_combat as combat, cland_combatant as side, cnaval_combatant, cpdx_array::Array,
-    cprovince, cunit, read,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
+    carmy,
+    cgame_state,
+    cland_combat as combat,
+    cland_combatant as side,
+    cnaval_combatant,
+    cprovince,
+    cunit,
 };
+use engine_native_parts::{cland_border_war_combat, cland_border_war_combatant};
 use engine_sites::Rva;
 
 pub const RETURN_RVA: Rva = Rva(0x147fa46);
@@ -156,7 +162,7 @@ fn address(pointer: usize, offset: usize) -> Result<usize, &'static str> {
 fn module(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("combat wipe address overflow")
 }
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,

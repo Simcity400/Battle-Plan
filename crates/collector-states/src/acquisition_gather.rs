@@ -1,4 +1,4 @@
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 
 pub struct Request<B> {
     pub base: usize,

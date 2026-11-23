@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
@@ -72,7 +72,7 @@ pub fn capture_influences(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    buffers: &mut crate::naval_ship_modifier_inputs::InfluenceBuffers<'_>,
+    buffers: &mut engine_native_naval::naval_ship_modifier_inputs::InfluenceBuffers<'_>,
 ) -> Result<[usize; 2], &'static str> {
     authenticate(memory, base, pointer)?;
     let at = pointer
@@ -103,13 +103,13 @@ pub fn capture_influences(
                 .ok_or("naval result HQ wrapper overflow")?,
         )
         .ok_or("naval result HQ wrapper unreadable")? as usize;
-        let destination = crate::naval_ship_modifier_inputs::InfluenceBuffers {
+        let destination = engine_native_naval::naval_ship_modifier_inputs::InfluenceBuffers {
             sources: &mut *buffers.sources,
             terms: &mut *buffers.terms,
             lengths: &mut *buffers.lengths,
             required: &mut *buffers.required,
         };
-        crate::naval_ship_modifier_inputs::capture_influence(
+        engine_native_naval::naval_ship_modifier_inputs::capture_influence(
             memory,
             base,
             wrapper,
@@ -127,7 +127,7 @@ fn hq_range(
     begin: u64,
     end: u64,
 ) -> Result<(u64, u64, u64), &'static str> {
-    if crate::creference_registry::resolve(memory, base, leader)
+    if engine_native_parts::creference_registry::resolve(memory, base, leader)
         .map_err(|_| "naval result HQ commander lookup unreadable")?
         .is_none()
     {
@@ -143,7 +143,7 @@ pub fn visit_entries(
     air: bool,
     mut visit: impl FnMut(u32, usize) -> Result<(), &'static str>,
 ) -> Result<usize, &'static str> {
-    use crate::cpdx_array::Array;
+    use engine_native_memory::cpdx_array::Array;
     authenticate(memory, base, pointer)?;
     let address = pointer
         .checked_add(if air { 8 } else { MEMBERS })
@@ -191,7 +191,7 @@ pub(crate) fn authenticate(
 #[cfg(test)]
 mod detail_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::RefCell;
 
     const HQ: u64 = 0x1_0000_0001;
@@ -202,7 +202,7 @@ mod detail_tests {
     }
     impl Memory for HqMemory<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            if at == self.base + crate::creference_registry::LOW_ROOTS_RVA.0 + 8 {
+            if at == self.base + engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 8 {
                 out.copy_from_slice(&0x1000u64.to_le_bytes());
                 return true;
             }
@@ -214,7 +214,10 @@ mod detail_tests {
         }
     }
     fn live_hq(bytes: &mut Vec<u8>) {
-        use crate::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native_parts::{
+            creference_registry as registry,
+            reference_bucket as bucket,
+        };
         bytes.resize(bytes.len().max(0x1800), 0);
         let hash = HQ.rotate_left(32).wrapping_mul(registry::HASH_MULTIPLIER);
         let slot = ((hash >> 32) as u32 ^ hash as u32) & 7;
@@ -356,7 +359,7 @@ mod detail_tests {
         let mut required = [0; 2];
         let mut sources = Vec::new();
         let mut terms = Vec::new();
-        let mut buffers = crate::naval_ship_modifier_inputs::InfluenceBuffers {
+        let mut buffers = engine_native_naval::naval_ship_modifier_inputs::InfluenceBuffers {
             sources: &mut sources,
             terms: &mut terms,
             lengths: &mut lengths,
@@ -373,8 +376,16 @@ mod detail_tests {
 
     #[test]
     fn retained_influences_grow_and_preserve_duplicate_wrappers_and_fault_prefixes() {
-        use crate::naval_ship_modifier_inputs::{InfluenceBuffers, ModifierTerm, SourceRow};
-        use crate::{creference_registry as registry, modifier_definition as md, reference_bucket};
+        use engine_native_naval::naval_ship_modifier_inputs::{
+            InfluenceBuffers,
+            ModifierTerm,
+            SourceRow,
+        };
+        use engine_native_parts::{
+            creference_registry as registry,
+            modifier_definition as md,
+            reference_bucket,
+        };
         const BASE: usize = 0x1000_0000;
         const REFERENCE: u64 = 0x1_0000_0001;
         struct InfluenceMemory<'a>(&'a [u8]);
@@ -519,7 +530,7 @@ mod detail_tests {
                 &memory,
                 base,
                 0x100,
-                &mut crate::naval_ship_modifier_inputs::InfluenceBuffers {
+                &mut engine_native_naval::naval_ship_modifier_inputs::InfluenceBuffers {
                     sources: &mut Vec::new(),
                     terms: &mut Vec::new(),
                     lengths: &mut [0; 2],
@@ -534,11 +545,11 @@ mod detail_tests {
         bytes[0x1010..0x1014].copy_from_slice(&0u32.to_le_bytes());
         let hash = HQ
             .rotate_left(32)
-            .wrapping_mul(crate::creference_registry::HASH_MULTIPLIER);
+            .wrapping_mul(engine_native_parts::creference_registry::HASH_MULTIPLIER);
         let slot = ((hash >> 32) as u32 ^ hash as u32) & 7;
         bytes[0x1100
-            + slot as usize * crate::reference_bucket::STRIDE
-            + crate::reference_bucket::DISTANCE] = 0;
+            + slot as usize * engine_native_parts::reference_bucket::STRIDE
+            + engine_native_parts::reference_bucket::DISTANCE] = 0;
         let memory = HqMemory {
             base,
             bytes: &bytes,
@@ -549,7 +560,7 @@ mod detail_tests {
                 &memory,
                 base,
                 0x100,
-                &mut crate::naval_ship_modifier_inputs::InfluenceBuffers {
+                &mut engine_native_naval::naval_ship_modifier_inputs::InfluenceBuffers {
                     sources: &mut Vec::new(),
                     terms: &mut Vec::new(),
                     lengths: &mut [0; 2],

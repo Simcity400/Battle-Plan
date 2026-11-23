@@ -1,13 +1,13 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, cship, ctask_force,
     memory::{RecordLayout, RecordSources, packed_fields},
     read,
     walk::Outcome,
 };
+use crate::{ccountry, cgame_state, cprovince, cship, ctask_force};
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_f3d8);
 pub const HANDLE: usize = 0x08;
@@ -50,14 +50,14 @@ pub struct TimedCapture {
 }
 
 struct Output<'a, R> {
-    rows: crate::walk::Buffer<'a, R>,
+    rows: engine_native_memory::walk::Buffer<'a, R>,
     len: usize,
     unread: u32,
     error: Option<&'static str>,
 }
 
 impl<'a, R: Default> Output<'a, R> {
-    fn from_buffer(rows: crate::walk::Buffer<'a, R>) -> Self {
+    fn from_buffer(rows: engine_native_memory::walk::Buffer<'a, R>) -> Self {
         Self {
             rows,
             len: 0,
@@ -127,9 +127,9 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Capture {
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
         |_| 0,
         |_, _| {},
         None,
@@ -174,9 +174,9 @@ pub fn walk_timed_with(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(fleets),
-        crate::walk::Buffer::Growing(task_forces),
-        crate::walk::Buffer::Growing(ships),
+        engine_native_memory::walk::Buffer::Growing(fleets),
+        engine_native_memory::walk::Buffer::Growing(task_forces),
+        engine_native_memory::walk::Buffer::Growing(ships),
         now,
         visit,
         None,
@@ -195,7 +195,7 @@ const FLEET_FIELDS: [(usize, usize); 7] = [
     (LEADER, 8),
     (TASK_FORCES, 16),
     (HOME_BASE, 8),
-    (NAME, crate::msvc_string::STRIDE),
+    (NAME, engine_native_memory::msvc_string::STRIDE),
 ];
 
 const TASK_CENSUS_FIELDS: [(usize, usize); 10] = [
@@ -270,7 +270,7 @@ impl ShipRun {
         }
         let complete = if count != 0 && ships.may_take() {
             memory.copy_records(
-                crate::memory::RecordSources::Pointers(&self.pointers[..count]),
+                engine_native_memory::memory::RecordSources::Pointers(&self.pointers[..count]),
                 &cship::ROW_LAYOUT,
                 &mut self.records[..count * cship::ROW_STRIDE],
             ) / cship::ROW_FIELDS.len()
@@ -326,7 +326,7 @@ impl ShipRun {
             }
         }
         if fell_back {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::ShipRuns);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::ShipRuns);
         }
         self.len = 0;
     }
@@ -348,9 +348,9 @@ pub fn walk_timed_with_names(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(fleets),
-        crate::walk::Buffer::Growing(task_forces),
-        crate::walk::Buffer::Growing(ships),
+        engine_native_memory::walk::Buffer::Growing(fleets),
+        engine_native_memory::walk::Buffer::Growing(task_forces),
+        engine_native_memory::walk::Buffer::Growing(ships),
         now,
         visit,
         Some(names),
@@ -363,9 +363,9 @@ fn walk_named(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    fleets: crate::walk::Buffer<'_, Row>,
-    task_forces: crate::walk::Buffer<'_, ctask_force::Row>,
-    ships: crate::walk::Buffer<'_, cship::Row>,
+    fleets: engine_native_memory::walk::Buffer<'_, Row>,
+    task_forces: engine_native_memory::walk::Buffer<'_, ctask_force::Row>,
+    ships: engine_native_memory::walk::Buffer<'_, cship::Row>,
     now: impl FnMut(usize) -> u64,
     visit: impl FnMut(usize, &mut cship::Row),
     names: Option<&mut Vec<u8>>,
@@ -397,15 +397,15 @@ pub fn walk_timed_with_management(
     now: impl FnMut(usize) -> u64,
     visit: impl FnMut(usize, &mut cship::Row),
     names: &mut Vec<u8>,
-    management: impl FnMut(crate::naval_management::CensusVisit),
+    management: impl FnMut(CensusVisit),
 ) -> TimedCapture {
     walk_named_observed(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(fleets),
-        crate::walk::Buffer::Growing(task_forces),
-        crate::walk::Buffer::Growing(ships),
+        engine_native_memory::walk::Buffer::Growing(fleets),
+        engine_native_memory::walk::Buffer::Growing(task_forces),
+        engine_native_memory::walk::Buffer::Growing(ships),
         now,
         visit,
         Some(names),
@@ -419,18 +419,18 @@ fn walk_named_observed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    fleets: crate::walk::Buffer<'_, Row>,
-    task_forces: crate::walk::Buffer<'_, ctask_force::Row>,
-    ships: crate::walk::Buffer<'_, cship::Row>,
+    fleets: engine_native_memory::walk::Buffer<'_, Row>,
+    task_forces: engine_native_memory::walk::Buffer<'_, ctask_force::Row>,
+    ships: engine_native_memory::walk::Buffer<'_, cship::Row>,
     mut now: impl FnMut(usize) -> u64,
     mut visit: impl FnMut(usize, &mut cship::Row),
     mut names: Option<&mut Vec<u8>>,
     batched: bool,
-    mut management: impl FnMut(crate::naval_management::CensusVisit),
+    mut management: impl FnMut(CensusVisit),
 ) -> TimedCapture {
     let mut names_used = 0;
     let invalid_reference = if names.is_some() {
-        engine_sites::at(base, crate::creference_registry::INVALID_REFERENCE_RVA)
+        engine_sites::at(base, engine_native_parts::creference_registry::INVALID_REFERENCE_RVA)
             .and_then(|address| read::<u64>(memory, address))
     } else {
         None
@@ -465,7 +465,7 @@ fn walk_named_observed(
                 continue;
             };
             found_country = true;
-            management(crate::naval_management::CensusVisit::Country(country));
+            management(CensusVisit::Country(country));
             let fleet_roster = country
                 .pointer
                 .checked_add(ccountry::FLEETS)
@@ -476,7 +476,7 @@ fn walk_named_observed(
                 if batched {
                     fleet_view.select(fleet);
                     if !fleet_view.complete() {
-                        crate::batch_fallback::record(crate::batch_fallback::Batch::FleetGathers);
+                        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::FleetGathers);
                     }
                 }
                 if read::<u64>(memory, fleet) != Some(expected_fleet_vtable as u64) {
@@ -493,7 +493,7 @@ fn walk_named_observed(
                 if owner_pointer != country.pointer {
                     return Err("fleet owner differs from country roster");
                 }
-                management(crate::naval_management::CensusVisit::Fleet {
+                management(CensusVisit::Fleet {
                     pointer: fleet,
                     handle: id,
                 });
@@ -517,7 +517,7 @@ fn walk_named_observed(
                                         if reference == invalid { 0 } else { reference }
                                     },
                                 );
-                            if let Ok((start, len)) = crate::msvc_string::append(
+                            if let Ok((start, len)) = engine_native_memory::msvc_string::append(
                                 memory,
                                 at(NAME)?,
                                 arena,
@@ -538,13 +538,13 @@ fn walk_named_observed(
                         if batched {
                             view.select(task);
                             if !view.complete() {
-                                crate::batch_fallback::record(
-                                    crate::batch_fallback::Batch::TaskForceGathers,
+                                engine_native_memory::batch_fallback::record(
+                                    engine_native_memory::batch_fallback::Batch::TaskForceGathers,
                                 );
                             }
                         }
                         let task_id = task_reader.identity(task, fleet)?;
-                        management(crate::naval_management::CensusVisit::TaskForce {
+                        management(CensusVisit::TaskForce {
                             pointer: task,
                             handle: task_id,
                         });
@@ -581,7 +581,7 @@ fn walk_named_observed(
                             .checked_add(ctask_force::SHIPS)
                             .and_then(|p| Array::read(memory, p, 8))
                             .ok_or("ship roster unreadable or invalid")?;
-                        crate::cpdx_array::pointer_pages(
+                        engine_native_memory::cpdx_array::pointer_pages(
                             memory,
                             ship_roster,
                             ROSTER_POINTER,
@@ -697,7 +697,7 @@ fn pointer(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'st
         .ok_or(ROSTER_POINTER)
 }
 
-pub(crate) fn province(
+pub fn province(
     memory: &impl Memory,
     base: usize,
     provinces: Array,
@@ -745,7 +745,7 @@ pub struct CounterWalk {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskForceVisit {
-    pub country: ccountry::Country,
+    pub country: engine_native_memory::country_identity::Country,
     pub task: usize,
     pub id: u64,
     pub fleet: usize,
@@ -756,7 +756,7 @@ pub struct TaskForceVisit {
 
 pub enum Visit {
     Fleet {
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         fleet: usize,
         handle: u64,
         tasks: Array,
@@ -831,7 +831,7 @@ fn visit_task_forces_inner<M: Memory>(
             .checked_add(ccountry::FLEETS)
             .and_then(|p| Array::read(memory, p, 8))
             .ok_or("fleet roster unreadable or invalid")?;
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             fleets,
             "fleet roster pointer unreadable or null",
@@ -924,17 +924,17 @@ fn visit_task_forces_inner<M: Memory>(
                         index,
                     ))
                 };
-                crate::cpdx_array::pointer_pages(
+                engine_native_memory::cpdx_array::pointer_pages(
                     memory,
                     tasks,
                     "task force pointer unreadable or null",
                     |first, page| {
                         for (offset, &task) in page.iter().enumerate() {
                             if let Some(&next) = page.get(offset + 1) {
-                                crate::prefetch::fields(next, task_layout.fields());
+                                engine_native_memory::prefetch::fields(next, task_layout.fields());
                                 if body_fields {
                                     for (at, len) in ctask_force::TASK_FIELDS {
-                                        crate::prefetch::span(next.wrapping_add(at), len);
+                                        engine_native_memory::prefetch::span(next.wrapping_add(at), len);
                                     }
                                 }
                             }
@@ -1020,7 +1020,7 @@ pub fn walk_counter_inputs_with_tooltips(
 }
 
 type PortCounterBuffers<'rows, 'names, 'bytes, 'supply, 'origins, 'port, 'sources, M> = (
-    crate::walk::Buffer<'rows, ctask_force::CounterRow>,
+    engine_native_memory::walk::Buffer<'rows, ctask_force::CounterRow>,
     Option<&'names mut crate::cname_group_member::Names<'bytes>>,
     Option<&'supply mut ctask_force::SupplyOrigins<'origins>>,
     Option<&'port mut ctask_force::port_mission::Collector<'sources, M>>,
@@ -1096,10 +1096,10 @@ pub fn walk_counter_inputs_with_port_and_fleet_observed<M: Memory, T>(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(fleets),
-        crate::walk::Buffer::Growing(rosters),
+        engine_native_memory::walk::Buffer::Growing(fleets),
+        engine_native_memory::walk::Buffer::Growing(rosters),
         (
-            crate::walk::Buffer::Growing(task_forces),
+            engine_native_memory::walk::Buffer::Growing(task_forces),
             names,
             supply,
             port,
@@ -1116,8 +1116,8 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
     memory: &M,
     base: usize,
     game_state: usize,
-    fleets: crate::walk::Buffer<'_, CounterRow>,
-    mut rosters: crate::walk::Buffer<'_, u64>,
+    fleets: engine_native_memory::walk::Buffer<'_, CounterRow>,
+    mut rosters: engine_native_memory::walk::Buffer<'_, u64>,
     (task_forces, mut names, mut supply, mut port): PortCounterBuffers<
         '_,
         '_,
@@ -1189,7 +1189,7 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
                             }
                             if let Some(supply) = supply.as_deref_mut() {
                                 row.supply_origins_start = supply.len;
-                                match crate::cunit_supply_inputs::capture_buffer(
+                                match engine_native_parts::cunit_supply_inputs::capture_buffer(
                                     memory,
                                     task.task,
                                     supply.origins.suffix(supply.len),
@@ -1200,7 +1200,7 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
                                                 supply.len += len;
                                                 len
                                             }
-                                            Err(crate::cunit_supply_inputs::Failure::OriginsCapacity { required }) => required,
+                                            Err(engine_native_parts::cunit_supply_inputs::Failure::OriginsCapacity { required }) => required,
                                             Err(_) => 0,
                                         };
                                         supply.required = supply.required.saturating_add(demand);
@@ -1270,17 +1270,24 @@ pub fn read_mission_regions(
     base: usize,
     regions: Array,
 ) -> Result<Vec<u32>, &'static str> {
-    let mut output = crate::allocation::vec(regions.count as usize)
+    let mut output = engine_allocation::vec(regions.count as usize)
         .map_err(|_| "fleet region allocation failed")?;
     for index in 0..regions.count {
         let pointer = regions
             .element(index, 8)
             .and_then(|at| read::<u64>(memory, at))
             .ok_or("fleet mission region pointer unreadable")?;
-        let id = crate::cstrategic_region::id(memory, base, pointer as usize)?
+        let id = engine_native_parts::cstrategic_region::id(memory, base, pointer as usize)?
             .ok_or("fleet mission region is null")?;
         output.push(id);
     }
     output.sort_unstable();
     Ok(output)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CensusVisit {
+    Country(engine_native_memory::country_identity::Country),
+    Fleet { pointer: usize, handle: u64 },
+    TaskForce { pointer: usize, handle: u64 },
 }

@@ -163,7 +163,7 @@ impl LeaderCache {
                 &memory,
                 base,
                 entry,
-                engine_native::walk::Buffer::Exact(&mut rows[start..]),
+                engine_native_memory::walk::Buffer::Exact(&mut rows[start..]),
             ))
         })
         .unwrap_or_else(|reason| Outcome::Unavailable { reason }))
@@ -348,7 +348,7 @@ impl LeaderCache {
     pub(super) fn decode(&self, captured: &mut Captured) {
         let len = self.outcome.len();
         let rows = &mut captured.leaders.rows.rows;
-        if let Err(reason) = engine_native::walk::Buffer::Growing(rows).ensure(len) {
+        if let Err(reason) = engine_native_memory::walk::Buffer::Growing(rows).ensure(len) {
             captured
                 .leaders
                 .primary(ReadResult::rows(Outcome::Unavailable { reason }));

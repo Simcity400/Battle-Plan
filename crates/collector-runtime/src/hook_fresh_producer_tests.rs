@@ -1,6 +1,6 @@
 use super::fresh_reads_tests::{Native, source};
 use super::*;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::rows::*;
 use replay_frame::frame::TableInput;
 use std::cell::RefCell;
@@ -23,7 +23,7 @@ impl Memory for ShipWorld {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
         let pointer = if at == SHIP_BASE + engine_native::cgame_state::SINGLETON_RVA.0 {
             Some(0x10000_u64)
-        } else if at == SHIP_BASE + engine_native::cequipment_database::SINGLETON_RVA.0 {
+        } else if at == SHIP_BASE + engine_native_parts::cequipment_database::SINGLETON_RVA.0 {
             Some(0x15000_u64)
         } else {
             None
@@ -41,10 +41,15 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     use collector_ship_models::ship_model_changes::Changes;
     use collector_ship_models::ship_models::{CaptureContext, Captured};
     use engine_native::{
-        ccountry, cequipment_database, cequipment_type, cequipment_variant,
-        cequipment_variant_pool, cgame_state, cship, csub_unit_definition, ctask_force, cunit,
-        msvc_string,
+        ccountry,
+        cequipment_variant::{self, pool as cequipment_variant_pool},
+        cgame_state,
+        cship,
+        ctask_force,
+        cunit,
     };
+    use engine_native_parts::{cequipment_database, cequipment_type, csub_unit_definition};
+    use engine_native_memory::msvc_string;
     if !contract_tests::isolated(
         "hook_failures::fresh_producer_tests::failed_ship_observer_rejects_carry_and_publishes_changed_native_models",
     ) {
@@ -84,7 +89,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     memory.word(task + 0x640, doctrine);
     memory.word(doctrine, doctrine);
     memory.put(doctrine + 0x19, &[1]);
-    memory.word(variant, SHIP_BASE + cequipment_variant::VTABLE_RVA.0);
+    memory.word(variant, SHIP_BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0);
     memory.word(
         variant + cequipment_variant::TYPE,
         (1_usize << 32) | cequipment_variant::REFERENCE_TYPE as usize,
@@ -207,10 +212,10 @@ fn complete(input: &TableInput) -> &TableRows {
 fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them() {
     use collector_production::production::{self, Captured, Sources};
     use engine_equipment::{cequipment_upgrades_instance, equipment_module_container};
-    use engine_native::{
-        cequipment_module, cequipment_type, cequipment_upgrade, cequipment_variant as variant,
-        equipment_upgrade_entry, msvc_string,
-    };
+    use engine_native_parts::{cequipment_module, cequipment_type, cequipment_upgrade};
+    use engine_native::cequipment_variant as variant;
+    use engine_native_memory::msvc_string;
+    use engine_native_politics::equipment_upgrade_entry;
     if !contract_tests::isolated(
         "hook_failures::fresh_producer_tests::failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them",
     ) {
@@ -225,7 +230,7 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
     assert!(!collector_production::production::design_changes::enabled());
     let mut memory = Native(vec![0; 0x9000]);
     let (object, definition, module, upgrade, bonus) = (0x1000, 0x2000, 0x3000, 0x4000, 0x5000);
-    memory.word(object, variant::VTABLE_RVA.0);
+    memory.word(object, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0);
     memory.word(
         object + variant::TYPE,
         (7_usize << 32) | variant::REFERENCE_TYPE as usize,
@@ -419,7 +424,8 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
 #[test]
 fn failed_army_observer_rejects_carry_and_reads_changed_native_operands() {
     use collector_division_parts::attack_stats::{ArmyStatStore, Captured};
-    use engine_native::{carmy::DivisionSeed, csub_unit_definition as stats};
+    use engine_native::carmy::DivisionSeed;
+    use engine_native_parts::csub_unit_definition as stats;
     if !contract_tests::isolated(
         "hook_failures::fresh_producer_tests::failed_army_observer_rejects_carry_and_reads_changed_native_operands",
     ) {

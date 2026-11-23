@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 struct Fixture(Vec<u8>, std::cell::RefCell<Vec<(usize, usize)>>);
 impl Memory for Fixture {
@@ -121,7 +121,7 @@ fn template_extension_fault_preserves_existing_icon_and_model_inputs() {
     let mut bytes = vec![0; 64];
     let mut counts = vec![SubunitCount::default(); 64];
     let mut variants = vec![0; 8];
-    let walked = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
+    let walked = walk_icons_inner(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut bytes), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(walked.outcome, expected.outcome);
     assert!(!rows[0].details_fresh);
     assert_eq!(
@@ -197,7 +197,7 @@ type IconAll = (IconWalk, Vec<u8>, Vec<SubunitCount>, Vec<u64>);
 fn icons_all(memory: &Fixture, rows: &mut Vec<IconRow>) -> IconAll {
     let (mut bytes, mut counts, mut variants) =
         (vec![0; 64], vec![Default::default(); 64], vec![0; 8]);
-    let walk = walk_icons_inner(memory, 0, 0x1000, crate::walk::Buffer::Growing(rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
+    let walk = walk_icons_inner(memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(rows), engine_native_memory::walk::Buffer::Growing(&mut bytes), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
     bytes.truncate(walk.bytes_len);
     counts.truncate(walk.counts_len);
     variants.truncate(walk.variants_len);
@@ -225,7 +225,7 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     memory.text(0x5000 + MODEL_ENTITY, b"GER_x_entity");
     memory.array(0x5000 + EXCLUDED_VARIANT_DATA, 0x8100, 1);
     memory.word(0x8100, 0x8200);
-    memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA.0 as u64);
+    memory.word(0x8200, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     memory.word(0x8208, 0x0000_0009_0000_0046);
     let mut rows = vec![IconRow::default(); 2];
     let (walk, bytes, counts, variants) = icons_all(&memory, &mut rows);
@@ -468,7 +468,7 @@ fn the_count_probe_counts_whole_rows_and_bad_identity_never_becomes_empty() {
     let mut memory = fixture();
     memory.array(0x5000 + SUBUNIT_COUNTS, 0x8000, 1);
     memory.word(0x8000, 0x7000);
-    let result = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
+    let result = walk_icons_inner(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(
         result.outcome,
         Outcome::Truncated {
@@ -532,7 +532,7 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
         }
         let mut rows = vec![IconRow::default(); 1];
         let mut counts = vec![SubunitCount::default(); count as usize * 2];
-        let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 64]), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
+        let walk = walk_icons_inner(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
         let expected = if count == 65_536 { 0 } else { 777 };
         assert_eq!(rows[0].representative.token, expected);
@@ -566,7 +566,7 @@ fn model_fixture() -> Fixture {
     memory.put(0x8018, &1_i32.to_le_bytes());
     memory.array(0x5000 + EXCLUDED_VARIANT_DATA, 0x8100, 1);
     memory.word(0x8100, 0x8200);
-    memory.word(0x8200, crate::cequipment_variant::VTABLE_RVA.0 as u64);
+    memory.word(0x8200, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     memory.word(0x8208, 0x0000_0009_0000_0046);
     memory
 }
@@ -575,7 +575,7 @@ fn icons_with(memory: &Fixture, database: usize, locals: usize) -> (IconAll, Ico
     let mut rows = vec![IconRow::default(); 1];
     let (mut bytes, mut counts, mut variants) =
         (vec![0; 64], vec![SubunitCount::default(); 64], vec![0; 8]);
-    let walk = walk_icons_inner(memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), DefinitionSlots {
+    let walk = walk_icons_inner(memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut bytes), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Growing(&mut variants), DefinitionSlots {
             database: &mut vec![0; database],
             globals: &mut vec![GlobalSlot::default(); database],
             locals: &mut vec![LocalSlot::default(); locals],
@@ -652,7 +652,7 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
     let mut rows = vec![IconRow::default(); 2];
     let (mut bytes, mut counts, mut variants) =
         (vec![0; 64], vec![SubunitCount::default(); 64], vec![0; 8]);
-    let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut bytes), crate::walk::Buffer::Growing(&mut counts), crate::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
+    let walk = walk_icons_inner(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut bytes), engine_native_memory::walk::Buffer::Growing(&mut counts), engine_native_memory::walk::Buffer::Growing(&mut variants), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
     let failed = rows[0];
     assert!(failed.model_failure.is_some());
@@ -678,7 +678,7 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
 #[test]
 fn a_row_without_room_still_asks_for_its_model_inputs() {
     let memory = model_fixture();
-    let walk = walk_icons_inner(&memory, 0, 0x1000, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut vec![0; 64]), crate::walk::Buffer::Growing(&mut vec![SubunitCount::default(); 8]), crate::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
+    let walk = walk_icons_inner(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]), engine_native_memory::walk::Buffer::Growing(&mut vec![SubunitCount::default(); 8]), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 8]), TestSlots::default().slots(), None, None, None, None);
     assert_eq!(
         walk.outcome,
         Outcome::Truncated {
@@ -927,7 +927,7 @@ fn spatial_cells_keep_holes_dimensions_null_objects_and_native_settings() {
     memory.array(0x5000 + FORBIDDEN_EQUIPMENT, 0x8100, 2);
     memory.word(0x8100, 0x8200);
     memory.word(0x8108, 0x8200);
-    memory.word(0x8200, crate::cequipment_type::VTABLE_RVA.0 as u64);
+    memory.word(0x8200, engine_native_parts::cequipment_type::VTABLE_RVA.0 as u64);
     memory.put(0x8208, &4294967294_u32.to_le_bytes());
     let mut rows = vec![IconRow::default(); 1];
     let (walk, _, counts, variants) = icons_all(&memory, &mut rows);

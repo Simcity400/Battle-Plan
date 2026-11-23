@@ -16,17 +16,17 @@ pub struct MovementPacket {
 }
 impl MovementPacket {
     pub fn try_new(unit_capacity: usize, path_capacity: usize) -> std::io::Result<Self> {
-        let paths = crate::allocation::vec(path_capacity)?;
+        let paths = engine_allocation::vec(path_capacity)?;
         let bytes = Self::route_byte_capacity(path_capacity)?;
         Ok(Self {
-            units: crate::allocation::vec(unit_capacity)?,
+            units: engine_allocation::vec(unit_capacity)?,
             paths,
             combats: MovementCombats::try_new(unit_capacity)?,
             combat_references: Vec::new(),
             combat_identities: cunit::MapCombatIdentityMemo::default(),
             sample_hour: None,
             required_combat_references: 0,
-            route_bytes: crate::allocation::vec(bytes)?,
+            route_bytes: engine_allocation::vec(bytes)?,
             defer_routes: false,
             raw_paths_len: 0,
             raw_paths_prefix: 0,
@@ -65,7 +65,7 @@ impl MovementPacket {
     fn route_byte_capacity(path_capacity: usize) -> std::io::Result<usize> {
         path_capacity
             .checked_mul(size_of::<u32>())
-            .ok_or_else(crate::allocation::oom)
+            .ok_or_else(engine_allocation::oom)
     }
 
     pub fn defer_route_decode(&mut self) {
@@ -93,12 +93,12 @@ impl MovementPacket {
     pub fn reserve(&mut self, unit_capacity: usize, path_capacity: usize) -> std::io::Result<()> {
         let units = unit_capacity.saturating_sub(self.units.len());
         let paths = path_capacity.saturating_sub(self.paths.len());
-        crate::allocation::reserve_exact(&mut self.units, units)?;
-        crate::allocation::reserve_exact(&mut self.paths, paths)?;
+        engine_allocation::reserve_exact(&mut self.units, units)?;
+        engine_allocation::reserve_exact(&mut self.paths, paths)?;
         self.combats.reserve(unit_capacity)?;
         let bytes = Self::route_byte_capacity(path_capacity)?;
         let additional = bytes.saturating_sub(self.route_bytes.len());
-        crate::allocation::reserve_exact(&mut self.route_bytes, additional)
+        engine_allocation::reserve_exact(&mut self.route_bytes, additional)
     }
     pub fn allocated_bytes(&self) -> usize {
         self.units.capacity() * std::mem::size_of::<MovementRow>()
@@ -110,7 +110,7 @@ impl MovementPacket {
     }
     pub fn reserve_combat_references(&mut self, capacity: usize) -> std::io::Result<()> {
         let additional = capacity.saturating_sub(self.combat_references.len());
-        crate::allocation::reserve_exact(&mut self.combat_references, additional)?;
+        engine_allocation::reserve_exact(&mut self.combat_references, additional)?;
         self.combat_identities.reserve(capacity)
     }
     pub fn combat_references_required(&self) -> usize {
@@ -564,20 +564,20 @@ pub fn capture_movement_inputs_with_extra(
     packet.result
 }
 
-const SPEED_FIELDS: [crate::memory::RecordField; 2] = [
-    crate::memory::RecordField {
+const SPEED_FIELDS: [engine_native_memory::memory::RecordField; 2] = [
+    engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 8,
     },
-    crate::memory::RecordField {
-        source_offset: crate::csub_unit_definition::MAXIMUM_SPEED,
+    engine_native_memory::memory::RecordField {
+        source_offset: engine_native_parts::csub_unit_definition::MAXIMUM_SPEED,
         destination_offset: 8,
         len: 8,
     },
 ];
-const SPEED_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&SPEED_FIELDS, 16).expect("valid movement speed layout");
+const SPEED_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&SPEED_FIELDS, 16).expect("valid movement speed layout");
 
 struct SpeedBatch {
     pointers: [usize; 64],
@@ -615,13 +615,13 @@ impl SpeedBatch {
             }
             row += 1;
         }
-        crate::memory::gather_records_once(
+        engine_native_memory::memory::gather_records_once(
             memory,
             &self.pointers[..self.len],
             &SPEED_LAYOUT,
             &mut self.bytes[..self.len * 16],
             &mut self.complete,
-            crate::batch_fallback::Batch::DivisionMovementSpeed,
+            engine_native_memory::batch_fallback::Batch::DivisionMovementSpeed,
         );
     }
 
@@ -638,7 +638,7 @@ impl SpeedBatch {
             && self.complete[row]
         {
             let bytes = &self.bytes[row * 16..][..16];
-            let expected = engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA)
+            let expected = engine_sites::at(base, engine_native_parts::csub_unit_definition::VTABLE_RVA)
                 .ok_or("module address overflow")? as u64;
             if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected {
                 return Err("division stat block identity mismatch");
@@ -659,9 +659,9 @@ fn movement_base_speed(
         return Err("division stat block null");
     }
     let speed_at = stat
-        .checked_add(crate::csub_unit_definition::MAXIMUM_SPEED)
+        .checked_add(engine_native_parts::csub_unit_definition::MAXIMUM_SPEED)
         .ok_or("division stat block address overflow")?;
-    let expected = engine_sites::at(base, crate::csub_unit_definition::VTABLE_RVA)
+    let expected = engine_sites::at(base, engine_native_parts::csub_unit_definition::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let mut vtable = [0; 8];
     let mut speed = [0; 8];
@@ -712,7 +712,7 @@ pub fn walk_movement(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [MovementRow],
     paths: &mut [u32],
@@ -735,7 +735,7 @@ pub fn walk_movement_with_inputs(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [MovementRow],
     paths: &mut [u32],
@@ -762,7 +762,7 @@ fn walk_movement_internal(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     source_outcome: Outcome,
     output: &mut [MovementRow],
     paths: &mut [u32],
@@ -846,7 +846,7 @@ fn walk_movement_internal(
                 (route, path_start, path_len),
                 (alternate, alternate_start, alternate_len),
             ] {
-                crate::cpdx_array::copy_u32_prefix(
+                engine_native_memory::cpdx_array::copy_u32_prefix(
                     memory,
                     array,
                     &mut paths[start..start + count],
@@ -870,7 +870,7 @@ fn walk_movement_internal(
                     vtable as usize,
                     &[
                         combat_layout::VTABLE_RVA,
-                        crate::cland_border_war_combat::VTABLE_RVA,
+                        engine_native_parts::cland_border_war_combat::VTABLE_RVA,
                     ],
                 )
                 .is_none()
@@ -884,7 +884,7 @@ fn walk_movement_internal(
                     vtable as usize,
                     &[
                         side_layout::VTABLE_RVA,
-                        crate::cland_border_war_combatant::VTABLE_RVA,
+                        engine_native_parts::cland_border_war_combatant::VTABLE_RVA,
                     ],
                 )
                 .is_none()

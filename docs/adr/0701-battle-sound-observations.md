@@ -6,4 +6,4 @@ The game keeps no persistent battle ID for this stream. The recorded ordinal fol
 
 The sizing reader measures demand from live counts off-thread. Acquisition can grow worker buffers before reading a battle. Once fixed storage cannot fit one whole battle, count remaining demand without claiming to have read that payload. Retaining only complete rows prevents a short output suffix from becoming an apparently empty battle.
 
-[Battle-sound read and sizing path](../../crates/engine-native/src/battle_sounds.rs) · [Ordering and refusal tests](../../crates/engine-native/src/battle_sounds/tests.rs)
+[Battle-sound read and sizing path](../../crates/engine-native-land/src/battle_sounds.rs) · [Ordering and refusal tests](../../crates/engine-native-land/src/battle_sounds/tests.rs)

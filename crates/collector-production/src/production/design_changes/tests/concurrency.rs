@@ -116,7 +116,7 @@ unsafe extern "system-unwind" fn edited(
         let definition =
             std::ptr::read_unaligned((pointer + native::DEFINITION) as *const usize);
         std::ptr::write_unaligned(
-            (definition + engine_native::cequipment_type::STATS_BASE + 46 * 8) as *mut i64,
+            (definition + engine_native_parts::cequipment_type::STATS_BASE + 46 * 8) as *mut i64,
             value as i64,
         );
         std::ptr::write_unaligned((pointer + native::AIR_RANGE_STAT) as *mut i64, value as i64);
@@ -1288,7 +1288,7 @@ fn contended_author_roster_keeps_its_occurrence_and_frozen_designs() {
     let header = [pointers.as_ptr() as usize as u64, 1 | (1u64 << 32)];
     liveness::change(1, true).unwrap();
     with_store_contended(|| {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         liveness::roster(&memory, space.base, header.as_ptr() as usize);
     });
     let memory = OnlyDesign {

@@ -259,7 +259,7 @@ fn elections(query: &Query<'_>, held: &BTreeMap<u32, Vec<Holding>>, reply: &mut 
                     if let Some(next) = crate::products::country_people::next_election(last_election, months, cached) {
                         parts.next.push((from, to, i128::from(next)));
                     }
-                    if !engine_native::cpolitical_status::needs_election_cache(last_election) {
+                    if !engine_native_politics::cpolitical_status::needs_election_cache(last_election) {
                         parts.last.push((from, to, i128::from(last_election)));
                     }
                 }

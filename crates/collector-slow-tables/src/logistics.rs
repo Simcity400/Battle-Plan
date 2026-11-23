@@ -1,6 +1,6 @@
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_land_inputs::clogistics_status as native;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::LogisticsEquipmentRow, rows::TableId,
     rows::tables,
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn walks_only_on_the_first_slot_after_the_daily_update_or_a_full_hour() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

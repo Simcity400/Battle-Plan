@@ -1,5 +1,6 @@
 use super::*;
-use crate::{memory::SliceMemory, modifier_keys};
+use engine_native_memory::memory::SliceMemory;
+use crate::modifier_keys;
 
 struct Fixture(Vec<u8>);
 
@@ -76,19 +77,19 @@ fn buffers<'a>(
 ) -> Buffers<'a> {
     let request_len = requests.len();
     Buffers {
-        requests: crate::walk::Buffer::Growing(requests),
+        requests: engine_native_memory::walk::Buffer::Growing(requests),
         request_len,
         request_required: request_len,
-        roots: crate::walk::Buffer::Growing(roots),
+        roots: engine_native_memory::walk::Buffer::Growing(roots),
         root_len: 0,
         root_required: 0,
-        nodes: crate::walk::Buffer::Growing(nodes),
+        nodes: engine_native_memory::walk::Buffer::Growing(nodes),
         node_len: 0,
         node_required: 0,
-        text: crate::walk::Buffer::Growing(text),
+        text: engine_native_memory::walk::Buffer::Growing(text),
         text_len: 0,
         text_required: 0,
-        stack: crate::walk::Buffer::Growing(stack),
+        stack: engine_native_memory::walk::Buffer::Growing(stack),
         stack_required: 0,
         repeats: None,
     }
@@ -113,19 +114,19 @@ fn cold_worker_formatter_arenas_keep_native_labels_and_later_tree_growth() {
             key,
         }];
         let mut captured = Buffers {
-            requests: crate::walk::Buffer::Growing(&mut requests),
+            requests: engine_native_memory::walk::Buffer::Growing(&mut requests),
             request_len: 1,
             request_required: 1,
-            roots: crate::walk::Buffer::Growing(&mut roots),
+            roots: engine_native_memory::walk::Buffer::Growing(&mut roots),
             root_len: 0,
             root_required: 0,
-            nodes: crate::walk::Buffer::Growing(&mut nodes),
+            nodes: engine_native_memory::walk::Buffer::Growing(&mut nodes),
             node_len: 0,
             node_required: 0,
-            text: crate::walk::Buffer::Growing(&mut text),
+            text: engine_native_memory::walk::Buffer::Growing(&mut text),
             text_len: 0,
             text_required: 0,
-            stack: crate::walk::Buffer::Growing(&mut stack),
+            stack: engine_native_memory::walk::Buffer::Growing(&mut stack),
             stack_required: 0,
             repeats: None,
         };
@@ -379,19 +380,19 @@ fn logged_capture(
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let len = requests.len();
     let mut buffers = Buffers {
-        requests: crate::walk::Buffer::Growing(&mut requests),
+        requests: engine_native_memory::walk::Buffer::Growing(&mut requests),
         request_len: len,
         request_required: len,
-        roots: crate::walk::Buffer::Growing(&mut roots),
+        roots: engine_native_memory::walk::Buffer::Growing(&mut roots),
         root_len: 0,
         root_required: 0,
-        nodes: crate::walk::Buffer::Growing(&mut nodes),
+        nodes: engine_native_memory::walk::Buffer::Growing(&mut nodes),
         node_len: 0,
         node_required: 0,
-        text: crate::walk::Buffer::Growing(&mut text),
+        text: engine_native_memory::walk::Buffer::Growing(&mut text),
         text_len: 0,
         text_required: 0,
-        stack: crate::walk::Buffer::Growing(&mut stack),
+        stack: engine_native_memory::walk::Buffer::Growing(&mut stack),
         stack_required: 0,
         repeats,
     };

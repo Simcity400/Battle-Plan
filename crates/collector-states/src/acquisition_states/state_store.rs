@@ -2,7 +2,8 @@ use super::Inputs;
 use crate::extended::state_flags;
 use collector_observers::territory_changes::{self, Changes, Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{Memory, cpdx_array::Array, cstate, cstate::infrastructure_map, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
+use engine_native::cstate::{self, infrastructure_map};
 use engine_railways::crailway_manager::fresh_inputs::StateFractionRow;
 
 type Fraction = Result<i64, &'static str>;
@@ -273,7 +274,7 @@ impl StateStore {
                 self.reread[index] = true;
             }
         }
-        if !engine_native::walk::Buffer::Growing(rows)
+        if !engine_native_memory::walk::Buffer::Growing(rows)
             .ensure(len)
             .ok()?
         {
@@ -331,7 +332,7 @@ impl StateStore {
             game_state,
             census,
             rows,
-            engine_native::walk::Buffer::Growing(names),
+            engine_native_memory::walk::Buffer::Growing(names),
             |index| (!reread[index]).then(|| held.names(index)),
             crate::scripted_maps::state,
         );

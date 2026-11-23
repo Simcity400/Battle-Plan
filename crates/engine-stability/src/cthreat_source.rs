@@ -1,5 +1,5 @@
 
-use crate::{Memory, msvc_string, read, read_slice, walk::Buffer};
+use engine_native_memory::{Memory, msvc_string, read, read_slice, walk::Buffer};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_2ff8);
@@ -123,7 +123,7 @@ fn literal(memory: &impl Memory, string: usize) -> Result<(usize, usize), &'stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn read_row(
         memory: &impl Memory,

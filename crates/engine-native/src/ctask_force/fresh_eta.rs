@@ -1,16 +1,34 @@
 
-use crate::{
-    Memory, ccountry, cfleet,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    creference_registry::ScopedResolver,
-    cship, csub_unit_definition, ctask_force, cunit, cweather_manager,
-    memory::{FieldBatch, Raw, RecordField, RecordLayout, gather_records_once, scalar_from_bytes},
-    modifier_accumulator::{self as accumulator, Value},
-    modifier_definition::{self as metadata, Operands},
-    modifier_keys as keys, naval_mission_inputs as mission, naval_ship_modifier_inputs as naval,
+    memory::{
+        FieldBatch,
+        Raw,
+        RecordField,
+        RecordLayout,
+        gather_records_once,
+        scalar_from_bytes,
+    },
+    modifier_cache::Value,
     read,
     recent::Recent,
 };
+use crate::{
+    ccountry,
+    cfleet,
+    cship::{self, modifier_sources as naval},
+    ctask_force::{self, mission_layout as mission, targeted_spotting},
+    cunit,
+    cweather_manager,
+};
+use engine_native_parts::{
+    creference_registry::ScopedResolver,
+    csub_unit_definition,
+    modifier_accumulator as accumulator,
+    modifier_definition::{self as metadata, Operands},
+};
+use engine_executable::modifier_keys as keys;
 use engine_sites::Rva;
 
 const P: i64 = 100_000;
@@ -60,8 +78,8 @@ const STAT_FIELDS: [(usize, usize); 3] = [(0, 8), (8, 4), (0x1a8, 16)];
 const PROVINCE_FIELDS: [(usize, usize); 2] = [(0, 8), (crate::cprovince::STRATEGIC_REGION, 8)];
 const REGION_FIELDS: [(usize, usize); 3] = [
     (0, 8),
-    (crate::cstrategic_region::TEMPLATE, 8),
-    (crate::cstrategic_region::ID, 4),
+    (engine_native_parts::cstrategic_region::TEMPLATE, 8),
+    (engine_native_parts::cstrategic_region::ID, 4),
 ];
 const TEMPLATE_FIELDS: [(usize, usize); 2] = [(0, 8), (0x130, 8)];
 const FLEET_FIELDS: [(usize, usize); 2] = [(0, 8), (cfleet::LEADER, 8)];
@@ -74,7 +92,7 @@ fn gather<const N: usize>(
 ) -> cship::GatheredObject<N> {
     let gathered = cship::GatheredObject::gather(memory, pointer, fields);
     if pointer != 0 && !gathered.complete() {
-        crate::batch_fallback::record(crate::batch_fallback::Batch::FreshEtaGathers);
+        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::FreshEtaGathers);
     }
     gathered
 }
@@ -118,7 +136,7 @@ pub struct MissionRiskInputs {
     pub speed_base: Result<Option<i64>, &'static str>,
     pub speed_modifier: Result<Option<i64>, &'static str>,
     pub terrain_class: Result<Option<i32>, &'static str>,
-    pub stats: Result<Option<crate::transport_spotting_graph::TaskForceStats>, &'static str>,
+    pub stats: Result<Option<TaskForceStats>, &'static str>,
     pub roster_owner: Result<Option<u32>, &'static str>,
     pub location: Result<Option<u32>, &'static str>,
     pub region: Result<Option<u32>, &'static str>,
@@ -196,7 +214,7 @@ pub(super) struct Reader<'a, M: Memory> {
     stat_view: cship::GatheredObject<3>,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -224,7 +242,7 @@ const ROSTER_SHIP: [(usize, usize); 4] = [
 ];
 
 const ROSTER_STRIDE: usize = 28;
-const ROSTER_RECORD_FIELDS: [RecordField; 4] = crate::memory::packed_fields(ROSTER_SHIP);
+const ROSTER_RECORD_FIELDS: [RecordField; 4] = engine_native_memory::memory::packed_fields(ROSTER_SHIP);
 const ROSTER_RECORD: RecordLayout<'static> =
     RecordLayout::new(&ROSTER_RECORD_FIELDS, ROSTER_STRIDE).expect("roster ship record");
 const ROSTER_OFFSETS: [usize; 4] = [0, 8, 16, 20];
@@ -424,7 +442,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
     }
 
-    fn country(&mut self, raw: u32) -> Result<ccountry::Country, &'static str> {
+    fn country(&mut self, raw: u32) -> Result<engine_native_memory::country_identity::Country, &'static str> {
         let reader = self
             .countries
             .get_or_insert_with(|| ccountry::Reader::new(self.memory, self.base, self.state));
@@ -581,7 +599,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 };
                 if let Some((receiver, certificate)) = receiver.zip(certificate)
                     && let Some(certified) = self.certified.as_mut()
-                    && crate::allocation::reserve(certified.log, 1).is_ok()
+                    && engine_allocation::reserve(certified.log, 1).is_ok()
                 {
                     certified.log.push(HeldCensus {
                         receiver,
@@ -698,20 +716,20 @@ impl<'a, M: Memory> Reader<'a, M> {
             field::<u64>(&province, location, crate::cprovince::STRATEGIC_REGION)? as usize;
         let region_fields = gather(self.memory, region, REGION_FIELDS);
         let region_memory = region_fields.memory(self.memory);
-        let id = crate::cstrategic_region::id(&region_memory, self.base, region)?
+        let id = engine_native_parts::cstrategic_region::id(&region_memory, self.base, region)?
             .ok_or("fresh task-force location region absent")?;
         if risk {
             self.context.region = Ok(Some(id));
         }
         let template =
-            field::<u64>(&region_memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
+            field::<u64>(&region_memory, region, engine_native_parts::cstrategic_region::TEMPLATE)? as usize;
         let template_fields = gather(self.memory, template, TEMPLATE_FIELDS);
         let template_memory = template_fields.memory(self.memory);
         auth(
             &template_memory,
             self.base,
             template,
-            crate::cstrategic_region::TEMPLATE_VTABLE_RVA,
+            engine_native_parts::cstrategic_region::TEMPLATE_VTABLE_RVA,
         )?;
         let terrain = naval::terrain_from_template_kept(
             &template_memory,
@@ -758,7 +776,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 &leader_memory,
                 self.base,
                 leader,
-                crate::cnavy_leader::VTABLE_RVA,
+                engine_native_parts::cnavy_leader::VTABLE_RVA,
             )?;
             if field::<u64>(&leader_memory, leader, 8)? != reference {
                 return Err("fresh task-force fleet leader reference mismatch");
@@ -810,7 +828,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 };
                 if record != 0 {
                     let mut weather = self.terms(
-                        add(record, crate::sweather_per_region::MODIFIERS)?,
+                        add(record, crate::cweather_manager::region_weather::MODIFIERS)?,
                         eta,
                         risk,
                     )?;
@@ -850,7 +868,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             )
             .ok_or("fresh task-force headquarters invalid")?;
             let mut strongest: Terms = [Ok(0); TERM_COUNT];
-            let acquired = crate::cpdx_array::pointers(
+            let acquired = engine_native_memory::cpdx_array::pointers(
                 self.memory,
                 headquarters,
                 "fresh task-force headquarters unreadable",
@@ -942,9 +960,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         };
         let memory = self.memory;
         let walked = {
-            let mut bytes = [0; ROSTER_STRIDE * crate::cpdx_array::POINTER_PAGE];
-            let mut complete = [false; crate::cpdx_array::POINTER_PAGE];
-            crate::cpdx_array::pointer_pages(
+            let mut bytes = [0; ROSTER_STRIDE * engine_native_memory::cpdx_array::POINTER_PAGE];
+            let mut complete = [false; engine_native_memory::cpdx_array::POINTER_PAGE];
+            engine_native_memory::cpdx_array::pointer_pages(
                 memory,
                 ships,
                 "fresh task-force ship pointer unreadable",
@@ -955,7 +973,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                         &ROSTER_RECORD,
                         &mut bytes,
                         &mut complete,
-                        crate::batch_fallback::Batch::FreshEtaGathers,
+                        engine_native_memory::batch_fallback::Batch::FreshEtaGathers,
                     );
                     for (index, &pointer) in page.iter().enumerate() {
                         let ship = if complete[index] {
@@ -987,10 +1005,10 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
         if mixed {
             self.context.terrain_speed =
-                speed.and_then(|value| crate::fixed5::fraction(value, i64::from(ships.count) * P));
+                speed.and_then(|value| engine_native_memory::fixed5::fraction(value, i64::from(ships.count) * P));
         }
         *total = (*total).map(|value| {
-            value.and_then(|value| crate::fixed5::fraction(value, i64::from(ships.count) * P))
+            value.and_then(|value| engine_native_memory::fixed5::fraction(value, i64::from(ships.count) * P))
         });
         Ok(())
     }
@@ -1035,7 +1053,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             self.memory,
             self.base,
             leader,
-            crate::cnavy_leader::VTABLE_RVA,
+            engine_native_parts::cnavy_leader::VTABLE_RVA,
         )?;
         for offset in mission::UNIT_LEADER_SOURCES {
             let source = field::<u64>(self.memory, leader, offset)? as usize;
@@ -1074,7 +1092,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     fn underway(
         &mut self,
         task: usize,
-        roster: ccountry::Country,
+        roster: engine_native_memory::country_identity::Country,
         country_values: Result<[Value; VALUE_COUNT], &'static str>,
     ) -> Result<i64, &'static str> {
         if field::<u8>(self.memory, task, mission::UNDERWAY)? == 0 {
@@ -1094,7 +1112,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 self.effective(4, country_values?[4])?
             } else {
                 let values = self.values(
-                    add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                    add(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                     &[KEYS[4]],
                 )?;
                 self.effective(4, values[0])?
@@ -1120,7 +1138,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         eta: bool,
         risk: bool,
     ) -> (
-        Result<ccountry::Country, &'static str>,
+        Result<engine_native_memory::country_identity::Country, &'static str>,
         Result<[Value; VALUE_COUNT], &'static str>,
         Terms,
     ) {
@@ -1131,7 +1149,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let country_values = if eta || risk {
             roster.and_then(|country| {
                 self.country_values(
-                    add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                    add(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                     country.pointer,
                     eta,
                     risk,
@@ -1155,7 +1173,7 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     fn targeted_spotting(
         &mut self,
-        roster: ccountry::Country,
+        roster: engine_native_memory::country_identity::Country,
         controller: Result<Option<u32>, &'static str>,
     ) -> Result<i64, &'static str> {
         let raw = controller?.ok_or("risk targeted spotting actual location absent")?;
@@ -1166,7 +1184,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             .as_ref()
             .map_err(|reason| *reason)?;
         let value =
-            mission::targeted_spotting::raw(self.memory, self.base, countries, roster, raw)?;
+            targeted_spotting::raw(self.memory, self.base, countries, roster, raw)?;
         self.effective(TARGETED_INDEX, value)
     }
     fn stats(&mut self, task: usize) -> Result<usize, &'static str> {
@@ -1200,7 +1218,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 .ships
                 .expect("original ship header installed")
                 .and_then(|ships| {
-                    crate::cpdx_array::pointers(
+                    engine_native_memory::cpdx_array::pointers(
                         self.memory,
                         ships,
                         "risk original ship pointer unreadable",
@@ -1274,12 +1292,12 @@ impl<'a, M: Memory> Reader<'a, M> {
             stats: contribution.map(|contribution| {
                 if contribution {
                     Some(if reached == Ok(true) {
-                        crate::transport_spotting_graph::TaskForceStats::capture(
+                        TaskForceStats::capture(
                             self.memory,
                             source.stats,
                         )
                     } else {
-                        crate::transport_spotting_graph::TaskForceStats::capture_detection(
+                        TaskForceStats::capture_detection(
                             self.memory,
                             source.stats,
                         )
@@ -1422,7 +1440,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         &mut self,
         task: usize,
         sample_hour: i32,
-    ) -> (FreshEtaInputs, Result<ccountry::Country, &'static str>) {
+    ) -> (FreshEtaInputs, Result<engine_native_memory::country_identity::Country, &'static str>) {
         let (eta, owner, _) = self.capture_with_mission_risk(task, sample_hour, Ok(false), Ok(()));
         (eta, owner)
     }
@@ -1435,7 +1453,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         guard: Result<(), &'static str>,
     ) -> (
         FreshEtaInputs,
-        Result<ccountry::Country, &'static str>,
+        Result<engine_native_memory::country_identity::Country, &'static str>,
         MissionRiskInputs,
     ) {
         self.capture_with_mission_risk_union(task, sample_hour, demand, guard, false)
@@ -1450,7 +1468,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         contributor: bool,
     ) -> (
         FreshEtaInputs,
-        Result<ccountry::Country, &'static str>,
+        Result<engine_native_memory::country_identity::Country, &'static str>,
         MissionRiskInputs,
     ) {
         let stats = self.stats(task);
@@ -1523,3 +1541,53 @@ impl<'a, M: Memory> Reader<'a, M> {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskForceStats {
+    pub detection_138: ResultWord<i64>,
+    pub visibility_148: ResultWord<i64>,
+    pub visibility_150: ResultWord<i64>,
+    pub carrier_detection_160: ResultWord<i64>,
+}
+
+impl TaskForceStats {
+    pub fn capture(memory: &impl Memory, original: ResultWord<usize>) -> Self {
+        Self::capture_with_visibility(memory, original, true)
+    }
+
+    pub fn capture_detection(memory: &impl Memory, original: ResultWord<usize>) -> Self {
+        Self::capture_with_visibility(memory, original, false)
+    }
+
+    fn capture_with_visibility(
+        memory: &impl Memory,
+        original: ResultWord<usize>,
+        visibility: bool,
+    ) -> Self {
+        let word = |offset| {
+            original.and_then(|stats| {
+                stats
+                    .checked_add(offset)
+                    .filter(|_| stats != 0)
+                    .and_then(|at| read::<i64>(memory, at))
+                    .ok_or("selected transport task-force stat word unreadable")
+            })
+        };
+        Self {
+            detection_138: word(0x138),
+            visibility_148: if visibility {
+                word(0x148)
+            } else {
+                Err("selected transport visibility stat query unreached")
+            },
+            visibility_150: if visibility {
+                word(0x150)
+            } else {
+                Err("selected transport visibility stat query unreached")
+            },
+            carrier_detection_160: word(0x160),
+        }
+    }
+}
+
+type ResultWord<T> = Result<T, &'static str>;

@@ -1,7 +1,7 @@
 use crate::extended;
 pub(crate) use collector_extended_support::demand::rows;
 use collector_map_capture::map_capture::MapCapacities;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 
 /// # Safety
 /// Run only in the active session's serial sizing pass or before callback publication at attach.
@@ -45,7 +45,7 @@ pub unsafe fn presize_periodic(
     };
     if capacity_census {
         accept(
-            rows(engine_native::cair_wing::count(memory, base, state))
+            rows(engine_native_air::cair_wing::count(memory, base, state))
                 .map(|count| map.raise_air_wings(count)),
         );
         let naval = engine_native::cfleet::count(memory, base, state);
@@ -202,7 +202,12 @@ pub unsafe fn presize_periodic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{cgame_state as gs, cprovince, csupply_system, walk::Outcome};
+    use engine_native::{
+        cgame_state as gs,
+        cprovince,
+        ccountry_supply_system::world as csupply_system,
+    };
+    use engine_native_memory::walk::Outcome;
 
     struct LargeMap {
         slots: u32,

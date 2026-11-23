@@ -16,6 +16,10 @@ naval_tree_changes = []
 raid_intel_changes = ["naval_tree_changes"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-politics.workspace = true
+engine-native-air.workspace = true
 engine-sites.workspace = true
 engine-scripts.workspace = true
 engine-allocation.workspace = true
@@ -61,6 +65,7 @@ collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-projects = { workspace = true, features = ["default", "naval_tree_changes", "raid_intel_changes", "test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

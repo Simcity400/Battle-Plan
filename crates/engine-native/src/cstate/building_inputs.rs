@@ -3,14 +3,21 @@ use super::{
     COUNTRY_MODIFIERS, EXTRA_SHARED_SLOTS, ID, OWNER, VTABLE_RVA,
     country_modifier_accumulator_with_canonical,
 };
-use crate::{
-    Memory, ccountry, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cproduction_status,
-    memory::{RecordField, RecordLayout, RecordSources, packed_fields},
-    modifier_accumulator, modifier_definition, read, read_slice,
+    memory::{
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+    },
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use crate::{ccountry, cgame_state, cproduction_status};
+use engine_native_parts::{modifier_accumulator, modifier_definition};
 
 pub const NAMES: [&[u8]; 8] = [
     b"local_building_slots",
@@ -126,7 +133,7 @@ fn walk_keys(
 ) -> Result<Outcome, &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     cache.clear();
-    crate::allocation::resize_default(cache, countries.count() as usize)
+    engine_allocation::resize_default(cache, countries.count() as usize)
         .map_err(|_| "state building input allocation failed")?;
     let states = game_state
         .checked_add(cgame_state::STATES)
@@ -267,7 +274,7 @@ fn values<const N: usize>(
         return None;
     }
     let sorted = resolved.map(|entry| entry.0);
-    let mut found = [modifier_accumulator::Value::default(); N];
+    let mut found = [engine_native_memory::modifier_cache::Value::default(); N];
     modifier_accumulator::lookup_many_at(memory, address, &sorted, &mut found).ok()?;
     let mut result = [0_i64; N];
     for ((_, operands, slot), value) in resolved.into_iter().zip(found) {
@@ -295,7 +302,7 @@ fn country<M: Memory>(
     }
     let accumulator = country
         .pointer
-        .checked_add(ccountry::MODIFIER_ACCUMULATOR)?;
+        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?;
     let slots = values(memory, accumulator, keys, OWNER_COUNTRY);
     let energy = values(memory, accumulator, keys, [CONTROLLER_COUNTRY]).map(|[value]| value);
     let factor = (|| {

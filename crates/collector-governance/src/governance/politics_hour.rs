@@ -5,10 +5,15 @@ use crate::{
     table_capture::grow_vec,
 };
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, ccountry, cpolitical_party, cpolitical_party::LeaderRow,
-    cpolitical_party::Row as PartyRow, cpolitical_status, cpolitical_status::IdeaRow,
-    memory::RecordField, memory::RecordLayout, memory::RecordSources, walk::Buffer, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    memory::{RecordField, RecordLayout, RecordSources},
+    walk::{Buffer, Outcome},
+};
+use engine_native::ccountry;
+use engine_native_politics::{
+    cpolitical_party::{self, LeaderRow, Row as PartyRow},
+    cpolitical_status::{self, IdeaRow},
 };
 use std::ops::Range;
 

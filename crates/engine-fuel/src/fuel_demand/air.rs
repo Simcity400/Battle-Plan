@@ -1,11 +1,20 @@
 use super::capture::{identity, name};
 use super::*;
-use crate::{
-    air_fuel_defines as defines, cair_base, cair_wing, cair_wing_pool, ccountry,
-    ccountry_air_container as container,
-    cpdx_array::{self, Array},
-    creference_registry, cstrategic_air, cstrategic_air_manager, modifier_accumulator,
+use engine_native_parts::{
+    air_fuel_defines as defines,
+    cair_wing_pool,
+    creference_registry,
+    modifier_accumulator,
 };
+use engine_native_air::{
+    cair_base,
+    cair_wing,
+    ccountry_air_container as container,
+    cstrategic_air,
+    cstrategic_air_manager,
+};
+use engine_native::ccountry;
+use engine_native_memory::cpdx_array::{self, Array};
 
 pub(super) fn pointer(
     memory: &impl Memory,
@@ -101,20 +110,20 @@ pub(super) fn capacity(
     base: usize,
     wing: usize,
 ) -> Result<i32, &'static str> {
-    let pool = field::<u64>(memory, wing, cair_wing::POOL)? as usize;
+    let pool = field::<u64>(memory, wing, engine_native_parts::cair_wing_layout::POOL)? as usize;
     vtable(memory, base, pool, cair_wing_pool::VTABLE_RVA)?;
     let assigned = field::<u64>(memory, pool, cair_wing_pool::AIR_BASE_REFERENCE)?;
     let air_base = creference_registry::resolve(memory, base, assigned)?
         .ok_or("fuel demand capacity base reference unresolved")?;
-    vtable(memory, base, air_base, cair_base::VTABLE_RVA)?;
+    vtable(memory, base, air_base, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
     let state = field::<u64>(memory, air_base, cair_base::STATE)?;
     let mut kind = 0;
     if state == 0 {
-        let host = field::<u64>(memory, air_base, cair_base::HOST_REFERENCE)?;
+        let host = field::<u64>(memory, air_base, engine_native_parts::cair_base_layout::HOST_REFERENCE)?;
         let ship = creference_registry::resolve(memory, base, host)?
             .ok_or("fuel demand capacity host ship reference unresolved")?;
-        vtable(memory, base, ship, crate::cship::VTABLE_RVA)?;
-        kind = if field::<u8>(memory, ship, crate::cship::FORMATION_FLAGS)? & 0x80 != 0 {
+        vtable(memory, base, ship, engine_native::cship::VTABLE_RVA)?;
+        kind = if field::<u8>(memory, ship, engine_native::cship::FORMATION_FLAGS)? & 0x80 != 0 {
             3
         } else {
             1 + usize::from(module_flag(memory, ship)?)
@@ -125,7 +134,7 @@ pub(super) fn capacity(
         memory,
         base,
         definition,
-        crate::csub_unit_definition::VTABLE_RVA,
+        engine_native_parts::csub_unit_definition::VTABLE_RVA,
     )?;
     if field::<u64>(memory, definition, 0x5a8)? & (1 << 33) != 0 {
         field(memory, air_base, cair_base::CAPACITY)
@@ -182,28 +191,28 @@ pub(super) fn context(
             bucket = (bucket + 1) & mask;
         }
     }
-    vtable(memory, base, region, crate::cstrategic_region::VTABLE_RVA)?;
+    vtable(memory, base, region, engine_native_parts::cstrategic_region::VTABLE_RVA)?;
     let mut result = Context {
-        region: field(memory, region, crate::cstrategic_region::ID)?,
+        region: field(memory, region, engine_native_parts::cstrategic_region::ID)?,
         pointer: region,
         ..Default::default()
     };
     let start = out.weather.len;
     let read = (|| {
-        let manager = field::<u64>(memory, state, crate::cgame_state::WEATHER_MANAGER)? as usize;
+        let manager = field::<u64>(memory, state, engine_native::cgame_state::WEATHER_MANAGER)? as usize;
         for slot in 0..24 {
-            let count = field::<i32>(memory, region, crate::cstrategic_region::PROVINCES_COUNT)?;
+            let count = field::<i32>(memory, region, engine_native_parts::cstrategic_region::PROVINCES_COUNT)?;
             result.counts[slot] = count;
             if count > 0 {
-                vtable(memory, base, manager, crate::cweather_manager::VTABLE_RVA)?;
-                let provinces = array(memory, region, crate::cstrategic_region::PROVINCES, 8)?;
+                vtable(memory, base, manager, engine_native::cweather_manager::VTABLE_RVA)?;
+                let provinces = array(memory, region, engine_native_parts::cstrategic_region::PROVINCES, 8)?;
                 if provinces.count != count as u32 {
                     return Err("fuel demand context province count changed within read");
                 }
                 out.weather.demand(provinces.count)?;
                 for ordinal in 0..provinces.count {
                     let province = pointer(memory, provinces, ordinal)?;
-                    vtable(memory, base, province, crate::cprovince::VTABLE_RVA)?;
+                    vtable(memory, base, province, engine_native::cprovince::VTABLE_RVA)?;
                     let selector = field::<i32>(memory, province, 0xa4)?;
                     let grid = field::<u64>(memory, manager, 0x370)? as usize;
                     let offset = (i64::from(selector) * 0x22 + slot as i64) * 0x18;
@@ -263,7 +272,7 @@ fn inputs<M: Memory>(
     };
     if result.mission_first == 0 {
         result.mask = field(memory, wing, 0xa0)?;
-        if result.mask & crate::air_mission::TRAINING_MASK == 0 {
+        if result.mask & engine_native_air::air_mission::TRAINING_MASK == 0 {
             return Ok((result, Span::default(), None, None));
         }
         result.veto = field(memory, wing, cair_wing::ELIGIBILITY_VETO)?;
@@ -290,7 +299,7 @@ fn inputs<M: Memory>(
         let class = field::<i32>(
             memory,
             wing,
-            cair_wing::MISSION + crate::air_mission::CAPACITY_CLASS,
+            cair_wing::MISSION + engine_native_air::air_mission::CAPACITY_CLASS,
         )?;
         let thresholds = global::<u64>(memory, base, defines::CAPACITY_THRESHOLDS_RVA)? as usize;
         let selected = thresholds
@@ -327,30 +336,30 @@ fn inputs<M: Memory>(
     if result.ace != 0
         && let Some(ace) = creference_registry::resolve(memory, base, result.ace)?
     {
-        vtable(memory, base, ace, crate::cace::VTABLE_RVA)?;
-        result.ace_alive = field(memory, ace, crate::cace::ALIVE)?;
+        vtable(memory, base, ace, engine_native_air::cace::VTABLE_RVA)?;
+        result.ace_alive = field(memory, ace, engine_native_air::cace::ALIVE)?;
         if result.ace_alive != 0 {
-            result.ace_modifier = modifier(memory, base, ace, crate::cace::MODIFIERS, 0x19e)?;
-            result.ace_assigned_wing = field(memory, ace, crate::cace::ASSIGNED_WING_REFERENCE)?;
+            result.ace_modifier = modifier(memory, base, ace, engine_native_air::cace::MODIFIERS, 0x19e)?;
+            result.ace_assigned_wing = field(memory, ace, engine_native_air::cace::ASSIGNED_WING_REFERENCE)?;
             if result.ace_assigned_wing != 0
                 && let Some(assigned) =
                     creference_registry::resolve(memory, base, result.ace_assigned_wing)?
                 && assigned != 0x10
             {
                 let assigned = assigned
-                    .checked_sub(cair_wing::SECONDARY)
+                    .checked_sub(engine_native_parts::cair_wing_layout::SECONDARY)
                     .ok_or("fuel demand ace wing address invalid")?;
-                vtable(memory, base, assigned, cair_wing::VTABLE_RVA)?;
+                vtable(memory, base, assigned, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
                 result.ace_assigned_planes = Some(field(memory, assigned, cair_wing::PLANE_COUNT)?);
                 if result.ace_assigned_planes != Some(0) {
                     result.ace_count = global(memory, base, defines::ACE_COUNT_RVA)?;
                     result.ace_cap = global(memory, base, defines::ACE_CAP_RVA)?;
                 }
             }
-            let owner = field::<u64>(memory, ace, crate::cace::OWNER_COUNTRY)? as usize;
+            let owner = field::<u64>(memory, ace, engine_native_air::cace::OWNER_COUNTRY)? as usize;
             if field::<u32>(memory, owner, ccountry::ID)? == 0 {
                 let reserved =
-                    crate::game_score_inputs::read_slot_zero(memory, base, countries.arrays()[0])?
+                    engine_native_air::game_score_inputs::read_slot_zero(memory, base, countries.arrays()[0])?
                         .ok_or("fuel demand ace reserved country object is null")?;
                 if reserved.pointer != owner {
                     return Err("fuel demand ace reserved country identity mismatch");
@@ -359,21 +368,21 @@ fn inputs<M: Memory>(
                 countries.of_pointer(owner)?;
             }
             result.ace_country_modifier =
-                modifier(memory, base, owner, ccountry::MODIFIER_ACCUMULATOR, 0x25a)?;
+                modifier(memory, base, owner, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0x25a)?;
         }
     }
     let overridden = field::<i32>(memory, wing, cair_wing::COUNTRY_OVERRIDE)?;
     let raw = if overridden > 0 {
         overridden as u32
     } else {
-        let pool = field::<u64>(memory, wing, cair_wing::POOL)? as usize;
+        let pool = field::<u64>(memory, wing, engine_native_parts::cair_wing_layout::POOL)? as usize;
         vtable(memory, base, pool, cair_wing_pool::VTABLE_RVA)?;
         let owner = field::<u64>(memory, pool, cair_wing_pool::OWNER)? as usize;
         vtable(memory, base, owner, cstrategic_air::VTABLE_RVA)?;
         field(memory, owner, cstrategic_air::COUNTRY)?
     };
     let owner = if raw == 0 {
-        crate::game_score_inputs::read_slot_zero(memory, base, countries.arrays()[0])?
+        engine_native_air::game_score_inputs::read_slot_zero(memory, base, countries.arrays()[0])?
             .ok_or("fuel demand reserved country object is null")?
     } else {
         countries.resolve(raw)?
@@ -382,7 +391,7 @@ fn inputs<M: Memory>(
         memory,
         base,
         owner.pointer,
-        ccountry::MODIFIER_ACCUMULATOR,
+        engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x19e,
     )?;
     result.period = field(memory, wing, 0xa8)?;
@@ -390,13 +399,13 @@ fn inputs<M: Memory>(
     let region = field::<u64>(
         memory,
         wing,
-        cair_wing::MISSION + crate::air_mission::REGION,
+        cair_wing::MISSION + engine_native_air::air_mission::REGION,
     )? as usize;
     let mut weather = Span::default();
     let mut context_index = None;
     if region != 0 {
-        vtable(memory, base, region, crate::cstrategic_region::VTABLE_RVA)?;
-        result.region = Some(field(memory, region, crate::cstrategic_region::ID)?);
+        vtable(memory, base, region, engine_native_parts::cstrategic_region::VTABLE_RVA)?;
+        result.region = Some(field(memory, region, engine_native_parts::cstrategic_region::ID)?);
         if result.period != 2 {
             let (index, sampled) = context(memory, base, state, region, out)?;
             context_index = Some(index);
@@ -414,7 +423,7 @@ fn site<M: Memory>(
     base: usize,
     state: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     pointer: usize,
     row: &mut Site,
     out: &mut Buffers<'_>,
@@ -423,8 +432,8 @@ fn site<M: Memory>(
         memory,
         base,
         pointer,
-        cair_base::VTABLE_RVA,
-        cair_base::HANDLE,
+        engine_native_parts::cair_base_layout::VTABLE_RVA,
+        engine_native_parts::cair_base_layout::HANDLE,
         0,
     )?;
     let containers = array(memory, pointer, cair_base::COUNTRY_CONTAINERS, 8)?;
@@ -449,8 +458,8 @@ fn site<M: Memory>(
     row.demilitarized = Some(if zone == 0 {
         0
     } else {
-        vtable(memory, base, zone, crate::cstate::VTABLE_RVA)?;
-        field(memory, zone, crate::cstate::DEMILITARIZED)?
+        vtable(memory, base, zone, engine_native::cstate::VTABLE_RVA)?;
+        field(memory, zone, engine_native::cstate::DEMILITARIZED)?
     });
     if row.demilitarized != Some(0) {
         return Ok(());
@@ -473,9 +482,9 @@ fn site<M: Memory>(
                     memory,
                     base,
                     wing,
-                    cair_wing::VTABLE_RVA,
-                    cair_wing::REFERENCE_TYPE,
-                    cair_wing::SECONDARY,
+                    engine_native_parts::cair_wing_layout::VTABLE_RVA,
+                    engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
+                    engine_native_parts::cair_wing_layout::SECONDARY,
                 )?;
                 let value = inputs(memory, base, state, countries, wing, out);
                 let stored = name(memory, at(wing, cair_wing::NAME), out);
@@ -490,7 +499,7 @@ fn site<M: Memory>(
                     if override_country > 0 {
                         return Ok((override_country as u32, override_country));
                     }
-                    let current_pool = field::<u64>(memory, wing, cair_wing::POOL)? as usize;
+                    let current_pool = field::<u64>(memory, wing, engine_native_parts::cair_wing_layout::POOL)? as usize;
                     vtable(memory, base, current_pool, cair_wing_pool::VTABLE_RVA)?;
                     let current_owner =
                         field::<u64>(memory, current_pool, cair_wing_pool::OWNER)? as usize;
@@ -522,10 +531,10 @@ pub(super) fn country<M: Memory>(
     base: usize,
     state: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
-    let manager = field::<u64>(memory, state, crate::cgame_state::STRATEGIC_AIR_MANAGER)? as usize;
+    let manager = field::<u64>(memory, state, engine_native::cgame_state::STRATEGIC_AIR_MANAGER)? as usize;
     vtable(memory, base, manager, cstrategic_air_manager::VTABLE_RVA)?;
     let owners = array(memory, manager, cstrategic_air_manager::COUNTRY_AIR, 8)?;
     let air = pointer(memory, owners, country.canonical_slot)?;

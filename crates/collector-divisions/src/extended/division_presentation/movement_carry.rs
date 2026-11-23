@@ -1,4 +1,5 @@
-use engine_native::{Memory, carmy::DivisionSeed, cprovince};
+use engine_native_memory::Memory;
+use engine_native::{carmy::DivisionSeed, cprovince};
 use engine_naval_history::cnaval_unit_transfer::{
     SpeedCache, SpeedInputs, TransportRegion, movement_speeds_inputs,
 };
@@ -64,13 +65,13 @@ impl Transport {
                 .ok_or("division transport location unavailable")?;
             let pointer = location
                 .checked_add(cprovince::STRATEGIC_REGION)
-                .and_then(|at| engine_native::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .ok_or("division transport region pointer unavailable")?
                 as usize;
             if let Some(&region) = self.regions.get(&pointer) {
                 return Ok((owner, region));
             }
-            let id = engine_native::cstrategic_region::id(memory, base, pointer)?
+            let id = engine_native_parts::cstrategic_region::id(memory, base, pointer)?
                 .ok_or("division transport source region absent")?;
             let region = TransportRegion { id, pointer };
             if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.regions, 1))

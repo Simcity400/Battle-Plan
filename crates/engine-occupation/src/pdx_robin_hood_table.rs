@@ -5,7 +5,8 @@ pub const CAPACITY_OR_MASK: usize = 0x0c;
 pub const MAX_DISTANCE: usize = 0x10;
 const COUNTRY_KEY_HASH_MULTIPLIER: u32 = 0x045d_9f3b;
 
-use crate::{Memory, pdx_robin_hood_bucket as bucket, read};
+use engine_native_memory::{Memory, read};
+use crate::pdx_robin_hood_bucket as bucket;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Entry {
@@ -140,7 +141,7 @@ pub(crate) fn visit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn occupation_key_lookup_probes_collisions_and_never_follows_an_empty_stale_value() {

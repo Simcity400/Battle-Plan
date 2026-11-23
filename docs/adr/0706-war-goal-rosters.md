@@ -6,4 +6,4 @@ The worker's complete inventory keeps serializable goals, unused handle occurren
 
 The relation view uses the first state and first country of their ordered naming arrays. It retains zero when a handle is null or stale and refuses the table on failed reads. The type's authored naming override comes from its war name, separate from a general war label or the declared type token.
 
-[Owned roster](../../crates/engine-native/src/cwar_goal.rs) · [Inventory](../../crates/engine-native/src/cwar_goal/inventory.rs) · [Writer coverage](../../crates/engine-native/src/cwar_goal/mutations.rs) · [Relation naming](../../crates/engine-native/src/cwar_goal/relation.rs)
+[Owned roster](../../crates/engine-native/src/cwar_relation/goals.rs) · [Inventory](../../crates/engine-native/src/cwar_relation/goals/inventory.rs) · [Writer coverage](../../crates/engine-native/src/cwar_relation/goals/mutations.rs) · [Relation naming](../../crates/engine-native/src/cwar_relation/goals/relation.rs)

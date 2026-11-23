@@ -11,10 +11,9 @@ use engine_allocation::{copy_vec, filled, owned_vec};
 use engine_events::ccountry_experience_status;
 use engine_fuel::{ccountry_fuel_status, fuel_consumer_data, fuel_history_entry};
 use engine_map_air::foreign_homebase_node;
-use engine_native::{
-    Memory, ccountry, ccountry_supply_system, cgame_state, cpdx_array::Array,
-    hub_motorization_entry, msvc_string, supply_node_record, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, walk::Outcome};
+use engine_native::{ccountry, ccountry_supply_system, cgame_state};
+use engine_native_parts::{hub_motorization_entry, supply_node_record};
 use engine_production::{cpurchase_contract, market_contract_manager};
 use engine_railways::{disrupted_supply_bucket, sprovince_supply_data};
 use engine_resources::{ccountry_resources, cresource_exchange, cstrategic_resource};
@@ -328,8 +327,8 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::Growing(&mut self.foreign.rows),
-                engine_native::walk::Buffer::Growing(&mut self.sources.first),
+                engine_native_memory::walk::Buffer::Growing(&mut self.foreign.rows),
+                engine_native_memory::walk::Buffer::Growing(&mut self.sources.first),
             );
             self.foreign.outcome = bounded(acquired.outcome, self.foreign.rows.len());
             self.sources.len = acquired.bytes_len;
@@ -353,7 +352,7 @@ impl Captured {
                 cstrategic_resource::walk_buffer(
                     memory,
                     base,
-                    engine_native::walk::Buffer::Growing(rows),
+                    engine_native_memory::walk::Buffer::Growing(rows),
                 )
             });
             ticks[6] = elapsed(begin);
@@ -370,7 +369,7 @@ impl Captured {
                         base,
                         game_state,
                         descriptors,
-                        engine_native::walk::Buffer::Growing(rows),
+                        engine_native_memory::walk::Buffer::Growing(rows),
                     )
                 });
             } else {
@@ -386,8 +385,8 @@ impl Captured {
                         base,
                         game_state,
                         descriptors,
-                        engine_native::walk::Buffer::Growing(&mut self.exchanges.rows),
-                        engine_native::walk::Buffer::Growing(&mut self.exchange_scratch),
+                        engine_native_memory::walk::Buffer::Growing(&mut self.exchanges.rows),
+                        engine_native_memory::walk::Buffer::Growing(&mut self.exchange_scratch),
                     ),
                     self.exchanges.rows.len(),
                 );
@@ -404,8 +403,8 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::Growing(rows),
-                    engine_native::walk::Buffer::Growing(&mut self.purchase_scratch),
+                    engine_native_memory::walk::Buffer::Growing(rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.purchase_scratch),
                 )
             });
             ticks[9] = elapsed(begin);
@@ -423,8 +422,8 @@ impl Captured {
             memory,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.fuel.rows),
-            engine_native::walk::Buffer::Growing(&mut self.fuel_consumers.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.fuel.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.fuel_consumers.rows),
         );
         self.fuel.outcome = bounded(outcomes.fuel, self.fuel.rows.len());
         self.fuel_consumers.outcome = bounded(outcomes.consumers, self.fuel_consumers.rows.len());

@@ -3,7 +3,8 @@ use collector_division_templates::extended::division_templates::{
     tests::{Fixture, capacity, fixture, large_content, set_name, template_outcomes},
 };
 use engine_native::creferenced_division_template as native;
-use engine_native::{ccountry, memory::SliceMemory, walk::Outcome};
+use engine_native::ccountry;
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 use replay_data::rows::Recorded;
 use replay_frame::frame::TableView;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 #[test]
 fn hourly_template_job_publishes_direct_walk_rows() {
     use crate::acquisition_countries::TemplatesRequest;
-    use engine_native::country_memory::Cache;
+    use engine_native_intelligence::country_memory::Cache;
 
     let mut source = fixture();
     let mut capture = Captured::vacant();
@@ -70,7 +71,7 @@ fn hourly_template_job_publishes_direct_walk_rows() {
 fn promoted_template_worker_matches_direct_rows_and_faults() {
     use crate::acquisition_jobs::{Batch, Job, Pool, Report, TemplatesRequest};
     use collector_workers::roles::Role;
-    use engine_native::country_memory::Cache;
+    use engine_native_intelligence::country_memory::Cache;
 
     fn word(source: &Fixture, at: usize) -> usize {
         u64::from_le_bytes(source.bytes[at..at + 8].try_into().unwrap()) as usize

@@ -5,7 +5,7 @@ use engine_mutations::{
     faction_companion_mutations::Family, faction_companion_mutations::MUTATIONS,
     faction_companion_mutations::Patch,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     mem::ManuallyDrop,
     ops::Range,
@@ -379,8 +379,8 @@ macro_rules! callback {
             let selected_slot = if $site == 65 {
                 a.checked_sub(engine_stability::cfaction_upgrade_status::SLOTS)
             } else if $site == 64 {
-                let memory = unsafe { engine_native::memory::LiveMemory::new() };
-                engine_native::read::<u64>(
+                let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+                engine_native_memory::read::<u64>(
                     &memory,
                     a + engine_stability::cfaction_upgrade_status::SLOTS,
                 )
@@ -395,7 +395,7 @@ macro_rules! callback {
             };
             let flight = ManuallyDrop::new(if let Some(selected) = selected_slot {
                 watch.notify(if $site == 16 {
-                    a.saturating_add(engine_native::cfaction_member_status::UPGRADES)
+                    a.saturating_add(engine_native_parts::cfaction_member_status::UPGRADES)
                 } else {
                     selected
                 })
@@ -512,10 +512,10 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
     CALLS.increment(site);
     use crate::faction_accounts::mirror::{self, Operation};
     if site == 67 {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Acquire);
         let canonical = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-            .and_then(|at| engine_native::read::<u64>(&memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
             .and_then(|state| usize::try_from(state).ok())
             .and_then(|state| engine_native::ccountry::Reader::new(&memory, base, state).ok())
             .and_then(|reader| reader.of_pointer(registers.r13).ok())
@@ -537,12 +537,12 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
     }
     let _flight = mirror::Flight::new();
     if matches!(site, 47..=49) {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let denominator = if site == 47 {
             registers
                 .r14
                 .checked_add(engine_native::cfaction::INFLUENCE_TOTAL)
-                .and_then(|at| engine_native::read::<i64>(&memory, at))
+                .and_then(|at| engine_native_memory::read::<i64>(&memory, at))
         } else {
             let (holder, offset) = if site == 48 {
                 (registers.r15, 0x10)
@@ -552,10 +552,10 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
             holder
                 .checked_add(offset)
                 .and_then(|at| {
-                    engine_native::read::<u64>(&memory, at)
+                    engine_native_memory::read::<u64>(&memory, at)
                         .and_then(|value| usize::try_from(value).ok())
                 })
-                .and_then(|at| engine_native::read::<i64>(&memory, at))
+                .and_then(|at| engine_native_memory::read::<i64>(&memory, at))
         };
         let receiver = if site == 48 {
             registers.r14
@@ -770,8 +770,8 @@ unsafe extern "system-unwind" fn projection_factory(
     CALLS.increment(69);
     let original: Function = unsafe { std::mem::transmute(ORIGINAL[69].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d) });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    crate::faction_accounts::mirror::projection_factory_total(engine_native::read::<i64>(
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    crate::faction_accounts::mirror::projection_factory_total(engine_native_memory::read::<i64>(
         &memory, result,
     ));
     result

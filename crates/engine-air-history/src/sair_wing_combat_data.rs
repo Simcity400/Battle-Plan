@@ -1,5 +1,5 @@
 
-use crate::Memory;
+use engine_native_memory::Memory;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a9_99d0);

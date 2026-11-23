@@ -150,7 +150,7 @@ impl Drop for Anchor {
 pub(super) fn forwarded_pass(country: usize, run: impl FnOnce() -> usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let previous = PASS.get();
     let mut anchor = Anchor {
         previous,

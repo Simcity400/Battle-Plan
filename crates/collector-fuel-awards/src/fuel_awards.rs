@@ -4,7 +4,7 @@ use crate::{
 };
 use collector_primitives::spill_stack::SpillStack;
 use engine_fuel::fuel_awards as native;
-use engine_native::{Memory, memory::LiveMemory};
+use engine_native_memory::{Memory, memory::LiveMemory};
 use engine_sites::Rva;
 use std::{
     cell::{Cell, RefCell, UnsafeCell},
@@ -935,8 +935,8 @@ pub fn drain(
     names: &mut Vec<u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     drain_buffers(
-        engine_native::walk::Buffer::Growing(entries),
-        engine_native::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 pub fn lost_drain() {
@@ -944,8 +944,8 @@ pub fn lost_drain() {
     LOG.invalidate();
 }
 fn drain_buffers(
-    entries: engine_native::walk::Buffer<'_, Entry>,
-    names: engine_native::walk::Buffer<'_, u8>,
+    entries: engine_native_memory::walk::Buffer<'_, Entry>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     let result = drain_domains(entries, names);
     if let Err(reason) = result {
@@ -955,8 +955,8 @@ fn drain_buffers(
     result
 }
 fn drain_domains(
-    entries: engine_native::walk::Buffer<'_, Entry>,
-    names: engine_native::walk::Buffer<'_, u8>,
+    entries: engine_native_memory::walk::Buffer<'_, Entry>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     let Ok(domains) = CURRENT.try_lock() else {
         COUNTERS[6].fetch_add(1, Ordering::Relaxed);
@@ -1008,8 +1008,8 @@ fn handover_buffers(
     spill: &Spill,
     buffer: &Buffer,
     older: Option<&Buffer>,
-    mut entries: engine_native::walk::Buffer<'_, Entry>,
-    mut names: engine_native::walk::Buffer<'_, u8>,
+    mut entries: engine_native_memory::walk::Buffer<'_, Entry>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     unavailable: Option<&'static str>,
 ) -> Result<(Drained, usize, usize), &'static str> {
     COUNTERS[4].fetch_add(1, Ordering::Relaxed);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::CountingMemory;
+use engine_native_memory::memory::CountingMemory;
 
 const PAIRS_AT: usize = 0x1000;
 const FIRST: usize = 0x100;
@@ -47,7 +47,7 @@ fn per_pair(
             {
                 return Err("front province identity mismatch");
             }
-            *word = crate::corder_instance::plan_field(memory, pointer, cprovince::ID)?;
+            *word = engine_native::corder_instance::plan_field(memory, pointer, cprovince::ID)?;
             if *word == 0 {
                 return Err("front province sentinel");
             }
@@ -118,6 +118,6 @@ fn every_fault_keeps_the_per_pair_ids_prefix_and_first_failure() {
     }
 }
 
-fn engine_memory(bytes: &[u8]) -> crate::memory::SliceMemory<'_> {
-    crate::memory::SliceMemory { base: 0, bytes }
+fn engine_memory(bytes: &[u8]) -> engine_native_memory::memory::SliceMemory<'_> {
+    engine_native_memory::memory::SliceMemory { base: 0, bytes }
 }

@@ -3,10 +3,9 @@ use crate::{
     hook::Hook,
 };
 use engine_mutations::combat_engagement_mutations as native;
-use engine_native::{
-    Memory, cland_border_war_combat, cland_border_war_combatant, cland_combat, cland_combatant,
-    cnaval_combat, cnaval_combatant,
-};
+use engine_native_memory::Memory;
+use engine_native_parts::{cland_border_war_combat, cland_border_war_combatant};
+use engine_native::{cland_combat, cland_combatant, cnaval_combat, cnaval_combatant};
 use replay_data::rows::CombatEngagementRefreshRow;
 use std::{
     cell::Cell,
@@ -124,11 +123,11 @@ fn read_side_index(
 ) -> Result<u8, &'static str> {
     let attacker = combat
         .checked_add(attacker_offset)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .ok_or("combat engagement refresh combat attacker unreadable")?;
     let defender = combat
         .checked_add(defender_offset)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .ok_or("combat engagement refresh combat defender unreadable")?;
     if attacker == defender {
         return Err("combat engagement refresh combat sides identical");
@@ -153,7 +152,7 @@ fn identify_side(
     if combatant == 0 {
         return Err("combat engagement refresh combatant null");
     }
-    let vtable = engine_native::read::<u64>(memory, combatant)
+    let vtable = engine_native_memory::read::<u64>(memory, combatant)
         .ok_or("combat engagement refresh combatant unreadable")?;
     let naval_vtable = engine_sites::at(base, cnaval_combatant::VTABLE_RVA)
         .ok_or("combat engagement refresh naval combatant vtable withheld")?
@@ -181,11 +180,11 @@ fn identify_side(
     };
     let combat = combatant
         .checked_add(combat_offset)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("combat engagement refresh parent combat unreadable")?;
-    let combat_vtable = engine_native::read::<u64>(memory, combat)
+    let combat_vtable = engine_native_memory::read::<u64>(memory, combat)
         .ok_or("combat engagement refresh parent combat vtable unreadable")?;
     if is_naval {
         let expected = engine_sites::at(base, cnaval_combat::VTABLE_RVA)
@@ -196,7 +195,7 @@ fn identify_side(
         }
         let handle = combat
             .checked_add(cnaval_combat::HANDLE)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .filter(|&handle| handle != 0)
             .ok_or("combat engagement refresh naval combat handle unreadable")?;
         let side = read_side_index(
@@ -234,14 +233,14 @@ fn identify_side(
         };
         let body_vtable = combat
             .checked_add(cland_combat::BODY)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .ok_or("combat engagement refresh land combat body unreadable")?;
         if body_vtable != expected_body {
             return Err("combat engagement refresh land combat body unauthenticated");
         }
         let handle = combat
             .checked_add(cland_combat::HANDLE)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .filter(|&handle| handle != 0)
             .ok_or("combat engagement refresh land combat handle unreadable")?;
         let side = read_side_index(
@@ -271,7 +270,7 @@ fn identify_controller_target(
     }
     let target = command
         .checked_add(native::CHANGE_CONTROLLER_TARGET)
-        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
         .ok_or("combat engagement refresh controller target unreadable")?;
     if (target as i32) <= 0 {
         return Ok(None);
@@ -287,7 +286,7 @@ fn identify_controller_target(
 
 fn read_local_viewing_country(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
     let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("combat engagement refresh game state unreadable")?;
@@ -314,7 +313,7 @@ fn identify_all_combats(
     let expected = engine_sites::at(base, native::COMBAT_MANAGER_VTABLE_RVA)
         .ok_or("combat engagement refresh combat manager vtable withheld")?
         as u64;
-    let vtable = engine_native::read::<u64>(memory, manager)
+    let vtable = engine_native_memory::read::<u64>(memory, manager)
         .ok_or("combat engagement refresh combat manager unreadable")?;
     if vtable != expected {
         return Err("combat engagement refresh combat manager unauthenticated");
@@ -340,14 +339,14 @@ fn read_manager_cached_viewer(
     let expected = engine_sites::at(base, native::COMBAT_MANAGER_VTABLE_RVA)
         .ok_or("combat engagement refresh combat manager vtable withheld")?
         as u64;
-    let vtable = engine_native::read::<u64>(memory, manager)
+    let vtable = engine_native_memory::read::<u64>(memory, manager)
         .ok_or("combat engagement refresh combat manager unreadable")?;
     if vtable != expected {
         return Err("combat engagement refresh combat manager unauthenticated");
     }
     manager
         .checked_add(native::COMBAT_MANAGER_CACHED_VIEWER)
-        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
         .ok_or("combat engagement refresh combat manager viewer unreadable")
 }
 
@@ -494,14 +493,14 @@ fn run_observed(
     rdx: usize,
     r8: usize,
     r9: usize,
-    read: impl FnOnce(&engine_native::memory::LiveMemory, usize) -> Result<Option<Entry>, &'static str>,
+    read: impl FnOnce(&engine_native_memory::memory::LiveMemory, usize) -> Result<Option<Entry>, &'static str>,
 ) -> usize {
     execute_observed(
         site,
         rcx,
         || {
             // SAFETY: live read occurs inside the native game callback on the paused object pointer.
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             read(&memory, base)
         },
@@ -609,7 +608,7 @@ unsafe extern "system-unwind" fn hourly_update(
         manager,
         || {
             // SAFETY: live read occurs inside the native game callback on the paused manager pointer.
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             read_manager_cached_viewer(&memory, base, manager)
         },
@@ -622,7 +621,7 @@ unsafe extern "system-unwind" fn hourly_update(
         },
         |before| {
             // SAFETY: live read occurs immediately after the native hourly update returns on the live manager.
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             let after = read_manager_cached_viewer(&memory, base, manager)?;
             Ok(identify_hourly_viewer_change(before, after))
@@ -753,7 +752,7 @@ impl Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::sync::{Mutex, MutexGuard};
 
     #[cfg(feature = "tap-foreign-probe")]

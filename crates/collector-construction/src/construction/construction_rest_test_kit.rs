@@ -3,10 +3,20 @@ use super::{
     ConstructionRestJob, N,
 };
 use engine_intelligence::ccountry_collaboration_status;
-use engine_native::{
-    carmy_manpower_values, cbuilding, cbuilding_status, ccountry, cgame_state, cproduction_line,
-    cproduction_status, cstate, cstate_template, msvc_string,
+use engine_native_parts::{
+    carmy_manpower_values,
+    cbuilding,
+    cproduction_line,
+    cstate_template,
 };
+use engine_native::{
+    cprovince::buildings as cbuilding_status,
+    ccountry,
+    cgame_state,
+    cproduction_status,
+    cstate,
+};
+use engine_native_memory::msvc_string;
 use engine_occupation::{
     ccountry_occupation_data, ccountry_occupation_status, coccupation_law, cresistance,
     cstate_garrison_data,
@@ -522,7 +532,7 @@ pub fn capacities() -> Capacities {
     }
 }
 
-pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
+pub fn direct(memory: &impl engine_native_memory::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let mut buildings = captured.take_buildings();
     let ticks = buildings.capture(memory, 0, BASE, 0, true);
@@ -542,7 +552,7 @@ pub fn job() -> ConstructionRestJob {
 }
 
 pub fn split(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     capacities: &Capacities,
 ) -> (Captured, ConstructionRestCopyReport, ConstructionRestJob) {
     let mut captured = Captured::with_capacities(capacities);

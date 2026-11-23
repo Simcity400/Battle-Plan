@@ -7,7 +7,8 @@ use std::{
 
 use engine_dlc::cdlc_manager;
 use engine_executable::build::hash_executable;
-use engine_native::{Memory, capture_text::Owned, cfleet, cgame_state, cship, read, walk::Outcome};
+use engine_native_memory::{Memory, capture_text::Owned, read, walk::Outcome};
+use engine_native::{cfleet, cgame_state, cship};
 use content_reader_layers::content::{GatherOptions, gather};
 use recorder_platform::games::{Discovery, choose_game};
 use replay::campaign::{Replay, SeekResult};

@@ -155,9 +155,9 @@ fn event(
 ) -> Result<(), &'static str> {
     store.batch.room()?;
     let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .ok_or("design liveness clock unreadable")?;
-    let hour = engine_native::read(
+    let hour = engine_native_memory::read(
         memory,
         state as usize + engine_native::cgame_state::CURRENT_HOUR,
     )
@@ -178,7 +178,7 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
         return;
     };
-    let Some(handle) = engine_native::read::<u64>(memory, pointer + organisation::REFERENCE) else {
+    let Some(handle) = engine_native_memory::read::<u64>(memory, pointer + organisation::REFERENCE) else {
         unobserved!();
         return;
     };
@@ -193,10 +193,10 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
         store.interests.author_changed(handle);
         let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
             .ok_or("design organisation liveness identity mismatch")?;
-        if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64) {
+        if engine_native_memory::read::<u64>(memory, pointer) != Some(vtable as u64) {
             return Err("design organisation liveness identity mismatch");
         }
-        let resolved = engine_native::creference_registry::resolve(memory, base, handle)?;
+        let resolved = engine_native_parts::creference_registry::resolve(memory, base, handle)?;
         store.interests.organisation(handle, resolved)?;
         event(
             &mut store,
@@ -239,7 +239,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
     for ordinal in 0..array.count {
         let pointer = array
             .element(ordinal, 8)
-            .and_then(|at| engine_native::read::<u64>(memory, at));
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at));
         if let Some(pointer) = pointer {
             registered(memory, base, pointer as usize);
         } else {
@@ -261,7 +261,7 @@ pub(super) fn refresh_context(
         }
     }
     for handle in &handles {
-        let resolved = engine_native::creference_registry::resolve(memory, base, *handle)?;
+        let resolved = engine_native_parts::creference_registry::resolve(memory, base, *handle)?;
         let designs = sources::author_designs(*handle)?;
         super::super::design_context::author(memory, base, *handle, resolved, &designs)?;
     }
@@ -291,7 +291,7 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
     REVISION.fetch_add(1, Ordering::AcqRel);
     let mut scope = Scope { complete: false };
     let base = BASE.load(Ordering::Acquire);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if SITE == 3 {
         retired(&memory, base, a);
     }
@@ -326,7 +326,7 @@ unsafe extern "system-unwind" fn reconcile(
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d, e) });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     roster(&memory, BASE.load(Ordering::Acquire), e);
     scope.complete = true;
     result

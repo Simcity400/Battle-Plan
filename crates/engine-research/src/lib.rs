@@ -1,11 +1,7 @@
 
 use engine_characters::cscientist;
 use engine_executable::modifier_keys;
-use engine_native::{
-    Memory, allocation, batch_fallback, ccharacter, ccountry, cdiplomacy_status, cfaction,
-    cgame_state, cidea, cpdx_array, cpdx_lexer, memory, modifier_definition, msvc_string, prefetch,
-    read, read_slice, walk,
-};
+use engine_allocation as allocation;
 use engine_projects::nproject_cprogram_status;
 
 pub mod climited_use_tech_bonus;

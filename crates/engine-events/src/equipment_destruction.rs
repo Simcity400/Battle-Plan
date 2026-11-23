@@ -1,8 +1,8 @@
 
-use crate::{
-    Memory, cair_wing, carmy, cequipment_variant_pool, cpdx_array::Array, equipment_entry, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_air::cair_wing;
+use engine_native::{carmy, cequipment_variant::pool as cequipment_variant_pool};
+use engine_native_parts::equipment_entry;
 use engine_sites::Rva;
 
 pub struct Site {
@@ -224,14 +224,14 @@ pub fn merge_armies(
 ) -> Result<(usize, usize), &'static str> {
     let survivor = pointer(memory, argument, 0)?;
     army_identity(memory, base, survivor)?;
-    let location = pointer(memory, survivor, crate::cunit::LOCATION)?;
+    let location = pointer(memory, survivor, engine_native::cunit::LOCATION)?;
     let (array_address, array) = merge_inputs(memory, argument)?;
     let first = output.first_mut().ok_or("merge army scratch too short")?;
     *first = survivor;
     let mut len = 1;
     for index in 0..array.count {
         let army = usize::try_from(
-            crate::read::<u64>(
+            engine_native_memory::read::<u64>(
                 memory,
                 array
                     .element(index, 8)
@@ -240,7 +240,7 @@ pub fn merge_armies(
             .ok_or("merge input army unreadable")?,
         )
         .map_err(|_| "merge input army pointer overflow")?;
-        if pointer(memory, army, crate::cunit::LOCATION)? == location {
+        if pointer(memory, army, engine_native::cunit::LOCATION)? == location {
             army_identity(memory, base, army)?;
             *output.get_mut(len).ok_or("merge army scratch too short")? = army;
             len += 1;
@@ -268,9 +268,9 @@ pub fn merge_reserves(
     survivor: usize,
 ) -> Result<usize, &'static str> {
     let state = game_state(memory, base)?;
-    let country = crate::ccountry::Reader::new(memory, base, state)?
+    let country = engine_native::ccountry::Reader::new(memory, base, state)?
         .resolve(merge_owner(memory, survivor)?)?;
-    let manager = pointer(memory, country.pointer, crate::ccountry::PRODUCTION_STATUS)?;
+    let manager = pointer(memory, country.pointer, engine_native::ccountry::PRODUCTION_STATUS)?;
     let pool = reserve_pool(manager)?;
     reserve_owner(memory, base, pool)?;
     Ok(pool)
@@ -320,7 +320,7 @@ pub fn canceled_delivery_pools(
         let array = Array::read(memory, at, 8).ok_or("merge deliveries array unreadable")?;
         for index in 0..array.count {
             let delivery = usize::try_from(
-                crate::read::<u64>(
+                engine_native_memory::read::<u64>(
                     memory,
                     array
                         .element(index, 8)
@@ -382,7 +382,7 @@ pub fn touched_reserves_if(
             .element(index, equipment_entry::STRIDE)
             .ok_or("reserve entry address overflow")?;
         let variant = usize::try_from(
-            crate::read::<u64>(memory, address).ok_or("reserve variant unreadable")?,
+            engine_native_memory::read::<u64>(memory, address).ok_or("reserve variant unreadable")?,
         )
         .map_err(|_| "reserve variant pointer overflow")?;
         if selected(variant) {
@@ -551,7 +551,7 @@ pub fn is_army(memory: &impl Memory, base: usize, unit: usize) -> Result<bool, &
     if unit == 0 {
         return Err("destruction unit is null");
     }
-    if field::<u32>(memory, unit, crate::cunit::CLASS)? != 0 {
+    if field::<u32>(memory, unit, engine_native::cunit::CLASS)? != 0 {
         return Ok(false);
     }
     army_identity(memory, base, unit).map(|_| true)
@@ -565,13 +565,13 @@ pub fn army_identity(memory: &impl Memory, base: usize, army: usize) -> Result<u
         return Err("destruction division identity mismatch");
     };
     if army == 0
-        || field::<u32>(memory, army, crate::cunit::CLASS)? != 0
+        || field::<u32>(memory, army, engine_native::cunit::CLASS)? != 0
         || field::<u64>(memory, army, 0)? != primary as u64
         || field::<u64>(memory, army, carmy::SECONDARY_BASE)? != secondary as u64
     {
         return Err("destruction division identity mismatch");
     }
-    let handle = field::<u64>(memory, army, crate::cunit::HANDLE)?;
+    let handle = field::<u64>(memory, army, engine_native::cunit::HANDLE)?;
     if handle >> 32 == 0 {
         return Err("destruction division handle invalid");
     }
@@ -634,16 +634,16 @@ pub fn air_cause(base: usize, return_address: usize) -> Cause {
 }
 
 pub fn army_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str> {
-    let expeditionary = field::<i32>(memory, army, crate::cunit::EXPEDITIONARY_OWNER)?;
+    let expeditionary = field::<i32>(memory, army, engine_native::cunit::EXPEDITIONARY_OWNER)?;
     if expeditionary > 0 {
         Ok(expeditionary as u32)
     } else {
-        field(memory, army, crate::cunit::ROSTER_OWNER)
+        field(memory, army, engine_native::cunit::ROSTER_OWNER)
     }
 }
 
 pub fn army_expeditionary_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str> {
-    field(memory, army, crate::cunit::EXPEDITIONARY_OWNER)
+    field(memory, army, engine_native::cunit::EXPEDITIONARY_OWNER)
 }
 
 pub fn fake_intel_division(memory: &impl Memory, army: usize) -> Result<bool, &'static str> {
@@ -654,7 +654,7 @@ pub fn fake_intel_division(memory: &impl Memory, army: usize) -> Result<bool, &'
         field::<u8>(
             memory,
             template,
-            crate::creferenced_division_template::REVEAL_SKIP,
+            engine_native::creferenced_division_template::REVEAL_SKIP,
         )
         .map(|flag| flag != 0)
     }
@@ -675,7 +675,7 @@ pub fn garrison_owner(memory: &impl Memory, occupation: usize) -> Result<u32, &'
     field(memory, state, 0xcc)
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -692,7 +692,7 @@ fn pointer(memory: &impl Memory, object: usize, offset: usize) -> Result<usize, 
 }
 
 fn game_state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    let singleton = engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)
+    let singleton = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .ok_or("destruction operand address overflow")?;
     pointer(memory, singleton, 0)
 }
@@ -715,7 +715,7 @@ pub fn reserve_pool(manager: usize) -> Result<usize, &'static str> {
 }
 
 pub fn reserve_owner(memory: &impl Memory, base: usize, pool: usize) -> Result<u32, &'static str> {
-    use crate::{ccountry, cproduction_status};
+    use engine_native::{ccountry, cproduction_status};
     let manager = pool
         .checked_sub(cproduction_status::STOCKPILE_POOL)
         .filter(|&manager| manager != 0)
@@ -738,7 +738,7 @@ pub fn reserve_owner(memory: &impl Memory, base: usize, pool: usize) -> Result<u
 }
 
 pub fn merge_owner(memory: &impl Memory, army: usize) -> Result<u32, &'static str> {
-    field(memory, army, crate::cunit::ROSTER_OWNER)
+    field(memory, army, engine_native::cunit::ROSTER_OWNER)
 }
 
 

@@ -3,7 +3,8 @@ use collector_production::production::complete_source;
 use engine_deployment::{
     army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status, cupgrade_delivery,
 };
-use engine_native::{Memory, carmy, cequipment_variant_pool, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{carmy, cequipment_variant::pool as cequipment_variant_pool};
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x10000;

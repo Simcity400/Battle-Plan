@@ -1,5 +1,6 @@
 
-use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccountry, cgame_state};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
@@ -37,14 +38,14 @@ pub fn capture(
     state: usize,
     output: &mut Vec<u32>,
 ) -> Capture {
-    capture_buffer(memory, base, state, crate::walk::Buffer::Growing(output))
+    capture_buffer(memory, base, state, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 fn capture_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, u32>,
+    mut output: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Capture {
     let mut required = 0;
     let len = (|| {

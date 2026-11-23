@@ -361,7 +361,7 @@ impl TraitCapture {
                             cunit_leader::VTABLE_RVA,
                             carmy_leader::VTABLE_RVA,
                             cnavy_leader::VTABLE_RVA,
-                            coperative_leader::VTABLE_RVA,
+                            engine_native_parts::coperative_leader_layout::VTABLE_RVA,
                         ],
                     )
                 });
@@ -450,8 +450,8 @@ impl TraitCapture {
         cursor: &mut usize,
         unit: usize,
         leader: u32,
-        mut rows: engine_native::walk::Buffer<'_, cunit_leader::TraitRow>,
-        mut bytes: engine_native::walk::Buffer<'_, u8>,
+        mut rows: engine_native_memory::walk::Buffer<'_, cunit_leader::TraitRow>,
+        mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     ) -> ReadResult {
         let Some(vector) = self.vectors.get(*cursor) else {
             return ReadResult::rows(Outcome::Unavailable {

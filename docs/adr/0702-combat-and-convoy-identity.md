@@ -6,4 +6,4 @@ A theatre lists controller areas in occurrence order. Insertion deduplicates poi
 
 The country-embedded convoy cache supplies a signed quantity only when its validity byte is set. Loading invalidates it. Divide the raw quantity by the fixed-point scale before narrowing for the native getter. The convoy reservation vector and the embedded equipment pool are independent of the ship operands used by combat bars. Preserve the ship's stored variant speed and maxima before applying a bar's minimum denominator.
 
-[Tactic reader](../../crates/engine-native/src/ccombat_tactic.rs) · [Controller area](../../crates/engine-native/src/ccontroller_area.rs) · [Convoy cache](../../crates/engine-native/src/cconvoys.rs) · [Convoy ship operands](../../crates/engine-native/src/cconvoy_ship.rs)
+[Tactic reader](../../crates/engine-native-parts/src/ccombat_tactic.rs) · [Controller area](../../crates/engine-native-parts/src/ccontroller_area.rs) · [Convoy cache](../../crates/engine-native-parts/src/cconvoys.rs) · [Convoy ship operands](../../crates/engine-native/src/cconvoy_ship.rs)

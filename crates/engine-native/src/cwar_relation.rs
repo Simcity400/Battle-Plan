@@ -1,12 +1,13 @@
+pub mod goals;
 
-use crate::{
-    Memory, ccountry, cdiplomacy_status,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    crelation, crelation_status,
     memory::{Raw, RecordField, RecordLayout, RecordSources},
     read,
     walk::Outcome,
 };
+use crate::{ccountry, crelation::{self, status as crelation_status}};
 use engine_sites::Rva;
 
 pub mod overview;
@@ -53,7 +54,7 @@ pub fn walk_owned(
         country_memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
         scratch,
         wars,
     )
@@ -106,14 +107,14 @@ pub fn row_demand(
         }
         fields.vtable(
             diplomacy,
-            cdiplomacy_status::VTABLE_RVA,
+            engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
             "war demand diplomacy vtable mismatch",
         )?;
-        if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)? != country.pointer as u64 {
+        if fields.field::<u64>(diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country.pointer as u64 {
             return Err("war demand diplomacy country mismatch");
         }
         let relations = diplomacy
-            .checked_add(cdiplomacy_status::OWNED_RELATIONS)
+            .checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)
             .and_then(|address| Array::read(memory, address, 8))
             .ok_or("war demand owned vector invalid")?;
         required = required
@@ -128,7 +129,7 @@ fn walk_owned_buffer(
     country_memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
     scratch: &mut OwnedSnapshotScratch,
     wars: Option<&mut Vec<usize>>,
 ) -> Outcome {
@@ -236,12 +237,12 @@ fn open_table_slots(entries: usize) -> std::io::Result<usize> {
     entries
         .checked_mul(2)
         .and_then(usize::checked_next_power_of_two)
-        .ok_or_else(crate::allocation::oom)
+        .ok_or_else(engine_allocation::oom)
 }
 
 fn resize_to<T: Copy>(cells: &mut Vec<T>, len: usize, value: T) -> std::io::Result<()> {
     if cells.len() < len {
-        crate::allocation::reserve_exact(cells, len - cells.len())?;
+        engine_allocation::reserve_exact(cells, len - cells.len())?;
         cells.resize_with(len, || value);
     }
     Ok(())
@@ -251,11 +252,11 @@ impl OwnedSnapshotScratch {
     pub fn try_with_capacity(countries: usize) -> std::io::Result<Self> {
         let slots = open_table_slots(countries)?;
         Ok(Self {
-            vectors: crate::allocation::vec(countries)?,
-            roots: crate::allocation::filled(slots, usize::MAX)?,
+            vectors: engine_allocation::vec(countries)?,
+            roots: engine_allocation::filled(slots, usize::MAX)?,
             words: Vec::new(),
             counts: Vec::new(),
-            status_graphs: crate::allocation::filled(slots, StatusGraph::default())?,
+            status_graphs: engine_allocation::filled(slots, StatusGraph::default())?,
             used_cells: 0,
             stats: OwnedSnapshotStats::default(),
             required_graphs: 0,
@@ -301,7 +302,7 @@ impl OwnedSnapshotScratch {
             .max(self.resolver.required()[1])
             .max(self.stats.required_vectors);
         let additional = vectors.saturating_sub(self.vectors.len());
-        crate::allocation::reserve_exact(&mut self.vectors, additional)?;
+        engine_allocation::reserve_exact(&mut self.vectors, additional)?;
         resize_to(&mut self.roots, open_table_slots(vectors)?, usize::MAX)?;
         resize_to(
             &mut self.status_graphs,
@@ -311,7 +312,7 @@ impl OwnedSnapshotScratch {
         let words = self.stats.required_words.max(self.observed_words);
         if self.words.capacity() < words {
             let additional = words.saturating_sub(self.words.len());
-            crate::allocation::reserve_exact(&mut self.words, additional)?;
+            engine_allocation::reserve_exact(&mut self.words, additional)?;
         }
         resize_to(
             &mut self.counts,
@@ -327,7 +328,7 @@ impl OwnedSnapshotScratch {
             .len()
             .checked_add(1)
             .ok_or("owned membership vector demand overflow")?;
-        crate::allocation::reserve(&mut self.vectors, 1)
+        engine_allocation::reserve(&mut self.vectors, 1)
             .map_err(|_| "owned membership vector allocation failed")?;
         let slots =
             open_table_slots(required).map_err(|_| "owned membership root demand overflow")?;
@@ -342,7 +343,7 @@ impl OwnedSnapshotScratch {
                 self.roots[slot] = index;
             }
         }
-        crate::allocation::reserve(&mut self.words, words)
+        engine_allocation::reserve(&mut self.words, words)
             .map_err(|_| "owned membership word allocation failed")?;
         let required = self
             .used_cells
@@ -449,7 +450,7 @@ impl OwnedSnapshotScratch {
         self.stats.queries += 1;
         self.stats.acquisition_headers += 1;
         let header = root
-            .checked_add(cdiplomacy_status::OWNED_RELATIONS)
+            .checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)
             .and_then(|address| read::<[u8; 16]>(memory, address));
         let Some((header, array)) =
             header.and_then(|header| Array::from_header(header, 8).map(|array| (header, array)))
@@ -554,7 +555,7 @@ impl OwnedSnapshotScratch {
 }
 
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
-    walk_from(memory, memory, base, game_state, crate::walk::Buffer::Growing(output), &mut crelation_status::Resolver::default(), None, None)
+    walk_from(memory, memory, base, game_state, engine_native_memory::walk::Buffer::Growing(output), &mut crelation_status::Resolver::default(), None, None)
 }
 
 fn walk_from(
@@ -562,7 +563,7 @@ fn walk_from(
     country_memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
     resolver: &mut crelation_status::Resolver,
     ownership: Option<&mut OwnedSnapshotScratch>,
     mut wars: Option<&mut Vec<usize>>,
@@ -600,7 +601,7 @@ fn walk_from(
             reader.current_matrix = (diplomacy, None);
             let source = reader.array(
                 diplomacy,
-                cdiplomacy_status::OWNED_RELATIONS,
+                engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                 "owned relations unreadable or invalid",
             )?;
             output.ensure(
@@ -611,8 +612,8 @@ fn walk_from(
                 scratch.observe_owned(source.count);
             }
             if wars.as_deref_mut().is_some_and(|wars| {
-                crate::allocation::advisory(|| {
-                    crate::allocation::reserve(wars, source.count as usize)
+                engine_allocation::advisory(|| {
+                    engine_allocation::reserve(wars, source.count as usize)
                 })
                 .is_err()
             }) {
@@ -749,7 +750,7 @@ impl PointerBatch {
             0 => self.copied = 0,
             1 => {
                 self.copied = usize::from(array.element(first, 8).is_some_and(|address| {
-                    crate::memory::read_slice(memory, address, &mut self.values[0])
+                    engine_native_memory::memory::read_slice(memory, address, &mut self.values[0])
                 }));
             }
             _ => self.copy(memory, array, first),
@@ -785,7 +786,7 @@ impl PointerBatch {
     }
 }
 
-const TYPE_FIELD: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+const TYPE_FIELD: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
     source_offset: crelation::TYPE_ID,
     destination_offset: 0,
     len: 4,
@@ -845,7 +846,7 @@ fn hint_owned_status_headers(status: usize) {
         if let Some(address) = status.checked_add(offset)
             && address.checked_add(16).is_some()
         {
-            crate::prefetch::span(address, 16);
+            engine_native_memory::prefetch::span(address, 16);
         }
     }
 }
@@ -879,7 +880,7 @@ impl<M: Memory> Fields<'_, M> {
 }
 
 impl<M: Memory, C: Memory> Reader<'_, M, C> {
-    fn resolve(&mut self, raw: u32) -> Result<ccountry::Country, &'static str> {
+    fn resolve(&mut self, raw: u32) -> Result<engine_native_memory::country_identity::Country, &'static str> {
         self.resolver.resolve(&self.countries, raw)
     }
 
@@ -916,7 +917,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
             .ok_or(reason)
     }
 
-    fn diplomacy(&mut self, country: ccountry::Country) -> Result<usize, &'static str> {
+    fn diplomacy(&mut self, country: engine_native_memory::country_identity::Country) -> Result<usize, &'static str> {
         let fields = Fields {
             memory: self.memory,
             base: self.base,
@@ -928,10 +929,10 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
             }
             fields.vtable(
                 pointer,
-                cdiplomacy_status::VTABLE_RVA,
+                engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
                 "diplomacy vtable mismatch",
             )?;
-            if fields.field::<u64>(pointer, cdiplomacy_status::COUNTRY)? != country.pointer as u64 {
+            if fields.field::<u64>(pointer, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country.pointer as u64 {
                 return Err("diplomacy country mismatch");
             }
             Ok(pointer)
@@ -969,7 +970,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
     fn pair_status(
         &mut self,
         diplomacy: usize,
-        target: ccountry::Country,
+        target: engine_native_memory::country_identity::Country,
         war: usize,
     ) -> Result<usize, &'static str> {
         let matrix = match self.current_matrix {
@@ -977,7 +978,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
             _ => {
                 let matrix = self.array(
                     diplomacy,
-                    cdiplomacy_status::RELATIONS,
+                    engine_native_parts::cdiplomacy_status_layout::RELATIONS,
                     "war matrix unreadable or invalid",
                 )?;
                 if self.current_matrix.0 == diplomacy {
@@ -1048,7 +1049,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
         war: usize,
         expected: u32,
     ) -> Result<(), &'static str> {
-        if offset == cdiplomacy_status::OWNED_RELATIONS
+        if offset == engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
             && expected == 1
             && let Some(scratch) = self.ownership.as_deref_mut()
         {
@@ -1061,7 +1062,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
     fn relation(
         &mut self,
         pointer: usize,
-        owner: ccountry::Country,
+        owner: engine_native_memory::country_identity::Country,
     ) -> Result<Option<Row>, &'static str> {
         if !self.active(pointer)? {
             return Ok(None);
@@ -1125,7 +1126,7 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
             Some([first_status, second_status])
         };
         for diplomacy in [first_diplomacy, second_diplomacy] {
-            self.occurrence(diplomacy, cdiplomacy_status::OWNED_RELATIONS, pointer, 1)?;
+            self.occurrence(diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, pointer, 1)?;
         }
         if let Some([first_status, second_status]) = statuses {
             for status in [first_status, second_status] {

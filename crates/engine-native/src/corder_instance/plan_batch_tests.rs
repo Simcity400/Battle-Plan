@@ -1,5 +1,5 @@
 use super::*;
-use crate::batch_fallback::{self, Batch};
+use engine_native_memory::batch_fallback::{self, Batch};
 use std::{cell::RefCell, collections::BTreeMap};
 
 const BASE: usize = 0x1000_0000;
@@ -41,7 +41,7 @@ impl Memory for Image {
 fn fixture() -> (Image, [corders_group::Root; 1], [Visit; 4]) {
     let mut image = Image::default();
     image.u64(
-        BASE + crate::creference_registry::INVALID_REFERENCE_RVA.0,
+        BASE + engine_native_parts::creference_registry::INVALID_REFERENCE_RVA.0,
         u64::MAX,
     );
     image.write(UNIT, &[0; 0x100]);
@@ -65,8 +65,8 @@ fn fixture() -> (Image, [corders_group::Root; 1], [Visit; 4]) {
         image.u64(members, (UNIT + crate::cunit::SCHEDULED_MEMBER) as u64);
         for offset in NAME_STRINGS {
             image.write(pointer + offset, &[b'A' + index as u8]);
-            image.u64(pointer + offset + crate::msvc_string::LENGTH, 1);
-            image.u64(pointer + offset + crate::msvc_string::CAPACITY, 15);
+            image.u64(pointer + offset + engine_native_memory::msvc_string::LENGTH, 1);
+            image.u64(pointer + offset + engine_native_memory::msvc_string::CAPACITY, 15);
         }
         Visit {
             pointer,
@@ -213,7 +213,7 @@ fn check_suffix(names: bool, once: bool) {
             "the later suffix fault belongs to the scalar decode"
         );
         let later = FIRST + 3 * STEP + offset;
-        let width = if names { crate::msvc_string::STRIDE } else { 4 };
+        let width = if names { engine_native_memory::msvc_string::STRIDE } else { 4 };
         assert_eq!(
             batched
                 .reads

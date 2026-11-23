@@ -1,5 +1,5 @@
 use collector_status::status::{DebugValue, map, status};
-use engine_native::{acquisition_profile::Costs, memory::ReadCounts};
+use engine_native_memory::{acquisition_profile::Costs, memory::ReadCounts};
 use replay_data::rows::{TABLE_COUNT, TableId};
 use std::{
     cell::Cell,
@@ -22,7 +22,7 @@ thread_local! {
 }
 
 pub(crate) fn boundary(table: usize, reads: ReadCounts) {
-    let costs = engine_native::acquisition_profile::take();
+    let costs = engine_native_memory::acquisition_profile::take();
     let now = Instant::now();
     let growths = engine_allocation::growths();
     let (elapsed, checked_growth_attempts) = LAST

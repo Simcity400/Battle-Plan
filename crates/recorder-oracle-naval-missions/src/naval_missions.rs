@@ -3,7 +3,7 @@ mod dominance_ranges;
 mod patrol_inputs;
 use super::eq;
 use super::*;
-use engine_native::{naval_mission_inputs::MISSION_KINDS, naval_mission_inputs::PRESENCE_WINDOW};
+use engine_native_naval::naval_mission_inputs::{MISSION_KINDS, PRESENCE_WINDOW};
 
 pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::NavalDominanceTaskForceRanges, |r| {

@@ -1,11 +1,13 @@
 
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{carmy, ccountry, cprovince, cstate, cunit};
 use crate::{
-    Memory, carmy, ccountry, cnuke,
-    cpdx_array::Array,
-    cprovince, crailway_gun, cstate, cunit, equipment_destruction,
+    cnuke,
+    equipment_destruction,
     event_feed_sites::{CountryIdentity, identity},
-    manpower_value_entry, read,
+    manpower_value_entry,
 };
+use engine_native_parts::crailway_gun;
 use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +46,7 @@ fn at(object: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("nuclear strike address overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -296,7 +298,8 @@ fn railway_gun(memory: &impl Memory, base: usize, gun: usize) -> Result<Unit, &'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const NUKE: usize = 0x100;
     const PROVINCE: usize = 0x400;

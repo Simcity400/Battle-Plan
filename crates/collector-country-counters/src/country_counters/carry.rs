@@ -4,10 +4,8 @@ use crate::{
     table_capture::Arena,
 };
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, ccountry, ccountry::CounterInputsRow, ccountry::RosterSpan, cpdx_array::Array,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
+use engine_native::ccountry::{self, CounterInputsRow, RosterSpan};
 
 const WORDS: usize = ccountry::PRODUCTION_STATUS;
 const WORDS_LEN: usize = ccountry::CHARACTERS + 8 - WORDS;
@@ -19,7 +17,7 @@ const WORD_OFFSETS: [usize; 3] = [
 
 #[derive(Clone, Copy)]
 struct Entry {
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     words: [u64; 3],
     row: CounterInputsRow,
     relation: RelationRow,
@@ -68,7 +66,7 @@ struct Hour {
 
 #[derive(Clone, Copy)]
 struct Walked {
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     words: Option<[u64; 3]>,
     carried: Option<usize>,
 }
@@ -159,7 +157,7 @@ impl CounterStore {
     pub(super) fn offer(
         &mut self,
         memory: &impl Memory,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         rosters: &mut ccountry::CounterRosters<'_>,
         effects: &mut ccountry::EffectRosters<'_>,
     ) -> Option<CounterInputsRow> {
@@ -171,7 +169,7 @@ impl CounterStore {
         let words = country
             .pointer
             .checked_add(WORDS)
-            .and_then(|at| engine_native::read::<[u8; WORDS_LEN]>(memory, at))
+            .and_then(|at| engine_native_memory::read::<[u8; WORDS_LEN]>(memory, at))
             .map(|bytes| {
                 WORD_OFFSETS.map(|offset| {
                     let at = offset - WORDS;
@@ -194,7 +192,7 @@ impl CounterStore {
 
     fn certified_entry(
         &self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         words: Option<[u64; 3]>,
     ) -> Option<usize> {
         if !self.hour.certified {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{cpdx_array, memory::SliceMemory};
+use engine_native_memory::{cpdx_array, memory::SliceMemory};
 
 mod selected_inputs_tests;
 
@@ -49,7 +49,7 @@ fn fixture() -> Vec<u8> {
         );
         put(
             &mut bytes,
-            0x2000 + id as usize * 0x100 + crate::province_definition::ID,
+            0x2000 + id as usize * 0x100 + engine_native::cprovince::definition::ID,
             id.to_le_bytes(),
         );
     }
@@ -127,26 +127,26 @@ fn eta_fixture() -> EtaMemory {
     put(
         &mut bytes,
         0x3000,
-        (crate::cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
+        (engine_native_parts::cbuilding::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        0x3000 + crate::cbuilding::BUILDING_STATUS,
+        0x3000 + engine_native_parts::cbuilding::BUILDING_STATUS,
         (0x1600_u64 + cprovince::BUILDING_STATUS as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        0x3000 + crate::cbuilding::LEVEL,
+        0x3000 + engine_native_parts::cbuilding::LEVEL,
         4_i16.to_le_bytes(),
     );
     put(
         &mut bytes,
-        0x3000 + crate::cbuilding::HEALTHY_LEVEL,
+        0x3000 + engine_native_parts::cbuilding::HEALTHY_LEVEL,
         2_i16.to_le_bytes(),
     );
     put(
         &mut bytes,
-        0x3000 + crate::cbuilding::PARTIAL_HEALTH,
+        0x3000 + engine_native_parts::cbuilding::PARTIAL_HEALTH,
         5_000_000_i64.to_le_bytes(),
     );
     EtaMemory {
@@ -200,7 +200,7 @@ fn rail_building_supplement_keeps_old_rows_and_faults_independent() {
         );
         assert_eq!(buildings[1].building, Ok(None));
     }
-    memory.refused = Some(0x4000 + crate::cbuilding::PARTIAL_HEALTH);
+    memory.refused = Some(0x4000 + engine_native_parts::cbuilding::PARTIAL_HEALTH);
     let mut buildings = vec![fresh_inputs::RailwayBuildingRow::default(); 2];
     let result = walk_with_buildings(
         &memory,
@@ -272,7 +272,7 @@ fn eta_rail_speed_uses_directed_edge_damage_and_cooldown() {
         0x1000 + info::COOLDOWN_TICKS,
         0_i32.to_le_bytes(),
     );
-    memory.refused = Some(0x4000 + crate::cbuilding::PARTIAL_HEALTH);
+    memory.refused = Some(0x4000 + engine_native_parts::cbuilding::PARTIAL_HEALTH);
     assert!(movement_speed(&memory, 0, MEMORY_BASE, 0x1600, 0x1900).is_err());
     memory.refused = None;
     put(
@@ -288,7 +288,8 @@ fn eta_rail_speed_uses_directed_edge_damage_and_cooldown() {
 
 #[test]
 fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
-    use crate::{cbuilding as b, cbuilding_status as s, cbuilding_template as t, cstate};
+    use engine_native_parts::{cbuilding as b, cbuilding_template as t};
+    use engine_native::{cprovince::buildings as s, cstate};
     let mut memory = eta_fixture();
     let bytes = &mut memory.bytes;
     put(bytes, 0x900 + cprovince::STATE, 0x5000_u64.to_le_bytes());
@@ -320,7 +321,7 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
     put(bytes, 0x5000 + 0x3b0, 0x7000_u64.to_le_bytes());
     array(
         bytes,
-        0x5000 + crate::cbuilding_database::TEMPLATES,
+        0x5000 + engine_native_parts::cbuilding_database::TEMPLATES,
         0x6800,
         2,
         2,
@@ -508,7 +509,7 @@ fn malformed_roots_and_province_backlinks_are_unavailable() {
         (0x400, 0_u64.to_le_bytes().to_vec()),
         (0x400 + PROVINCE_INFO_COUNT, 3_u32.to_le_bytes().to_vec()),
         (
-            0x2100 + crate::province_definition::ID,
+            0x2100 + engine_native::cprovince::definition::ID,
             3_u32.to_le_bytes().to_vec(),
         ),
         (0x1000, 0_u64.to_le_bytes().to_vec()),

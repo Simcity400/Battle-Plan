@@ -29,7 +29,7 @@ fn sizing_retries_a_missing_world_and_grows_receipt_pressure_after_a_failed_cens
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     release().unwrap();
     struct NullState;
-    impl engine_native::Memory for NullState {
+    impl engine_native_memory::Memory for NullState {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.fill(0);
@@ -59,7 +59,7 @@ fn sizing_retries_a_missing_world_and_grows_receipt_pressure_after_a_failed_cens
             Ordering::Release,
         );
     }
-    let unreadable = engine_native::memory::SliceMemory {
+    let unreadable = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -108,7 +108,7 @@ fn independent_fuel_offers_preserve_pending_entry_and_name_growth() {
 }
 
 struct Memory(Vec<u8>);
-impl engine_native::Memory for Memory {
+impl engine_native_memory::Memory for Memory {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let Some(end) = address.checked_add(output.len()) else {
             return false;
@@ -161,7 +161,7 @@ fn stored_names_and_signed_awards_survive_a_growing_handover_and_later_rename() 
     let mut output = vec![Entry::default()];
     let mut names = vec![0; 16];
     let (drained, len, required) =
-        handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Growing(&mut names), None).unwrap();
+        handover_buffers(&log, &spill, &buffer, None, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Growing(&mut names), None).unwrap();
     assert_eq!(
         (drained.copied, drained.pending, len, required),
         (2, 2, 11, 11)
@@ -193,7 +193,7 @@ fn a_name_past_the_stride_is_kept_whole_with_its_money() {
     let mut output = vec![Entry::default()];
     let mut names = vec![0; 4];
     let (drained, len, required) =
-        handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Growing(&mut names), None).unwrap();
+        handover_buffers(&log, &spill, &buffer, None, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Growing(&mut names), None).unwrap();
     assert_eq!((drained.copied, len, required), (1, 4, 4));
     assert_eq!(output[0].amount, -1);
     assert_eq!(output[0].name, Some((0, 4)));
@@ -237,8 +237,8 @@ fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_receipt_and_name_in
         &spill,
         &buffer,
         None,
-        engine_native::walk::Buffer::Growing(&mut output),
-        engine_native::walk::Buffer::Growing(&mut names),
+        engine_native_memory::walk::Buffer::Growing(&mut output),
+        engine_native_memory::walk::Buffer::Growing(&mut names),
         None,
     )
     .unwrap();
@@ -306,7 +306,7 @@ fn a_burst_past_the_buffer_is_handed_over_whole_and_only_failed_storage_withhold
         assert!(append_buffer(&log, &spill, &buffer, entry, None, &memory));
     }
     let mut output = vec![Entry::default(); 3];
-    let (drained, _, _) = handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Count, None).unwrap();
+    let (drained, _, _) = handover_buffers(&log, &spill, &buffer, None, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Count, None).unwrap();
     assert_eq!((drained.copied, drained.pending), (3, 3));
     assert_eq!(output[0].amount, 1);
     assert!(output[1].reset && output[1].started.status == 0x1000);
@@ -318,7 +318,7 @@ fn a_burst_past_the_buffer_is_handed_over_whole_and_only_failed_storage_withhold
     crate::test_support::with_allocations_denied(|| {
         assert!(!append_buffer(&log, &spill, &buffer, reset, None, &memory));
     });
-    let (drained, _, _) = handover_buffers(&log, &spill, &buffer, None, engine_native::walk::Buffer::Growing(&mut output), engine_native::walk::Buffer::Count, None).unwrap();
+    let (drained, _, _) = handover_buffers(&log, &spill, &buffer, None, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Count, None).unwrap();
     assert_eq!((drained.first, drained.cursor, drained.copied), (5, 5, 0));
     assert_eq!(COUNTERS[2].load(Ordering::Relaxed), settled_before);
     assert_eq!(COUNTERS[10].load(Ordering::Relaxed), overflow_before + 1);
@@ -376,7 +376,7 @@ fn started(root: u64) -> Pending {
         },
         located: native::Located {
             owner: 0,
-            country: engine_native::ccountry::Country {
+            country: engine_native_memory::country_identity::Country {
                 pointer: 0,
                 canonical_slot: 0,
                 id: root as u32,
@@ -577,7 +577,7 @@ fn rejected_country_receipt_burst_preserves_growth_after_failed_census() {
     drop(current);
     assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10);
     assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40);
-    let unreadable = engine_native::memory::SliceMemory {
+    let unreadable = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -856,8 +856,8 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
         &spill,
         &fresh,
         Some(&old),
-        engine_native::walk::Buffer::Growing(&mut entries),
-        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native_memory::walk::Buffer::Growing(&mut entries),
+        engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
         None,
     )
     .unwrap();

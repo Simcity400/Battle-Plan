@@ -3,9 +3,8 @@ use engine_land_inputs::{
     ncombat_log_cequipment_loss as loss, ncombat_log_cmanager as manager,
     ncombat_log_corders_group_logs as group,
 };
-use engine_native::{
-    cequipment_variant as variant, cequipment_variant_pool as pool, equipment_entry,
-};
+use engine_native::cequipment_variant::{self as variant, pool as pool};
+use engine_native_parts::equipment_entry;
 use std::cell::Cell;
 
 fn isolated() -> bool {
@@ -177,7 +176,7 @@ impl Fixture {
     }
     fn equipment(&mut self, owner: usize, amounts: &[i64]) {
         let v = self.alloc(16);
-        self.word(v, variant::VTABLE_RVA.0 as u64);
+        self.word(v, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         self.word(
             v + 8,
             u64::from(variant::REFERENCE_TYPE) | (u64::from(u32::MAX) << 32),
@@ -223,7 +222,7 @@ impl Fixture {
     fn battle(&mut self, count: i16) -> usize {
         self.blocks.insert(
             native::BATTLE_POOL_RVA.0,
-            vec![0; 3 * engine_native::cpdx_array::STRIDE],
+            vec![0; 3 * engine_native_memory::cpdx_array::STRIDE],
         );
         let p = self.alloc(native::BATTLE_SIZE);
         self.word(p, native::BATTLE_VTABLE_RVA.0 as u64);
@@ -1068,9 +1067,9 @@ fn retained_history_recovers_independently_of_unreadable_own_equipment_payloads(
     let mut f = Fixture::new();
     let (g, _) = f.complete();
     f.month(g, 0, &[17]);
-    let months = engine_native::cpdx_array::Array::read(&f, g + group::REASONS, 8).unwrap();
-    let month = engine_native::read::<u64>(&f, months.data).unwrap() as usize;
-    let equipment = engine_native::cpdx_array::Array::read(
+    let months = engine_native_memory::cpdx_array::Array::read(&f, g + group::REASONS, 8).unwrap();
+    let month = engine_native_memory::read::<u64>(&f, months.data).unwrap() as usize;
+    let equipment = engine_native_memory::cpdx_array::Array::read(
         &f,
         month + loss::POOL + pool::ITEMS,
         equipment_entry::STRIDE,

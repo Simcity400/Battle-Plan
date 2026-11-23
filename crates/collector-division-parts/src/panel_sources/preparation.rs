@@ -206,7 +206,7 @@ impl NativeReads {
             return;
         };
         if let Some((_, Ok(country))) = selection.country {
-            if let Some(accumulator) = country.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR) {
+            if let Some(accumulator) = country.pointer.checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR) {
                 self.capture_root(
                     memory,
                     store,
@@ -416,7 +416,7 @@ impl NativeReads {
         read.variants.clear();
         read.ready = true;
         read.result =
-            engine_native::division_panel_operands::held_variants(memory, base, seed, |entry| {
+            engine_native_land::division_panel_operands::held_variants(memory, base, seed, |entry| {
                 if engine_allocation::advisory(|| engine_allocation::reserve(&mut read.variants, 1))
                     .is_err()
                 {
@@ -559,7 +559,7 @@ impl NativeReads {
         read.availability = availability;
         read.values.clear();
         read.ready = true;
-        read.result = engine_native::division_panel_operands::terrain(
+        read.result = engine_native_land::division_panel_operands::terrain(
             memory,
             base,
             pointer,
@@ -639,7 +639,8 @@ fn state_attrition(
     country: u32,
 ) -> [Result<i64, &'static str>; 3] {
     use engine_executable::modifier_keys::{ATTRITION, ATTRITION_FOR_CONTROLLER, ENEMY_ATTRITION};
-    use engine_native::modifier_accumulator::{Value, lookup_many_at};
+    use engine_native_memory::modifier_cache::Value;
+    use engine_native_parts::modifier_accumulator::lookup_many_at;
     const KEYS: [u32; 3] = [ATTRITION, ATTRITION_FOR_CONTROLLER, ENEMY_ATTRITION];
     let mut sorted = KEYS;
     sorted.sort_unstable();
@@ -671,7 +672,7 @@ fn state_attrition(
                 }
             };
             if raw.present {
-                engine_native::modifier_definition::effective(memory, base, key, raw.raw)
+                engine_native_parts::modifier_definition::effective(memory, base, key, raw.raw)
             } else {
                 Ok(0)
             }
@@ -693,7 +694,7 @@ fn state_countries(seed: &DivisionSeed) -> impl Iterator<Item = u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use replay_data::rows::tables;
 
     #[test]

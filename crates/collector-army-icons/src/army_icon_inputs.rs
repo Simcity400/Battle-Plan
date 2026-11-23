@@ -1,5 +1,6 @@
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine_native::{Memory, carmy, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{carmy, cequipment_variant::pool::DivisionSource};
 use replay_data::{rows::ArmyIconInputRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
@@ -157,7 +158,7 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     #[test]
     fn missing_or_truncated_census_never_becomes_empty_success() {
         let memory = SliceMemory {

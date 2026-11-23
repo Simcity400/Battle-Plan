@@ -338,7 +338,7 @@ fn commander_values(
     );
     for (index, (a, b)) in a.traits.iter().zip(&b.traits).enumerate() {
         let label = format!("{label} assigned trait {index}");
-        if a.token_id == engine_native::cpdx_lexer::FIXED15_TOKEN as i32 || a.token.contains(&0) {
+        if a.token_id == engine_native_memory::cpdx_lexer::FIXED15_TOKEN as i32 || a.token.contains(&0) {
             r.limitation("reserved numeric or interior-NUL trait token has no proven literal text projection",label);
         } else {
             equal(r, label, a.token.as_slice(), b.as_slice());

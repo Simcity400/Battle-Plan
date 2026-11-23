@@ -1,9 +1,17 @@
 use crate::read_accounting::TableCounts;
 use engine_land_inputs::cfaction_theater_manager as faction_theatres;
 use engine_native::{
-    ccountry, cfaction, cfaction_system, cgame_state, corder_instance, corders_group,
-    creference_registry as registry, ctheatre, memory::CountedMemory, memory::LiveMemory,
-    memory::ReadCounts, memory::SliceMemory, msvc_string, reference_bucket as bucket,
+    ccountry,
+    cfaction::{self, system as cfaction_system},
+    cgame_state,
+    corder_instance,
+    corders_group,
+    ctheatre,
+};
+use engine_native_parts::{creference_registry as registry, reference_bucket as bucket};
+use engine_native_memory::{
+    memory::{CountedMemory, LiveMemory, ReadCounts, SliceMemory},
+    msvc_string,
 };
 use engine_sites::Rva;
 use replay_data::rows::TableId;

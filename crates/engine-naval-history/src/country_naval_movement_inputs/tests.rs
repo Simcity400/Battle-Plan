@@ -1,5 +1,5 @@
 use super::*;
-use crate::cprovince;
+use engine_native::cprovince;
 use std::cell::{Cell, RefCell};
 
 const STATE: usize = 0x1000;

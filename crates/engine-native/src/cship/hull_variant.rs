@@ -1,10 +1,9 @@
 
 use engine_sites::Rva;
 use super::{ModelMemo, SelectedModelVariant};
-use crate::{
-    Memory, cequipment_database, cequipment_type, cequipment_variant, cpdx_array::Array,
-    memory::Raw, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read};
+use engine_native_parts::{cequipment_database, cequipment_type};
+use crate::cequipment_variant;
 
 const MODULE_COUNT: usize = 0xc4;
 const UPGRADE_LEVEL_SUM: usize = 0x414;
@@ -50,7 +49,7 @@ pub struct HullVariantInputs {
 #[derive(Default)]
 pub(super) struct Memo {
     last: Option<(Key, Option<HullVariantInputs>)>,
-    complete: crate::combat_sources::Map<Key, HullVariantInputs>,
+    complete: engine_native_parts::keyed_map::Map<Key, HullVariantInputs>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,7 +111,7 @@ pub fn read_hull_variant(
         None => {
             let packet = acquire(memory, base, source);
             if let Some(complete) = packet.filter(complete)
-                && crate::allocation::reserve_map(&mut state.complete, 1).is_ok()
+                && engine_allocation::reserve_map(&mut state.complete, 1).is_ok()
             {
                 state.complete.insert(key, complete);
             }
@@ -137,9 +136,9 @@ fn acquire(
     base: usize,
     source: &SelectedModelVariant,
 ) -> Option<HullVariantInputs> {
-    let expected = engine_sites::at(base, cequipment_variant::VTABLE_RVA)?;
+    let expected = engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)?;
     let identity = scalar::<[u8; 16]>(memory, source.pointer, 0)?;
-    if cequipment_variant::identity_from_header(expected, identity).ok()? != source.handle {
+    if engine_native_parts::equipment_variant_identity::identity_from_header(expected, identity).ok()? != source.handle {
         return None;
     }
     let token = scalar::<[u8; 4]>(memory, source.pointer, cequipment_variant::EQUIPMENT_TOKEN)?;

@@ -1,7 +1,5 @@
 
-use engine_native::{
-    read_plan::Control, read_plan::Hint, read_plan::PreparedPlan, read_plan::Read,
-};
+use engine_native_memory::read_plan::{Control, Hint, PreparedPlan, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
@@ -515,7 +513,7 @@ pub fn allocation_exercise() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{Memory, memory::SliceMemory, read_plan::Outcome};
+    use engine_native_memory::{Memory, memory::SliceMemory, read_plan::Outcome};
 
     #[test]
     fn redundant_checks_keep_the_first_failure_frontier_and_fresh_unchecked_payload() {

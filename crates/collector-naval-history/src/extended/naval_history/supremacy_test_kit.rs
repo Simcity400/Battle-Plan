@@ -1,5 +1,5 @@
 use super::{Capacities, Captured, SupremacyCopyContext, SupremacyCopyReport, SupremacyJob};
-use engine_native::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub const BASE: usize = 0;
 pub const GAME_STATE: usize = 0x1000;
@@ -23,7 +23,8 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub fn fixture() -> Vec<u8> {
-    use engine_native::{cgame_state, cstrategic_region};
+    use engine_native::cgame_state;
+    use engine_native_parts::cstrategic_region;
     use engine_naval_history::{cdominance_values, cnaval_region_dominance, naval_dominance_entry};
     let mut bytes = vec![0; 0x4000];
     header(

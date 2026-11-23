@@ -20,13 +20,13 @@ fn full_reference_fixture() -> EtaFixture {
         ),
         (
             COMBAT_TWO,
-            crate::cland_border_war_combat::VTABLE_RVA.0,
-            crate::cland_border_war_combat::BODY_VTABLE_RVA.0,
+            engine_native_parts::cland_border_war_combat::VTABLE_RVA.0,
+            engine_native_parts::cland_border_war_combat::BODY_VTABLE_RVA.0,
             BORDER_REFERENCE,
         ),
         (
             NAVAL,
-            crate::cnaval_combat::VTABLE_RVA.0,
+            engine_native::cnaval_combat::VTABLE_RVA.0,
             0x02a5_6e70,
             NAVAL_REFERENCE,
         ),
@@ -64,23 +64,23 @@ fn reference_capture(
     let mut roots = vec![(0, 0); 1];
     let mut observations = vec![FreshEtaObservations::default(); 1];
     let mut names = NameArena {
-        bytes: crate::walk::Buffer::Count,
+        bytes: engine_native_memory::walk::Buffer::Count,
         used: 0,
         required: 0,
         failures: 0,
     };
     let mut layout = None;
     let mut scratch = TooltipScratch {
-        guns: crate::walk::Buffer::Growing(&mut roots),
-        fresh_observations: crate::walk::Buffer::Growing(&mut observations),
+        guns: engine_native_memory::walk::Buffer::Growing(&mut roots),
+        fresh_observations: engine_native_memory::walk::Buffer::Growing(&mut observations),
         sample_hour: hour,
         named: crate::railway_gun_speed::NamedBonuses {
-            pointers: crate::walk::Buffer::Count,
+            pointers: engine_native_memory::walk::Buffer::Count,
             required: 0,
         },
         layout: &mut layout,
         layout_buffer: &mut [],
-        supply_origins: crate::walk::Buffer::Count,
+        supply_origins: engine_native_memory::walk::Buffer::Count,
         supply_origins_len: 0,
         required_supply_origins: 0,
     };
@@ -102,7 +102,7 @@ fn reference_capture(
             &mut arena,
         )
     } else {
-        walk_impl(image, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(1), Some(&mut names), Some(&mut scratch), None)
+        walk_impl(image, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(1), Some(&mut names), Some(&mut scratch), None)
     };
     (walk, rows[0], arena.used, arena.required)
 }

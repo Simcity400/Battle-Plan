@@ -16,6 +16,9 @@ country_input_changes = []
 visibility_changes = ["country_input_changes"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-naval.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true
@@ -54,6 +57,7 @@ collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 collector-visibility = { workspace = true, features = ["country_input_changes", "default", "test-support", "visibility_changes"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

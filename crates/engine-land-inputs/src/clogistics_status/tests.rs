@@ -1,5 +1,5 @@
 use super::*;
-use crate::{chuman, loop_history_window as window};
+use crate::loop_history_window as window;
 use std::collections::BTreeMap;
 
 const BASE: usize = 0x0001_4000_0000;
@@ -306,7 +306,7 @@ fn the_count_probe_counts_every_country_unread_without_reading_its_values() {
     let manual_values = Fixture::history(MANUAL.2, BALANCE_SERIES) + 0x800;
     f.forget(manual_values, 3 * 8);
     assert_eq!(
-        walk_buffer(&f, BASE, GAME, crate::walk::Buffer::Count),
+        walk_buffer(&f, BASE, GAME, engine_native_memory::walk::Buffer::Count),
         Outcome::Truncated {
             len: 0,
             unread_rows: 6
@@ -518,12 +518,12 @@ fn a_slot_past_the_controller_counts_follows_the_live_players() {
     let mut f = Fixture::new(3);
     f.array(GAME + cgame_state::HUMAN_STATUS, COUNTS, 2);
     f.array(GAME + cgame_state::PLAYER_RECORDS, 0x13000, 1);
-    f.pointer(0x13000, BASE + chuman::VTABLE_RVA.0);
-    f.u32(0x13000 + chuman::COUNTRY_TAG, MANUAL.1);
+    f.pointer(0x13000, BASE + engine_native_parts::chuman_layout::VTABLE_RVA.0);
+    f.u32(0x13000 + engine_native_parts::chuman_layout::COUNTRY_TAG, MANUAL.1);
     let (outcome, rows) = capture(&f, 8);
     assert_eq!(outcome, Outcome::Rows { len: 6 });
     assert_eq!(rows[3], expected(MANUAL, 0));
-    f.u32(0x13000 + chuman::COUNTRY_TAG, AI.1);
+    f.u32(0x13000 + engine_native_parts::chuman_layout::COUNTRY_TAG, AI.1);
     f.logistics(AI.0, AI.2, 3);
     let (outcome, rows) = capture(&f, 8);
     assert_eq!(outcome, Outcome::Rows { len: 6 });

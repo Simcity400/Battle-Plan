@@ -7,7 +7,8 @@ pub const OPTION_HANDLE: usize = 0x0c;
 pub const CONTEXT: usize = 0x10;
 pub const DATE: usize = 0x48;
 
-use crate::{Memory, nproject_cproject, nproject_sproject_context, read, walk::Outcome};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use crate::{nproject_cproject, nproject_sproject_context};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -25,8 +26,8 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut V
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Growing(output),
     )
     .1
 }
@@ -71,7 +72,7 @@ pub fn read_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn history_keeps_owner_project_ordinal_and_checks_both_vtables() {

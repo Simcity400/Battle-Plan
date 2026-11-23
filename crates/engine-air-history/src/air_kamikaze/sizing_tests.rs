@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const BASE: usize = 0x1_0000_0000;

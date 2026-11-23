@@ -60,7 +60,7 @@ fn callers_are_classified_semantically_and_unknown_is_preserved() {
 
 #[test]
 fn bounded_variant_copy_sums_signed_duplicates_and_refuses_short_or_unreadable() {
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0xc0];
     bytes[..8].copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[0x20..0x28].copy_from_slice(&0x1080u64.to_le_bytes());
@@ -144,7 +144,7 @@ fn bounded_variant_copy_sums_signed_duplicates_and_refuses_short_or_unreadable()
 
 #[test]
 fn original_pool_demand_survives_short_storage_without_extra_native_reads() {
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::{Cell, RefCell};
     struct Traced<'a> {
         memory: SliceMemory<'a>,
@@ -193,13 +193,14 @@ fn original_pool_demand_survives_short_storage_without_extra_native_reads() {
 
 #[test]
 fn signed_snapshot_preserves_full_native_signed_quantities() {
-    use crate::{cequipment_variant, memory::SliceMemory};
+    use engine_native::cequipment_variant;
+    use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0x180];
     bytes[..8].copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[0x20..0x28].copy_from_slice(&0x1080u64.to_le_bytes());
     bytes[0x28..0x2c].copy_from_slice(&2i32.to_le_bytes());
     bytes[0x2c..0x30].copy_from_slice(&2i32.to_le_bytes());
-    bytes[0x100..0x108].copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[0x100..0x108].copy_from_slice(&(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
     let handle = (5000u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE);
     bytes[0x108..0x110].copy_from_slice(&handle.to_le_bytes());
     for (index, quantity) in [ADD_QUANTITY_BOUND, -ADD_QUANTITY_BOUND]
@@ -245,15 +246,15 @@ fn signed_snapshot_preserves_full_native_signed_quantities() {
 
 #[test]
 fn native_owners_follow_expeditionary_roster_wing_and_controller() {
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0xc00];
     let write32 = |bytes: &mut [u8], at: usize, value: i32| {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes())
     };
-    write32(&mut bytes, crate::cunit::ROSTER_OWNER, 4999);
-    write32(&mut bytes, crate::cunit::LOGICAL_OWNER, 1234);
+    write32(&mut bytes, engine_native::cunit::ROSTER_OWNER, 4999);
+    write32(&mut bytes, engine_native::cunit::LOGICAL_OWNER, 1234);
     for expeditionary in [-1, 0, 1500] {
-        write32(&mut bytes, crate::cunit::EXPEDITIONARY_OWNER, expeditionary);
+        write32(&mut bytes, engine_native::cunit::EXPEDITIONARY_OWNER, expeditionary);
         assert_eq!(
             army_owner(
                 &SliceMemory {
@@ -377,11 +378,11 @@ fn site_metadata_keeps_call_targets_and_install_groups_explicit() {
 
 #[test]
 fn fake_intel_uses_the_recorded_census_flag_and_refuses_short_reads() {
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0x700];
     let army = 0x1000;
     let template = army + 0x400;
-    let flag_at = 0x400 + crate::creferenced_division_template::REVEAL_SKIP;
+    let flag_at = 0x400 + engine_native::creferenced_division_template::REVEAL_SKIP;
     assert_eq!(
         fake_intel_division(
             &SliceMemory {
@@ -421,7 +422,7 @@ fn fake_intel_uses_the_recorded_census_flag_and_refuses_short_reads() {
 
 #[test]
 fn division_identity_authenticates_both_vtables_and_dynamic_handles() {
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0x200];
     bytes[..8].copy_from_slice(&(carmy::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[0x10..0x18].copy_from_slice(&(carmy::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes());
@@ -493,7 +494,7 @@ fn reset_and_current_game_state_reads_fail_closed() {
     }
     let mut memory = Fields(vec![
         (
-            crate::cgame_state::SINGLETON_RVA.0,
+            engine_native::cgame_state::SINGLETON_RVA.0,
             0x1000u64.to_le_bytes().to_vec(),
         ),
         (0x1000 + RESETTING, vec![0]),
@@ -584,7 +585,8 @@ fn scripted_factor_above_one_and_sign_flip_are_signed() {
 
 #[test]
 fn scripted_reserve_owner_authenticates_both_objects_and_reverse_link() {
-    use crate::{ccountry, cproduction_status, memory::SliceMemory};
+    use engine_native::{ccountry, cproduction_status};
+    use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0x2400];
     let country = 0x1000;
     let manager = 0x3000;

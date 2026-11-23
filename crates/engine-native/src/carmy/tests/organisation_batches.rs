@@ -1,9 +1,10 @@
 use super::super::*;
 use super::*;
-use crate::{
-    carmy::organisation_movement::{LOW_ORGANISATION_FOR_ATTACK_RVA, land_speed_demand},
-    memory::{CountedMemory, ReadCounts},
+use crate::carmy::organisation_movement::{
+    LOW_ORGANISATION_FOR_ATTACK_RVA,
+    land_speed_demand,
 };
+use engine_native_memory::memory::{CountedMemory, ReadCounts};
 
 fn below_threshold(current: i64, maximum: i64, threshold: i64) -> Result<bool, &'static str> {
     let share = if (current as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
@@ -25,7 +26,7 @@ fn land_province(
         presentation_field::<u8>(
             memory,
             definition,
-            crate::province_definition::TERRAIN_FLAGS,
+            crate::cprovince::definition::TERRAIN_FLAGS,
         )?,
     ))
 }
@@ -127,7 +128,7 @@ fn fixture(count: usize) -> (PresentationMemory, Vec<DivisionSeed>) {
     let mut source = normal_route_fixture();
     p64(
         &mut source.bytes,
-        0x11000 + crate::csub_unit_definition::MAXIMUM_ORGANISATION,
+        0x11000 + engine_native_parts::csub_unit_definition::MAXIMUM_ORGANISATION,
         1_000_000,
     );
     p64(&mut source.bytes, A1 + ORGANISATION, 1_000_000);
@@ -209,7 +210,7 @@ fn compare(
 #[test]
 fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() {
     let (mut source, mut seeds) = fixture(3);
-    use crate::{cdiplomacy_status as diplomacy, crelation_status as relation};
+        use crate::crelation::status as relation;
     const DIPLOMACY: usize = 0x2d000;
     const RELATIONS: usize = 0x2d200;
     const RELATION: usize = 0x2d300;
@@ -217,9 +218,9 @@ fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() 
     let b = &mut source.bytes;
     p32(b, 0x18400 + cprovince::CONTROLLER, 2);
     p64(b, C2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA.0 as u64);
-    p64(b, DIPLOMACY + diplomacy::COUNTRY, C2 as u64);
-    array(b, DIPLOMACY + diplomacy::RELATIONS, RELATIONS, 4);
+    p64(b, DIPLOMACY, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+    p64(b, DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY, C2 as u64);
+    array(b, DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS, RELATIONS, 4);
     p64(b, RELATIONS + 8, RELATION as u64);
     p64(b, RELATION, relation::VTABLE_RVA.0 as u64);
     p64(b, RELATION + relation::DIPLOMACY_STATUS, DIPLOMACY as u64);
@@ -261,10 +262,10 @@ fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() 
     }
     for flags in [
         0,
-        crate::province_definition::LAND_FLAG,
-        crate::province_definition::LAKE_FLAG,
+        crate::cprovince::definition::LAND_FLAG,
+        crate::cprovince::definition::LAKE_FLAG,
     ] {
-        source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = flags;
+        source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] = flags;
         for first in [2, 99] {
             p32(&mut source.bytes, 0x1f000, first);
             compare(&source, &seeds, None);
@@ -292,14 +293,14 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
         (P1, 0),
         (P1 + cprovince::DEFINITION, 0),
         (P1 + cprovince::ID, 9),
-        (0x12000 + crate::province_definition::ID, 9),
+        (0x12000 + crate::cprovince::definition::ID, 9),
     ] {
         let old = source.bytes[at..at + 8].to_vec();
         p64(&mut source.bytes, at, value);
         compare(
             &source,
             &seeds,
-            Some(0x12000 + crate::province_definition::TERRAIN_FLAGS),
+            Some(0x12000 + crate::cprovince::definition::TERRAIN_FLAGS),
         );
         source.bytes[at..at + 8].copy_from_slice(&old);
     }
@@ -307,13 +308,13 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
     compare(
         &source,
         &seeds,
-        Some(0x12000 + crate::province_definition::TERRAIN_FLAGS),
+        Some(0x12000 + crate::cprovince::definition::TERRAIN_FLAGS),
     );
 }
 
 struct Native<'a> {
     source: &'a PresentationMemory,
-    live: crate::memory::LiveMemory,
+    live: engine_native_memory::memory::LiveMemory,
 }
 impl Native<'_> {
     fn address(&self, address: usize, len: usize) -> usize {
@@ -331,7 +332,7 @@ impl Native<'_> {
     }
 }
 impl Memory for Native<'_> {
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         self.live
             .read_scalar(self.address(address, std::mem::size_of::<T>()))
     }
@@ -357,7 +358,7 @@ fn bench_division_status_organisation_guarded_reads() {
     let (source, seeds) = fixture(DIVISIONS);
     let memory = CountedMemory::new(Native {
         source: &source,
-        live: unsafe { crate::memory::LiveMemory::new() },
+        live: unsafe { engine_native_memory::memory::LiveMemory::new() },
     });
     let mut capture = packet(&source, &seeds);
     let mut rows = Vec::new();
@@ -395,7 +396,7 @@ fn bench_division_status_organisation_guarded_reads() {
     assert_eq!(rows[0], rows[2]);
 
     let words = vec![7_u64; DIVISIONS];
-    let live = CountedMemory::new(unsafe { crate::memory::LiveMemory::new() });
+    let live = CountedMemory::new(unsafe { engine_native_memory::memory::LiveMemory::new() });
     let mut samples = Vec::new();
     for run in 0..28 {
         let begin = Instant::now();
@@ -422,11 +423,11 @@ fn division_status_organisation_memo_pressure_and_new_pass_preserve_rows() {
         actual.organisation_memo = organisation_movement::OrganisationMemo::new(capacity).unwrap();
         let allocated = actual.allocated_bytes();
         for flags in [
-            crate::province_definition::LAND_FLAG,
+            crate::cprovince::definition::LAND_FLAG,
             0,
-            crate::province_definition::LAKE_FLAG,
+            crate::cprovince::definition::LAKE_FLAG,
         ] {
-            source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = flags;
+            source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] = flags;
             let old = capture_serial(&mut expected, &source, 0, GS, &seeds);
             let new = actual.capture_movement_organisation(&source, 0, GS, &seeds);
             assert_eq!(new, old);
@@ -457,8 +458,8 @@ fn division_status_organisation_transient_faults_do_not_poison_later_divisions()
         P1,
         P1 + cprovince::DEFINITION,
         P1 + cprovince::ID,
-        0x12000 + crate::province_definition::ID,
-        0x12000 + crate::province_definition::TERRAIN_FLAGS,
+        0x12000 + crate::cprovince::definition::ID,
+        0x12000 + crate::cprovince::definition::TERRAIN_FLAGS,
         GS + cgame_state::PROVINCES,
     ] {
         let mut expected = packet(&source, &seeds);
@@ -504,13 +505,13 @@ fn division_status_organisation_optional_storage_failure_is_nonterminal() {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
-            crate::allocation::set_hooks(None, None);
+            engine_allocation::set_hooks(None, None);
         }
     }
     let _reset = Reset;
-    crate::allocation::set_hooks(None, Some(failed));
+    engine_allocation::set_hooks(None, Some(failed));
     assert!(organisation_movement::OrganisationMemo::new(usize::MAX).is_err());
     assert!(!FAILED.load(Relaxed));
-    drop(crate::allocation::oom());
+    drop(engine_allocation::oom());
     assert!(FAILED.load(Relaxed));
 }

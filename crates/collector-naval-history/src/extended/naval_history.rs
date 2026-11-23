@@ -6,11 +6,22 @@ use collector_primitives::{
 use collector_projection::table_conversion::{table, unavailable};
 use collector_raw::raw::RawLog;
 use engine_allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
-use engine_native::{
-    Memory, cair_group, cair_theatre, cair_wing, cgame_date, cgame_state, corders_group,
-    cpdx_array::Array, cprovince, cstrategic_region, csub_unit_definition, ctheater_group,
-    ctheatre, msvc_string, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cgame_date,
+    cpdx_array::Array,
+    msvc_string,
+    walk::Outcome,
 };
+use engine_native_parts::{
+    cair_group,
+    cair_theatre,
+    cstrategic_region,
+    csub_unit_definition,
+    ctheater_group,
+};
+use engine_native::{cgame_state, corders_group, cprovince, ctheatre};
+use engine_native_air::cair_wing;
 use engine_naval_history::{
     cdominance_values, cnaval_combat_results, cnaval_region_dominance, csunk_convoy_info,
     csunk_ship_info, naval_dominance_entry,
@@ -85,7 +96,7 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         use collector_extended_support::demand::rows;
-        use engine_native::walk::Buffer;
+        use engine_native_memory::walk::Buffer;
         let mut failure = None;
         let mut accept = |slot: usize, outcome: Outcome| match rows(outcome) {
             Ok(required) => self.rows[slot] = self.rows[slot].max(required),
@@ -382,7 +393,7 @@ pub struct Captured {
     theatre_names: Arena<u8>,
     sunk_names: Arena<u8>,
     orders_sources: CaptureRows<ctheatre::OrdersMembership>,
-    wing_sources: CaptureRows<ctheatre::WingMembership>,
+    wing_sources: CaptureRows<engine_native_air::cair_wing::WingMembership>,
     orders_finished: bool,
     wings_finished: bool,
     source_ticks: [u64; 3],
@@ -1026,7 +1037,7 @@ impl Captured {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        root: Result<engine_native::ccountry::Country, &'static str>,
+        root: Result<engine_native_memory::country_identity::Country, &'static str>,
         prior_rosters: Option<(&RawLog<NAVAL_PACK_N>, usize)>,
         staging_refusal: Option<&'static str>,
     ) {
@@ -1038,7 +1049,7 @@ impl Captured {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        root: Result<engine_native::ccountry::Country, &'static str>,
+        root: Result<engine_native_memory::country_identity::Country, &'static str>,
         prior_rosters: Option<(&RawLog<NAVAL_PACK_N>, usize)>,
         staging_refusal: Option<&'static str>,
     ) {
@@ -1050,7 +1061,7 @@ impl Captured {
                     memory,
                     base,
                     root,
-                    engine_native::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
                     |_, _| Ok(()),
                 );
                 self.reserved_land_required_rows = walk.required_rows;
@@ -1065,7 +1076,7 @@ impl Captured {
             memory,
             base,
             root,
-            engine_native::walk::Buffer::GrowingFrom(&mut self.land.rows, positive_len),
+            engine_native_memory::walk::Buffer::GrowingFrom(&mut self.land.rows, positive_len),
             |theatre, handle| {
                 if !oob_finished {
                     return Err("reserved land OOB census not captured");
@@ -1487,8 +1498,8 @@ impl Captured {
     }
 }
 
-fn storage_buffer<T>(values: &mut Vec<T>) -> engine_native::walk::Buffer<'_, T> {
-    engine_native::walk::Buffer::Growing(values)
+fn storage_buffer<T>(values: &mut Vec<T>) -> engine_native_memory::walk::Buffer<'_, T> {
+    engine_native_memory::walk::Buffer::Growing(values)
 }
 
 fn elapsed(begin: i64) -> u64 {

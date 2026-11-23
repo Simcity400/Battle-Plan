@@ -1,7 +1,7 @@
 use collector_hooks::hook::Hook;
 use collector_primitives::shared_lane::SharedLane;
 use engine_events::operation_outcome_sites as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     cell::{Cell, UnsafeCell},
     ops::Range,
@@ -836,7 +836,7 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
         }
         if let Some(log) = log() {
             if let Some(lease) = publishing(log) {
-                let memory = unsafe { engine_native::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
                 observe_return(
                     lease.0,
                     lane(lease.0),
@@ -878,7 +878,7 @@ pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, 
     unsafe {
         handoff_buffer(
             seal_offered(log),
-            engine_native::walk::Buffer::Growing(cursors),
+            engine_native_memory::walk::Buffer::Growing(cursors),
         )
     }
 }
@@ -887,7 +887,7 @@ pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, 
 /// [`Handoff`], and only the single spool or isolated fixture owning this handoff may consume it.
 pub unsafe fn handoff_buffer(
     log: &Log,
-    mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
+    mut cursors: engine_native_memory::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
     let lanes = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     cursors
@@ -1247,7 +1247,8 @@ impl Hooks {
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
-    use engine_native::{ccountry, cgame_state, coperation, coperation_instance as operation};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_intelligence::{coperation, coperation_instance as operation};
     use std::cell::RefCell;
 
     static TEST: Mutex<()> = Mutex::new(());
@@ -1405,7 +1406,7 @@ pub mod tests {
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: `_exclusive` serializes fixture access and `cursors` is locally owned.
         let handoff =
-            unsafe { handoff_buffer(log, engine_native::walk::Buffer::Growing(&mut cursors)) }?;
+            unsafe { handoff_buffer(log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }?;
         let mut events = vec![Event::default(); handoff.pending()];
         let mut bytes = vec![0; handoff.description_capacity(&cursors).unwrap()];
         // SAFETY: `handoff` was sealed from `log` under `_exclusive` as the sole consumer.
@@ -1480,7 +1481,7 @@ pub mod tests {
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` and is the sole consumer of `log`.
         let handoff =
-            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+            unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                 .unwrap();
         let captured = Captured::sealed(handoff, cursors);
         let mut ledger = Ledger::default();
@@ -1652,7 +1653,7 @@ pub mod tests {
             let mut cursors = vec![LaneCursor::default()];
             // SAFETY: test holds `serial()` as the sole consumer of `log`.
             let handoff =
-                unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                     .unwrap();
             Captured::sealed(handoff, cursors)
         };
@@ -1817,7 +1818,7 @@ pub mod tests {
             let epoch = EPOCH.load(Ordering::Acquire);
             // SAFETY: test holds `serial()` and owns `log` with no concurrent writers.
             let handoff =
-                unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                     .unwrap();
             assert_eq!(handoff.lanes, count);
             assert_eq!(handoff.epoch, epoch);
@@ -1825,7 +1826,7 @@ pub mod tests {
             assert_eq!(cursors[count - 1].cursor, count as u64 - 1);
             assert_eq!(cursors[count - 1].attempts, count as u64 + 6);
             // SAFETY: test holds `serial()` and exercises count-only buffer refusal on `log`.
-            assert!(unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Count) }.is_err());
+            assert!(unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Count) }.is_err());
         }
     }
     #[test]
@@ -1876,7 +1877,7 @@ pub mod tests {
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let old =
-            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+            unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                 .unwrap();
         let idle = Captured::sealed(old, cursors.clone());
         let mut ledger = Ledger::default();
@@ -2029,7 +2030,7 @@ pub mod tests {
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let sealed =
-            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+            unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                 .unwrap();
         // SAFETY: Test is the sole writer to lane 0 of this log.
         unsafe { complete(&log, &Fixture::new(&[0xfb; 10]), 1) };
@@ -2375,7 +2376,7 @@ pub mod tests {
             let mut cursors = vec![LaneCursor::default()];
             // SAFETY: test holds `serial()` as the sole consumer of `log`.
             let handoff =
-                unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                     .unwrap();
             Captured::sealed(handoff, cursors)
         };
@@ -2494,7 +2495,7 @@ pub mod tests {
         let mut first = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let queued =
-            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)) }
+            unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut first)) }
                 .unwrap();
         let mut events = [Event::default(); 2];
         let mut bytes = [0; 32];
@@ -2512,7 +2513,7 @@ pub mod tests {
         let mut second = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let later =
-            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)) }
+            unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut second)) }
                 .unwrap();
         assert_eq!(later.pending(), 1);
         later.admitted(&second);
@@ -2534,14 +2535,14 @@ pub mod tests {
         unsafe { complete(&log, &Fixture::new(b"before"), 1) };
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
-        unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+        unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
             .admitted(&cursors);
         unsafe { invalidate() };
         // SAFETY: Test is the sole writer to lane 0 of this log.
         unsafe { complete(&log, &Fixture::new(b"after"), 1) };
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
-        unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+        unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
             .admitted(&cursors);
         log.reset_admitted();
@@ -2567,7 +2568,7 @@ pub mod tests {
             unsafe { complete(&log, &fixture, 1) };
             let mut cursors = vec![LaneCursor::default()];
             // SAFETY: test holds `serial()` as the sole consumer of `log`.
-            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+            unsafe { handoff_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
                 .unwrap()
                 .admitted(&cursors);
         }
@@ -2596,7 +2597,7 @@ pub mod tests {
         assert!(!std::ptr::eq(log().unwrap(), old));
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `sealed`.
-        unsafe { handoff_buffer(sealed, engine_native::walk::Buffer::Growing(&mut cursors)) }
+        unsafe { handoff_buffer(sealed, engine_native_memory::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
             .admitted(&cursors);
         let epoch = EPOCH.load(Ordering::Acquire);

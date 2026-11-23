@@ -1,11 +1,18 @@
 
-use crate::{
-    Memory, ccountry, cequipment_database as database, cequipment_type, cgame_state, cloop_history,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    loop_history_record_fields as record_fields, loop_history_window as window,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
     walk::Outcome,
+};
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::{cequipment_database as database, cequipment_type};
+use crate::{
+    cloop_history,
+    loop_history_record_fields as record_fields,
+    loop_history_window as window,
 };
 use engine_sites::Rva;
 
@@ -69,14 +76,14 @@ pub fn walk(
     game_state: usize,
     rows: &mut Vec<Row>,
 ) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Growing(rows))
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Growing(rows))
 }
 
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: crate::walk::Buffer<'_, Row>,
+    rows: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     match walk_inner(memory, base, game_state, rows) {
         Ok((len, 0)) => Outcome::Rows { len },
@@ -113,7 +120,7 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut rows: crate::walk::Buffer<'_, Row>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<(usize, u32), &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut control = cgame_state::AiControl::read(memory, game_state)?;
@@ -201,7 +208,7 @@ struct Records {
 fn read_records(
     memory: &impl Memory,
     vtables: &Vtables,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Records, &'static str> {
     let status = pointer_at(memory, country.pointer, ccountry::LOGISTICS_STATUS)
         .filter(|&status| status != 0)

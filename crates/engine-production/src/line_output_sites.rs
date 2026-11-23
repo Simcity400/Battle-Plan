@@ -1,8 +1,20 @@
 
-use crate::{
-    Memory, ccountry, cequipment_production_line, cequipment_variant, cgame_state,
-    cmilitary_production_line, cnaval_production_line, cpdx_array::Array, cproduction_line,
-    cproduction_status, crailway_gun_production_line, cship_refit_production_line, read,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{
+    ccountry,
+    cproduction_status::{
+        equipment_line as cequipment_production_line,
+        self,
+    },
+    cequipment_variant,
+    cgame_state,
+};
+use engine_native_parts::{
+    cmilitary_production_line,
+    cnaval_production_line,
+    cproduction_line,
+    crailway_gun_production_line,
+    cship_refit_production_line,
 };
 use engine_sites::Rva;
 
@@ -248,7 +260,7 @@ pub fn read_rocket_spending(
         .and_then(|address| usize::try_from(address).ok())
         .and_then(|status| production_status_country(memory, base, status).ok());
     let design =
-        variant.and_then(|variant| cequipment_variant::identity(memory, base, variant).ok());
+        variant.and_then(|variant| engine_native_parts::equipment_variant_identity::identity(memory, base, variant).ok());
     let mut tick = RocketTick {
         country: country.unwrap_or(0),
         variant: design.unwrap_or(0),
@@ -405,7 +417,7 @@ mod conversion_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x140000000;
     const LINE: usize = 0x100;

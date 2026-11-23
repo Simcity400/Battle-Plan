@@ -1,5 +1,5 @@
 use engine_allocation::string;
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::rows::TableId;
 use replay_frame::frame::TableView;
 

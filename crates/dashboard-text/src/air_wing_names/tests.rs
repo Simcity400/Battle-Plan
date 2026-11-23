@@ -1,8 +1,10 @@
 use super::*;
-use engine_native::{
-    raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,
-    raid_tooltip_operands::REFERENCES, raid_tooltip_operands::WING_NAME,
-    raid_tooltip_operands::WING_RESOLVED,
+use engine_native_air::raid_tooltip_operands::{
+    ARMY_RESOLVED,
+    NAME,
+    REFERENCES,
+    WING_NAME,
+    WING_RESOLVED,
 };
 use replay_data::{rows::AirWingRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
@@ -144,7 +146,7 @@ fn historical_names_share_authenticated_active_raid_inputs() {
     else {
         unreachable!()
     };
-    rows[0].phase = engine_native::craid_instance::PHASE_ENDED;
+    rows[0].phase = engine_native_air::craid_instance::PHASE_ENDED;
     let mut refused = Refusals::default();
     assert!(recorded_names(&frame, &HashSet::from([WING]), &mut refused).is_empty());
     assert!(refused.lines("wing names")[0].contains("outside selected active raids"));

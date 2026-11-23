@@ -4,10 +4,10 @@ pub fn walk_country_buffer<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     if !inputs.iter().any(|r| r.slot.technology_present != 0) {
         return Outcome::Rows { len: 0 };
@@ -24,7 +24,7 @@ pub fn walk_country_buffer<M: Memory>(
     };
     let result = (|| {
         let context = context?;
-        let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
+        let accumulator = at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?;
         let (raw, metadata) = modifier(
             memory,
             base,
@@ -130,7 +130,7 @@ pub fn walk_country_buffer<M: Memory>(
                 if raw != 0 {
                     let idea = pointer_from(&bytes[8..])?;
                     if read::<u64>(memory, idea)
-                        != Some(site(base, crate::cidea::VTABLE_RVA)? as u64)
+                        != Some(site(base, engine_native_parts::cidea::VTABLE_RVA)? as u64)
                     {
                         return Err("research idea identity mismatch");
                     }
@@ -140,7 +140,7 @@ pub fn walk_country_buffer<M: Memory>(
                         0,
                         0,
                         0,
-                        text(memory, at(idea, crate::cidea::TOKEN)?)?,
+                        text(memory, at(idea, engine_native_parts::cidea::TOKEN)?)?,
                     )?;
                 }
                 Ok(())

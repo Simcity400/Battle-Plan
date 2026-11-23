@@ -10,10 +10,14 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["collector-combat/test-support", "collector-extended-support/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
+test-support = ["dep:engine-native-air", "collector-combat/test-support", "collector-extended-support/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
 
 
 [dependencies]
+engine-native-air = { workspace = true, optional = true }
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-naval.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true
 engine-naval-history.workspace = true
@@ -30,6 +34,7 @@ collector-status.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
 
 [dev-dependencies]
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-executable.workspace = true
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
@@ -53,6 +58,7 @@ collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-naval-details = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

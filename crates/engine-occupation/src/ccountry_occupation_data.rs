@@ -10,10 +10,9 @@ pub const GARRISON_TABLE: usize = 0xd8;
 pub const GARRISON_CAPACITY_OR_MASK: usize = 0xe4;
 
 use crate::ccountry_occupation_status::Rows;
-use crate::{
-    Memory, ccountry, cgame_state, coccupation_law, cpdx_array::Array, cstate,
-    pdx_robin_hood_table, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccountry, cgame_state, cstate};
+use crate::{coccupation_law, pdx_robin_hood_table};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LawRow {

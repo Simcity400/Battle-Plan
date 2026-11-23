@@ -1,11 +1,14 @@
 
-use crate::{
-    Memory, ccountry, cdeployment_status, cequipment_variant,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    creferenced_division_template::Span,
-    csub_unit_definition, msvc_string, read,
+    msvc_string,
+    read,
     walk::{Buffer, Outcome},
 };
+use engine_native::{ccountry, cequipment_variant, creferenced_division_template::Span};
+use crate::cdeployment_status;
+use engine_native_parts::csub_unit_definition;
 use engine_sites::Rva;
 
 pub const STRIDE: usize = 0x70;

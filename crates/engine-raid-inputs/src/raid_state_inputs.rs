@@ -1,17 +1,40 @@
 
-use crate::{
-    Memory, cbuilding, cbuilding_database, cbuilding_status, cbuilding_template, ccountry,
-    ccountry_resources, ccountry_supply_system, cdynamic_modifier, cdynamic_modifier_container,
-    cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, cresource_origin, cstate, cstrategic_resource, cstrategic_resource_database,
-    cstrategic_resource_pool, csupply_system, dynamic_modifier_entry,
     memory::{RecordField, RecordLayout, RecordSources},
-    modifier_accumulator::{self, Value},
-    modifier_definition::{DefinitionMemo, effective_memo},
-    modifier_entry, read, read_slice, supply_companion, supply_node,
+    modifier_cache::Value,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::{
+    cbuilding,
+    cbuilding_database,
+    cbuilding_template,
+    cdynamic_modifier,
+    modifier_accumulator,
+    modifier_definition::{DefinitionMemo, effective_memo},
+    modifier_entry,
+    supply_companion,
+};
+use engine_native::{
+    cprovince::{buildings as cbuilding_status, self},
+    ccountry,
+    ccountry_supply_system::{self, world as csupply_system},
+    cgame_state,
+    cstate,
+};
+use crate::{
+    ccountry_resources,
+    cdynamic_modifier_container,
+    cresource_origin,
+    cstrategic_resource,
+    cstrategic_resource_database,
+    cstrategic_resource_pool,
+    dynamic_modifier_entry,
+};
+use engine_native_land::supply_node;
 
 pub const GLOBAL_FACTOR_KEY: u32 = crate::modifier_keys::STATE_RESOURCES_FACTOR;
 pub const INFRASTRUCTURE_KEY: u32 =
@@ -1508,7 +1531,7 @@ fn walk_inner(
             nation.routes = Array::from_header(header16(bytes, index * 32), 8)
                 .ok_or("supply routes invalid")?;
             nation.nodes =
-                Array::from_header(header16(bytes, index * 32 + 16), supply_node::STRIDE)
+                Array::from_header(header16(bytes, index * 32 + 16), engine_native_parts::supply_node_layout::STRIDE)
                     .ok_or("supply nodes invalid")?;
         }
         let mut start = 0;
@@ -2168,7 +2191,7 @@ fn origin_states_supply(
             }
             addresses[found] = nation
                 .nodes
-                .element(node, supply_node::STRIDE)
+                .element(node, engine_native_parts::supply_node_layout::STRIDE)
                 .ok_or("supply route node outside the companion's nodes")?;
             words[found] = u64::from(id as u32) << 32 | u64::from(node);
             found += 1;

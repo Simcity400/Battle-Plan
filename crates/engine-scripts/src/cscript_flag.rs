@@ -1,8 +1,5 @@
 
-use crate::{
-    Memory,
-    memory::{RecordField, RecordLayout},
-};
+use engine_native_memory::{Memory, memory::{RecordField, RecordLayout}};
 use engine_sites::Rva;
 
 pub const STRIDE: usize = 0x30;

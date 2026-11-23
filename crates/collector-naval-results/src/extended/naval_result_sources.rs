@@ -5,7 +5,7 @@ use collector_primitives::{
 };
 use collector_projection::table_conversion::unavailable;
 use engine_allocation as allocation;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{rows::NavalResultSourceRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 

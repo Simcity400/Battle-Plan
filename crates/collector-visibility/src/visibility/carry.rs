@@ -1,9 +1,12 @@
 use crate::country_input_changes::{self as changes, Changes, Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, ccountry::Country, modifier_accumulator, modifier_accumulator::Value, walk::Buffer,
-    walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    country_identity::Country,
+    modifier_cache::Value,
+    walk::{Buffer, Outcome},
 };
+use engine_native_parts::modifier_accumulator;
 use engine_visibility::visibility_inputs as native;
 
 #[derive(Clone, Copy)]

@@ -5,10 +5,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
 };
 
-use crate::{
-    Memory,
-    memory::{RecordLayout, RecordSources},
-};
+use engine_native_memory::{Memory, memory::{RecordLayout, RecordSources}};
 
 const BATCH_FIELDS: usize = 64;
 const BATCH_BYTES: usize = 8192;

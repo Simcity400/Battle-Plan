@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn rank_alias_selects_canonical_account_and_keeps_its_supplying_certificate() {
         let bytes = super::super::tests::alias_fixture();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };

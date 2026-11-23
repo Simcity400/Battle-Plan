@@ -6,11 +6,18 @@ use collector_primitives::{
 };
 use collector_projection::table_conversion::table;
 use engine_allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
-use engine_native::{
-    Memory, ccountry, cfleet, creference_registry, cstrategic_navy, cstrategic_navy_manager,
-    cweather_manager, modifier_accumulator as accumulator, modifier_accumulator::Value,
-    naval_mission_inputs as inputs, naval_mission_inputs::COUNTRY_KEYS,
-    naval_mission_inputs::MISSION_KINDS, naval_mission_inputs::Operands, walk::Outcome,
+use engine_native_memory::{Memory, modifier_cache::Value, walk::Outcome};
+use engine_native::{ccountry, cfleet, cweather_manager};
+use engine_native_parts::{creference_registry, modifier_accumulator as accumulator};
+use engine_native_naval::{
+    cstrategic_navy,
+    cstrategic_navy_manager,
+    naval_mission_inputs::{
+        self as inputs,
+        COUNTRY_KEYS,
+        MISSION_KINDS,
+        Operands,
+    },
 };
 use replay_data::{
     rows::NavalMissionCommanderRow, rows::NavalMissionCountryRow, rows::NavalMissionLedgerRow,
@@ -62,7 +69,8 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        use engine_native::{cpdx_array::Array, ctask_force};
+        use engine_native_memory::cpdx_array::Array;
+        use engine_native::ctask_force;
         let countries = ccountry::Reader::new(memory, base, state)?;
         let mut tasks = 0_usize;
         let mut selected = 0_usize;
@@ -211,7 +219,7 @@ struct CommanderRow {
 struct PatrolMember {
     id: u64,
     owner: Option<u32>,
-    row: engine_native::naval_patrol_inputs::Operands,
+    row: engine_native_naval::naval_patrol_inputs::Operands,
     local: Option<Value>,
     weather: Option<Value>,
     leader: u64,
@@ -258,7 +266,7 @@ pub struct Captured {
     countries: CaptureRows<CountryRow>,
     pub hubs: Arena<u32>,
     commanders: CaptureRows<CommanderRow>,
-    named: Arena<ccountry::Country>,
+    named: Arena<engine_native_memory::country_identity::Country>,
     keys: Vec<u64>,
     weather: Vec<(u32, [Value; 9])>,
     selection: SliceSelection,
@@ -367,7 +375,7 @@ fn distinct<T: Copy, K: Ord>(keys: &mut [T], key: impl Fn(T) -> K) -> usize {
     distinct
 }
 
-const NO_COUNTRY: ccountry::Country = ccountry::Country {
+const NO_COUNTRY: engine_native_memory::country_identity::Country = engine_native_memory::country_identity::Country {
     pointer: 0,
     canonical_slot: 0,
     id: 0,
@@ -503,7 +511,7 @@ impl Captured {
             + self.countries.allocated_bytes()
             + self.hubs.allocated_bytes()
             + self.commanders.allocated_bytes()
-            + self.named.first.capacity() * size_of::<ccountry::Country>()
+            + self.named.first.capacity() * size_of::<engine_native_memory::country_identity::Country>()
             + self.keys.capacity() * size_of::<u64>()
             + self.weather.capacity() * size_of::<(u32, [Value; 9])>()
             + self.dominance_fleets.capacity() * size_of::<u64>()
@@ -889,8 +897,8 @@ impl Captured {
                 return Ok(());
             };
             census.required += 1;
-            engine_native::walk::Buffer::Growing(&mut census.first).ensure(census.required)?;
-            engine_native::walk::Buffer::Growing(rows).ensure(
+            engine_native_memory::walk::Buffer::Growing(&mut census.first).ensure(census.required)?;
+            engine_native_memory::walk::Buffer::Growing(rows).ensure(
                 len.checked_add(1)
                     .ok_or("naval mission row demand overflow")?,
             )?;
@@ -928,7 +936,7 @@ impl Captured {
                 base,
                 visit,
                 {
-                    engine_native::walk::Buffer::GrowingFrom(
+                    engine_native_memory::walk::Buffer::GrowingFrom(
                         &mut headquarters.first,
                         headquarters.len,
                     )
@@ -1108,7 +1116,7 @@ impl Captured {
         }
     }
 
-    fn add_named(&mut self, country: ccountry::Country) -> Result<(), &'static str> {
+    fn add_named(&mut self, country: engine_native_memory::country_identity::Country) -> Result<(), &'static str> {
         self.named.required += 1;
         if self.named.required > self.named.first.len() {
             let additional = self.named.required - self.named.first.len();
@@ -1140,7 +1148,7 @@ impl Captured {
                     .get_or_insert_with(|| cweather_manager::Reader::new(memory, base, game_state));
                 let mut values = [Value::default(); 9];
                 inputs::region_weather(memory, reader.as_ref().ok()?, region, &mut values).ok()?;
-                engine_native::walk::Buffer::Growing(&mut self.weather)
+                engine_native_memory::walk::Buffer::Growing(&mut self.weather)
                     .ensure(self.weather_len + 1)
                     .ok()?;
                 self.weather.copy_within(at..self.weather_len, at + 1);
@@ -1168,7 +1176,7 @@ impl Captured {
         let original_hq = self.headquarters.len;
         let original_named = (self.named.len, self.named.required);
         let result = (|| {
-            engine_native::walk::Buffer::Growing(&mut self.keys).ensure(self.entries.len)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(self.entries.len)?;
             self.keys[..self.entries.len].copy_from_slice(&self.entries.first[..self.entries.len]);
             let count = distinct(&mut self.keys[..self.entries.len], |key| key);
             reserve(&mut self.patrol, count)
@@ -1189,7 +1197,7 @@ impl Captured {
                     .visit
                     .ok_or("naval patrol member lacks asynchronous witness")?;
                 let header = member.mission_header.unwrap_or_else(|| {
-                    engine_native::naval_patrol_inputs::read_header(memory, base, visit)
+                    engine_native_naval::naval_patrol_inputs::read_header(memory, base, visit)
                 });
                 self.census.first[member_index].mission_header = Some(header);
                 let known = self
@@ -1205,7 +1213,7 @@ impl Captured {
                             targets[0] == Some(true)
                                 || targets[0] == Some(false) && targets[1] == Some(true)
                         });
-                let row = engine_native::naval_patrol_inputs::read_member_observed_stats(
+                let row = engine_native_naval::naval_patrol_inputs::read_member_observed_stats(
                     memory,
                     base,
                     visit,
@@ -1224,7 +1232,7 @@ impl Captured {
                     ..PatrolMember::default()
                 };
                 if convoy_demand {
-                    packet.targeted_spotting = inputs::targeted_spotting::read(
+                    packet.targeted_spotting = engine_native::ctask_force::targeted_spotting::read(
                         memory,
                         base,
                         countries,
@@ -1236,12 +1244,12 @@ impl Captured {
                 if known.is_some() {
                     packet.existing_context = true;
                 } else if member.range_failure.is_none() {
-                    let context = engine_native::naval_patrol_inputs::read_context_with_location(
+                    let context = engine_native_naval::naval_patrol_inputs::read_context_with_location(
                         memory,
                         base,
                         visit,
                         member.original_selectors.location,
-                        engine_native::walk::Buffer::GrowingFrom(
+                        engine_native_memory::walk::Buffer::GrowingFrom(
                             &mut self.headquarters.first,
                             self.headquarters.len,
                         ),
@@ -1259,7 +1267,7 @@ impl Captured {
                             self.headquarters.required.max(self.headquarters.len);
                     }
                     self.add_named(visit.country)?;
-                    engine_native::walk::Buffer::Growing(&mut self.task_forces.rows)
+                    engine_native_memory::walk::Buffer::Growing(&mut self.task_forces.rows)
                         .ensure(len + 1)?;
                     self.task_forces.rows[len] = TaskForce {
                         row: Operands {
@@ -1373,11 +1381,11 @@ impl Captured {
                 .visit
                 .ok_or("escort source lacks asynchronous witness")?;
             let header = member.mission_header.unwrap_or_else(|| {
-                engine_native::naval_patrol_inputs::read_header(memory, base, visit)
+                engine_native_naval::naval_patrol_inputs::read_header(memory, base, visit)
             });
             self.census.first[at].mission_header = Some(header);
             let owner = member.mission_owner.unwrap_or_else(|| {
-                engine_native::naval_patrol_inputs::read_owner(memory, base, visit, header)
+                engine_native_naval::naval_patrol_inputs::read_owner(memory, base, visit, header)
             });
             self.census.first[at].mission_owner = Some(owner);
             if let Ok(packet) = self.patrol.binary_search_by_key(&first, |packet| packet.id) {
@@ -1418,7 +1426,7 @@ impl Captured {
         let original_named_required = self.named.required;
         let result = (|| {
             let entries = self.entries.len;
-            engine_native::walk::Buffer::Growing(&mut self.keys).ensure(entries)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(entries)?;
             self.keys[..entries].copy_from_slice(&self.entries.first[..entries]);
             self.keys[..entries].sort_unstable();
             for member in &self.census.first[..self.census.len] {
@@ -1454,7 +1462,7 @@ impl Captured {
                     memory,
                     base,
                     visit,
-                    engine_native::walk::Buffer::GrowingFrom(
+                    engine_native_memory::walk::Buffer::GrowingFrom(
                         &mut self.headquarters.first,
                         self.headquarters.len,
                     ),
@@ -1483,7 +1491,7 @@ impl Captured {
                                 row.region,
                                 &mut values,
                             )?;
-                            engine_native::walk::Buffer::Growing(&mut self.weather)
+                            engine_native_memory::walk::Buffer::Growing(&mut self.weather)
                                 .ensure(self.weather_len + 1)?;
                             self.weather.copy_within(at..self.weather_len, at + 1);
                             self.weather[at] = (row.region, values);
@@ -1516,7 +1524,7 @@ impl Captured {
                     self.named.first[self.named.len] = country;
                     self.named.len += 1;
                 }
-                engine_native::walk::Buffer::Growing(&mut self.task_forces.rows).ensure(len + 1)?;
+                engine_native_memory::walk::Buffer::Growing(&mut self.task_forces.rows).ensure(len + 1)?;
                 self.task_forces.rows[len] = TaskForce {
                     row,
                     slot: visit.country.canonical_slot,
@@ -1556,8 +1564,8 @@ impl Captured {
         game_state: usize,
     ) -> Result<(), &'static str> {
         let rows = self.task_forces.outcome.len();
-        engine_native::walk::Buffer::Growing(&mut self.keys).ensure(rows)?;
-        engine_native::walk::Buffer::Growing(&mut self.weather).ensure(rows)?;
+        engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(rows)?;
+        engine_native_memory::walk::Buffer::Growing(&mut self.weather).ensure(rows)?;
 
         let mut located = 0;
         for task_force in &self.task_forces.rows[..rows] {
@@ -1684,11 +1692,11 @@ impl Captured {
                 for &(region, count) in &held.regions {
                     let entries = &held.entries[first..first + count];
                     first += count;
-                    engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                    engine_native_memory::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
                         len.checked_add(1)
                             .ok_or("naval mission ledger row demand overflow")?,
                     )?;
-                    engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                    engine_native_memory::walk::Buffer::Growing(&mut self.entries.first).ensure(
                         self.entries
                             .len
                             .checked_add(count)
@@ -1742,13 +1750,13 @@ impl Captured {
             }
             self.ledger_counts.read += 1;
             inputs::ledger_regions_in(memory, outer, |region, ledger| {
-                engine_native::walk::Buffer::Growing(&mut self.scratch)
+                engine_native_memory::walk::Buffer::Growing(&mut self.scratch)
                     .ensure(ledger.count as usize)?;
-                engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                engine_native_memory::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
                     len.checked_add(1)
                         .ok_or("naval mission ledger row demand overflow")?,
                 )?;
-                engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                engine_native_memory::walk::Buffer::Growing(&mut self.entries.first).ensure(
                     self.entries
                         .len
                         .checked_add(ledger.count as usize)
@@ -1880,7 +1888,7 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         (resolve, leaders): (inputs::Resolve<'_>, &mut Leaders),
         (witness, receivers): (&mut Vec<u64>, &mut usize),
     ) -> Option<()> {
@@ -1906,14 +1914,14 @@ impl Captured {
         push(&[country.pointer as u64, epoch, sequence])?;
         let navy = cstrategic_navy_manager::navy(memory, base, game_state, country).ok()?;
         let hubs =
-            engine_native::cpdx_array::Array::read(memory, navy.checked_add(inputs::HUBS)?, 4)?;
+            engine_native_memory::cpdx_array::Array::read(memory, navy.checked_add(inputs::HUBS)?, 4)?;
         push(&[u64::from(hubs.count)])?;
         let mut chunk = [0_u8; 256];
         let total = hubs.count as usize * 4;
         let mut done = 0;
         while done < total {
             let len = (total - done).min(chunk.len());
-            if !engine_native::memory::read_slice(memory, hubs.data + done, &mut chunk[..len]) {
+            if !engine_native_memory::memory::read_slice(memory, hubs.data + done, &mut chunk[..len]) {
                 return None;
             }
             for word in chunk[..len].chunks(8) {
@@ -2017,10 +2025,10 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         (len, unread): &mut (usize, u32),
     ) -> Result<(), &'static str> {
-        engine_native::walk::Buffer::Growing(&mut self.countries.rows).ensure(
+        engine_native_memory::walk::Buffer::Growing(&mut self.countries.rows).ensure(
             len.checked_add(1)
                 .ok_or("naval mission country row demand overflow")?,
         )?;
@@ -2033,7 +2041,7 @@ impl Captured {
         let count = inputs::navy_hubs_buffer(
             memory,
             navy,
-            engine_native::walk::Buffer::GrowingFrom(&mut self.hubs.first, self.hubs.len),
+            engine_native_memory::walk::Buffer::GrowingFrom(&mut self.hubs.first, self.hubs.len),
         )?;
         self.hubs.required = self.hubs.required.saturating_add(count);
         if self.hubs.len + count > self.hubs.first.len() {
@@ -2071,7 +2079,7 @@ impl Captured {
         (len, unread): &mut (usize, u32),
     ) -> Result<(), &'static str> {
         let bound = self.task_forces.outcome.len().max(self.headquarters.len);
-        engine_native::walk::Buffer::Growing(&mut self.keys).ensure(bound)?;
+        engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(bound)?;
         let additional = self
             .task_forces
             .outcome
@@ -2083,7 +2091,7 @@ impl Captured {
                     .ok_or("naval mission commander demand overflow")?,
             )
             .ok_or("naval mission commander demand overflow")?;
-        engine_native::walk::Buffer::Growing(&mut self.commanders.rows).ensure(
+        engine_native_memory::walk::Buffer::Growing(&mut self.commanders.rows).ensure(
             len.checked_add(additional)
                 .ok_or("naval mission commander row demand overflow")?,
         )?;

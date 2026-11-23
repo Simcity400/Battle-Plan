@@ -1,5 +1,6 @@
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine_native::{Memory, cstate::building_inputs as native, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cstate::building_inputs as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::StateBuildingInputRow, rows::TableId,
     rows::tables,
@@ -106,7 +107,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use replay_data::rows::TableRows;
 
     #[test]

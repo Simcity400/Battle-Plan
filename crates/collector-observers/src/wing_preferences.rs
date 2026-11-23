@@ -1,5 +1,6 @@
 use collector_hooks::hook::Hook;
-use engine_native::{Memory, cair_wing as wing, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native_air::cair_wing as wing;
 use std::{
     collections::HashMap,
     ops::Range,
@@ -40,7 +41,7 @@ impl Cache {
         engine_allocation::reserve_map(&mut self.identities, 1).ok()?;
         let setting = pointer
             .checked_add(SETTING)
-            .and_then(|address| engine_native::read(memory, address));
+            .and_then(|address| engine_native_memory::read(memory, address));
         self.retire(pointer);
         if let Some(previous) = self.identities.get(&id).copied() {
             self.retire(previous);
@@ -184,7 +185,7 @@ fn command(memory: &impl Memory, pointer: usize) -> Result<(), &'static str> {
     let references = Array::read(memory, pointer + COMMAND_WINGS, 8)
         .ok_or("wing preference command roster unreadable")?;
     for index in 0..references.count {
-        let handle: u64 = engine_native::read(
+        let handle: u64 = engine_native_memory::read(
             memory,
             references
                 .element(index, 8)
@@ -194,7 +195,7 @@ fn command(memory: &impl Memory, pointer: usize) -> Result<(), &'static str> {
         if handle == 0 {
             continue;
         }
-        if handle as u32 != wing::TYPE {
+        if handle as u32 != engine_native_parts::cair_wing_layout::TYPE {
             return Err("wing preference command reference type mismatch");
         }
         cache.retire_identity(handle);
@@ -204,7 +205,7 @@ fn command(memory: &impl Memory, pointer: usize) -> Result<(), &'static str> {
 unsafe extern "system-unwind" fn setting(a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WingChanges);
     let scope = Scope::begin(false);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if command(&memory, a).is_err() {
         invalidate();
     }

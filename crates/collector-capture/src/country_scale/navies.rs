@@ -1,5 +1,6 @@
 use crate::extended::PhysicalNavyCapacities;
-use engine_native::{Memory, ccountry, cfleet};
+use engine_native_memory::Memory;
+use engine_native::{ccountry, cfleet};
 use engine_naval_history::country_naval_movement_inputs as native;
 
 #[derive(Clone, Copy, Default)]
@@ -111,7 +112,7 @@ fn task_forces<M: Memory>(
                 observed.name_failure.get_or_insert(reason);
             }
         }
-        match engine_native::cunit_supply_inputs::origin_demand(memory, visit.task) {
+        match engine_native_parts::cunit_supply_inputs::origin_demand(memory, visit.task) {
             Ok(count) => match observed.supply_origins.checked_add(count) {
                 Some(count) => observed.supply_origins = count,
                 None => {
@@ -176,10 +177,8 @@ pub fn observe(memory: &impl Memory, base: usize, state: usize) -> Demand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{
-        cgame_state, cprovince, cstrategic_navy, cstrategic_navy_manager, ctask_force, ctheatre,
-        cunit,
-    };
+    use engine_native::{cgame_state, cprovince, ctask_force, ctheatre, cunit};
+    use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
     use std::cell::{Cell, RefCell};
 
     const STATE: usize = 0x1000;
@@ -312,7 +311,7 @@ mod tests {
                 world.word(province + cprovince::ID, id);
                 world.pointer(province + cprovince::CONTROLLER_AREA, area);
                 if area != 0 {
-                    world.pointer(area, engine_native::ccontroller_area::VTABLE_RVA.0);
+                    world.pointer(area, engine_native_parts::ccontroller_area::VTABLE_RVA.0);
                 }
             }
             for (country, roster, theatre, owner, id, areas, values) in [
@@ -402,7 +401,7 @@ mod tests {
         for (task, data, count) in [(TASK, 0x100000, 10_000), (0xdc00, 0x200000, 20_000)] {
             world.word(task + cunit::ORDINARY_ROUTE_COUNT, 0);
             world.array(
-                task + engine_native::cunit_supply_inputs::ORIGINS,
+                task + engine_native_parts::cunit_supply_inputs::ORIGINS,
                 data,
                 count,
             );
@@ -413,13 +412,13 @@ mod tests {
         assert_eq!(demand.name_rows, 2);
         assert!(!world.touches(
             0x100000,
-            10_000 * engine_native::cunit_supply_inputs::ORIGIN_STRIDE
+            10_000 * engine_native_parts::cunit_supply_inputs::ORIGIN_STRIDE
         ));
         assert!(!world.touches(
             0x200000,
-            20_000 * engine_native::cunit_supply_inputs::ORIGIN_STRIDE
+            20_000 * engine_native_parts::cunit_supply_inputs::ORIGIN_STRIDE
         ));
-        assert!(!world.touches(TASK + engine_native::cunit_supply_inputs::ASKED, 8));
+        assert!(!world.touches(TASK + engine_native_parts::cunit_supply_inputs::ASKED, 8));
         assert!(!world.touches(NAVY, 0x90));
         let mut capacity = collector_naval_counters::naval_counters::Capacities::default();
         let initial = capacity;
@@ -445,11 +444,11 @@ mod tests {
             world.word(task + ctask_force::MISSION, 2);
             world.pointer(
                 task + ctask_force::NAVAL_MISSION,
-                engine_native::cnaval_mission::VTABLE_RVA.0,
+                engine_native_parts::cnaval_mission::VTABLE_RVA.0,
             );
             world.pointer(task + ctask_force::NAVAL_MISSION + 8, task);
             world.word(
-                task + ctask_force::NAVAL_MISSION + engine_native::cnaval_mission::ENGAGEMENT_RULE,
+                task + ctask_force::NAVAL_MISSION + engine_native_parts::cnaval_mission::ENGAGEMENT_RULE,
                 2,
             );
             world.array(task + 0x610, refs, count);
@@ -489,9 +488,9 @@ mod tests {
     #[test]
     fn invalid_supply_header_keeps_other_supply_and_name_floors() {
         let mut world = World::new();
-        world.array(TASK + engine_native::cunit_supply_inputs::ORIGINS, 0, 3);
+        world.array(TASK + engine_native_parts::cunit_supply_inputs::ORIGINS, 0, 3);
         world.array(
-            0xdc00 + engine_native::cunit_supply_inputs::ORIGINS,
+            0xdc00 + engine_native_parts::cunit_supply_inputs::ORIGINS,
             0x100000,
             7000,
         );
@@ -504,9 +503,9 @@ mod tests {
     #[test]
     fn supply_header_fault_is_named_and_preserves_independent_hints() {
         let mut world = World::new();
-        world.fault = Some(TASK + engine_native::cunit_supply_inputs::ORIGINS);
+        world.fault = Some(TASK + engine_native_parts::cunit_supply_inputs::ORIGINS);
         world.array(
-            0xdc00 + engine_native::cunit_supply_inputs::ORIGINS,
+            0xdc00 + engine_native_parts::cunit_supply_inputs::ORIGINS,
             0x100000,
             7000,
         );

@@ -109,7 +109,7 @@ impl Drop for Loan {
 
 pub(super) struct Country {
     pub owner: u32,
-    pub country: Result<ccountry::Country, &'static str>,
+    pub country: Result<engine_native_memory::country_identity::Country, &'static str>,
     pub held: Option<HeldCountry>,
     pub start: usize,
     pub end: usize,

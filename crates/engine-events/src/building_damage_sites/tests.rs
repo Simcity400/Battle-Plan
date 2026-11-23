@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0x140000000;
 const GAME: usize = 0x100;
@@ -70,8 +70,8 @@ fn fixture(province_scope: bool) -> Vec<u8> {
         (PROVINCES + 4 * 8, PROVINCE),
         (BUILDINGS, BUILDING),
         (SOURCE + SOURCE_WING, WING),
-        (WING, BASE + cair_wing::VTABLE_RVA.0),
-        (WING + cair_wing::POOL, POOL),
+        (WING, BASE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0),
+        (WING + engine_native_parts::cair_wing_layout::POOL, POOL),
         (POOL, BASE + cair_wing_pool::VTABLE_RVA.0),
         (POOL + cair_wing_pool::OWNER, OWNER),
         (OWNER, BASE + cstrategic_air::VTABLE_RVA.0),
@@ -180,7 +180,7 @@ fn effective_country_uses_positive_override_otherwise_pool_owner() {
     }
     let mut bytes = fixture(false);
     u32_at(&mut bytes, WING + cair_wing::COUNTRY_OVERRIDE, 7001);
-    u64_at(&mut bytes, WING + cair_wing::POOL, 0);
+    u64_at(&mut bytes, WING + engine_native_parts::cair_wing_layout::POOL, 0);
     assert_eq!(
         capture(&bytes, CALLERS[1].0.0).unwrap().attacker,
         Some(7001)
@@ -615,7 +615,7 @@ fn exhausted_health_skips_source_reads_but_positive_health_reads_source() {
 #[test]
 #[ignore = "synthetic guarded-read scale measurement; run release with --nocapture"]
 fn building_damage_5000_country_scale() {
-    use crate::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     use std::time::Instant;
     const WINGS: usize = 0x10000;
     const STRIDE: usize = 0xa00;
@@ -623,7 +623,7 @@ fn building_damage_5000_country_scale() {
     bytes.resize(WINGS + 5000 * STRIDE, 0);
     for index in 0..5000 {
         let wing = WINGS + index * STRIDE;
-        u64_at(&mut bytes, wing, BASE + cair_wing::VTABLE_RVA.0);
+        u64_at(&mut bytes, wing, BASE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
         u32_at(&mut bytes, wing + cair_wing::ID, index as u32 + 1);
         u32_at(
             &mut bytes,

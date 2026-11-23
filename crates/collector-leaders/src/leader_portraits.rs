@@ -4,7 +4,8 @@ use crate::{
     table_capture::CaptureRows,
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, corders_group::Root, cunit_leader, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{corders_group::Root, cunit_leader};
 use replay_data::{rows::LeaderPortraitRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableInput;
 
@@ -31,7 +32,7 @@ impl Capacities {
 }
 
 pub struct Captured {
-    rows: CaptureRows<cunit_leader::PortraitRow<engine_native::capture_text::Owned>>,
+    rows: CaptureRows<cunit_leader::PortraitRow<engine_native_memory::capture_text::Owned>>,
     sources: CaptureRows<(u64, usize)>,
 }
 impl Captured {
@@ -66,7 +67,7 @@ impl Captured {
                 .rows
                 .iter()
                 .flat_map(|row| &row.strings)
-                .map(engine_native::capture_text::Owned::allocated_bytes)
+                .map(engine_native_memory::capture_text::Owned::allocated_bytes)
                 .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -187,7 +188,7 @@ mod tests {
         capture.rows.outcome = Outcome::Rows { len: 1 };
         capture.sources.outcome = Outcome::Rows { len: 1 };
         capture.capture(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },
@@ -205,7 +206,7 @@ mod tests {
 
     #[test]
     fn incomplete_order_census_is_not_an_empty_portrait_scope() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

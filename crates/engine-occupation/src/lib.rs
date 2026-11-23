@@ -1,12 +1,6 @@
 
 use engine_deployment::manpower_value_entry;
-#[cfg(test)]
-use engine_native::carmy_manpower_values;
-use engine_native::{
-    Memory, allocation_equipment_row, ccountry, cequipment_type, cequipment_variant_pool,
-    cgame_state, cpdx_array, creferenced_division_template, cstate, memory, msvc_string, read,
-    read_slice, walk,
-};
+use engine_native::cequipment_variant::pool as cequipment_variant_pool;
 
 pub mod ccountry_occupation_data;
 pub mod ccountry_occupation_status;

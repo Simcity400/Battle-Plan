@@ -1,7 +1,7 @@
-use crate::{
-    Memory, cequipment_type as ty, cequipment_variant_pool as pool, cpdx_array::Array,
-    garrison_equipment_pool, read, required_equipment_row,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_parts::cequipment_type as ty;
+use engine_native::cequipment_variant::pool as pool;
+use crate::{garrison_equipment_pool, required_equipment_row};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
@@ -15,13 +15,13 @@ pub struct Row {
 }
 
 pub struct Arena<'a> {
-    pub rows: crate::walk::Buffer<'a, Row>,
+    pub rows: engine_native_memory::walk::Buffer<'a, Row>,
     pub len: usize,
     pub required: usize,
 }
 
 impl<'a> Arena<'a> {
-    pub fn new_buffer(rows: crate::walk::Buffer<'a, Row>) -> Self {
+    pub fn new_buffer(rows: engine_native_memory::walk::Buffer<'a, Row>) -> Self {
         Self {
             rows,
             len: 0,
@@ -67,9 +67,9 @@ impl<'a> Arena<'a> {
             let mut allocated = 0;
             for index in 0..allocations.count {
                 let address = allocations
-                    .element(index, crate::allocation_equipment_row::STRIDE)
+                    .element(index, engine_native_parts::allocation_equipment_row::STRIDE)
                     .ok_or("garrison allocation entry address overflow")?;
-                let row = crate::allocation_equipment_row::read(memory, base, address, index)?;
+                let row = engine_native_parts::allocation_equipment_row::read(memory, base, address, index)?;
                 if target <= row.archetype_id {
                     if target == row.archetype_id {
                         allocated = row.amount_raw;
@@ -139,7 +139,7 @@ fn authenticate(memory: &impl Memory, base: usize, pointer: usize) -> Result<(),
     Ok(())
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -153,7 +153,7 @@ fn field<T: crate::memory::Raw>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     const START: usize = 0x1000;
 
     fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
@@ -246,12 +246,12 @@ mod tests {
             bytes: &bytes,
         };
         let mut rows = Vec::new();
-        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut rows));
+        let mut arena = Arena::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut rows));
         assert_eq!(arena.capture(&memory, 0, START), Ok(Some((0, 5000))));
         assert_eq!(arena.len, 5000);
         assert_eq!(arena.required, 5000);
         assert_eq!(arena.rows[4999].required_raw, 104999);
-        assert_eq!(Arena::new_buffer(crate::walk::Buffer::Count).capture(&memory, 0, START), Ok(None));
+        assert_eq!(Arena::new_buffer(engine_native_memory::walk::Buffer::Count).capture(&memory, 0, START), Ok(None));
     }
 
     #[test]
@@ -259,7 +259,7 @@ mod tests {
         let (mut bytes, _, equipment) = fixture(1);
         put(&mut bytes, equipment + ty::ACTIVE, &[0]);
         let mut output = vec![Row::default(); 1];
-        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
+        let mut arena = Arena::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut output));
         assert_eq!(
             arena.capture(
                 &SliceMemory {
@@ -273,7 +273,7 @@ mod tests {
         );
         assert_eq!(arena.rows[0].required_lookup_raw, 0);
         assert_eq!(arena.rows[0].required_raw, 100_000);
-        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
+        let mut arena = Arena::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut output));
         assert!(
             arena
                 .capture(
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(arena.len, 0);
         let (bytes, _, _) = fixture(0);
         assert_eq!(
-            Arena::new_buffer(crate::walk::Buffer::Count).capture(
+            Arena::new_buffer(engine_native_memory::walk::Buffer::Count).capture(
                 &SliceMemory {
                     base: START,
                     bytes: &bytes[..super::super::REQUIRED_EQUIPMENT + 24]
@@ -333,7 +333,7 @@ mod tests {
         );
         put(&mut bytes, required + 16, &(clone as u64).to_le_bytes());
         let mut output = vec![Row::default(); 2];
-        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
+        let mut arena = Arena::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut output));
         assert_eq!(
             arena.capture(
                 &SliceMemory {
@@ -353,7 +353,7 @@ mod tests {
             clone + ty::ARCHETYPE,
             &(equipment as u64).to_le_bytes(),
         );
-        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut output));
+        let mut arena = Arena::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut output));
         assert_eq!(
             arena.capture(
                 &SliceMemory {

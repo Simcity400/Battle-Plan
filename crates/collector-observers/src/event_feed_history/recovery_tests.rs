@@ -2,7 +2,7 @@ use super::*;
 use crate::event_feed_history::recovery::PreparedOwner;
 use engine_decisions::{cdecision, cdecision_cooldown, cdecision_status, decision_runtime};
 
-fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
+fn populated_cohort(countries: usize) -> (WarImage, Vec<engine_native_memory::country_identity::Country>) {
     let mut image = owners_image(1);
     let roster = 0x2000000;
     let links = 0x2100000;
@@ -84,7 +84,7 @@ fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
             image.q(pointer + 0x2a00, timer);
             delayed_timer(&mut image, timer, -9);
         }
-        owners.push(ccountry::Country {
+        owners.push(engine_native_memory::country_identity::Country {
             pointer,
             canonical_slot: id,
             id,
@@ -411,7 +411,7 @@ fn consecutive_private_owner_failures(tokens_tight: bool) {
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
     state.observe(earlier.row()).unwrap();
     state.observe(refused.row()).unwrap();
-    let identity = |country: ccountry::Country| EventFeedCountry {
+    let identity = |country: engine_native_memory::country_identity::Country| EventFeedCountry {
         reference: country.id,
         id: country.id,
         instance: country.id + 1000,

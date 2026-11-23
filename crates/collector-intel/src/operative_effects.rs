@@ -2,10 +2,11 @@ use collector_observers::{
     naval_tree_changes,
     unit_leader_changes::{self, Changes},
 };
-use engine_native::{
-    Memory, ccountry, modifier_accumulator, modifier_breakdown, modifier_definition::NamedKey,
-    operative_missions, read,
-};
+use engine_native_memory::{Memory, read};
+use engine_native::ccountry;
+use engine_native_parts::{modifier_accumulator, modifier_definition::NamedKey};
+use engine_native_politics::modifier_breakdown;
+use engine_native_intelligence::operative_missions;
 use replay_data::rows::{OperativeEffect, OperativeEffectModifier};
 use std::{
     collections::HashMap,
@@ -196,7 +197,7 @@ impl Cache {
         } else {
             (row.variant, row.target_country)
         };
-        let trade_opinion = if variant == Some(engine_native::operative_action::CONTROL_TRADE) {
+        let trade_opinion = if variant == Some(engine_native_intelligence::operative_action::CONTROL_TRADE) {
             let pair = (target?, row.owner_country);
             if let Some(value) = self.trade.get(&pair) {
                 *value

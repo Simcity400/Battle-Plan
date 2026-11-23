@@ -4,7 +4,7 @@ use collector_hooks::hook::Hook;
 use collector_observers::opinion_changes::Padded;
 use collector_primitives::spill_stack::SpillStack;
 use engine_land_inputs::land_events as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     cell::Cell,
     ops::Range,
@@ -299,7 +299,7 @@ impl Observer {
     }
     fn drain_buffer(
         &self,
-        output: engine_native::walk::Buffer<'_, u64>,
+        output: engine_native_memory::walk::Buffer<'_, u64>,
         hour: i32,
         invalidating: bool,
     ) -> Drain {
@@ -322,7 +322,7 @@ impl Observer {
     }
     fn drain_interval(
         &self,
-        mut output: engine_native::walk::Buffer<'_, u64>,
+        mut output: engine_native_memory::walk::Buffer<'_, u64>,
         hour: i32,
         invalidating: bool,
         end: u64,
@@ -498,7 +498,7 @@ impl Observer {
     }
 
     pub(crate) fn drain(&self, output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
-        self.drain_buffer(engine_native::walk::Buffer::Growing(output), hour, invalidating)
+        self.drain_buffer(engine_native_memory::walk::Buffer::Growing(output), hour, invalidating)
     }
 }
 pub(crate) static LIVE: Observer = Observer::new(&TAP_IN_FLIGHT, &TAP_ESCAPED_UNWINDS);
@@ -753,7 +753,7 @@ fn observe(combat: usize) {
     if !observing() {
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let border = BORDER.get();
     if border.combat == combat {
@@ -797,7 +797,7 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
         unsafe { std::mem::transmute(ORIGINAL[FINALIZE].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(combat) });
     if observing() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::LossesPlan::read(&memory, base, combat) {
             Ok(plan) => {
@@ -871,7 +871,7 @@ unsafe fn observe_wipe_for(observer: &Observer, combatant: usize, army: usize) {
         _call.finish();
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     match engine_land_inputs::land_wipe::WipePlan::read(&memory, base, combatant, army) {
         Ok(Some(plan)) => observer.append(plan.words, |put| plan.copy(&memory, base, put)),
@@ -904,7 +904,7 @@ unsafe extern "system-unwind" fn destroyed(
 ) {
     let _call = Call::enter();
     if observing() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let mut context = DESTRUCTION.get();
         let matches = context.army == army && context.from == from && context.to == to;
@@ -939,7 +939,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
     let _call = Call::enter();
     let _restore = Restore::new(&DESTRUCTION);
     if observing() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::DestructionPlan::read(&memory, base, from, to, army, 0) {
             Ok(plan) => {
@@ -983,19 +983,19 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
     let _call = Call::enter();
     let _restore = Restore::new(&BORDER);
     if observing() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        let fields = engine_native::read::<[u8; 3]>(
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+        let fields = engine_native_memory::read::<[u8; 3]>(
             &memory,
-            combat + engine_native::cland_border_war_combat::END_FLAGS,
+            combat + engine_native_parts::cland_border_war_combat::END_FLAGS,
         )
-        .zip(engine_native::read::<[u8; 16]>(
+        .zip(engine_native_memory::read::<[u8; 16]>(
             &memory,
             combat + engine_native::cland_combat::ATTACKER,
         ));
         if let Some((flags, sides)) = fields {
             BORDER.set(Border {
                 combat,
-                handle: engine_native::read::<u64>(
+                handle: engine_native_memory::read::<u64>(
                     &memory,
                     combat + engine_native::cland_combat::HANDLE,
                 )
@@ -1013,7 +1013,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
         }
     }
     if observing() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let border = BORDER.get();
         if border.combat == combat && border.handle != 0 {
@@ -1105,7 +1105,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
     let _call = Call::enter();
     let _restore = Restore::new(&DISPATCH);
     if observing() {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         match native::dispatch_inputs(&memory, BASE.load(Ordering::Relaxed), combat, loser, winner)
         {
             Ok((header, winner)) => {
@@ -1180,7 +1180,7 @@ unsafe fn leader_observation(call: &Call<'_>, side: usize, caller: usize, target
     if observing() && observed.combat != 0 {
         match observed.slot(side, caller, BASE.load(Ordering::Relaxed)) {
             Ok(Some(n)) => {
-                let memory = unsafe { engine_native::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
                 match native::leader_reference(&memory, BASE.load(Ordering::Relaxed), result) {
                     Ok(handle) => {
                         observed.leaders[n] = handle;
@@ -2065,7 +2065,7 @@ mod tests {
                 ptr::read_unaligned(
                     (observer
                         + engine_land_inputs::cstats_observer::EQUIPMENT_LOSSES
-                        + engine_native::cequipment_variant_pool::ITEMS)
+                        + engine_native::cequipment_variant::pool::ITEMS)
                         as *const usize,
                 )
             };

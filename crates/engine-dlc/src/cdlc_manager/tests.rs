@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn equivalent_mount_notation_preserves_root_membership_and_priority() {
@@ -481,7 +481,7 @@ fn counts_read_headers_and_the_mount_terminator_only() {
         u64_at(&mut bytes, 0x1000 + index * 8, 0x1800);
     }
     let rooted = Rooted(&bytes);
-    let memory = crate::read_census::ReadCensus::new(&rooted);
+    let memory = engine_native_memory::read_census::ReadCensus::new(&rooted);
     assert_eq!(
         observe_counts(&memory, 0),
         Counts {
@@ -504,7 +504,7 @@ fn search_path_order_raw_bytes_and_omitted_count_are_preserved() {
         root: 0x100,
         bytes: &bytes,
     };
-    let memory = crate::read_census::ReadCensus::new(&memory);
+    let memory = engine_native_memory::read_census::ReadCensus::new(&memory);
     let mut output = [Descriptor::default(); 3];
     assert_eq!(
         observe_search_path(&memory, 0, &mut output),
@@ -539,7 +539,7 @@ fn search_path_order_raw_bytes_and_omitted_count_are_preserved() {
         root: 0x100,
         bytes: &empty_bytes,
     };
-    let empty = crate::read_census::ReadCensus::new(&empty);
+    let empty = engine_native_memory::read_census::ReadCensus::new(&empty);
     assert_eq!(
         observe_search_path(&empty, 0, &mut []),
         Outcome::Rows { len: 0 }

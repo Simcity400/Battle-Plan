@@ -4,9 +4,13 @@ use std::{
     io,
 };
 
-use engine_native::{
-    cair_base_access_relation, cattache_relation, cdocking_rights_relation,
-    cmilitary_access_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
+use engine_native_parts::{
+    cair_base_access_relation,
+    cattache_relation,
+    cdocking_rights_relation,
+    cmilitary_access_relation,
+    coffer_air_base_access_relation,
+    coffer_docking_rights_relation,
     coffer_military_access_relation,
 };
 use content_reader_save::Save;

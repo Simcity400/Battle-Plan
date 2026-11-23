@@ -2,11 +2,13 @@ use super::air_bases_test_kit as kit;
 use super::*;
 use collector_observers::air_base_carry_changes::Watches;
 use engine_mutations::air_base_mutations::MUTATIONS;
-use engine_native::{cair_base, cprovince, cstate, walk::Outcome};
+use engine_native_air::cair_base;
+use engine_native::{cprovince, cstate};
+use engine_native_memory::walk::Outcome;
 use std::cell::RefCell;
 
-const B0_HANDLE: u64 = (0x41 << 32) | cair_base::TYPE as u64;
-const B1_HANDLE: u64 = (0x42 << 32) | cair_base::TYPE as u64;
+const B0_HANDLE: u64 = (0x41 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
+const B1_HANDLE: u64 = (0x42 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
 
 struct Reads<'a> {
     inner: kit::SyntheticMemory<'a>,
@@ -67,7 +69,7 @@ fn direct(bytes: &[u8]) -> Vec<cair_base::Row> {
 fn row_reads(base: usize, state: usize, province: usize) -> [usize; 7] {
     [
         base,
-        base + cair_base::HOST_REFERENCE,
+        base + engine_native_parts::cair_base_layout::HOST_REFERENCE,
         state,
         state + cstate::ID,
         province,
@@ -235,7 +237,7 @@ fn a_moved_slot_array_is_read() {
         );
         kit::put64(&mut bytes, MOVED + index * 8, word);
     }
-    let header = kit::MANAGER + engine_native::cstrategic_air_manager::STATE_AIR_BASES;
+    let header = kit::MANAGER + engine_native_air::cstrategic_air_manager::STATE_AIR_BASES;
     kit::put64(&mut bytes, header, MOVED as u64);
     let (moved, reads, census) = hour(&bytes, &mut job);
     assert_eq!(of(census), counts([2, 1], [2, 0]));

@@ -207,7 +207,7 @@ fn final_worker_unrun_continuation_restores_storage_and_raw_verdicts_without_cap
     let bytes = captured.allocated_bytes();
     let outcomes = captured.outcomes();
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     collector_test_support::with_allocations_denied(|| {
@@ -229,7 +229,7 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
     captured.divisions = Divisions::new(5_000);
     let source_storage = captured.divisions.first.as_ptr();
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     collector_test_support::with_allocations_denied(|| {
@@ -256,7 +256,7 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
 fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut orders = Orders::vacant();
@@ -576,7 +576,7 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
 fn late_handoff_retains_only_the_current_input_lease() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut orders = Orders::vacant();
@@ -616,7 +616,7 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
         });
     let mut captured = Captured::with_capacities(&capacity);
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let inputs = engine_allocation::shared(UnitInputs::fixture(
@@ -710,7 +710,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     }
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let inputs = engine_allocation::shared(UnitInputs::empty_rows()).unwrap();
@@ -792,7 +792,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
 
 #[test]
 fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
-    use engine_native::{memory::CountedMemory, memory::SliceMemory};
+    use engine_native_memory::memory::{CountedMemory, SliceMemory};
     use replay_frame::frame::TableView;
 
     let slow = [
@@ -820,7 +820,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
     ]
     .concat();
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let memory = CountedMemory::new(SliceMemory {
@@ -960,7 +960,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                     assert_eq!(outcomes[id.index()], expected, "{id:?}");
                     assert_eq!(
                         reads[id.index()],
-                        engine_native::memory::ReadCounts::ZERO,
+                        engine_native_memory::memory::ReadCounts::ZERO,
                         "retried {id:?}"
                     );
                     assert_eq!(ticks[id.index()], 0, "partial cost for {id:?}");
@@ -1001,7 +1001,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
 fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     captured.prepare_hour(1, true);
@@ -1100,7 +1100,7 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
 #[test]
 fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut captured = Captured::with_capacities(&Capacities::default());
@@ -1123,7 +1123,7 @@ fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
 #[test]
 fn ordinary_terminal_failures_forget_the_counter_censuses() {
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for (family, task_forces, other) in [
@@ -1286,7 +1286,7 @@ fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
         }
     }
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let mut captured = Captured::with_capacities(&Capacities::default());
@@ -1357,7 +1357,7 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
         }
     }
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for reason in [
@@ -1461,10 +1461,10 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
 fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
     use collector_certificates::slicing::{SliceFingerprints, SliceSelection};
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -1528,7 +1528,7 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
 #[test]
 fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failure() {
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let (hour, force_full) = (7, false);
@@ -1628,7 +1628,7 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
     let mut capacity = Capacities::default();
     capacity.production.rows[3..7].fill(1);
     let mut captured = Captured::with_capacities(&capacity);
-    let memory = engine_native::memory::CountedMemory::new(Reads(std::cell::Cell::new(0)));
+    let memory = engine_native_memory::memory::CountedMemory::new(Reads(std::cell::Cell::new(0)));
     let bytes = captured.allocated_bytes();
     let mut request = collector_test_support::with_allocations_denied(|| {
         captured.take_variants_request(11, 0x1000, slot + 1, false)
@@ -1680,7 +1680,7 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
         {
             assert_eq!(
                 counts[table.index()],
-                engine_native::memory::ReadCounts::ZERO
+                engine_native_memory::memory::ReadCounts::ZERO
             );
         }
         let expected = match failure {
@@ -1763,7 +1763,7 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         let bytes = captured.allocated_bytes();
         let governance_bytes = captured.governance.allocated_bytes();
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         let request = captured.take_governance_request(
@@ -1933,7 +1933,7 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
         let bytes = captured.allocated_bytes();
         let family_bytes = captured.intel.allocated_bytes();
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         let context = intel::CaptureContext {
@@ -2004,7 +2004,7 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
         }
     }
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let walked = |ships: u64| {
@@ -2093,7 +2093,7 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
     }
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     captured.ship_models.begin_sources();
@@ -2166,7 +2166,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
     capacity.supply_trains.raise_for_countries(1);
     let mut captured = Captured::with_capacities(&capacity);
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let supply_bytes = captured.supply_trains.allocated_bytes();
@@ -2526,7 +2526,7 @@ fn faction_provider_inventory_matches_spooling() {
 fn the_slow_job_stores_travel_with_it_and_always_return() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for completed in [true, false] {
@@ -2565,7 +2565,7 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
 fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let (hour, force_full) = (9, false);
@@ -2625,7 +2625,7 @@ fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
 fn the_war_overview_is_its_own_job_and_fails_apart_from_slow() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let (hour, force_full) = (9, false);
@@ -2665,7 +2665,7 @@ fn the_war_overview_is_its_own_job_and_fails_apart_from_slow() {
 fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     captured.set_modifier_definitions_moved(true);
@@ -2775,7 +2775,7 @@ impl Memory for SourceReads {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.borrow_mut().push((address, destination.len()));
         self.bytes.as_ref().is_some_and(|bytes| {
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: air::wing_test_kit::BASE,
                 bytes,
             }
@@ -2795,7 +2795,7 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
     }
     let (base, state, hour) = (11, 0x1000, 9);
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for rejected in [true, false] {
@@ -2807,7 +2807,7 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
         captured
             .country_appearance
             .raw
-            .reserve(engine_native::raw_country_observations::Capacity {
+            .reserve(engine_native_memory::raw_country_observations::Capacity {
                 links: 8,
                 ..Default::default()
             })
@@ -2919,7 +2919,7 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
         .find(|&owner| !replay_data::cadence::slice_active(owner, hour, false))
         .unwrap();
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for refused_before_completion in [false, true] {
@@ -3003,7 +3003,7 @@ fn cached_and_unsynchronised_packs_are_helper_packs() {
 
 #[test]
 fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let tables = [
         TableId::RaidAirScores,
         TableId::RailCooldowns,
@@ -3012,7 +3012,7 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
     for completed in [true, false] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         captured.prepare_hour(1, true);
@@ -3074,11 +3074,11 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
 
 #[test]
 fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     for completed in [true, false] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         captured.prepare_hour(1, true);
@@ -3112,7 +3112,7 @@ fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
 
 #[test]
 fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
-    use engine_native::memory::CountedMemory;
+    use engine_native_memory::memory::CountedMemory;
     use replay_data::cadence::SKIPPED_REASON;
     struct NoRead;
     impl Memory for NoRead {
@@ -3121,7 +3121,7 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
         }
     }
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let outcomes = |captured: &Captured| -> Vec<Outcome> {
@@ -3166,7 +3166,7 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
             {
                 assert_eq!(
                     reads[table.index()],
-                    engine_native::memory::ReadCounts::ZERO,
+                    engine_native_memory::memory::ReadCounts::ZERO,
                     "{table:?}"
                 );
             }
@@ -3197,7 +3197,7 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
         }
     }
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let outcomes = |captured: &Captured| -> Vec<Outcome> {
@@ -3352,7 +3352,7 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         Missing,
     }
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     let context = engine_production::production_modifiers::Context {
@@ -3695,7 +3695,7 @@ fn only_force_full_governance_and_recorded_projects_promote_the_long_join_tail()
     use crate::acquisition_jobs::Job;
     use collector_workers::roles::Role;
     let countries = engine_allocation::shared(
-        engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
     .unwrap();
     for force_full in [false, true] {
@@ -3770,7 +3770,7 @@ fn independent_variant_family_survives_every_final_input_return_order_without_al
             variant.as_mut().unwrap().changes_finished = true;
             let bytes = captured.allocated_bytes() + variant.as_ref().unwrap().allocated_bytes();
             let countries = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap();
             collector_test_support::with_allocations_denied(|| {

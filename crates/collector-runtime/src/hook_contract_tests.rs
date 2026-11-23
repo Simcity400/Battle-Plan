@@ -145,7 +145,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
         };
     }
     let mut sites = match family {
-        Family::PlayerCommands => engine_native::command_inputs::SITES
+        Family::PlayerCommands => engine_native_air::command_inputs::SITES
             .iter()
             .map(|site| site.rva)
             .collect(),
@@ -337,7 +337,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
     match family {
         Family::Missions => {
             sites.extend(
-                engine_native::naval_mine_inputs::WRITERS
+                engine_native_naval::naval_mine_inputs::WRITERS
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| *i != 5)
@@ -396,13 +396,13 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
                     .map(|s| s.rva),
             );
             sites.extend(
-                engine_native::cair_wing::replacement::MUTATIONS
+                engine_native_air::cair_wing::replacement::MUTATIONS
                     .iter()
                     .map(|s| s.rva),
             );
         }
         Family::CountryInputs => sites.extend(
-            engine_native::cwar_goal::mutations::SITES
+            engine_native::cwar_relation::goals::mutations::SITES
                 .iter()
                 .map(|s| s.rva),
         ),
@@ -585,7 +585,7 @@ pub(crate) fn reset_session() {
     reset_failures_for_test();
 }
 struct Unreadable;
-impl engine_native::Memory for Unreadable {
+impl engine_native_memory::Memory for Unreadable {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {
         false
     }
@@ -1069,7 +1069,7 @@ fn map_exclusive_intel_hooks_install_nothing_without_reads_or_failure_counters()
     }
     reset_session();
     struct NoRead;
-    impl engine_native::Memory for NoRead {
+    impl engine_native_memory::Memory for NoRead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("an omitted hook family read native memory");
         }

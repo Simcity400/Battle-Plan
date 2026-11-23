@@ -4,7 +4,9 @@ use crate::extended;
 use crate::sampling;
 use collector_map_capture::map_capture::MapCapacities;
 use collector_primitives::country_slots::{raise, rows};
-use engine_native::{Memory, cgame_state, country_memory::Cache};
+use engine_native_memory::Memory;
+use engine_native::cgame_state;
+use engine_native_intelligence::country_memory::Cache;
 mod navies;
 pub mod source_demand;
 pub mod table_demand;
@@ -36,7 +38,7 @@ pub fn observe_country_intel(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let rows = engine_native::ccountry_intel::native_rows(memory, base, state)
+    let rows = engine_native_intelligence::ccountry_intel::native_rows(memory, base, state)
         .ok_or("country intel sizing census unreadable or invalid")?;
     Ok(Some(rows))
 }
@@ -55,7 +57,7 @@ pub struct MapDemand {
     pub states: Result<usize, &'static str>,
     pub provinces: Result<usize, &'static str>,
     pub(crate) rail_levels: Result<usize, &'static str>,
-    pub carrier: Result<engine_native::cair_base::CarrierDemand, &'static str>,
+    pub carrier: Result<engine_native_air::cair_base::CarrierDemand, &'static str>,
     pub navies: navies::Demand,
 }
 
@@ -76,7 +78,7 @@ impl MapDemand {
 fn province_slots(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
     let root = state
         .checked_add(cgame_state::PROVINCES)
-        .and_then(|address| engine_native::cpdx_array::Array::read(memory, address, 8))
+        .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
         .ok_or("map sizing province census unreadable or invalid")?;
     if root.count < 2 {
         return Err("map sizing province census empty");
@@ -90,7 +92,7 @@ pub fn observe_map(memory: &impl Memory, base: usize) -> Result<Option<MapDemand
     };
     let states = state
         .checked_add(cgame_state::STATES)
-        .and_then(|address| engine_native::cpdx_array::Array::read(memory, address, 8))
+        .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
         .map(|array| array.count as usize)
         .ok_or("map sizing state census unreadable or invalid");
     Ok(Some(MapDemand {
@@ -99,7 +101,7 @@ pub fn observe_map(memory: &impl Memory, base: usize) -> Result<Option<MapDemand
         rail_levels: engine_railways::crailway_manager::selected_inputs::demand(
             memory, base, state,
         ),
-        carrier: engine_native::cair_base::carrier_demand(memory, base, state),
+        carrier: engine_native_air::cair_base::carrier_demand(memory, base, state),
         navies: navies::observe(memory, base, state),
     }))
 }
@@ -132,11 +134,11 @@ pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<us
 pub fn observe_land_details(
     memory: &impl Memory,
     base: usize,
-) -> Result<Option<engine_native::cland_combat::DetailDemand>, &'static str> {
+) -> Result<Option<engine_native_land::land_combat_details::DetailDemand>, &'static str> {
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_native::cland_combat::detail_demand(memory, base, state).map(Some)
+    engine_native_land::land_combat_details::detail_demand(memory, base, state).map(Some)
 }
 pub fn observe_naval_details(
     memory: &impl Memory,
@@ -165,20 +167,20 @@ pub fn observe_raid_arenas(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let parents = engine_native::craid_system::required_type_tokens(memory, base, state)?;
+    let parents = engine_native_air::craid_system::required_type_tokens(memory, base, state)?;
     let player = engine_visibility::cplayer_status_cache::required_tokens(memory, base, state);
     let reservation_words =
-        engine_native::raid_launch_inputs::required_reservations(memory, base, state)?;
+        engine_native_air::raid_launch_inputs::required_reservations(memory, base, state)?;
     let facility_rows = match engine_raid_inputs::raid_facilities::count(memory, base, state) {
-        engine_native::walk::Outcome::Rows { len } => Ok(len),
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native_memory::walk::Outcome::Rows { len } => Ok(len),
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("raid facility sizing count overflow"),
-        engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     let air_regions = state
         .checked_add(cgame_state::STRATEGIC_REGIONS)
-        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
+        .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, 8))
         .map(|array| array.count as usize)
         .ok_or("raid region sizing header unreadable or invalid");
     let path_rows = {
@@ -240,7 +242,7 @@ pub fn observe_reserved_visibility(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_native::crelation_status::reserved_visibility_demand(memory, base, state).map(Some)
+    engine_native::crelation::status::reserved_visibility_demand(memory, base, state).map(Some)
 }
 
 pub fn observe_politics_demand(
@@ -340,7 +342,7 @@ pub struct PoliticsDemand {
     pub pride_name_bytes: usize,
     pub(crate) pride_name_failure: Option<&'static str>,
     optional_failures: [Option<&'static str>; 4],
-    pub(crate) timed_ideas: engine_native::cpolitical_status::IdeaDemand,
+    pub(crate) timed_ideas: engine_native_politics::cpolitical_status::IdeaDemand,
     pub(crate) decision_random_items: engine_decisions::cdecision_status::RandomItemDemand,
     pub(crate) effect_rosters: engine_native::ccountry::EffectRosterDemand,
     pub(crate) captured_operatives: usize,
@@ -458,7 +460,7 @@ impl PoliticsDemand {
                     .tooltip_bytes
                     .max(other.advisor_modifiers.tooltip_bytes),
             },
-            timed_ideas: engine_native::cpolitical_status::IdeaDemand {
+            timed_ideas: engine_native_politics::cpolitical_status::IdeaDemand {
                 rows: self.timed_ideas.rows.max(other.timed_ideas.rows),
                 bytes: self.timed_ideas.bytes.max(other.timed_ideas.bytes),
             },
@@ -521,23 +523,23 @@ pub fn observe_politics(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let demand = |outcome: engine_native::walk::Outcome| match outcome {
-        engine_native::walk::Outcome::Rows { len } => Ok(len),
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
+    let demand = |outcome: engine_native_memory::walk::Outcome| match outcome {
+        engine_native_memory::walk::Outcome::Rows { len } => Ok(len),
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("politics demand row count overflow"),
-        engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     let tokens = engine_characters::advisor_tokens::count(memory, base, state);
     let advisor_tokens = demand(tokens.outcome)?;
     let factions = engine_native::cfaction::count_advisors(memory, base, state);
     let faction_advisors = demand(factions.outcome)?;
-    let [active, retired] = engine_native::ccountry_characters::count_records(memory, base, state);
+    let [active, retired] = engine_native_politics::ccountry_characters::count_records(memory, base, state);
     let active_characters = demand(active)?;
     let retired_characters = demand(retired)?;
-    let agencies = engine_native::cintelligence_agency::count(memory, base, state);
+    let agencies = engine_native_intelligence::cintelligence_agency::count(memory, base, state);
     demand(agencies.outcome)?;
-    let operatives = engine_native::coperative_leader::count(memory, base, state);
+    let operatives = engine_native_intelligence::coperative_leader::count(memory, base, state);
     let operative_memberships = demand(operatives.outcome)?
         .checked_sub(operatives.refused_rows as usize)
         .ok_or("operative refusal count exceeds demand")?;
@@ -546,12 +548,12 @@ pub fn observe_politics(
     let strategic = engine_intelligence::strategic_operatives::count(memory, base, state);
     let strategic_operatives = demand(strategic.outcome)?;
     let (available_advisors, available_advisor_bytes) =
-        engine_native::ccountry_characters::demand_available(memory, base, state)?;
+        engine_native_politics::ccountry_characters::demand_available(memory, base, state)?;
     let advisor_modifiers =
         collector_characters::extended::characters::advisors::live_modifier_demand();
     let mut pride_name_bytes = 0_usize;
     let mut pride_name_failure = None;
-    let mut references = engine_native::creference_registry::ScopedResolver::new(base);
+    let mut references = engine_native_parts::creference_registry::ScopedResolver::new(base);
     let country_rosters = engine_native::ccountry::counter_roster_demand_with_pride_observer(
         memory,
         base,
@@ -572,7 +574,7 @@ pub fn observe_politics(
             }
         },
     )?;
-    let upgrades = engine_native::agency_upgrade_levels::native_demand(memory, base, state)?;
+    let upgrades = engine_native_intelligence::agency_upgrade_levels::native_demand(memory, base, state)?;
     let operations = engine_intelligence::ccountry_operation_manager::demand(memory, base, state)?;
     let reserved_naming_bytes =
         engine_native::ccountry::read_country_naming_demand(memory, base, state);
@@ -601,12 +603,12 @@ pub fn observe_politics(
         country_rosters,
         pride_name_bytes,
         pride_name_failure,
-        timed_ideas: engine_native::cpolitical_status::timed_idea_demand(memory, base, state)?,
+        timed_ideas: engine_native_politics::cpolitical_status::timed_idea_demand(memory, base, state)?,
         decision_random_items: engine_decisions::cdecision_status::random_item_demand(
             memory, base, state,
         )?,
         effect_rosters: engine_native::ccountry::counter_effect_roster_demand(memory, base, state)?,
-        captured_operatives: engine_native::cintelligence_agency::captured_operative_demand(
+        captured_operatives: engine_native_intelligence::cintelligence_agency::captured_operative_demand(
             memory, base, state,
         )?,
         occupied_countries: engine_occupation::ccountry_occupation_status::occupied_demand(
@@ -624,7 +626,7 @@ pub fn observe_politics(
         co_belligerents,
         active_characters,
         retired_characters,
-        party_leaders: engine_native::cpolitical_status::party_leader_demand(memory, base, state)?,
+        party_leaders: engine_native_politics::cpolitical_status::party_leader_demand(memory, base, state)?,
         civil_wars: demand(engine_native::ccountry::count_civil_wars(
             memory, base, state,
         ))?,
@@ -642,7 +644,7 @@ fn pride_name_demand(
     memory: &impl Memory,
     base: usize,
     handle: u64,
-    references: &mut engine_native::creference_registry::ScopedResolver,
+    references: &mut engine_native_parts::creference_registry::ScopedResolver,
 ) -> Result<usize, &'static str> {
     if handle == 0 {
         return Ok(0);
@@ -806,7 +808,7 @@ mod tests {
 
     #[test]
     fn politics_staging_demand_follows_the_frames_holding_undrained_hours() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: cgame_state::SINGLETON_RVA.0,
             bytes: &[0; 8],
         };
@@ -824,7 +826,7 @@ mod tests {
                 Some(slots * 5 * 13)
             );
         }
-        let unreadable = engine_native::memory::SliceMemory {
+        let unreadable = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -1019,7 +1021,7 @@ mod tests {
 
     #[test]
     fn demand_observers_distinguish_a_menu_from_an_unreadable_game_state() {
-        let missing = engine_native::memory::SliceMemory {
+        let missing = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -1032,7 +1034,7 @@ mod tests {
             Err("input demand game state unreadable or address overflow")
         );
         let null = [0; 8];
-        let menu = engine_native::memory::SliceMemory {
+        let menu = engine_native_memory::memory::SliceMemory {
             base: cgame_state::SINGLETON_RVA.0,
             bytes: &null,
         };
@@ -1051,7 +1053,7 @@ mod tests {
             }
         }
         let memory = Unreadable(std::cell::Cell::new(0));
-        let mut references = engine_native::creference_registry::ScopedResolver::new(0);
+        let mut references = engine_native_parts::creference_registry::ScopedResolver::new(0);
         assert_eq!(pride_name_demand(&memory, 0, 0, &mut references), Ok(0));
         assert_eq!(memory.0.get(), 0);
         assert_eq!(
@@ -1124,7 +1126,7 @@ mod tests {
                 let count = if address == 0x1000 + cgame_state::COUNTRIES {
                     5_001
                 } else if self.manager != 0
-                    && address == self.manager + engine_native::cstrategic_air_manager::COUNTRY_AIR
+                    && address == self.manager + engine_native_air::cstrategic_air_manager::COUNTRY_AIR
                 {
                     self.slots
                 } else {
@@ -1162,9 +1164,9 @@ mod tests {
         assert_eq!(demand_air_game_state(&loaded, 0), Ok(Some(0x1000)));
     }
 
-    use engine_native::{
-        ccountry, ccountry_intel, cgame_state as gs, country_intel_row, msvc_string, walk::Outcome,
-    };
+    use engine_native::{ccountry, cgame_state as gs};
+    use engine_native_memory::{msvc_string, walk::Outcome};
+    use engine_native_intelligence::{ccountry_intel, country_intel_row};
 
     const COUNTRIES: usize = 5_000;
     const BASE: usize = 0x1_0000_0000;
@@ -1231,7 +1233,7 @@ mod tests {
     impl World {
         fn tactic_byte(&self, address: usize) -> Option<u8> {
             use engine_land_inputs::country_tactic_unlocks as doctrine;
-            use engine_native::ccombat_tactic as tactic;
+            use engine_native_parts::ccombat_tactic as tactic;
             let word = |at: usize, value: u64| (value >> ((address - at) * 8)) as u8;
             let header = |at: usize, pointer: usize, count: usize| match address - at {
                 0..8 => word(at, pointer as u64),
@@ -1256,7 +1258,7 @@ mod tests {
                 let index = (address - TACTIC_OBJECTS) / TACTIC_OBJECT;
                 let object = TACTIC_OBJECTS + index * TACTIC_OBJECT;
                 let vtable = match index {
-                    0 => engine_native::cnull_combat_tactic::VTABLE_RVA.0,
+                    0 => engine_native_parts::cnull_combat_tactic::VTABLE_RVA.0,
                     _ => tactic::VTABLE_RVA.0,
                 };
                 return Some(match address - object {
@@ -1310,11 +1312,11 @@ mod tests {
             if (singleton..singleton + 8).contains(&address) {
                 return word(singleton, STATE as u64);
             }
-            let database = BASE + engine_native::ccountry_database::SINGLETON_RVA.0;
+            let database = BASE + engine_native_parts::ccountry_database::SINGLETON_RVA.0;
             if (database..database + 8).contains(&address) {
                 return word(database, DATABASE as u64);
             }
-            let boundary = DATABASE + engine_native::ccountry_database::DYNAMIC_TAG_BOUNDARY;
+            let boundary = DATABASE + engine_native_parts::ccountry_database::DYNAMIC_TAG_BOUNDARY;
             if (boundary..boundary + 4).contains(&address) {
                 return word(boundary, slots);
             }
@@ -1326,13 +1328,13 @@ mod tests {
             if (DIPLOMACY..DIPLOMACY + 8).contains(&address) {
                 return word(
                     DIPLOMACY,
-                    (BASE + engine_native::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                    (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
                 );
             }
             if let Some((enemies, allies)) = self.bloc {
                 for (field, count) in [
-                    (engine_native::cdiplomacy_status::ENEMY_COUNTRIES, enemies),
-                    (engine_native::cdiplomacy_status::WARTIME_ALLIES, allies),
+                    (engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, enemies),
+                    (engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES, allies),
                 ] {
                     let at = DIPLOMACY + field;
                     if (at..at + 16).contains(&address) {
@@ -1452,7 +1454,7 @@ mod tests {
                 }
                 a if (AIR_MANAGER..AIR_MANAGER + 8).contains(&a) => word(
                     AIR_MANAGER,
-                    (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA.0) as u64,
+                    (BASE + engine_native_air::cstrategic_air_manager::VTABLE_RVA.0) as u64,
                 ),
                 a if (AIR_MANAGER + 0x30..AIR_MANAGER + 0x40).contains(&a) => {
                     match a - AIR_MANAGER - 0x30 {
@@ -1471,11 +1473,11 @@ mod tests {
                 a if (AIR_OBJECTS + AIR_OBJECT..AIR_OBJECTS + slots * AIR_OBJECT).contains(&a) => {
                     let slot = (a - AIR_OBJECTS) / AIR_OBJECT;
                     let object = AIR_OBJECTS + slot * AIR_OBJECT;
-                    let table = engine_native::cstrategic_air::HISTORY_TABLE;
+                    let table = engine_native_air::cstrategic_air::HISTORY_TABLE;
                     match a - object {
                         0..8 => word(
                             object,
-                            (BASE + engine_native::cstrategic_air::VTABLE_RVA.0) as u64,
+                            (BASE + engine_native_air::cstrategic_air::VTABLE_RVA.0) as u64,
                         ),
                         o if (0x90..0x94).contains(&o) => word(object + 0x90, slot as u64),
                         o if (table..table + 8).contains(&o) => word(
@@ -1735,8 +1737,8 @@ mod tests {
         }
         fn copy_records(
             &self,
-            sources: engine_native::memory::RecordSources<'_>,
-            layout: &engine_native::memory::RecordLayout<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
+            layout: &engine_native_memory::memory::RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {
             self.1.fetch_add(1, Ordering::Relaxed);

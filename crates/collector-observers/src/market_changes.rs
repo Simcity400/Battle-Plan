@@ -3,7 +3,7 @@ use crate::{
     hook::{Hook, Registers, Tap},
     watch_registry::{Notification, WatchRegistry},
 };
-use engine_native::{Memory, read};
+use engine_native_memory::{Memory, read};
 use engine_production::market_mutations as native;
 use engine_resources::clend_lease_exchange as lease;
 use replay_data::rows::MarketEventRow;
@@ -144,7 +144,7 @@ pub fn schedule_storage(
     base: usize,
     resources: usize,
 ) -> Result<usize, &'static str> {
-    let list = engine_native::cpdx_array::Array::read(memory, resources + lease::OUTGOING, 8)
+    let list = engine_native_memory::cpdx_array::Array::read(memory, resources + lease::OUTGOING, 8)
         .ok_or("market sizing exchange list unreadable")?;
     let mut demand = 0_usize;
     for index in 0..list.count {
@@ -160,7 +160,7 @@ pub fn schedule_storage(
             .ok_or("market sizing demand overflow")?;
         for offset in [lease::DELIVERED, lease::SUNK] {
             let entries =
-                engine_native::cequipment_variant_pool::entries(memory, base, pointer + offset)?;
+                engine_native::cequipment_variant::pool::entries(memory, base, pointer + offset)?;
             demand = demand
                 .checked_add(entries.count as usize)
                 .ok_or("market sizing demand overflow")?;
@@ -171,7 +171,7 @@ pub fn schedule_storage(
             lease::ONCE_NEED,
         ] {
             let entries =
-                engine_native::cequipment_variant_pool::entries(memory, base, pointer + offset)?;
+                engine_native::cequipment_variant::pool::entries(memory, base, pointer + offset)?;
             demand = demand
                 .checked_add(entries.count as usize)
                 .ok_or("market sizing demand overflow")?;
@@ -289,7 +289,7 @@ pub struct CountryReset {
 impl Drop for CountryReset {
     fn drop(&mut self) {
         if let Some(owner) = self.owner {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let result = country_reset_completed(&memory, BASE.load(Ordering::Relaxed), owner);
             if let Err(reason) = result {
                 failure(reason);
@@ -318,7 +318,7 @@ fn country_reset_completed(
     })
 }
 pub fn country_reset(country: usize) -> CountryReset {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let owner = read::<u32>(&memory, country.wrapping_add(engine_native::ccountry::ID));
     if ENABLED.load(Ordering::SeqCst) && owner.is_none() {
         failure("market country reset identity unreadable");
@@ -413,7 +413,7 @@ fn root(
         ..Default::default()
     })
 }
-fn scalar<T: engine_native::memory::Raw>(
+fn scalar<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     at: usize,
     offset: usize,
@@ -425,7 +425,7 @@ fn scalar<T: engine_native::memory::Raw>(
     )
     .ok_or("market writer operand unreadable")
 }
-fn global<T: engine_native::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: engine_sites::Rva,
@@ -579,7 +579,7 @@ fn final_pools(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), 
     )?;
     let offsets = [lease::DELIVERED, lease::SUNK];
     let headers = offsets.map(|offset| {
-        engine_native::cequipment_variant_pool::entries(memory, base, pointer + offset)
+        engine_native::cequipment_variant::pool::entries(memory, base, pointer + offset)
     });
     let headers = [headers[0]?, headers[1]?];
     let mut flags = 0;
@@ -589,7 +589,7 @@ fn final_pools(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), 
             scalar::<u8>(
                 memory,
                 pointer + offsets[mode],
-                engine_native::cequipment_variant_pool::ALLOW_ZERO,
+                engine_native::cequipment_variant::pool::ALLOW_ZERO,
             )? != 0,
         ) << mode;
         count = count
@@ -600,11 +600,11 @@ fn final_pools(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), 
     append(MarketEventRow { flags, ..event })?;
     for (mode, header) in headers.into_iter().enumerate() {
         for ordinal in 0..header.count {
-            let item = engine_native::equipment_entry::read(
+            let item = engine_native_parts::equipment_entry::read(
                 memory,
                 base,
                 header
-                    .element(ordinal, engine_native::equipment_entry::STRIDE)
+                    .element(ordinal, engine_native_parts::equipment_entry::STRIDE)
                     .ok_or("market final entry address overflow")?,
                 ordinal,
             )?;
@@ -798,7 +798,7 @@ fn run(site: usize, args: [usize; 6]) -> usize {
         FLIGHTS.fetch_sub(1, Ordering::SeqCst);
         return result;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let domain = match site {
         11 => Some(PRICES),
@@ -980,7 +980,7 @@ unsafe extern "system-unwind" fn fuel_write(registers: &Registers, tag: usize) {
     if outer {
         LEDGER.enter();
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if let Err(reason) = fuel_store(
         &memory,
         BASE.load(Ordering::Acquire),
@@ -1579,11 +1579,11 @@ mod tests {
     fn market_amendment_stream_and_removal_witness_use_only_prepared_storage() {
         let _serial = test_support::SERIAL.lock().unwrap();
         use engine_native::{
-            ccountry::synthetic::World, cequipment_variant as variant,
-            cequipment_variant_pool as pool,
+            ccountry::synthetic::World,
+            cequipment_variant::{self as variant, pool as pool},
         };
         struct Memory<'a>(&'a World);
-        impl engine_native::Memory for Memory<'_> {
+        impl engine_native_memory::Memory for Memory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(self.0.game_state() as u64).to_le_bytes());
@@ -1613,7 +1613,7 @@ mod tests {
         world.u64(exchange + lease::GIVER_RESOURCES, resources as u64);
         world.u32(exchange + lease::RECEIVER, 4999);
         let model = world.alloc(16);
-        world.u64(model, variant::VTABLE_RVA.0 as u64);
+        world.u64(model, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         world.u64(model + 8, (31_u64 << 32) | variant::REFERENCE_TYPE as u64);
         for offset in [
             lease::MONTHLY_NEED,
@@ -1661,7 +1661,7 @@ mod tests {
         assert_eq!(LEDGER.lost_events_unknown.load(Ordering::Relaxed), 0);
         const CONTRACT: usize = 0x100;
         struct StackBirth;
-        impl engine_native::Memory for StackBirth {
+        impl engine_native_memory::Memory for StackBirth {
             fn copy(&self, at: usize, output: &mut [u8]) -> bool {
                 let value = if at == CONTRACT + engine_production::cpurchase_contract::ID_TYPE {
                     17_u64
@@ -1701,7 +1701,7 @@ mod tests {
             memory: Memory<'a>,
             reads: std::cell::Cell<usize>,
         }
-        impl engine_native::Memory for Counted<'_> {
+        impl engine_native_memory::Memory for Counted<'_> {
             fn copy(&self, at: usize, output: &mut [u8]) -> bool {
                 self.reads.set(self.reads.get() + 1);
                 self.memory.copy(at, output)

@@ -1,7 +1,10 @@
 use super::*;
+use engine_native_air::{cair_wing, cstrategic_air};
+use engine_native_parts::{cair_wing_pool, cbuilding, cbuilding_template};
 use engine_native::{
-    cair_wing, cair_wing_pool, cbuilding, cbuilding_status, cbuilding_template, cgame_state,
-    cprovince, cstate, cstrategic_air,
+    cprovince::{buildings as cbuilding_status, self},
+    cgame_state,
+    cstate,
 };
 use std::{cell::UnsafeCell, hint::black_box, sync::Mutex, time::Instant};
 use windows_sys::Win32::System::Diagnostics::Debug::{
@@ -95,8 +98,8 @@ impl World {
             (PROVINCES + 4 * 8, world.at(PROVINCE)),
             (BUILDINGS, world.at(BUILDING)),
             (SOURCE + native::SOURCE_WING, world.at(WING)),
-            (WING, world.base + cair_wing::VTABLE_RVA.0),
-            (WING + cair_wing::POOL, world.at(POOL)),
+            (WING, world.base + engine_native_parts::cair_wing_layout::VTABLE_RVA.0),
+            (WING + engine_native_parts::cair_wing_layout::POOL, world.at(POOL)),
             (POOL, world.base + cair_wing_pool::VTABLE_RVA.0),
             (POOL + cair_wing_pool::OWNER, world.at(OWNER)),
             (OWNER, world.base + cstrategic_air::VTABLE_RVA.0),

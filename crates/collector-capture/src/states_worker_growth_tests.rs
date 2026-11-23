@@ -3,7 +3,8 @@ use collector_states::acquisition_states::{
     Inputs, Report,
     tests::{FIRST, STATE},
 };
-use engine_native::{cstate, walk::Outcome};
+use engine_native::cstate;
+use engine_native_memory::walk::Outcome;
 
 #[test]
 fn worker_failure_before_supplement_keeps_visited_demand_for_core_growth() {

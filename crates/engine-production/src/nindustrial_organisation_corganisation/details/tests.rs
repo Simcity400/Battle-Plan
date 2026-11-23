@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 const ORG: usize = 0x1000;
 const HEAD: usize = 0x2000;
 const QUEUE: usize = 0x3000;
@@ -254,7 +254,7 @@ fn research_and_production_slots_keep_referent_identity_and_reject_reused_line_s
     );
     put(
         &mut bytes,
-        country + crate::ccountry::ID,
+        country + engine_native::ccountry::ID,
         &31_u32.to_le_bytes(),
     );
     put(
@@ -276,12 +276,12 @@ fn research_and_production_slots_keep_referent_identity_and_reject_reused_line_s
     put(
         &mut bytes,
         line,
-        &(engine_native::cmilitary_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cmilitary_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     let reference = (17_u64 << 32) | 51;
     put(
         &mut bytes,
-        line + crate::cproduction_line::REFERENCE_TYPE,
+        line + engine_native_parts::cproduction_line::REFERENCE_TYPE,
         &reference.to_le_bytes(),
     );
     let row = run(&bytes).unwrap();
@@ -309,7 +309,7 @@ fn country_policies_keep_cached_names_context_and_selection_score() {
     let policy = 0x4500;
     array(
         &mut bytes,
-        status + crate::cproduction_status::POLICIES,
+        status + engine_native::cproduction_status::POLICIES,
         QUEUE,
         1,
     );
@@ -317,11 +317,11 @@ fn country_policies_keep_cached_names_context_and_selection_score() {
     put(
         &mut bytes,
         policy,
-        &(crate::cproduction_status::POLICY_VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native::cproduction_status::POLICY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        policy + crate::cproduction_status::POLICY_TOKEN,
+        policy + engine_native::cproduction_status::POLICY_TOKEN,
         &19_u32.to_le_bytes(),
     );
     put(&mut bytes, policy + POLICY_COST, &(-7_i32).to_le_bytes());
@@ -395,7 +395,7 @@ fn country_policies_keep_cached_names_context_and_selection_score() {
 
 #[test]
 fn policy_cost_modifier_is_the_country_accumulators_effective_entry() {
-    use crate::modifier_definition as definitions;
+    use engine_native_parts::modifier_definition as definitions;
     use crate::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST as KEY;
     use std::collections::BTreeMap;
     const COUNTRY: usize = 0x1_0000;
@@ -421,7 +421,7 @@ fn policy_cost_modifier_is_the_country_accumulators_effective_entry() {
             }
         }
         fn entries(&mut self, entries: &[(u32, i64)]) {
-            let header = COUNTRY + crate::ccountry::MODIFIER_ACCUMULATOR;
+            let header = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
             self.put(header, &(VALUES as u64).to_le_bytes());
             self.put(header + 12, &(entries.len() as u32).to_le_bytes());
             for (index, (key, value)) in entries.iter().enumerate() {

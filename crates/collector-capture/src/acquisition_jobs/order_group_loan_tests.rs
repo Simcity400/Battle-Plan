@@ -1,6 +1,8 @@
 use super::*;
 use collector_raw::raw::{RawLog, Recorded};
-use engine_native::{Memory, carmy_group, corders_group, memory::SliceMemory};
+use engine_native_memory::{Memory, memory::SliceMemory};
+use engine_native_parts::carmy_group;
+use engine_native::corders_group;
 use std::sync::atomic::AtomicUsize;
 
 const GROUP: usize = 0x30000;
@@ -27,7 +29,7 @@ fn request(count: i32) -> OrdersRequest {
     }
     OrdersRequest {
         countries: engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap(),
         base: 0,

@@ -1,5 +1,6 @@
 
-use crate::{Memory, ccountry, read};
+use engine_native_memory::{Memory, read};
+use engine_native::ccountry;
 
 pub const STOCKPILE: usize = 0x00;
 pub const MANAGER: usize = 0x70;

@@ -36,7 +36,7 @@ impl Work {
             _ => Role::Variants,
         }
     }
-    pub(super) fn capture(&mut self, memory: &impl engine_native::Memory, base: usize) {
+    pub(super) fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
         match self {
             Self::Variant(part) => part.capture(memory, base),
             #[cfg(test)]
@@ -90,7 +90,7 @@ impl Dispatch {
     pub(super) fn storage_during(
         &self,
         part: production::ColdStorage,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         run: &mut dyn FnMut(),
     ) {
@@ -107,7 +107,7 @@ impl Dispatch {
     fn during(
         &self,
         mut work: Work,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         run: &mut dyn FnMut(),
     ) {
@@ -150,7 +150,7 @@ impl Dispatch {
     pub(super) fn beside(
         &self,
         mut work: Work,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         wait: collector_workers::hour_stages::Part,
         run: &mut dyn FnMut(),
@@ -215,7 +215,7 @@ impl Dispatch {
     pub(super) fn acquire(
         &self,
         parts: Vec<production::VariantPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<production::VariantPart>, &'static str> {
         let parts = engine_allocation::collect_vec(parts.into_iter().map(Work::Variant))
@@ -234,7 +234,7 @@ impl Dispatch {
     pub(super) fn context(
         &self,
         parts: Vec<production::DesignContextPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<production::DesignContextPart>, &'static str> {
         let parts = engine_allocation::collect_vec(parts.into_iter().map(Work::Context))
@@ -253,7 +253,7 @@ impl Dispatch {
     pub(super) fn technologies(
         &self,
         parts: Vec<governance::TechnologyPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<governance::TechnologyPart>, &'static str> {
         let parts = engine_allocation::collect_vec(parts.into_iter().map(Work::Technology))
@@ -270,7 +270,7 @@ impl Dispatch {
     pub(super) fn projects(
         &self,
         parts: Vec<projects::ProjectPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         game_state: usize,
     ) -> Result<Vec<projects::ProjectPart>, &'static str> {
@@ -292,7 +292,7 @@ impl Dispatch {
     pub(crate) fn template_walk(
         &self,
         parts: Vec<collector_division_templates::extended::division_templates::WalkPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<
         Vec<collector_division_templates::extended::division_templates::WalkPart>,
@@ -312,7 +312,7 @@ impl Dispatch {
     pub(super) fn snapshots(
         &self,
         parts: Vec<production::SnapshotPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<production::SnapshotPart>, &'static str> {
         if self.workers < 2 || self.executor.upgrade().is_none() {
@@ -332,7 +332,7 @@ impl Dispatch {
     pub(super) fn setup(
         &self,
         parts: Vec<production::ColdSetupPart>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<production::ColdSetupPart>, &'static str> {
         let parts = engine_allocation::collect_vec(parts.into_iter().map(Work::Setup))
@@ -349,7 +349,7 @@ impl Dispatch {
     fn acquire_work(
         &self,
         parts: Vec<Work>,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<Work>, &'static str> {
         let Some(executor) = self.executor.upgrade().filter(|_| self.workers > 1) else {
@@ -497,7 +497,7 @@ mod overlap_tests {
     use super::*;
     use std::sync::{atomic::AtomicUsize, mpsc};
     struct NoReads;
-    impl engine_native::Memory for NoReads {
+    impl engine_native_memory::Memory for NoReads {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
             panic!("owned setup read native memory")
         }

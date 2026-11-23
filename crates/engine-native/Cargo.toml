@@ -10,14 +10,16 @@ license.workspace = true
 doctest = false
 
 [features]
-acquisition_profile = []
+acquisition_profile = ["engine-native-memory/acquisition_profile"]
 order_membership_oracle = ["acquisition_profile"]
-alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
-batch-fallback-test-counts = []
-layout-fixtures = []
-test-support = ["batch-fallback-test-counts", "engine-allocation/test-support", "layout-fixtures"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection"]
+batch-fallback-test-counts = ["engine-native-memory/batch-fallback-test-counts"]
+layout-fixtures = ["engine-native-parts/layout-fixtures"]
+test-support = ["batch-fallback-test-counts", "engine-native-memory/test-support", "layout-fixtures", "engine-native-parts/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
 game-model.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
@@ -25,10 +27,13 @@ engine-executable.workspace = true
 replay-spool.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
+engine-native-air = { workspace = true, features = ["test-support"] }
+engine-native-naval = { workspace = true, features = ["test-support"] }
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support"] }
-
-[build-dependencies]
-cc = { version = "1", features = ["parallel"] }
 
 [lints]
 workspace = true
@@ -39,5 +44,4 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 test-unify = { workspace = true }

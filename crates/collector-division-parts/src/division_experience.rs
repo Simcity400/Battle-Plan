@@ -424,13 +424,13 @@ impl<T: Clone> Store<T> {
 impl Store<i64> {
     pub fn observe(
         &mut self,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         seed: &DivisionSeed,
         certificate: Option<(u64, u64)>,
     ) -> Result<i64, &'static str> {
         self.observe_with(base, seed, certificate, || {
-            engine_native::read::<i64>(
+            engine_native_memory::read::<i64>(
                 memory,
                 seed.pointer
                     .checked_add(carmy::EXPERIENCE)
@@ -444,7 +444,7 @@ impl Store<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::Memory;
+    use engine_native_memory::Memory;
     use std::cell::Cell;
     struct Value {
         value: i64,

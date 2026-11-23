@@ -1,13 +1,15 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cequipment_module, cequipment_variant,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    equipment_module_entry,
     memory::{RecordField, RecordLayout, RecordSources},
     read_slice,
     walk::Outcome,
 };
+use engine_native_parts::cequipment_module;
+use engine_native::cequipment_variant;
+use engine_native_politics::equipment_module_entry;
 
 pub const IDENTITY_WORD_RVA_CANDIDATE: Rva = Rva(0x030f_d000);
 pub const ENTRIES_CANDIDATE: usize = 0x08;
@@ -148,10 +150,10 @@ pub fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
-    fn source(bytes: &[u8]) -> crate::cequipment_variant::RegistryRow {
-        crate::cequipment_variant::RegistryRow::read(
+    fn source(bytes: &[u8]) -> engine_native::cequipment_variant::RegistryRow {
+        engine_native::cequipment_variant::RegistryRow::read(
             &SliceMemory {
                 base: 0x1000,
                 bytes,
@@ -164,7 +166,7 @@ mod tests {
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x300];
-        bytes[..8].copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
+        bytes[..8].copy_from_slice(&(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[8..16].copy_from_slice(&0x1234_5678_0000_0046_u64.to_le_bytes());
         bytes[0xb0..0xb8].fill(0xee);
         bytes[0xb8..0xc0].copy_from_slice(&0x1180_u64.to_le_bytes());

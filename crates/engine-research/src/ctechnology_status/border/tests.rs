@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn doctrine_preserves_signed_cache_and_requires_country_backlink() {

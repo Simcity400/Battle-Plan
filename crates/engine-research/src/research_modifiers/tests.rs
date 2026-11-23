@@ -22,8 +22,8 @@ impl Fixture {
             calls: Cell::new(0),
             fault: None,
         };
-        f.array(GAME + crate::cgame_state::COUNTRIES, 0x2000, 3);
-        f.array(GAME + crate::cgame_state::COUNTRY_LINKS, 0x2100, 3);
+        f.array(GAME + engine_native::cgame_state::COUNTRIES, 0x2000, 3);
+        f.array(GAME + engine_native::cgame_state::COUNTRY_LINKS, 0x2100, 3);
         for id in [1_u32, 2] {
             f.put(0x2000 + id as usize * 8, (COUNTRY as u64).to_le_bytes());
             f.put(0x2100 + id as usize * 4, 1_u32.to_le_bytes());
@@ -74,7 +74,7 @@ impl Fixture {
             }
             return false;
         }
-        if at == crate::modifier_definition::TABLE_RVA.0 && out.len() == 8 {
+        if at == engine_native_parts::modifier_definition::TABLE_RVA.0 && out.len() == 8 {
             out.copy_from_slice(&(METADATA as u64).to_le_bytes());
             return true;
         }
@@ -109,7 +109,7 @@ impl Fixture {
             self,
             0,
             &countries,
-            ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 pointer: COUNTRY,
                 id: 1,
                 canonical_slot: 1,
@@ -171,7 +171,7 @@ fn gap_research_grants_grant_inventory_captures_unused_kinds_restrictions_and_co
             countries.at(1).unwrap().unwrap(),
             Err("idle needs no modifier defines"),
             &[],
-            crate::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(rows),
         )
     };
     let mut rows = Vec::new();
@@ -219,7 +219,7 @@ fn gap_research_grants_grant_inventory_captures_unused_kinds_restrictions_and_co
         &[],
         STATUS,
         &[cached],
-        crate::walk::Buffer::Growing(&mut reused),
+        engine_native_memory::walk::Buffer::Growing(&mut reused),
     );
     assert_eq!(reused_outcome, outcome);
     assert_eq!(&reused[..outcome.len()], rows);
@@ -256,7 +256,7 @@ fn gap_research_grants_empty_grant_inventory_is_a_recorded_counter_and_reuses_ow
             countries.at(1).unwrap().unwrap(),
             Err("unused"),
             &[],
-            crate::walk::Buffer::Growing(&mut rows)
+            engine_native_memory::walk::Buffer::Growing(&mut rows)
         ),
         Outcome::Rows { len: 1 }
     );
@@ -284,8 +284,8 @@ impl Memory for Fixture {
     }
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         out: &mut [u8],
     ) -> usize {
         struct Fields<'a>(&'a Fixture);
@@ -305,7 +305,7 @@ fn capture(f: &Fixture, rows: &mut Vec<Row>) -> Outcome {
         f,
         0,
         &countries,
-        ccountry::Country {
+        engine_native_memory::country_identity::Country {
             pointer: COUNTRY,
             id: 1,
             canonical_slot: 1,
@@ -342,7 +342,7 @@ fn growing_modifier_sources_keep_mod_sized_fanout_text_and_later_growth() {
     let mut rows = Vec::new();
     for count in [5_000_u32, 7_000] {
         f.array(
-            COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18,
+            COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x18,
             POINTERS,
             count,
         );
@@ -366,7 +366,7 @@ fn growing_modifier_sources_keep_mod_sized_fanout_text_and_later_growth() {
             f.reads
                 .borrow()
                 .iter()
-                .filter(|&&(at, _)| at == COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18)
+                .filter(|&&(at, _)| at == COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x18)
                 .count(),
             1
         );
@@ -379,7 +379,7 @@ fn growing_source_stack_has_no_chosen_depth_and_keeps_cycles_named() {
     const DEPTH: usize = 5_000;
     let mut f = Fixture::new();
     f.bytes.resize(FIRST + DEPTH * 0x100, 0);
-    f.array(COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18, 0x8000, 1);
+    f.array(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x18, 0x8000, 1);
     f.put(0x8000, (FIRST as u64).to_le_bytes());
     for index in 0..DEPTH - 1 {
         let node = FIRST + index * 0x100;
@@ -558,14 +558,14 @@ fn scripted_sharing_roster_keeps_idle_countries_duplicates_and_native_extent() {
             &f,
             0,
             &countries,
-            ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 pointer: COUNTRY,
                 id: 1,
                 canonical_slot: 1,
             },
             Err("idle country has no modifier context"),
             std::slice::from_ref(&input),
-            crate::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(rows),
             record,
         )
     };
@@ -585,7 +585,7 @@ fn scripted_sharing_roster_keeps_idle_countries_duplicates_and_native_extent() {
         !f.reads
             .borrow()
             .iter()
-            .any(|&(address, _)| address == COUNTRY + ccountry::MODIFIER_ACCUMULATOR)
+            .any(|&(address, _)| address == COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
     );
 }
 
@@ -611,10 +611,10 @@ fn unbonused_slots_share_one_guard_for_all_technology_operands() {
 #[test]
 fn cyclic_country_source_trees_fail_without_unbounded_recursion() {
     let mut f = Fixture::new();
-    f.array(COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18, 0x8000, 1);
+    f.array(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x18, 0x8000, 1);
     f.put(
         0x8000,
-        (COUNTRY as u64 + ccountry::MODIFIER_ACCUMULATOR as u64 - 0x10).to_le_bytes(),
+        (COUNTRY as u64 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR as u64 - 0x10).to_le_bytes(),
     );
     assert_eq!(
         f.capture(&[f.input()], &mut vec![Row::default(); 32]),
@@ -628,12 +628,12 @@ fn cyclic_country_source_trees_fail_without_unbounded_recursion() {
 fn country_tree_is_shared_and_preserves_negative_sources_and_clamps() {
     let mut f = Fixture::new();
     f.modifier(
-        COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x8000,
         0xcd,
         -12_000,
     );
-    f.array(COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18, 0x8100, 1);
+    f.array(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x18, 0x8100, 1);
     f.put(0x8100, 0x8200_u64.to_le_bytes());
     f.modifier(0x8210, 0x8300, 0xcd, -12_000);
     f.text(0x8258, b"slow_idea");
@@ -651,8 +651,8 @@ fn country_tree_is_shared_and_preserves_negative_sources_and_clamps() {
     assert_eq!(sources[0].raw, -12_000);
     assert_eq!(sources[0].name.as_bytes(), b"slow_idea");
     f.put(
-        METADATA + 0xcd * crate::modifier_definition::STRIDE + crate::modifier_definition::FLAGS,
-        crate::modifier_definition::CLAMP_MAXIMUM.to_le_bytes(),
+        METADATA + 0xcd * engine_native_parts::modifier_definition::STRIDE + engine_native_parts::modifier_definition::FLAGS,
+        engine_native_parts::modifier_definition::CLAMP_MAXIMUM.to_le_bytes(),
     );
     let result = f.capture(&[f.input()], &mut rows);
     let value = rows[..result.len()]
@@ -666,7 +666,7 @@ fn country_tree_is_shared_and_preserves_negative_sources_and_clamps() {
         .unwrap();
     assert_eq!(
         metadata.raw,
-        i64::from(crate::modifier_definition::CLAMP_MAXIMUM)
+        i64::from(engine_native_parts::modifier_definition::CLAMP_MAXIMUM)
     );
 }
 
@@ -696,7 +696,7 @@ fn selected_idea_and_script_sources_retain_names_without_reading_catalogues() {
     f.put(0x8000, 0x8100_u64.to_le_bytes());
     f.put(0x8138, (-15_000_i64).to_le_bytes());
     f.put(0x8140, 0x8200_u64.to_le_bytes());
-    f.put(0x8200, (crate::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
+    f.put(0x8200, (engine_native_parts::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
     f.text(0x8218, b"idea_penalty");
     f.array(TECH + 0x128, 0x8400, 1);
     f.put(0x8400, 0x8500_u64.to_le_bytes());
@@ -724,14 +724,14 @@ fn selected_idea_and_script_sources_retain_names_without_reading_catalogues() {
 fn walk_buffer(
     f: &Fixture,
     input: &research_inputs::Row,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let countries = ccountry::Reader::new(f, 0, GAME).unwrap();
     walk_country_buffer(
         f,
         0,
         &countries,
-        ccountry::Country {
+        engine_native_memory::country_identity::Country {
             pointer: COUNTRY,
             id: 1,
             canonical_slot: 1,
@@ -755,8 +755,8 @@ fn idea_text_past_512_bytes_is_whole_in_exact_and_count_walks() {
     f.put(0x8000, 0x8100_u64.to_le_bytes());
     f.put(0x8138, (-15_000_i64).to_le_bytes());
     f.put(0x8140, 0x8200_u64.to_le_bytes());
-    f.put(0x8200, (crate::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
-    let descriptor = 0x8200 + crate::cidea::TOKEN;
+    f.put(0x8200, (engine_native_parts::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
+    let descriptor = 0x8200 + engine_native_parts::cidea::TOKEN;
     f.put(descriptor, (NAME as u64).to_le_bytes());
     f.put(descriptor + 16, 2_048_u64.to_le_bytes());
     f.put(descriptor + 24, 2_048_u64.to_le_bytes());
@@ -774,12 +774,12 @@ fn idea_text_past_512_bytes_is_whole_in_exact_and_count_walks() {
     );
     let mut exact = vec![Row::default(); len];
     assert_eq!(
-        walk_buffer(&f, &input, crate::walk::Buffer::Exact(&mut exact)),
+        walk_buffer(&f, &input, engine_native_memory::walk::Buffer::Exact(&mut exact)),
         expected
     );
     assert_eq!(exact[..], grown[..len]);
     assert_eq!(
-        walk_buffer(&f, &input, crate::walk::Buffer::Count),
+        walk_buffer(&f, &input, engine_native_memory::walk::Buffer::Count),
         Outcome::Truncated {
             len: 0,
             unread_rows: len as u32
@@ -932,9 +932,9 @@ fn scientist_efficiency_sources_preserve_character_identity_and_cached_total() {
     f.modifier(0xb058, 0xb200, 0x27a, 50_000);
     f.put(
         0xc000,
-        (crate::ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
+        (engine_native::ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
-    f.put(0xc008, crate::ccharacter::REFERENCE_TYPE.to_le_bytes());
+    f.put(0xc008, engine_native::ccharacter::REFERENCE_TYPE.to_le_bytes());
     f.put(0xc00c, 91_u32.to_le_bytes());
     f.put(0xc0c0, 0xb000_u64.to_le_bytes());
     f.text(0xc048, b"scientist_name");
@@ -1012,7 +1012,7 @@ fn many_member_fixture() -> Fixture {
     let mut f = Fixture::new();
     f.bytes.resize(0x70000, 0);
     let slots = OTHERS + 2;
-    f.array(GAME + crate::cgame_state::COUNTRY_LINKS, LINKS, slots);
+    f.array(GAME + engine_native::cgame_state::COUNTRY_LINKS, LINKS, slots);
     f.put(LINKS + 4, 1_u32.to_le_bytes());
     for raw in 2..slots as usize {
         f.put(LINKS + raw * 4, 2_u32.to_le_bytes());
@@ -1121,15 +1121,15 @@ fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
         (DIPLOMACY as u64).to_le_bytes(),
     );
     f.put(
-        DIPLOMACY + crate::cdiplomacy_status::FACTION,
+        DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::FACTION,
         (FACTION as u64).to_le_bytes(),
     );
     f.put(
         FACTION,
-        (crate::cfaction::VTABLE_RVA.0 as u64).to_le_bytes(),
+        (engine_native::cfaction::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     let count = OTHERS + 1;
-    f.array(FACTION + crate::cfaction::MEMBERS, POINTERS, count);
+    f.array(FACTION + engine_native::cfaction::MEMBERS, POINTERS, count);
     for (index, raw) in (2..OTHERS + 2).chain(std::iter::once(1)).enumerate() {
         let member = MEMBERS + index * 16;
         f.put(POINTERS + index * 8, (member as u64).to_le_bytes());
@@ -1211,7 +1211,7 @@ fn batch_capture(
 ) -> (Outcome, Vec<Row>) {
     use engine_governance_tests::{GAME, World};
     let countries = ccountry::Reader::new(memory, 0, GAME).unwrap();
-    let country = ccountry::Country {
+    let country = engine_native_memory::country_identity::Country {
         pointer: World::country(id),
         id,
         canonical_slot: id,
@@ -1227,7 +1227,7 @@ fn batch_capture(
             country,
             context,
             inputs,
-            crate::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
         )
     } else {
         walk_country(memory, 0, &countries, country, context, inputs, &mut rows)
@@ -1247,8 +1247,8 @@ fn batch_source_world() -> engine_governance_tests::World {
         world.pointer(country + 0x7000 + i * 8, contribution);
         world.put(contribution + 0x38, (-7_001_i64).to_le_bytes());
         world.pointer(contribution + 0x40, idea);
-        world.put(idea, (crate::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
-        world.text(idea + crate::cidea::TOKEN, b"mod_idea");
+        world.put(idea, (engine_native_parts::cidea::VTABLE_RVA.0 as u64).to_le_bytes());
+        world.text(idea + engine_native_parts::cidea::TOKEN, b"mod_idea");
         let script = country + 0x7500 + i * 40;
         let source = country + 0x7600 + i * 0x100;
         world.pointer(script, source);

@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{ccountry, cpdx_array::Array};
+use engine_native::ccountry;
+use engine_native_memory::cpdx_array::Array;
 use engine_production::market_ledger as market;
 use engine_sites::Rva;
 use replay_data::rows::{
@@ -18,7 +19,7 @@ static EPOCH: AtomicU64 = AtomicU64::new(1);
 static RECOVERY: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<State> = Mutex::new(State::new(0));
 struct Country {
-    identity: ccountry::Country,
+    identity: engine_native_memory::country_identity::Country,
     manager: usize,
     cutoff: u64,
     row: CountryMarketRow,
@@ -58,7 +59,7 @@ struct State {
     agreements: BTreeMap<(u32, u64), Agreement>,
     changed: [BTreeSet<u32>; 2],
     changed_contracts: BTreeSet<(u32, u64, u8)>,
-    pending_countries: BTreeMap<u32, (ccountry::Country, usize)>,
+    pending_countries: BTreeMap<u32, (engine_native_memory::country_identity::Country, usize)>,
     unseeded_countries: BTreeSet<u32>,
     unavailable_agreements: BTreeSet<(u32, u64)>,
     unavailable_contracts: BTreeSet<(u32, u64, u8)>,
@@ -368,7 +369,7 @@ fn read_variables(
     let mut rows = Vec::new();
     let mut names = Vec::new();
     let result = engine_scripts::cvariables::walk(memory, base, at, &mut rows, &mut names);
-    let engine_native::walk::Outcome::Rows { len } = result.outcome else {
+    let engine_native_memory::walk::Outcome::Rows { len } = result.outcome else {
         return Err("market contract variables unavailable");
     };
     let mut output: Vec<_> = rows[..len]
@@ -404,7 +405,7 @@ fn read_runtime(
 fn read_country(
     memory: &impl Memory,
     base: usize,
-    identity: ccountry::Country,
+    identity: engine_native_memory::country_identity::Country,
     manager: usize,
 ) -> Result<Country, &'static str> {
     authenticate_country(memory, base, identity)?;
@@ -452,7 +453,7 @@ fn read_country(
 fn authenticate_country(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<(), &'static str> {
     let expected = engine_sites::at(base, ccountry::VTABLE_RVA)
         .ok_or("market country vtable address overflow")? as u64;
@@ -463,7 +464,7 @@ fn authenticate_country(
     }
     Ok(())
 }
-pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Country, manager: usize) {
+pub fn seed_country(memory: &impl Memory, base: usize, country: engine_native_memory::country_identity::Country, manager: usize) {
     if !ENABLED.load(Ordering::SeqCst) {
         return;
     }
@@ -583,7 +584,7 @@ pub fn discover_country(
     memory: &impl Memory,
     base: usize,
     game: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     _resources: usize,
 ) {
     if !ENABLED.load(Ordering::SeqCst) {
@@ -1398,7 +1399,7 @@ pub(super) fn test_census(rows: [replay_data::rows::TableRows; 3]) {
                     state.countries.insert(
                         row.country,
                         Country {
-                            identity: ccountry::Country {
+                            identity: engine_native_memory::country_identity::Country {
                                 pointer: usize::MAX,
                                 id: row.country,
                                 canonical_slot: row.country,
@@ -1447,7 +1448,10 @@ mod tests {
     use super::*;
     #[test]
     fn foreign_giver_agreement_is_recorded_under_its_resources_owner() {
-        use engine_native::{ccountry::synthetic::World, cequipment_variant_pool as native_pool};
+        use engine_native::{
+            ccountry::synthetic::World,
+            cequipment_variant::pool as native_pool,
+        };
         let mut world = World::new(0, 2, 0x20);
         let resources = world.alloc(0x30);
         world.u64(
@@ -1745,7 +1749,7 @@ mod tests {
             put(
                 &mut bytes,
                 at,
-                engine_native::cequipment_variant_pool::VTABLE_RVA.0 as u64,
+                engine_native::cequipment_variant::pool::VTABLE_RVA.0 as u64,
             );
         }
         put(
@@ -1757,7 +1761,7 @@ mod tests {
             put(&mut bytes, HEAD + offset, HEAD as u64);
         }
         bytes[HEAD + 25] = 1;
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };

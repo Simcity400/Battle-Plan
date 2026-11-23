@@ -6,4 +6,4 @@ Callers can track data reads without using them as control comparisons. Those re
 
 Raw capture and prepared traces validate read extents before touching memory. An empty extent succeeds. Nonempty spans require both endpoints to be in the same canonical half, with bit 47 included in the sign extension and overflow treated as invalid. Early validation attributes the failed read to its requested range. The guarded copy still contains native faults for direct callers.
 
-[Snapshot crate](../../crates/collector-snapshots/src/lib.rs) · [Prepared read plans](../../crates/collector-snapshots/src/snapshot_plan.rs) · [Range gate](../../crates/engine-native/src/memory.rs)
+[Snapshot crate](../../crates/collector-snapshots/src/lib.rs) · [Prepared read plans](../../crates/collector-snapshots/src/snapshot_plan.rs) · [Range gate](../../crates/engine-native-memory/src/memory.rs)

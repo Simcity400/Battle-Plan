@@ -2,9 +2,9 @@ use crate::{
     naval_tree_changes::{self, Changes, Counts, Held, Store},
     table_conversion::unavailable,
 };
-use engine_native::{
-    Memory, cfex_air, cfex_member, cnaval_combat, naval_ship_modifier_inputs, walk::Outcome,
-};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{cfex_air, cfex_member, cnaval_combat};
+use engine_native_naval::naval_ship_modifier_inputs;
 use engine_naval_history::{
     naval_modifier_trees as trees, naval_modifier_trees::Definitions, naval_modifier_trees::KEYS,
     naval_modifier_trees::Kind, naval_modifier_trees::RawNode, naval_modifier_trees::Request,
@@ -106,9 +106,9 @@ impl Trees {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        combats: Option<&[cnaval_combat::DetailsRow]>,
-        members: Option<&[cfex_member::DetailsRow]>,
-        planes: &[cfex_air::Row],
+        combats: Option<&[engine_native_naval::naval_combat_details::DetailsRow]>,
+        members: Option<&[engine_native_naval::naval_member_details::DetailsRow]>,
+        planes: &[engine_native_naval::naval_air_details::Row],
         sources: &[naval_ship_modifier_inputs::SourceRow],
     ) {
         self.reset();
@@ -155,9 +155,9 @@ impl Trees {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        combats: &[cnaval_combat::DetailsRow],
-        members: &[cfex_member::DetailsRow],
-        planes: &[cfex_air::Row],
+        combats: &[engine_native_naval::naval_combat_details::DetailsRow],
+        members: &[engine_native_naval::naval_member_details::DetailsRow],
+        planes: &[engine_native_naval::naval_air_details::Row],
         sources: &[naval_ship_modifier_inputs::SourceRow],
         store: &mut Box<Store>,
         counts: &mut Counts,

@@ -48,13 +48,13 @@ fn fixture(count: u32) -> World {
             world.object(slot) + ccountry::DIPLOMACY_STATUS,
             diplomacy as u64,
         );
-        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA.0 as u64);
+        world.u64(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
         world.u64(
-            diplomacy + cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             world.object(slot) as u64,
         );
         let offsite = world.alloc(0x80);
-        world.u64(offsite, crate::cbuilding_status::VTABLE_RVA.0 as u64);
+        world.u64(offsite, crate::cprovince::buildings::VTABLE_RVA.0 as u64);
         world.u64(
             world.object(slot) + ccountry::WAR_OVERVIEW_OFFSITE,
             offsite as u64,
@@ -75,7 +75,7 @@ fn fixture(count: u32) -> World {
             let vector = world.alloc(8);
             world.u64(vector, relation as u64);
             world.array(
-                roots[owner as usize - 1] + cdiplomacy_status::OWNED_RELATIONS,
+                roots[owner as usize - 1] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                 vector,
                 1,
             );
@@ -154,7 +154,7 @@ fn bad_owned_identity_and_short_goal_arrays_are_unavailable() {
     .unwrap() as usize;
     let vector = read::<u64>(
         &world.memory(),
-        diplomacy + cdiplomacy_status::OWNED_RELATIONS,
+        diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
     )
     .unwrap() as usize;
     let relation = read::<u64>(&world.memory(), vector).unwrap() as usize;
@@ -188,7 +188,8 @@ fn bad_owned_identity_and_short_goal_arrays_are_unavailable() {
 }
 
 fn cost_fixture(count: u32) -> World {
-    use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
+    use engine_native_parts::{cbuilding, cbuilding_template};
+    use crate::{cprovince::buildings as cbuilding_status, cstate};
     let mut w = fixture(count);
     let template = w.alloc(cbuilding_template::SIZE);
     w.u64(template, cbuilding_template::VTABLE_RVA.0 as u64);
@@ -197,7 +198,7 @@ fn cost_fixture(count: u32) -> World {
         let root =
             read::<u64>(&w.memory(), w.object(slot) + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
         let old =
-            read::<u64>(&w.memory(), root + cdiplomacy_status::OWNED_RELATIONS).unwrap() as usize;
+            read::<u64>(&w.memory(), root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS).unwrap() as usize;
         let war = read::<u64>(&w.memory(), old).unwrap();
         w.put(war as usize + crelation::RETIRED, &[0]);
         let relations = w.alloc(25 * 8);
@@ -207,7 +208,7 @@ fn cost_fixture(count: u32) -> World {
             w.u32(relation + crelation::TYPE_ID, 99);
             w.u64(relations + index * 8, relation as u64);
         }
-        w.array(root + cdiplomacy_status::OWNED_RELATIONS, relations, 25);
+        w.array(root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, relations, 25);
         let cores = w.alloc(4 * 8);
         for index in 0..4 {
             let state = w.alloc(0x200);
@@ -244,14 +245,14 @@ fn cost_fixture(count: u32) -> World {
         w.u32(status + crelation_status::TARGET_COUNTRY, target);
         w.u64(matrix + target as usize * 8, status as u64);
     }
-    w.array(root + cdiplomacy_status::RELATIONS, matrix, count + 1);
+    w.array(root + engine_native_parts::cdiplomacy_status_layout::RELATIONS, matrix, count + 1);
     w
 }
 
 #[test]
 #[ignore = "synthetic acquisition timing; run alone with --nocapture"]
 fn hourly_cost_at_1500_and_5000_countries() {
-    use crate::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     for count in [1_500, 5_000] {
         let w = cost_fixture(count);
         let memory = CountedMemory::new(w.memory());
@@ -259,8 +260,8 @@ fn hourly_cost_at_1500_and_5000_countries() {
         let mut goals = vec![cwar_goal::relation::Row::default(); count as usize * 2];
         let mut scores = vec![CountryRow::default(); count as usize];
         let mut cache = DiscoveryCache::new(count as usize + 1, count as usize * 25);
-        let mut census = crate::country_memory::Cache::with_capacity(
-            crate::country_memory::Cache::cells_for_countries(count as usize + 1, 0),
+        let mut census = engine_native_intelligence::country_memory::Cache::with_capacity(
+            engine_native_intelligence::country_memory::Cache::cells_for_countries(count as usize + 1, 0),
         );
         census.prepare(&memory, 0, w.game_state());
         let memory = census.roster_view(&memory);
@@ -312,7 +313,8 @@ fn hourly_cost_at_1500_and_5000_countries() {
 
 #[test]
 fn shared_templates_keep_every_factory_score_native() {
-    use crate::{cbuilding, cbuilding_status, cbuilding_template, cstate};
+    use engine_native_parts::{cbuilding, cbuilding_template};
+    use crate::{cprovince::buildings as cbuilding_status, cstate};
     let mut w = cost_fixture(4);
     let words: [[u32; 2]; 4] = [[1, 0], [0, 0], [0, (-5_i32) as u32], [i32::MAX as u32, 1]];
     let templates = words.map(|[first, second]| {
@@ -423,7 +425,7 @@ fn unchanged_header_does_not_hide_retirement_goal_changes_or_replaced_pointers()
     let mut w = fixture(2);
     let root = read::<u64>(&w.memory(), w.object(1) + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
     let vector =
-        read::<u64>(&w.memory(), root + cdiplomacy_status::OWNED_RELATIONS).unwrap() as usize;
+        read::<u64>(&w.memory(), root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS).unwrap() as usize;
     let relation = read::<u64>(&w.memory(), vector).unwrap() as usize;
     let mut cache = DiscoveryCache::new(3, 2);
     let mut owned = vec![OwnedRow::default(); 2];
@@ -510,12 +512,12 @@ fn template_and_subject_failures_are_scores_only_and_unreachable_factories_are_n
     let state = read::<u64>(&w.memory(), core).unwrap() as usize;
     let vector = read::<u64>(
         &w.memory(),
-        state + crate::cstate::BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS,
+        state + crate::cstate::BUILDING_STATUS + crate::cprovince::buildings::ACTIVE_BUILDINGS,
     )
     .unwrap() as usize;
     let building = read::<u64>(&w.memory(), vector).unwrap() as usize;
     let template =
-        read::<u64>(&w.memory(), building + crate::cbuilding::TEMPLATE).unwrap() as usize;
+        read::<u64>(&w.memory(), building + engine_native_parts::cbuilding::TEMPLATE).unwrap() as usize;
     w.u64(template, 0);
     assert_eq!(
         run(&w).0,
@@ -527,9 +529,9 @@ fn template_and_subject_failures_are_scores_only_and_unreachable_factories_are_n
             }
         ]
     );
-    w.u64(template, crate::cbuilding_template::VTABLE_RVA.0 as u64);
+    w.u64(template, engine_native_parts::cbuilding_template::VTABLE_RVA.0 as u64);
     let root = read::<u64>(&w.memory(), w.object(1) + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
-    let matrix = read::<u64>(&w.memory(), root + cdiplomacy_status::RELATIONS).unwrap() as usize;
+    let matrix = read::<u64>(&w.memory(), root + engine_native_parts::cdiplomacy_status_layout::RELATIONS).unwrap() as usize;
     let status = read::<u64>(&w.memory(), matrix + 2 * 8).unwrap() as usize;
     w.u64(status, 0);
     assert_eq!(
@@ -576,7 +578,7 @@ fn batched_goals_preserve_owner_side_and_page_order_and_exact_truncation() {
     let mut w = fixture(4);
     let root = read::<u64>(&w.memory(), w.object(1) + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
     let vector =
-        read::<u64>(&w.memory(), root + cdiplomacy_status::OWNED_RELATIONS).unwrap() as usize;
+        read::<u64>(&w.memory(), root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS).unwrap() as usize;
     let relation = read::<u64>(&w.memory(), vector).unwrap() as usize;
     for (offset, count) in [(super::super::GOALS[0], 65), (super::super::GOALS[1], 3)] {
         let handles = w.alloc(count * 8);
@@ -652,7 +654,7 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
     for owner in [1, 3] {
         let root = read::<u64>(&w.memory(), w.object(owner) + ccountry::DIPLOMACY_STATUS).unwrap()
             as usize;
-        let old = Array::read(&w.memory(), root + cdiplomacy_status::OWNED_RELATIONS, 8).unwrap();
+        let old = Array::read(&w.memory(), root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 8).unwrap();
         let vector = w.alloc((old.count as usize + 1) * 8);
         for ordinal in 0..old.count {
             let pointer = read::<u64>(&w.memory(), old.element(ordinal, 8).unwrap()).unwrap();
@@ -660,7 +662,7 @@ fn retired_viewpoint_counterparts_keep_scores_when_native_sides_can_reach_them()
         }
         w.u64(vector + old.count as usize * 8, relation as u64);
         w.array(
-            root + cdiplomacy_status::OWNED_RELATIONS,
+            root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             vector,
             old.count + 1,
         );
@@ -732,7 +734,7 @@ fn a_flush_partway_through_a_country_keeps_its_later_pages_previous_rows() {
         };
         w.u64(vector + ordinal * 8, relation as u64);
     }
-    w.array(root + cdiplomacy_status::OWNED_RELATIONS, vector, 150);
+    w.array(root + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, vector, 150);
     let mut cache = DiscoveryCache::new(3, 151);
     let mut owned = vec![OwnedRow::default(); 160];
     let mut goals = vec![cwar_goal::relation::Row::default(); 8];

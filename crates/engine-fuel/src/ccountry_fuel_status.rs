@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, cpdx_array::Array, fuel_consumer_data as consumer,
-    fuel_history_entry as entry, read, read_slice, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use engine_native::ccountry;
+use crate::{fuel_consumer_data as consumer, fuel_history_entry as entry};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a0_7068);
@@ -74,8 +73,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(consumers),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(consumers),
     )
 }
 
@@ -83,8 +82,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: crate::walk::Buffer<'_, Row>,
-    consumers: crate::walk::Buffer<'_, ConsumerRow>,
+    rows: engine_native_memory::walk::Buffer<'_, Row>,
+    consumers: engine_native_memory::walk::Buffer<'_, ConsumerRow>,
 ) -> Outcomes {
     let mut rows = Sink::new(rows);
     let mut consumers = Sink::new(consumers);
@@ -168,7 +167,7 @@ struct Status {
 fn read_status(
     memory: &impl Memory,
     vtable: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Status, &'static str> {
     let status = country
         .pointer
@@ -291,14 +290,14 @@ fn i32_at(bytes: &[u8], offset: usize) -> i32 {
 }
 
 struct Sink<'a, R> {
-    rows: crate::walk::Buffer<'a, R>,
+    rows: engine_native_memory::walk::Buffer<'a, R>,
     len: usize,
     unread_rows: u32,
     failure: Option<&'static str>,
 }
 
 impl<'a, R: Default> Sink<'a, R> {
-    fn new(rows: crate::walk::Buffer<'a, R>) -> Self {
+    fn new(rows: engine_native_memory::walk::Buffer<'a, R>) -> Self {
         Self {
             rows,
             len: 0,
