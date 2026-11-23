@@ -486,7 +486,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn a_trait_is_found_by_token_as_the_database_scans_it() {
         content_reader_script::test_game::enter();

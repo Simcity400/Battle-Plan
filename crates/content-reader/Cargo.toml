@@ -77,7 +77,7 @@ test-support = [
     "content-reader-wargoals/test-support",
     "content-reader-weather/test-support",
 ]
-layer-fixtures = ["content-reader-layers/layer-fixtures", "content-reader-script/layer-fixtures"]
+layer-fixtures = ["content-reader-layers/layer-fixtures", "content-reader-mesh/layer-fixtures", "content-reader-script/layer-fixtures"]
 
 [lints]
 workspace = true

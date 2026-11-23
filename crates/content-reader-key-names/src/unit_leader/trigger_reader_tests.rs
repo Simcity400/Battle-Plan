@@ -1,4 +1,5 @@
 use super::*;
+use content_reader_script::key_names::KeyNames;
 
 #[test]
 fn every_trait_trigger_skips_invalid_key_definitions() {

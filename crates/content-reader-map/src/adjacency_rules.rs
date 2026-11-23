@@ -280,8 +280,7 @@ fn key_names_tables_status() -> Result<(), String> {
 }
 
 fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<AdjacencyRule>> {
-    let lazy_names: std::cell::OnceCell<Result<std::sync::Arc<KeyNames>, String>> =
-        std::cell::OnceCell::new();
+    let lazy_names = std::cell::OnceCell::new();
     let mut interrupted: Option<io::Error> = None;
     let mut shaper: Option<content_reader_script::trigger_grammar::Shaper<'_>> = None;
     let provided = match names {

@@ -111,7 +111,6 @@ fn naval_hitmiss_scalar_and_tagged_state_carriers_refuse_later_entities_in_the_f
     }
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn naval_hitmiss_layered_roster_refuses_later_entity_names_from_an_unsettled_file() {
     for (index, (carrier, reason)) in [

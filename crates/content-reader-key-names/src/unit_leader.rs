@@ -1,10 +1,10 @@
-use crate::key_name_products::KeyNamesExt as _;
+use crate::key_name_products::{KeyNameProducts, KeyNamesExt as _};
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use content_reader_layers::{ResolvedLayers, script_files};
 use content_reader_parser::{crt::{self, Scanned}, parser::{Item, Value}};
-use content_reader_script::{key_names::KeyNames, modifiers::{self, Modifiers}, native::{self, Field, Kind, Shape, Token}, scope::ScopeKind};
+use content_reader_script::{modifiers::{self, Modifiers}, native::{self, Field, Kind, Shape, Token}, scope::ScopeKind};
 
 mod division_experience;
 pub mod needs;
@@ -27,7 +27,7 @@ pub struct Leaders<N = String> {
     pub skills: Skills,
     pub misreads: Vec<N>,
     files: Vec<(String, content_reader_layers::content::Bytes)>,
-    names: Arc<KeyNames>,
+    names: Arc<KeyNameProducts>,
 }
 
 impl<N> Default for Leaders<N> {
@@ -70,7 +70,7 @@ impl<N: content_reader_parser::DiagnosticMessage> Leaders<N> {
         files: Vec<(String, B)>,
         terrain: &dyn Fn(&str) -> Option<String>,
         registry: Registry<'_>,
-        names: Arc<KeyNames>,
+        names: Arc<KeyNameProducts>,
     ) -> Self {
         let files: Vec<(String, content_reader_layers::content::Bytes)> = files.into_iter()
             .map(|(path, bytes)| (path, bytes.into())).collect();

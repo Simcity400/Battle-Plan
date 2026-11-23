@@ -1,4 +1,3 @@
-#[cfg(feature = "test-support")]
 use super::descriptors::last_text;
 use super::*;
 
@@ -354,7 +353,6 @@ fn an_animation_in_a_descriptor_with_a_raw_file_name_registers() {
     );
 }
 
-#[cfg(feature = "test-support")]
 pub(super) fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[u8])]) -> Roster {
     let root = std::env::temp_dir().join(format!("content-reader-roster-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -374,7 +372,6 @@ pub(super) fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[
     roster
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn the_roster_registers_entities_in_declaration_order() {
     let roster = roster_of(
@@ -445,7 +442,6 @@ fn the_roster_registers_entities_in_declaration_order() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn a_plain_redeclaration_ends_a_copy() {
     let roster = roster_of(
@@ -475,7 +471,6 @@ fn a_plain_redeclaration_ends_a_copy() {
     assert_eq!(roster.clones["again"], "other");
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
     let roster = roster_of(
@@ -511,7 +506,6 @@ fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn a_clone_merges_attachments_in_place_and_keeps_an_unregistered_mesh() {
     let roster = roster_of(
@@ -565,7 +559,6 @@ fn a_clone_merges_attachments_in_place_and_keeps_an_unregistered_mesh() {
     assert!(roster.logged[0].starts_with("child in gfx/entities/a.asset: no pdxmesh missing"));
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn unbound_mesh_diagnostics_follow_registration() {
     let roster = roster_of(
@@ -609,7 +602,6 @@ fn unbound_mesh_diagnostics_follow_registration() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn the_roster_keeps_the_last_object_of_a_name() {
     let roster = roster_of(
@@ -645,7 +637,6 @@ fn the_roster_keeps_the_last_object_of_a_name() {
     assert!(roster.descriptors.entities.is_empty());
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn the_roster_keeps_the_last_animation_that_loads() {
     let clip: &[u8] = b"@@b@[info\0[samples\0";
@@ -2124,7 +2115,6 @@ fn entity_and_mesh_scale_multiply_and_follow_native_clone_and_field_rules() {
     approx(descriptors.resolve("clone_bad_scale").unwrap().scale, 2.5, "clone malformed scale resets entity factor to 1.0");
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn roster_clone_inheritance_multiplies_entity_and_mesh_scale_factors() {
     let roster = roster_of(
@@ -2154,7 +2144,6 @@ fn roster_clone_inheritance_multiplies_entity_and_mesh_scale_factors() {
     assert!((resolve("bad_override") - 2.5).abs() < 1e-6);
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
     let roster = roster_of(
@@ -2242,7 +2231,6 @@ fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
     assert!((resolve("target") - 3.0).abs() < 1e-6);
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     use content_reader_layers::content::{ResolveOptions, visual};
@@ -2442,7 +2430,6 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn mixed_unknown_dispatch_recovery_handles_brace_shifts_variables_and_lexer_rules() {
     let mut mixed_brace_file = Vec::new();
@@ -2603,7 +2590,6 @@ fn mixed_unknown_dispatch_recovery_handles_brace_shifts_variables_and_lexer_rule
     }
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn recovery_merges_identical_unknown_dispatch_states_without_exponential_blowup() {
     let mut benign = String::from("entity = { name = \"converging_entity\" pdxmesh = \"m\"\n");
@@ -2662,7 +2648,6 @@ fn recovery_merges_identical_unknown_dispatch_states_without_exponential_blowup(
     );
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn recovery_handles_astra_r1_edge_cases() {
     use content_reader_layers::content::{ResolveOptions, visual};
@@ -2813,7 +2798,6 @@ fn recovery_handles_astra_r1_edge_cases() {
     assert_eq!(overlay_roster.unreadable_names.get("recorded_first"), None);
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn recovery_handles_astra_r2_edge_cases() {
     use content_reader_layers::content::{ResolveOptions, visual};
@@ -2947,7 +2931,6 @@ fn recovery_handles_astra_r2_edge_cases() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[test]
 fn recovery_handles_astra_r3_edge_cases() {
     use content_reader_layers::content::{ResolveOptions, visual};

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    ops::Deref,
     sync::Arc,
 };
 
@@ -18,11 +19,19 @@ use content_reader_script::{
 
 mod effect_names;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct KeyNameProducts {
-    pub names: Arc<KeyNames>,
+    pub names: KeyNames,
     pub buildings: Option<Arc<buildings::Buildings>>,
     equipment_database: Option<Arc<Database>>,
+}
+
+impl Deref for KeyNameProducts {
+    type Target = KeyNames;
+
+    fn deref(&self) -> &KeyNames {
+        &self.names
+    }
 }
 
 impl KeyNameProducts {
@@ -110,7 +119,7 @@ impl KeyNameProducts {
         let (effects, equipment_database) = effect_names::read(layers, &names)?;
         names.effects = effects;
         Ok(Self {
-            names: Arc::new(names),
+            names,
             buildings,
             equipment_database: Some(equipment_database),
         })
@@ -118,13 +127,13 @@ impl KeyNameProducts {
 }
 
 pub trait KeyNamesExt {
-    fn key_names(&self) -> io::Result<Arc<KeyNames>>;
+    fn key_names(&self) -> io::Result<Arc<KeyNameProducts>>;
     fn key_name_products(&self) -> io::Result<Arc<KeyNameProducts>>;
 }
 
 impl KeyNamesExt for ResolvedLayers {
-    fn key_names(&self) -> io::Result<Arc<KeyNames>> {
-        Ok(Arc::clone(&self.key_name_products()?.names))
+    fn key_names(&self) -> io::Result<Arc<KeyNameProducts>> {
+        self.key_name_products()
     }
 
     fn key_name_products(&self) -> io::Result<Arc<KeyNameProducts>> {
@@ -287,6 +296,22 @@ mod tests {
         assert!(!expected.is_empty());
         assert_eq!(reads(&a_log, "a"), expected);
         assert_eq!(reads(&b_log, "b"), expected);
+
+        let (stack, names) = {
+            let _generation = content_reader_layers::content::Generation::enter();
+            let stack = open();
+            let (first, _) = traced(&stack, "first");
+            let names = first.key_names().unwrap();
+            (stack, names)
+        };
+        let tags = game.join("common/country_tags/00_base.txt");
+        let hidden = tags.with_extension("hidden");
+        std::fs::rename(&tags, &hidden).unwrap();
+        let (fresh, log) = traced(&stack, "fresh");
+        let kept = fresh.key_names();
+        std::fs::rename(&hidden, &tags).unwrap();
+        assert!(Arc::ptr_eq(&names, &kept.unwrap()));
+        assert_eq!(reads(&log, "fresh"), expected);
     }
 
     #[test]

@@ -48,7 +48,7 @@ fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears
     let cached = scripted.effects().unwrap();
     assert!(Arc::ptr_eq(&shared, cached.key_names.as_ref().unwrap()));
     let names = cached.view(None).key_names.unwrap();
-    assert!(std::ptr::eq(shared.as_ref(), names));
+    assert!(std::ptr::eq(&shared.names, names));
     assert!(names.countries.contains(b"SYN".as_slice()));
     assert!(
         names

@@ -1134,10 +1134,8 @@ pub fn read_enablers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "test-support")]
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    #[cfg(feature = "test-support")]
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
     fn parse_with_registry(
@@ -1246,7 +1244,6 @@ mod tests {
             && note == "research folder infantry_folder is defined again; its first definition is used"));
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn a_mod_adds_research_folders_after_the_base_game_and_cannot_redefine_one() {
         content_reader_script::test_game::enter();
@@ -1300,7 +1297,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn tokens_keep_database_order_replacement_and_refused_inventory_notes() {
         content_reader_script::test_game::enter();
@@ -2039,7 +2035,6 @@ mod tests {
         assert_eq!(enablers.single("rifle_1"), Ok(None));
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn a_mod_technology_replaces_vanilla_under_the_lexer_fold() {
         content_reader_script::test_game::enter();
@@ -2084,7 +2079,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn a_technology_redefined_in_another_file_is_another_template() {
         content_reader_script::test_game::enter();
@@ -2133,7 +2127,6 @@ mod tests {
         assert_eq!(enablers.single("tank_1"), Ok(None));
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn unverified_native_parse_retains_reason_and_withholds_effect_consumed_enablers() {
         content_reader_script::test_game::enter();
@@ -2199,7 +2192,6 @@ mod tests {
         assert_eq!(ok.single("lost"), Ok(None));
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn unresolved_variable_in_native_enablers_withholds_single_fallback() {
         content_reader_script::test_game::enter();
@@ -2236,7 +2228,6 @@ mod tests {
         assert_eq!(enablers.single("rifle_1"), Ok(None));
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn unreadable_technology_file_records_unverified_and_preserves_other_files() {
         content_reader_script::test_game::enter();

@@ -292,13 +292,13 @@ mod tests {
             database.named("Active_Equipment").unwrap()
         ));
         let product = super::super::KeyNameProducts {
-            names: Arc::new(lookup),
+            names: lookup,
             buildings: None,
             equipment_database: Some(database),
         };
         let cloned = product.clone();
         assert!(Arc::ptr_eq(product.equipment_database().unwrap(), cloned.equipment_database().unwrap()));
-        let lookup = &*product.names;
+        let lookup = &product.names;
         assert!(lookup.at(content_reader_script::key_names::Point::IdeaTags).effects.equipment.is_empty());
         assert_eq!(
             content_reader_script::modifiers::registered(b"ACTIVE_UNIT_MODIFIER", Some(lookup)),
