@@ -12696,6 +12696,7 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
+ "serde_json",
  "synthetic-game",
  "test-unify",
  "tracing",
@@ -12820,6 +12821,7 @@ name = "viewer-counters-land"
 version = "0.1.0"
 dependencies = [
  "content-reader-core",
+ "content-reader-gfx",
  "content-reader-naval-path",
  "content-reader-province-area",
  "dashboard-text",
