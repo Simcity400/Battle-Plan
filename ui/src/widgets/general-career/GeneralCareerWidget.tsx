@@ -6,7 +6,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveOptions } from '../../dashboard/options';
 import { subjectHandle } from '../../dashboard/chosen';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
-import { useCountriesRequest, useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
+import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { leaderRequestSelection, leaderRows, leadersStructure, topLeader, validateLeaders, withheldLeaderState, withheldLeaders } from '../generals/generalsData';
 import { OPTIONS } from './definition';
 import CareerView from './CareerView';
@@ -27,10 +27,9 @@ function TopGeneralCareer(props: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const dashboard = widget.countries.kind === 'selected';
   const tag = dashboard ? defaultCountryKey(track) : null;
-  const selection = useCountriesRequest(widget, runtime, active);
-  const params = useMemo(() => selection.requestTags === undefined ? null : { selection: leaderRequestSelection(selection.requestTags), leaders: 'land' },
-    [selection.requestTags]);
   const atRead = useCountriesSelectionAt(widget, runtime, active);
+  const params = useMemo(() => atRead.requestTags === undefined ? null : { selection: leaderRequestSelection(atRead.requestTags), leaders: 'land' },
+    [atRead.requestTags]);
   const head = useHeadProduct(runtime, atRead.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const read = atRead.hour;
   const rows = useMemo(() => head.data && read !== null && atRead.countries !== undefined ? leaderRows(head.data, read, atRead.countries, 'land') : [], [head.data, read, atRead.countries]);
@@ -40,8 +39,8 @@ function TopGeneralCareer(props: WidgetProps) {
   const body = () => {
     if (dashboard && !tag) return <WidgetState kind="empty" message="Choose a dashboard country or a leader in the widget settings." />;
     if (head.outside || atRead.outside) return <WidgetState kind="outside" read={head} />;
-    if (selection.group.error) return <WidgetState kind="error" failure={selection.group.error} onRetry={selection.group.retry} />;
-    if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
+    if (atRead.group.error) return <WidgetState kind="error" failure={atRead.group.error} onRetry={atRead.group.retry} />;
+    if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
     if (atRead.selectionReason) return <WidgetState kind="unavailable" message={atRead.selectionReason} />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (!head.data || atRead.countries === undefined) return <WidgetState kind="loading" label="Loading leaders…" />;

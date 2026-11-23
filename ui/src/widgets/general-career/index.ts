@@ -4,7 +4,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { useMemo } from 'react';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { useProduct } from '../../dashboard/products';
-import { useCountriesRequest } from '../../dashboard/useCountriesSelectionAt';
+import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { leaderRequestSelection } from '../generals/generalsData';
 import { leaderChoices, validateLeaderChoicesReply } from './choicesData';
 import GeneralCareerWidget from './GeneralCareerWidget';
@@ -14,7 +14,7 @@ const LOADING = { loading: true } as const;
 
 function useLeaderChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const { requestTags, selectionReason, group } = useCountriesRequest(widget, runtime, true);
+  const { requestTags, selectionReason, group } = useCountriesSelectionAt(widget, runtime, true);
   const request = track && requestTags !== undefined ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'unit-leader-choices',
     params: { branchId: track.branch.id, selection: leaderRequestSelection(requestTags) } }) : null;
   const { data, error, retry } = useProduct(runtime.client, request, true, validateLeaderChoicesReply, track?.source);

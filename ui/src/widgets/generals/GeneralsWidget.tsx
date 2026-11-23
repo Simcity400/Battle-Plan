@@ -16,7 +16,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { useCountriesRequest, useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
+import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { resolveOptions } from '../../dashboard/options';
 import CareerView from '../general-career/CareerView';
@@ -57,13 +57,12 @@ export default function GeneralsWidget(props: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const kind = String(options.leaders) as LeaderKinds;
-  const asked = useCountriesRequest(widget, runtime, active);
   const members = useCountriesSelectionAt(widget, runtime, active);
-  const params = useMemo(() => asked.requestTags === undefined ? null : { selection: leaderRequestSelection(asked.requestTags), leaders: kind },
-    [asked.requestTags, kind]);
+  const params = useMemo(() => members.requestTags === undefined ? null : { selection: leaderRequestSelection(members.requestTags), leaders: kind },
+    [members.requestTags, kind]);
   const head = useHeadProduct(runtime, members.gate, 'unit-leaders', params, { active, validate: validateLeaders, structure: leadersStructure });
   const hour = members.outside ? null : head.at ?? members.hour;
-  const selection = { group: asked.group, countries: members.countries, selectionReason: asked.selectionReason ?? members.selectionReason };
+  const selection = { group: members.group, countries: members.countries, selectionReason: members.selectionReason ?? members.selectionReason };
   const shown = useShownHour();
   shown(head.data ? hour : null);
   const data = head.data;
