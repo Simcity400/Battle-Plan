@@ -45,7 +45,13 @@ test('every widget module loads with its registered lazy body and the catalogue 
     for (const meta of widgetMetas) {
       const registered = widgetDefinition(meta.kind);
       const renderer = await load(meta.kind);
-      assert.equal(typeof renderer.render, 'function', `${meta.kind} body loads`);
+      assert.ok(
+        typeof renderer.render === 'function' || renderer.declaration?.family === 'table',
+        `${meta.kind} body or family declaration loads`,
+      );
+      if (renderer.declaration) {
+        assert.equal(renderer.declaration.kind, meta.kind, `${meta.kind} declaration matches kind`);
+      }
       assert.equal(typeof registered.render, 'function', `${meta.kind} body is registered`);
       for (const slot of ['countryChip']) {
         if (renderer[slot]) assert.equal(typeof registered[slot], 'function', `${meta.kind} ${slot} is registered`);

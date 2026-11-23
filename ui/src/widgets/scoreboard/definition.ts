@@ -2,7 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS, tableSortOf, tableSortOptions } from '../../charts/table/options.ts';
 import { TOP_COUNTRIES } from '../../charts/race/options.ts';
-import { tableFamilyOptions, type TableBase } from '../../draw/tables/settings.ts';
+import { tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 
 export const DEFAULT_SORT = { column: '', direction: 'descending' } as const;
 export const TABLE_BASE: TableBase = { density: 'comfortable', overflow: 'tooltip', sort: { column: 'country', direction: 'ascending' } };

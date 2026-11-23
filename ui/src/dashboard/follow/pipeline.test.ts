@@ -548,10 +548,21 @@ test('widget drawing fault reports via typed widget-failed, sticks across surfac
     assert.equal(p1.status(s1).status, 'followed', 'a widget drawing fault does not fail the subscription');
     p1.bind(w1, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
     assert.equal(p1.view(w1)?.mode, 'failed', 'widget drawing fault stays sticky across surface remounts');
+    assert.equal(p1.view(w1)?.failureOrigin, 'local', 'widget drawing fault preserves local failureOrigin across remounts');
+
+    shouldThrow = false;
+    p1.retryWidget(w1);
+    await env.waitView(p1, w1, v => v?.mode === 'picture');
+    assert.equal(p1.widgetError(w1), undefined, 'local retryWidget clears widget error without restarting pipeline');
+
+    shouldThrow = true;
+    p1.bind(w1, [surface()], { surfaces: [{ width: 3, height: 1, dpr: 1 }] });
+    await env.waitView(p1, w1, v => v?.mode === 'failed');
+    const e1Retry = installedEntry(p1, w1, s1);
 
     shouldThrow = false;
     const restarted = env.nextEvent('restart');
-    e1.retry!();
+    e1Retry.retry!();
     await restarted;
     const p2 = env.pipeline;
     const c2 = env.nextEvent('follow-clock');

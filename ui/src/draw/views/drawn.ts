@@ -1,3 +1,4 @@
+import '../../families/table/registerAll.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
 import { ArsenalPicture, arsenalNext, type ArsenalModel } from '../arsenal.ts';

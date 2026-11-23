@@ -1,17 +1,9 @@
 import type { CSSProperties } from 'react';
+import { valueStateText, type ValueStateKind, type ValueStateProps } from './valueStateText.ts';
 import './ValueState.css';
 
-export type ValueStateKind = 'known' | 'zero' | 'missing' | 'notApplicable' | 'partial';
-
-export interface ValueStateProps {
-  kind: ValueStateKind;
-  text?: string;
-  unit?: string;
-  reason?: string;
-  narrow?: boolean;
-  atLeast?: boolean;
-  className?: string;
-}
+export { valueStateText };
+export type { ValueStateKind, ValueStateProps };
 
 export interface MissingPictureProps {
   kind?: 'flag' | 'picture';
@@ -25,26 +17,6 @@ export interface MissingPictureProps {
 export interface MissingNameProps {
   reason?: string;
   className?: string;
-}
-
-export function valueStateText({ kind, text, unit, reason, atLeast }: Pick<ValueStateProps, 'kind' | 'text' | 'unit' | 'reason' | 'atLeast'>): string {
-  switch (kind) {
-    case 'known':
-      return unit ? `${text ?? ''} ${unit}` : (text ?? '');
-    case 'zero': {
-      const zero = text ?? '0';
-      return unit ? `${zero} ${unit}` : zero;
-    }
-    case 'missing':
-      return reason ? `Not recorded: ${reason}` : 'Not recorded';
-    case 'notApplicable':
-      return reason ? `Not applicable: ${reason}` : 'Not applicable';
-    case 'partial': {
-      const figure = unit ? `${text ?? ''} ${unit}` : (text ?? '');
-      const lead = atLeast ? `at least ${figure}` : figure;
-      return reason ? `${lead}, partial: ${reason}` : `${lead}, partial`;
-    }
-  }
 }
 
 export function ValueState({ kind, text, unit, reason, narrow = false, atLeast = false, className = '' }: ValueStateProps) {

@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
+import { ValueState } from '../components/ValueState';
 import { measureTooltipScroll, scrollTooltip } from './tooltip';
 import type { TooltipContent, TooltipRow } from './tooltip';
 import { tooltipRowOffsets, tooltipRowWindow, tooltipScrollTop } from './tooltipScroll';
@@ -9,7 +10,9 @@ export function TooltipRowView({ row, element }: { row: TooltipRow; element?: (n
     <span>{row.swatch && <i style={{ background: row.swatch }} aria-hidden="true" />}{row.countryFlag
       ? <CountryFlagUrl className="chart-tooltip-flag" url={row.countryFlag.flag} detail={row.countryFlag.flagDetail} reason={row.countryFlag.flagReason} pending={row.countryFlag.flagPending} />
       : row.icon && <img src={row.icon} alt="" />}{row.label}</span>
-    {row.value != null && <b className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</b>}
+    {row.valueState
+      ? <b className={row.tone ? `is-${row.tone}` : undefined}><ValueState {...row.valueState} /></b>
+      : row.value != null && <b className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</b>}
   </div>;
 }
 

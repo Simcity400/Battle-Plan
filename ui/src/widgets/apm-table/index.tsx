@@ -1,4 +1,5 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import { ApmWidget } from '../player-apm/ApmWidget';
+import { apmTableDeclaration } from '../player-apm/apmProjection';
 import { useApmChoices } from '../player-apm/useApm';
-export default { render: props => <ApmWidget {...props} graph={false} />, useOptionChoices: useApmChoices } satisfies WidgetRenderer;
+
+export default { declaration: apmTableDeclaration, useOptionChoices: useApmChoices } satisfies WidgetRenderer;
