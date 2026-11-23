@@ -82,6 +82,7 @@ jobs:
     if: needs.changes.outputs.any == 'true'
     name: ${{ matrix.name }}
     runs-on: ${{ fromJSON('{"linux":"ubuntu-24.04","windows":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
+    timeout-minutes: ${{ fromJSON('{"linux":30,"windows":60,"rust":90}')[matrix.group] }}
     strategy:
       fail-fast: false
       matrix:

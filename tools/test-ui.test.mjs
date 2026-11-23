@@ -121,12 +121,13 @@ test('both groups complete sequentially and failure of either group fails test:u
   }
 });
 
-test('the production group runner reports actual Node test failures', async () => {
+test('the production group runner reports actual Node test failures, and a group stopped at its deadline names its unfinished files', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'hoi4-test-ui-results-'));
   try {
     await writeFile(resolve(root, 'pass.test.mjs'), `import assert from 'node:assert/strict'; import test from 'node:test';
 test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
+    await writeFile(resolve(root, 'leak.test.mjs'), "import test from 'node:test'; test('synthetic leak', () => { setInterval(() => {}, 1000); });");
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
@@ -140,7 +141,10 @@ process.chdir(caller);
 const passReport = reported;
 reported = '';
 const failed = await executeGroup({ files: ['fail.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output);
-console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported, cwd: process.cwd(), relativePassed }));
+const failureReport = reported;
+reported = '';
+const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs'], concurrency: true }, ${JSON.stringify(root)}, output, AbortSignal.abort());
+console.log(JSON.stringify({ passed, failed, passReport, failureReport, stopped, stopReport: reported, cwd: process.cwd(), relativePassed }));
 `);
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
@@ -152,6 +156,9 @@ console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported
     assert.match(result.passReport, /synthetic pass/);
     assert.equal(result.failed, 1);
     assert.match(result.failureReport, /expected synthetic failure/);
+    assert.equal(result.stopped, 1, 'a group stopped at its deadline fails');
+    assert.match(result.stopReport, /leak\.test\.mjs/, 'the unfinished file is named');
+    assert.match(result.stopReport, /Synthetic group stopped at the \d+-minute deadline/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

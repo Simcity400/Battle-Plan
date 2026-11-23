@@ -238,7 +238,9 @@ export function testGroups(files, manifest = browserTests, { tabFull = false } =
   ];
 }
 
-export async function executeGroup(group, root = repositoryRoot, output = process.stdout) {
+export const groupDeadlineMinutes = 20;
+
+export async function executeGroup(group, root = repositoryRoot, output = process.stdout, signal = AbortSignal.timeout(groupDeadlineMinutes * 60_000)) {
   if (!group.files.length) return 0;
   const flags = ['BATTLEPLAN_VIRTUAL_TAB_ONLY', 'BATTLEPLAN_VIRTUAL_TAB_FULL'];
   const previous = flags.map(flag => process.env[flag]);
@@ -251,10 +253,11 @@ export async function executeGroup(group, root = repositoryRoot, output = proces
     process.chdir(base);
     let failed = false;
     const tests = run({ files: group.files.map(file => resolve(base, file)), concurrency: group.concurrency,
-      execArgv: ['--experimental-strip-types'] });
+      execArgv: ['--experimental-strip-types'], signal });
     tests.on('test:fail', () => { failed = true; });
     for await (const chunk of tests.compose(spec)) output.write(chunk);
-    return failed ? 1 : 0;
+    if (signal.aborted) output.write(`${group.name ?? 'UI tests'} stopped at the ${groupDeadlineMinutes}-minute deadline: each file reported cancelled above never finished, often a handle left open after its last test\n`);
+    return failed || signal.aborted ? 1 : 0;
   } finally {
     process.chdir(invokedFrom);
     for (let i = 0; i < flags.length; i++) {
