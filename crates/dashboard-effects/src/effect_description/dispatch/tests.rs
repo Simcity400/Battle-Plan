@@ -30,7 +30,7 @@ fn aliases_share_one_class_dispatch() {
         scripted_stack: Vec::new(),
         concise: None,
     };
-    let items = content_reader_core::parser::parse(
+    let items = content_reader_parser::parser::parse(
         b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}",
     )
     .unwrap()

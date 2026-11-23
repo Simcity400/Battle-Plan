@@ -1,11 +1,11 @@
 use crate::triggers::{Failure, refusal::refused};
 
-use content_reader_core::parser::{Item, Operator};
+use content_reader_parser::parser::{Item, Operator};
 use std::borrow::Cow;
 
 use super::{Evaluator, Scope, Scopes, world::NULL_STATE};
 use crate::scripted_text::EventObject;
-use content_reader_core::scope::Keyword;
+use content_reader_script::scope::Keyword;
 
 pub(super) struct FlagTest<'i> {
     pub name: &'i [u8],
@@ -117,7 +117,7 @@ impl Evaluator<'_, '_> {
                                 .slot(raw)
                                 .ok_or("dynamic flag capital owner has no country links row")?;
                             match self.enter_flat(
-                                &content_reader_core::scope::Scope::Keyword(Keyword::CapitalScope),
+                                &content_reader_script::scope::Scope::Keyword(Keyword::CapitalScope),
                                 Scopes::of(Scope::Country(country)),
                             )? {
                                 Some(Scope::State(state)) => state,
@@ -231,13 +231,13 @@ fn flag_members(object: Option<EventObject>) -> (Option<u32>, u32) {
 fn name<'i>(item: &'i Item, trigger: &str) -> Result<&'i [u8], Failure> {
     item.value
         .scalar()
-        .map(content_reader_core::parser::c_string)
+        .map(content_reader_parser::parser::c_string)
         .ok_or_else(|| format!("{trigger} needs a scalar flag name").into())
 }
 
 fn integer(field: &Item, trigger: &str) -> Result<i32, Failure> {
     let text = field.value.scalar().unwrap_or_default();
-    let value = content_reader_core::fixed5::decimal_i32(text);
+    let value = content_reader_parser::fixed5::decimal_i32(text);
     if value == i32::MIN || value == i32::MAX {
         return Err(refused(format!(
             "{trigger} {} = {} reaches the end of the 32-bit range, whose conversion is not reproduced",
@@ -256,7 +256,7 @@ fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
             String::from_utf8_lossy(text)
         ))
     };
-    let parts: Vec<&[u8]> = content_reader_core::parser::c_string(text)
+    let parts: Vec<&[u8]> = content_reader_parser::parser::c_string(text)
         .split(|byte| *byte == b'.')
         .collect();
     let [year, month, day] = parts.as_slice() else {

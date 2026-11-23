@@ -62,7 +62,7 @@ fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord
 
 pub fn text_flag(source: &dyn FlagSource, tag: &str) -> Result<Option<Texture>, String> {
     let tag = tag.as_bytes();
-    let tag = content_reader_core::parser::c_string(tag);
+    let tag = content_reader_parser::parser::c_string(tag);
     if tag.len() <= 2 {
         return Ok(None);
     }

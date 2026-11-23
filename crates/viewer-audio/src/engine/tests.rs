@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Emitter, Frame, Group, Listener, Mix};
-use content_reader_core::test_support::Stack;
+use content_reader_layers::test_support::Stack;
 use content_reader_sound::wav::{decode, encode_pcm16};
 
 fn tone(frames: usize) -> Vec<u8> {
@@ -9,7 +9,7 @@ fn tone(frames: usize) -> Vec<u8> {
 
 struct Fixture {
     _stack: Stack,
-    layers: content_reader_core::ResolvedLayers,
+    layers: content_reader_layers::ResolvedLayers,
     engine: Engine,
 }
 

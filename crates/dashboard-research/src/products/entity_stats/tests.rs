@@ -3,7 +3,7 @@ use dashboard_base::{
     products::at_hour::entry,
     test_fixtures::{CAMPAIGN, records, source},
 };
-use content_reader_core::equipment::StatValue;
+use content_reader_key_names::equipment::StatValue;
 use replay::campaign::Replay;
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicBool;
@@ -89,7 +89,7 @@ fn module_stats_sign_their_changes_like_the_game() {
 fn tactics_show_all_six_effects_favoured_by_side() {
     let localisation = localisation();
     let mut sheet = Sheet::new(&localisation);
-    let fields = content_reader_core::parser::parse(b"is_attacker = yes").unwrap().items;
+    let fields = content_reader_parser::parser::parse(b"is_attacker = yes").unwrap().items;
     let tactic = Tactic { id: 1, token: b"mod_tactic".to_vec(), fields, phase: 0, display_phase: 0, effects: [10_000, 0, 25_000, 0, -10_000, 0], unproven: None };
     let mut warnings = Vec::new();
     sheet.tactic(&tactic, &mut warnings);
@@ -103,7 +103,7 @@ fn tactics_show_all_six_effects_favoured_by_side() {
 
 #[test]
 fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability_scaling_and_name_what_they_withhold() {
-    let (database, _) = content_reader_core::equipment::fixture::load(&[(
+    let (database, _) = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/convoys.txt",
         "equipment_modules = {
             gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } }
@@ -126,8 +126,8 @@ fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability
             hull_6 = { archetype = hull module_slots = inherit default_modules = { main = bad } }
          }",
     )]);
-    let metadata = content_reader_core::equipment::stat_metadata();
-    let stat = |name: &str| content_reader_core::equipment::stat_index(name.as_bytes()).unwrap();
+    let metadata = content_reader_script::equipment_stats::stat_metadata();
+    let stat = |name: &str| content_reader_script::equipment_stats::stat_index(name.as_bytes()).unwrap();
     let names = localisation();
     let totals = |token: &str| equipment_totals(&database, metadata, &names, token);
     let hull_1 = totals("hull_1").unwrap().stats;
@@ -150,7 +150,7 @@ fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability
 fn a_modules_conditional_stats_and_costs_are_shown_with_their_condition_and_only_unreadable_ones_are_withheld() {
     let localisation = localisation();
     let mut sheet = Sheet::new(&localisation);
-    let design = content_reader_core::equipment::ModuleDesign {
+    let design = content_reader_key_names::equipment::ModuleDesign {
         mission_terms: vec![(vec![b"cas".to_vec()], StatGroup { add: vec![StatValue { index: 0, value: 600_000 }], ..Default::default() })],
         manpower: Some(Ok(50_000_000)),
         build_resources: vec![(b"steel".to_vec(), Ok(200_000)), (b"chromium".to_vec(), Err("chromium = lots is not a number".into()))],
@@ -183,7 +183,7 @@ fn a_module_stat_with_an_unreadable_term_is_withheld_whole() {
 
 #[test]
 fn an_unreadable_module_multiplier_withholds_only_the_stats_a_module_scales_with_it() {
-    let (database, _) = content_reader_core::equipment::fixture::load(&[(
+    let (database, _) = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/convoys.txt",
         "equipment_modules = { gun = { add_stats = { lg_attack = 2 } } motor = { add_stats = { torpedo_attack = 1 } } }
          equipments = {
@@ -195,8 +195,8 @@ fn an_unreadable_module_multiplier_withholds_only_the_stats_a_module_scales_with
             hull_3 = { archetype = hull module_slots = inherit default_modules = { main = motor } }
          }",
     )]);
-    let metadata = content_reader_core::equipment::stat_metadata();
-    let lg_attack = content_reader_core::equipment::stat_index(b"lg_attack").unwrap();
+    let metadata = content_reader_script::equipment_stats::stat_metadata();
+    let lg_attack = content_reader_script::equipment_stats::stat_index(b"lg_attack").unwrap();
     let names = localisation();
     let totals = |token: &str| equipment_totals(&database, metadata, &names, token).unwrap();
     assert!(totals("hull_1").withheld.is_empty(), "X-S10: with no module adding light attack, the unread multiplier scales nothing, so the known base attack stays: {:?}", totals("hull_1").withheld);
@@ -209,8 +209,8 @@ fn an_unreadable_module_multiplier_withholds_only_the_stats_a_module_scales_with
 fn a_buildings_sheet_shows_its_recorded_maximum_level_and_names_what_it_leaves_out() {
     let localisation = localisation();
     let mut sheet = Sheet::new(&localisation);
-    let building = content_reader_core::buildings::BuildingType { name: "mod_bunker".into(), province_max: Some(5), local_resources: vec![("steel".into(), 1)], ..Default::default() };
-    sheet.building(&building, &content_reader_core::defines::Defines::new().unwrap());
+    let building = content_reader_key_names::buildings::BuildingType { name: "mod_bunker".into(), province_max: Some(5), local_resources: vec![("steel".into(), 1)], ..Default::default() };
+    sheet.building(&building, &content_reader_defines::defines::Defines::new().unwrap());
     assert_eq!(lines(&sheet), ["Maximum level|5"], "O-S2, X-S11: the sheet is the building's recorded facts, never empty");
     assert_eq!(sheet.stats[0].source.as_deref(), Some("Per province"));
     assert!(sheet.refusals.keys().any(|why| why.contains("local resources")), "{:?}", sheet.refusals);

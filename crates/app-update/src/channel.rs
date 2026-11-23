@@ -45,20 +45,35 @@ pub fn load() -> Result<Option<Channel>, String> {
     }
 }
 
-pub fn save(channel: Channel) -> Result<(), String> {
-    let path = path()?;
-    let write = || -> io::Result<()> {
-        fs::create_dir_all(
-            path.parent()
-                .ok_or_else(|| io::Error::other("no parent folder"))?,
-        )?;
-        let bytes = serde_json::to_vec_pretty(&Saved {
-            channel: Some(channel),
-        })?;
-        let mut temporary = path.clone().into_os_string();
-        temporary.push(format!(".{}.tmp", std::process::id()));
-        fs::write(&temporary, bytes)?;
-        fs::rename(&temporary, &path)
-    };
-    write().map_err(|error| format!("{} couldn’t be saved: {error}", path.display()))
+pub fn save(channel: Channel, write: impl FnOnce(&Path, &[u8]) -> io::Result<Option<String>>) -> Result<Option<String>, String> {
+    save_to(&path()?, channel, write)
+}
+
+fn save_to(path: &Path, channel: Channel, write: impl FnOnce(&Path, &[u8]) -> io::Result<Option<String>>) -> Result<Option<String>, String> {
+    serde_json::to_vec_pretty(&Saved { channel: Some(channel) })
+        .map_err(io::Error::from)
+        .and_then(|bytes| write(path, &bytes))
+        .map_err(|error| format!("{} couldn’t be saved: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_channel_is_saved_only_through_the_hosts_admitted_write() {
+        let path = Path::new("updates.json");
+        let refused = save_to(path, Channel::Nightly, |_, _| Err(io::Error::new(io::ErrorKind::Interrupted, "BattlePlan is closing, so nothing more is written.")));
+        assert_eq!(refused, Err("updates.json couldn’t be saved: BattlePlan is closing, so nothing more is written.".to_owned()), "a channel chosen once BattlePlan closes is refused by name");
+        let mut written = None;
+        let warning = save_to(path, Channel::Nightly, |to, bytes| {
+            written = Some((to.to_path_buf(), bytes.to_vec()));
+            Ok(None)
+        })
+        .unwrap();
+        assert_eq!(warning, None);
+        let (to, bytes) = written.unwrap();
+        assert_eq!(to, path);
+        assert_eq!(serde_json::from_slice::<Saved>(&bytes).unwrap().channel, Some(Channel::Nightly));
+    }
 }

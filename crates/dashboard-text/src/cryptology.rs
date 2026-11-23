@@ -6,7 +6,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> Result<Self, String> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> Result<Self, String> {
         let read = |name| {
             defines
                 .fixed5("NOperatives", name)

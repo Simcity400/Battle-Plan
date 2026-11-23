@@ -10,13 +10,14 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-defines.workspace = true
+content-reader-layers.workspace = true
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-layers = { workspace = true, features = ["layer-fixtures"] }
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = ["content-reader-layers/test-support"]
 
 [lints]
 workspace = true

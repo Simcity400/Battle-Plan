@@ -27,7 +27,7 @@ pub(crate) struct Defines {
     day_night: replay_data::day_night::Defines,
 }
 impl Defines {
-    pub(crate) fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub(crate) fn read(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let get = |key| defines.fixed5("NNavy", key);
         Ok(Self {
             base: [
@@ -596,9 +596,9 @@ fn float(raw: i64, multiplier: f32) -> Value {
 }
 fn coloured(raw: i64, precision: i32, percent: bool) -> String {
     let number = if percent {
-        content_reader_core::fixed5::fixed5_percent(raw, precision, true)
+        content_reader_parser::fixed5::fixed5_percent(raw, precision, true)
     } else {
-        content_reader_core::fixed5::fixed5_to_string(raw, precision)
+        content_reader_parser::fixed5::fixed5_to_string(raw, precision)
     };
     format!(
         "\u{11}{}{number}\u{11}!",

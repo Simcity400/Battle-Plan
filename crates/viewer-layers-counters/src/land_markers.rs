@@ -3,7 +3,7 @@ use viewer_layer_core::{layers::{Carried, Change, Settling, Dirty, Inputs, KeptA
 use super::{counters::key_of, naval_counters::Admits};
 use viewer_layer_core::counter_rows::Rows;
 use viewer_layer_core::playhead_host::mirror::{Cell, Mirror, Mirrors};
-use content_reader_core::movement::MovementMap;
+use content_reader_map::movement::MovementMap;
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{DivisionMovementStats, DivisionPanelStatsRow, Field, LandCombatDivisionRow, LandCombatMemberValues, LandCombatSideDetails, NameOperands, NativeValue, Opaque, Recorded, TableId};

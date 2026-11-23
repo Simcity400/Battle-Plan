@@ -74,7 +74,7 @@ impl<'a> ScriptedText<'a> {
                 .checked_div(total)
                 .ok_or("GetPartySupport: native signed quotient overflows")?
         };
-        Ok(content_reader_core::fixed5::format_fixed5(
+        Ok(content_reader_parser::fixed5::format_fixed5(
             value.wrapping_mul(100),
             true,
             5,

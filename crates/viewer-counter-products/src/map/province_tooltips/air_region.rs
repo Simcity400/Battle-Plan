@@ -700,7 +700,7 @@ fn fixed_round(value: i64) -> i32 {
 
 fn value(context: &Context<'_>, item: derive::Item) -> Result<String, String> {
     let text = match item.cause {
-        0 | 1 | 2 | 6 | 7 => content_reader_core::fixed5::fixed5_to_string(item.amount, 2),
+        0 | 1 | 2 | 6 | 7 => content_reader_parser::fixed5::fixed5_to_string(item.amount, 2),
         3 => context.loc(
             "AIRWING_DISRUPTED_VAL",
             &[("VAL", Arg::Fixed5(item.amount))],

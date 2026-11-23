@@ -1,3 +1,4 @@
+use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 
 use job_priority::SpawnCarried as _;
 #[cfg(any(test, feature = "test-support"))]
@@ -475,7 +476,7 @@ pub trait EffectDescriber: std::any::Any + Send + Sync {
         &self,
         text: &ScriptedText<'f>,
         source: &str,
-        items: &[content_reader_core::parser::Item],
+        items: &[content_reader_parser::parser::Item],
         expansion: &ExpansionScopes<'_, 'f>,
         graph: &mut EventScopes,
         refused: &mut Vec<String>,
@@ -489,30 +490,30 @@ pub type EffectDescriberFactory = fn() -> Box<dyn EffectDescriber>;
 pub struct ScriptedContent {
     pub names: content_reader_scripted_localisation::scripted_localisation::Names,
     pub recursion: i32,
-    pub tag_aliases: std::sync::Arc<content_reader_core::tag_aliases::TagAliases>,
+    pub tag_aliases: std::sync::Arc<content_reader_key_names::tag_aliases::TagAliases>,
     pub recorded_language: String,
-    pub layers: std::sync::Arc<content_reader_core::content::ResolvedContent>,
+    pub layers: std::sync::Arc<content_reader_layers::content::ResolvedContent>,
     pub(crate) environment:
-        content_reader_core::content::diagnostics::Once<Result<entries::Environment, String>>,
+        content_reader_layers::content::diagnostics::Once<Result<entries::Environment, String>>,
     pub(crate) state_content: std::sync::Arc<
-        content_reader_core::content::diagnostics::Once<Result<entries::StateContent, String>>,
+        content_reader_layers::content::diagnostics::Once<Result<entries::StateContent, String>>,
     >,
     pub(crate) template_names:
-        content_reader_core::content::diagnostics::Once<Result<Localisation, String>>,
-    event_index: content_reader_core::content::diagnostics::Once<content_reader_events::events::LazyEvents>,
+        content_reader_layers::content::diagnostics::Once<Result<Localisation, String>>,
+    event_index: content_reader_layers::content::diagnostics::Once<content_reader_events::events::LazyEvents>,
     effect_describer: Option<Box<dyn EffectDescriber>>,
-    static_modifiers: std::sync::Arc<content_reader_core::static_modifiers::Descriptions>,
+    static_modifiers: std::sync::Arc<content_reader_politics::static_modifiers::Descriptions>,
 }
 
 impl ScriptedContent {
     pub fn read(
-        content: std::sync::Arc<content_reader_core::content::ResolvedContent>,
+        content: std::sync::Arc<content_reader_layers::content::ResolvedContent>,
         recorded_language: String,
     ) -> Result<Self, String> {
         let layers = &content.layers;
         let names = content_reader_scripted_localisation::scripted_localisation::names(layers)
             .map_err(|error| format!("common/scripted_localisation is unreadable: {error}"))?;
-        let environment = content_reader_core::content::diagnostics::Once::new();
+        let environment = content_reader_layers::content::diagnostics::Once::new();
         let recursion = environment
             .get_or_init(|| {
                 Environment::read(layers).map_err(|error| {
@@ -524,7 +525,7 @@ impl ScriptedContent {
             .defines()
             .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
-        let tag_aliases = content_reader_core::tag_aliases::read(layers)
+        let tag_aliases = content_reader_key_names::tag_aliases::read(layers)
             .map_err(|error| format!("common/country_tag_aliases is unreadable: {error}"))?;
         Ok(Self {
             names,
@@ -533,9 +534,9 @@ impl ScriptedContent {
             recorded_language,
             layers: content,
             environment,
-            state_content: std::sync::Arc::new(content_reader_core::content::diagnostics::Once::new()),
-            template_names: content_reader_core::content::diagnostics::Once::new(),
-            event_index: content_reader_core::content::diagnostics::Once::new(),
+            state_content: std::sync::Arc::new(content_reader_layers::content::diagnostics::Once::new()),
+            template_names: content_reader_layers::content::diagnostics::Once::new(),
+            event_index: content_reader_layers::content::diagnostics::Once::new(),
             effect_describer: None,
             static_modifiers: Default::default(),
         })
@@ -554,7 +555,7 @@ impl ScriptedContent {
 
     pub fn static_modifiers(
         &self,
-    ) -> &std::sync::Arc<content_reader_core::static_modifiers::Descriptions> {
+    ) -> &std::sync::Arc<content_reader_politics::static_modifiers::Descriptions> {
         &self.static_modifiers
     }
 
@@ -583,7 +584,7 @@ impl ScriptedContent {
 
     pub fn set_synthetic_environment(&self, state_names: std::collections::BTreeMap<u32, String>) {
         let mut environment = entries::EnvironmentInputs::synthetic().with_constants(
-            content_reader_core::script_constants::read(&self.layers.layers)
+            content_reader_politics::script_constants::read(&self.layers.layers)
                 .map_err(|why| why.to_string()),
         );
         environment.state_names = state_names
@@ -1608,7 +1609,7 @@ impl<'a> ScriptedText<'a> {
         }
         let digits = segment.strip_prefix(['-', '+']).unwrap_or(segment);
         if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-            let id = content_reader_core::fixed5::decimal_i32(segment.as_bytes());
+            let id = content_reader_parser::fixed5::decimal_i32(segment.as_bytes());
             if id <= 0 {
                 return Ok(object);
             }

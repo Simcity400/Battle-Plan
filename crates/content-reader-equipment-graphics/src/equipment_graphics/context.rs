@@ -1,3 +1,4 @@
+use content_reader_script::native::{self, Shape};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,7 +8,7 @@ use std::{
 use crate::{
     ResolvedLayers,
     map::ProvinceDefinition,
-    parser::native::{self, Shape},
+
     states,
     terrain::DefaultMap,
 };
@@ -384,7 +385,7 @@ mod tests {
 
     #[test]
     fn mixed_continent_and_coastal_states_follow_native_continent_scan() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_context_mixed_continent_{}_{:?}",
             std::process::id(),

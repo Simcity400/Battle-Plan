@@ -1,7 +1,7 @@
 use super::*;
 use crate::catalogue::{Catalogue, View, built_catalogue, catalogue};
 use crate::products::ContentOptions;
-use content_reader_core::content::diagnostics;
+use content_reader_layers::content::diagnostics;
 use std::sync::atomic::AtomicBool;
 
 fn built() -> usize {
@@ -100,7 +100,7 @@ fn kept_sprites_read_back_as_every_kind_was_declared() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = SpriteSet::new(&[(
         "interface/test.gfx".to_owned(),
-        content_reader_core::gui::native::sprites::read_sprites(GFX.as_bytes()),
+        content_reader_gui::gui::native::sprites::read_sprites(GFX.as_bytes()),
     )]);
     for name in ["GFX_a", "GFX_b", "GFX_tile", "GFX_bar", "GFX_anim"] {
         assert!(read.contains(name), "{name}: {read:?}");

@@ -2,7 +2,8 @@
 use std::{cmp::Reverse, collections::BTreeMap, io};
 use viewer_runtime::count_math::{count_range_seeded, ratio};
 
-use content_reader_core::{defines::Defines, unit_leader::SubUnit, unit_leader::SubUnits};
+use content_reader_defines::defines::Defines;
+use content_reader_script::sub_units::{SubUnit, SubUnits};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::DivisionTemplateIconRow, rows::tables};
 use replay_frame::frame::DecodedFrame;

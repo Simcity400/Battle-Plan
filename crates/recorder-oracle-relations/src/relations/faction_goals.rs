@@ -52,7 +52,7 @@ fn project<'a>(
     let spelling = |token| {
         tokens
             .get(&token)
-            .map(|bytes| content_reader_core::parser::c_string(bytes).to_vec())
+            .map(|bytes| content_reader_parser::parser::c_string(bytes).to_vec())
             .ok_or_else(|| {
                 invalid(format!(
                     "faction goal token {token} is absent from LexicalTokens"

@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::test_support::Stack;
+use content_reader_layers::test_support::Stack;
 use content_reader_sound::combat_sounds::{BattleDefines, Layers};
 use std::collections::BTreeMap;
 

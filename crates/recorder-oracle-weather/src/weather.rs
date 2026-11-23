@@ -21,12 +21,12 @@ use super::{Report, complete, invalid};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceModifierContent {
     pub rules: ProvinceModifierRules,
-    pub statics: BTreeMap<String, Result<content_reader_core::modifiers::Modifiers, String>>,
+    pub statics: BTreeMap<String, Result<content_reader_script::modifiers::Modifiers, String>>,
     pub notes: Vec<String>,
 }
 
 impl ProvinceModifierContent {
-    pub fn read(layers: &content_reader_core::ResolvedLayers, saved: &Save) -> io::Result<Self> {
+    pub fn read(layers: &content_reader_layers::ResolvedLayers, saved: &Save) -> io::Result<Self> {
         let rules = content_reader_weather::weather::province_modifier_rules(layers)?;
         let mut names: BTreeSet<&str> = TEMPERATURE_MODIFIERS
             .into_iter()
@@ -43,7 +43,7 @@ impl ProvinceModifierContent {
             );
         }
         let names: Vec<&str> = names.into_iter().collect();
-        let blocks = content_reader_core::static_modifiers::read_blocks(layers, &names)?;
+        let blocks = content_reader_politics::static_modifiers::read_blocks(layers, &names)?;
         let statics = names
             .iter()
             .zip(blocks.blocks)
@@ -445,7 +445,7 @@ impl<'a> ModifierRebuild<'a> {
     fn added(
         registry: &Registry<'_>,
         name: &str,
-        block: &'a content_reader_core::modifiers::Modifiers,
+        block: &'a content_reader_script::modifiers::Modifiers,
         names: &mut BTreeMap<u32, &'a str>,
     ) -> Result<Vec<(u32, i64)>, String> {
         let mut entries = Vec::new();

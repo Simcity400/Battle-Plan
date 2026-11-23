@@ -1,6 +1,6 @@
 
 use dashboard_base::{Source, products::{LoadContext, Product}};
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -201,7 +201,7 @@ fn project(
     selected: Option<u32>,
     viewing: Option<u32>,
     defines: Result<&Defines, &str>,
-    subunits: Result<&content_reader_core::unit_leader::SubUnits, &str>,
+    subunits: Result<&content_reader_script::sub_units::SubUnits, &str>,
 ) -> io::Result<IntelDetailsReply> {
     let countries = frame.complete::<tables::Countries>()?;
 
@@ -729,11 +729,11 @@ impl Product for IntelDetails {
         let defines = catalogue
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|catalogue| content_reader_core::defines::read(&catalogue.content.layers).map_err(|e| e.to_string()));
+            .and_then(|catalogue| content_reader_defines::defines::read(&catalogue.content.layers).map_err(|e| e.to_string()));
         let subunits = catalogue
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|catalogue| content_reader_core::unit_leader::sub_units(&catalogue.content.layers).map_err(|e| e.to_string()));
+            .and_then(|catalogue| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|e| e.to_string()));
         let fuel = fuel_frame(recording, stretch.run, &frame);
         project(
             &frame,

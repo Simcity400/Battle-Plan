@@ -46,7 +46,7 @@ pub struct Localisation {
 #[derive(Clone)]
 enum Entries {
     Read(BTreeMap<String, String>),
-    Kept(content_reader_core::kept::Table),
+    Kept(content_reader_layers::kept::Table),
 }
 
 impl Default for Entries {
@@ -140,7 +140,7 @@ impl Localisation {
     }
 
     pub fn keep(&self, out: &mut Vec<u8>) {
-        use content_reader_core::kept::{Table, put_bytes, put_texts};
+        use content_reader_layers::kept::{Table, put_bytes, put_texts};
         put_bytes(out, self.language.as_bytes());
         put_texts(out, &self.logged);
         put_texts(out, &self.refused);
@@ -155,12 +155,12 @@ impl Localisation {
     }
 
     pub fn from_kept(bytes: &std::sync::Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
-        let mut input = content_reader_core::kept::Input::new(bytes, at);
+        let mut input = content_reader_layers::kept::Input::new(bytes, at);
         let language = input.text()?;
         let logged = input.texts()?;
         let refused = input.texts()?;
         let duplicates = input.texts()?;
-        let (table, end) = content_reader_core::kept::Table::read(bytes, input.at())?;
+        let (table, end) = content_reader_layers::kept::Table::read(bytes, input.at())?;
         Ok((
             Self {
                 language,
@@ -1158,7 +1158,7 @@ const LANGUAGE_LIST: &str = "localisation/languages.yml";
 fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
     match layers.recorded_language() {
         Some(recorded) if recorded != language => {
-            content_reader_core::content::diagnostics::Diagnostics::note(format!(
+            content_reader_layers::content::diagnostics::Diagnostics::note(format!(
                 "Text is shown in {recorded}, the language this recording was made in: it carries no {language} text."
             ));
             recorded
@@ -1193,7 +1193,7 @@ fn read_with(
         ..Localisation::default()
     };
     let mut sources = BTreeMap::new();
-    let read = content_reader_core::parallel::map(&files, |(_, _, path)| {
+    let read = content_reader_layers::parallel::map(&files, |(_, _, path)| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bytes = layers.read_path(&normalize_path(path)?)?;
             io::Result::Ok(parse(&bytes))
@@ -2520,7 +2520,7 @@ mod tests {
 
     #[test]
     fn an_archive_file_whose_name_is_not_utf8_loads() {
-        use content_reader_core::test_support::{Record, zip_records};
+        use content_reader_layers::test_support::{Record, zip_records};
         let root = std::env::temp_dir().join(format!(
             "hoi4_localisation_raw_name_{}_{:?}",
             std::process::id(),

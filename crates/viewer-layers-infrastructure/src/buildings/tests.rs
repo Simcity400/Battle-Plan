@@ -1,10 +1,8 @@
 use std::{collections::BTreeSet, sync::Arc};
 use super::{Buildings, BuildingsFed, Catalogue};
 use viewer_layer_core::{layers::{Inputs, Layer, Upstream, View}, test_support::rail_recording::{frames_until, recorded, side_of}, vision::{self as sight, Vision as Sight}, playhead_host::{MapSide, open, units::Units}};
-use content_reader_core::{
-    buildings::{BuildingType, Buildings as Types},
-    positions::BuildingPosition,
-};
+use content_reader_key_names::buildings::{BuildingType, Buildings as Types};
+use content_reader_map::positions::BuildingPosition;
 use playhead::{Settings, Timeline};
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::TableId;

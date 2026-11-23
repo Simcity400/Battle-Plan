@@ -302,7 +302,9 @@ collector-states = { workspace = true, features = ["default", "test-support"] }
 collector-visibility = { workspace = true, features = ["country_input_changes", "default", "test-support", "visibility_changes"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }

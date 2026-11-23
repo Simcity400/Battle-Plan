@@ -1,9 +1,9 @@
+use content_reader_script::native::{self, Shape};
 use crate::{
     fields::invalid,
     key_names::KeyNames,
     parser::{
         Document,
-        native::{self, Shape},
     },
     scope::ScopeKind,
 };

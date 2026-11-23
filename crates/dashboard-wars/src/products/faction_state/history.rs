@@ -366,7 +366,7 @@ impl Naming<'_, '_> {
         };
         let name = (|| {
             let cat = self.cat.clone()?;
-            let definitions = content_reader_core::faction_upgrades::cached(&cat.content.layers)?;
+            let definitions = content_reader_politics::faction_upgrades::cached(&cat.content.layers)?;
             let definition = definitions.upgrade(spelling.as_bytes())?;
             let text = localise(cat, definition.name.as_deref().unwrap_or(spelling.as_bytes()))?;
             if text.contains('[') {
@@ -380,7 +380,7 @@ impl Naming<'_, '_> {
     fn group(&mut self, hour: i32, group: u32) -> Result<String, String> {
         let spelling = self.lexicon.spelling(self.query, hour, group)?;
         let cat = self.cat.clone().map_err(|why| format!("Faction upgrade group {spelling}: {why}"))?;
-        let definitions = content_reader_core::faction_upgrades::cached(&cat.content.layers)?;
+        let definitions = content_reader_politics::faction_upgrades::cached(&cat.content.layers)?;
         let definition = definitions.group(spelling.as_bytes())?;
         let key = definition.name.as_deref().ok_or_else(|| format!("Faction upgrade group {spelling}: authored name is unavailable"))?;
         let text = localise(cat, key)?;
@@ -412,7 +412,7 @@ impl Naming<'_, '_> {
             .clone();
         let token = self.lexicon.spelling(self.query, hour, project.definition_id)?;
         let cat = self.cat.clone()?;
-        let catalog = content_reader_core::special_projects::Catalog::cached(&cat.content.layers)?;
+        let catalog = content_reader_military::special_projects::Catalog::cached(&cat.content.layers)?;
         if let Some(reason) = &catalog.unsettled {
             return Err(reason.clone());
         }

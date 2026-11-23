@@ -2,7 +2,7 @@
 use dashboard_base::products::Country;
 use dashboard_base::products::{LoadContext, finite_fixed64, at_hour::{At, AtHour, Owner, Read}};
 use dashboard_base::Source;
-use content_reader_core::content::diagnostics::Once as OnceLock;
+use content_reader_layers::content::diagnostics::Once as OnceLock;
 use replay_data::rows::{CountryLinkRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -109,11 +109,11 @@ pub struct RecruitmentDefines {
     pub noncore_max: i64,
 }
 
-pub fn content_defines(layers: &content_reader_core::ResolvedLayers) -> Result<RecruitmentDefines, String> {
+pub fn content_defines(layers: &content_reader_layers::ResolvedLayers) -> Result<RecruitmentDefines, String> {
     let held = layers.derived::<OnceLock<Result<RecruitmentDefines, String>>>();
     held.get_or_init(|| {
         let load = || -> io::Result<RecruitmentDefines> {
-            let defines = content_reader_core::defines::read(layers)?;
+            let defines = content_reader_defines::defines::read(layers)?;
             Ok(RecruitmentDefines {
                 speed: defines.fixed5("NCountry", "BASE_MOBILIZATION_SPEED")?,
                 noncore_base: defines.fixed5("NCountry", "LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR")?,

@@ -90,6 +90,7 @@ export const CHANNEL_LABELS: Record<UpdateChannel, string> = { stable: 'Stable',
 
 export function channelDescription(state: UpdateState | null): string {
   if (!state) return '';
+  if (state.channelWarning) return `Changed to ${CHANNEL_LABELS[state.channel]}, but Windows didn’t confirm the choice reached the disk.`;
   if (!state.enabled) return 'This build doesn’t update, so its channel has no effect.';
   return state.channel === 'nightly'
     ? 'Nightly: a build of each day’s changes for BattlePlan and the recorder.'

@@ -1,4 +1,4 @@
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use viewer_counter_kit::{
@@ -490,7 +490,7 @@ mod tests {
     }
     #[test]
     fn carrier_grid_composes_through_both_holders_and_hits_in_the_outer_coordinates() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let source = std::str::from_utf8(window_bytes()).unwrap().replacen(
             "guiTypes={",
             r#"guiTypes={
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn air_item_draws_authored_controls_count_type_selection_flags_and_current_strength() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         viewer_counter_kit::fixtures::with_counter_inputs_fixture(
             viewer_counter_kit::fixtures::action_gui(false),
             |_| {},
@@ -779,7 +779,7 @@ mod tests {
 
     #[test]
     fn air_grid_country_plate_reports_non_finite_ui_color_refusal() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let source = std::str::from_utf8(window_bytes()).unwrap().replacen(
             "guiTypes={",
             r#"guiTypes={

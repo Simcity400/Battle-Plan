@@ -50,7 +50,7 @@ fn map_counters_take_the_exercise_predicate_from_the_model_witness() {
 
 #[test]
 fn map_counters_markers_and_selections_read_only_recorded_tables() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_counter_inputs_and_content(
         action_gui(false),
         |_| {},

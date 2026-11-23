@@ -8,7 +8,7 @@ use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_query::Query;
 use dashboard_text::triggers::{Evaluator, LeaderVisibility, RECORDED_TABLES, World, core_gap};
-use content_reader_core::unit_leader::Leaders;
+use content_reader_key_names::unit_leader::Leaders;
 use replay::campaign::Replay;
 use replay_data::rows::{CharacterRow, LexicalTokenRow, TableId, UnitLeaderRow, UnitLeaderTraitRow, tables};
 use replay_columnar::store::TableView as StoreView;
@@ -118,7 +118,7 @@ pub struct Content {
     leaders: Result<Arc<Leaders>, String>,
 }
 
-type HeldLeaders = content_reader_core::content::diagnostics::Once<Result<Arc<Leaders>, String>>;
+type HeldLeaders = content_reader_layers::content::diagnostics::Once<Result<Arc<Leaders>, String>>;
 
 impl Content {
     pub fn load(source: &Source, load: &LoadContext) -> Self {

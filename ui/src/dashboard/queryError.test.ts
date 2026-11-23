@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionFailure, plainFailure } from './queryError.ts';
+import { actionFailure, failureText, plainFailure, queryFailure } from './queryError.ts';
+
+test('a query the transport rejects with a sentence shows that sentence, not an invalid reply', () => {
+  const lost = 'BattlePlan couldn’t reach its desktop host for dashboard_product: the IPC request failed (TypeError: Failed to fetch).';
+  const failure = queryFailure(lost);
+  assert.equal(failureText(failure, 'generic'), 'BattlePlan couldn’t reach its desktop host for dashboard_product.');
+  assert.equal(failure.message, lost);
+});
 
 test('a failure shows its plain sentence and keeps the technical reason as detail, whatever its case', () => {
   const folder = 'Couldn’t read the recordings folder: Access is denied. (os error 5)';

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use super::{Front, LandMarkers, TABLES};
 use viewer_layer_core::{layers::{Layer, View}, engagements::{Engagements, Index}, test_support::{recorded::frames_until, sound_recording::{put, quick, record, units}}, playhead_host::{MapSide, open}};
 use crate::naval_counters::Admits;
-use content_reader_core::movement::MovementMap;
+use content_reader_map::movement::MovementMap;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, TableId};
 use viewer_counter_kit::combat_markers::{LandCombatDefines, MarkerOutcome};

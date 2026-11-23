@@ -1,6 +1,6 @@
 
 use crate::{ModelInstance, PaletteJoint};
-use content_reader_core::{mesh, mesh::EntityState, mesh::JointPose, mesh::Transform};
+use content_reader_mesh::mesh::{self, EntityState, JointPose, Transform};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::{collections::BTreeMap, sync::Arc};
@@ -1906,7 +1906,7 @@ mod tests {
 
     #[test]
     fn building_damage_event_uses_state_entry_and_repair_stops_it() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let rig = building_rig();
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -1936,7 +1936,7 @@ mod tests {
 
     #[test]
     fn newly_created_damaged_building_does_not_use_the_global_elapsed_clock() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let rig = building_rig();
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -1969,7 +1969,7 @@ mod tests {
 
     #[test]
     fn a_stage_crossed_during_playback_plays_its_intro_then_its_state() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let rig = stage_rig(true);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -1991,7 +1991,7 @@ mod tests {
 
     #[test]
     fn a_fresh_entity_mid_stage_shows_the_state_from_its_own_entry() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let rig = stage_rig(true);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -2004,7 +2004,7 @@ mod tests {
 
     #[test]
     fn a_stage_whose_intro_the_entity_lacks_keeps_the_current_state() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let rig = stage_rig(false);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];

@@ -770,7 +770,7 @@ impl Inputs {
         self.job(Box::new(move |frame, _| Arc::new(if mines { naval_mines::build(&inputs.content, frame, &inputs.vision, region, false) } else { naval_accidents::build(&inputs.content, frame, &inputs.vision, region) })))
     }
 
-    pub(crate) fn occupation(&self, state: u32, definition: content_reader_core::occupation_modifiers::Definition) -> Job {
+    pub(crate) fn occupation(&self, state: u32, definition: content_reader_politics::occupation_modifiers::Definition) -> Job {
         let inputs = self.clone();
         self.job(Box::new(move |frame, _| Arc::new(occupation_modifier_tooltips::build(&inputs.content, frame, state, &definition, inputs.vision.ours()))))
     }

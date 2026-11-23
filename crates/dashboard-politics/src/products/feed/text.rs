@@ -602,7 +602,7 @@ fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<
     catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &[])?)
 }
 
-fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[content_reader_core::parser::Item]) -> Result<effect_description::Description, String> {
+fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[content_reader_parser::parser::Item]) -> Result<effect_description::Description, String> {
     let scripted = catalogue.scripted_content()?;
     let content = scripted.effects()?;
     let frame = DecodedFrame {
@@ -619,7 +619,7 @@ fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, 
     Ok(effect_description::describe(items, &context, &mut inputs.graph(decision)?))
 }
 
-fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, inputs: &Inputs, decision: bool, label: &str, items: &[content_reader_core::parser::Item]) -> io::Result<()> {
+fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, inputs: &Inputs, decision: bool, label: &str, items: &[content_reader_parser::parser::Item]) -> io::Result<()> {
     if items.is_empty() {
         return Ok(());
     }

@@ -73,18 +73,18 @@ impl Content {
         &self.members
     }
     pub fn load(
-        layers: &content_reader_core::ResolvedLayers,
-        defines: &content_reader_core::defines::Defines,
+        layers: &content_reader_layers::ResolvedLayers,
+        defines: &content_reader_defines::defines::Defines,
         states: &BTreeMap<u32, StateDefinition>,
         temperature: &Result<content_reader_weather::weather::TemperatureRanges, String>,
-        subunits: Result<&content_reader_core::unit_leader::SubUnits, &str>,
+        subunits: Result<&content_reader_script::sub_units::SubUnits, &str>,
         labels: Arc<viewer_runtime::recorded_labels::RecordedLabels>,
     ) -> Self {
         let members = states
             .iter()
             .map(|(&id, state)| (id, state.provinces.clone()))
             .collect();
-        let graph = content_reader_core::province_graph::ProvinceGraph::read(layers);
+        let graph = content_reader_map::province_graph::ProvinceGraph::read(layers);
         Self {
             labels,
             impassable: states
@@ -571,9 +571,9 @@ fn state_name_of(content: &counter_content::Content, frame: &DecodedFrame, id: u
     })
 }
 
-fn click_footer(loc: &Localisation, kind: Option<content_reader_core::map::ProvinceKind>, out: &mut Tooltip) {
+fn click_footer(loc: &Localisation, kind: Option<content_reader_map::map::ProvinceKind>, out: &mut Tooltip) {
     match kind {
-        Some(content_reader_core::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
+        Some(content_reader_map::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
             Ok(text) => {
                 viewer_foundation::tooltip_text::ensure_newlines(&mut out.body, 1);
                 out.body.push_str(&text);

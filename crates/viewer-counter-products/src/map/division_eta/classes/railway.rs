@@ -179,10 +179,7 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{
-        movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        movement::RailMovementDefines,
-    };
+    use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain, RailMovementDefines};
     use replay_data::{
         rows::OwnerTransportSpeedRow, rows::RailCooldownRow, rows::RailEdgeRow,
         rows::RailwayBuildingHealth, rows::RailwayBuildingState, rows::RailwayGunEtaOperands,
@@ -323,7 +320,7 @@ mod tests {
 
     #[test]
     fn railway_bonus_is_directed_and_applies_supply_after_land_scale() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -444,7 +441,7 @@ mod tests {
 
     #[test]
     fn actual_progress_is_demanded_only_for_the_same_first_edge() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);
@@ -470,7 +467,7 @@ mod tests {
 
     #[test]
     fn zero_speed_stops_before_progress_or_later_land_operands() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -491,7 +488,7 @@ mod tests {
 
     #[test]
     fn earlier_edge_division_overflow_is_not_hidden_by_later_zero_speed() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         put(
             &mut frame,
@@ -566,7 +563,7 @@ mod tests {
 
     #[test]
     fn land_common_refusals_never_become_an_army_fallback() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);

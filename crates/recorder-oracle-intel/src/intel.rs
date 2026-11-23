@@ -30,7 +30,7 @@ pub fn compare(
     characters: Option<&saved_characters::Manager>,
     countries: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
-    intelligence: Result<&content_reader_core::intelligence::AgencyUpgrades, &str>,
+    intelligence: Result<&content_reader_military::intelligence::AgencyUpgrades, &str>,
     scopes: ScopeKinds,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -2074,7 +2074,7 @@ fn compare_agency_upgrade_identities(
     frame: &DecodedFrame,
     countries: &BTreeMap<u32, &CountryRow>,
     tokens: &TokenNames<'_>,
-    intelligence: Result<&content_reader_core::intelligence::AgencyUpgrades, &str>,
+    intelligence: Result<&content_reader_military::intelligence::AgencyUpgrades, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::AgencyUpgradeLevels>(frame)?;
@@ -3540,7 +3540,7 @@ mod tests {
         let input: &[u8] = br#"countries={AAA={diplomacy={wargoals={take_state={id={id=3 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=BBB type=take_state} puppet={id={id=4 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=AAA type=puppet}} available_wargoals={wargoal={id=3 type=4713}}}} BBB={diplomacy={}}}"#;
         let save = parsed(input);
         let rosters = content_reader_save::country_rosters::parse(
-            &content_reader_core::parser::parse(input).unwrap().items,
+            &content_reader_parser::parser::parse(input).unwrap().items,
         )
         .unwrap();
         let run = |goals: [Recorded<Option<Vec<u32>>>; 2]| {
@@ -3908,7 +3908,7 @@ mod tests {
     }
 
     fn parsed(input: &[u8]) -> saved::Pack {
-        saved::parse(&content_reader_core::parser::parse(input).unwrap().items).unwrap()
+        saved::parse(&content_reader_parser::parser::parse(input).unwrap().items).unwrap()
     }
 
     fn germany() -> CountryRow {
@@ -3922,7 +3922,7 @@ mod tests {
 
     #[test]
     fn character_variables_compare_with_each_saved_character() {
-        let items = content_reader_core::parser::parse(
+        let items = content_reader_parser::parser::parse(
             br#"variables={} countries={} character_manager={historical={
             character={id={id=44 type=73} token=a variables={ score=1.5 }}
             character={id={id=45 type=73} token=b}
@@ -3978,7 +3978,7 @@ mod tests {
 
     #[test]
     fn character_flags_compare_with_each_saved_characters_flags() {
-        let items = content_reader_core::parser::parse(
+        let items = content_reader_parser::parser::parse(
             br#"countries={} character_manager={historical={
             character={id={id=44 type=73} token=a flags={
                 recently_sick={ value=1 date="1936.1.26.1" days=180 }
@@ -4367,8 +4367,8 @@ mod tests {
         let file = root.join("common/intelligence_agency_upgrades/synthetic.txt");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, b"first_branch={mod_upgrade={picture=first}} second_branch={mod_upgrade={picture=second}}").unwrap();
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let intelligence = content_reader_core::intelligence::read_agency_upgrades(&layers).unwrap();
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let intelligence = content_reader_military::intelligence::read_agency_upgrades(&layers).unwrap();
         let country = germany();
         let countries = BTreeMap::from([(101, &country), (102, &country)]);
         let tokens = BTreeMap::from([
@@ -4987,7 +4987,7 @@ mod tests {
 
     #[test]
     fn variable_seeds_compare_all_scope_kinds_and_name_missing_operands() {
-        let items = content_reader_core::parser::parse(
+        let items = content_reader_parser::parser::parse(
             br#"variables={random={11 2147483648}}
             countries={GER={variables={random={12 99}}}}
             states={1={variables={random={13 0}}}}

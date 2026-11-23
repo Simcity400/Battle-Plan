@@ -33,7 +33,9 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
     },
     useRef(initial: any) { const index = cursor++; return slots[index] ??= { current: initial }; },
     useCallback(callback: any) { return callback; },
+    useMemo(factory: () => unknown) { const index = cursor++; return (slots[index] ??= { value: factory() }).value; },
     useEffect() {},
+    useSyncExternalStore(_subscribe: unknown, snapshot: () => unknown) { return snapshot(); },
     useLayoutEffect(effect: () => (() => void) | undefined, deps: unknown[]) {
       const index = cursor++;
       const previous = slots[index];
@@ -79,7 +81,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       transform(source, id) {
         const name = id.replaceAll('\\', '/');
         if (name.endsWith('/shell/App.tsx')) return source.replace(/import \{[^\n]+\} from 'react';/,
-          `const { useState, useRef, useCallback, useEffect, useLayoutEffect } = globalThis.__shellFixture;
+          `const { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect, useSyncExternalStore } = globalThis.__shellFixture;
            const memo = value => value;`);
         return Object.entries(replacements).find(([suffix]) => name.endsWith(suffix))?.[1];
       },

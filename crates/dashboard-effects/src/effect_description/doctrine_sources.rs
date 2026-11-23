@@ -1,7 +1,8 @@
 
 use super::*;
 use crate::{scripted_text::EventScope, triggers::Eval};
-use content_reader_core::{doctrines::DefinitionSources, tokens::Token};
+use content_reader_military::doctrines::DefinitionSources;
+use content_reader_parser::tokens::Token;
 
 pub fn doctrine_tactic_sources(
     context: &Context<'_, '_>,
@@ -220,7 +221,7 @@ fn tracked_source(
     key: &[u8],
     doctrine_argument: &str,
     name: &str,
-    track: &content_reader_core::gui::native::BoundLocalization,
+    track: &content_reader_script::localization_binding::BoundLocalization,
     mastery: Option<i64>,
 ) -> Result<String, String> {
     let track = renderer.bound_localisation(track, Scopes::empty(), false)?;
@@ -260,7 +261,7 @@ fn available(
 mod tests;
 
 pub fn doctrine_benefits(
-    benefits: &content_reader_core::doctrines::Benefits,
+    benefits: &content_reader_military::doctrines::Benefits,
     context: &Context<'_, '_>,
     scopes: &mut EventScopes,
 ) -> Description {
@@ -301,7 +302,7 @@ pub fn doctrine_benefits(
         }
         Err(why) => renderer.refuse("doctrine bonus scope", why.to_string()),
     }
-    if benefits.modifiers != content_reader_core::modifiers::Modifiers::default() {
+    if benefits.modifiers != content_reader_script::modifiers::Modifiers::default() {
         match renderer.modifier_description_with(
             &benefits.modifiers,
             "",

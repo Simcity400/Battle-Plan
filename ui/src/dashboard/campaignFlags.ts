@@ -1,9 +1,11 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { currentCampaignSettings, saveCampaignSettings, setCampaignFlag, useCampaignSettings } from './campaignSettings.ts';
 import type { CampaignSettings } from './campaignSettings.ts';
+import { writeSlot } from '../shell/pendingWrites.ts';
+import type { WriteSlot } from '../shell/pendingWrites.ts';
 
 export type CampaignFlags = Record<string, string>;
-type Save = (campaignKey: string, tag: string | null) => Promise<void>;
+type Save = (campaignKey: string, tag: string | null) => Promise<string | null | void>;
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 
 let shared: { flags: CampaignFlags; save: Save } | null = null;
@@ -70,14 +72,24 @@ export function useCampaignFlags(): CampaignFlags {
   return useMemo(() => flags ?? settingsFlags(settings), [flags, settings]);
 }
 
-export function saveCampaignFlag(campaignKey: string, tag: string | null, report?: (error: string | null) => void, storage?: Storage): string | null {
+const flagSlots = new Map<string, WriteSlot>();
+const latestFlag = new Map<string, Promise<unknown>>();
+
+export function saveCampaignFlag(campaignKey: string, tag: string | null, report?: (error: string | null, warning?: string | null) => void, storage?: Storage): string | null {
   migrating?.add(campaignKey);
   if (shared) {
     const flags = { ...shared.flags };
     if (tag === null) delete flags[campaignKey]; else flags[campaignKey] = tag;
     shared = { ...shared, flags };
     notify();
-    void shared.save(campaignKey, tag).then(() => report?.(null), () => report?.('Couldn’t save the campaign flag. It applies until the app closes.'));
+    const slot = flagSlots.get(campaignKey) ?? writeSlot();
+    flagSlots.set(campaignKey, slot);
+    slot.enter();
+    const saving = shared.save(campaignKey, tag);
+    latestFlag.set(campaignKey, saving);
+    const latest = () => latestFlag.get(campaignKey) === saving;
+    void saving.then(warning => { if (!latest()) return; slot.saved(); report?.(null, warning || null); },
+      () => { if (!latest()) return; slot.failed(() => saveCampaignFlag(campaignKey, tag, report, storage)); report?.('Couldn’t save the campaign flag. It applies until the app closes.'); });
     return null;
   }
   return saveCampaignSettings(setCampaignFlag(currentCampaignSettings(storage), campaignKey, tag), storage);

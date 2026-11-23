@@ -22,7 +22,7 @@ pub(super) struct TechBonus {
 }
 
 impl Renderer<'_, '_, '_> {
-    pub(in crate::effect_description) fn technology_catalog(&self) -> Result<&content_reader_core::technology::Catalog, String> {
+    pub(in crate::effect_description) fn technology_catalog(&self) -> Result<&content_reader_military::technology::Catalog, String> {
         self.context
             .content
             .doctrines
@@ -85,10 +85,10 @@ impl Renderer<'_, '_, '_> {
         let Some(field) = field else {
             return Ok(0);
         };
-        if let Some(value) = content_reader_core::modifiers::read_fixed5(field) {
+        if let Some(value) = content_reader_script::modifiers::read_fixed5(field) {
             return Ok(value);
         }
-        let name = std::str::from_utf8(content_reader_core::parser::c_string(
+        let name = std::str::from_utf8(content_reader_parser::parser::c_string(
             field.value.scalar().unwrap_or_default(),
         ))
         .map_err(|_| "breakthrough progress constant is not UTF-8")?;
@@ -98,10 +98,10 @@ impl Renderer<'_, '_, '_> {
             return Ok(value);
         }
         Err(match constants.value(&parts) {
-            content_reader_core::scoped_variable::Constant::Unset(why) => {
+            content_reader_script::scoped_variable::Constant::Unset(why) => {
                 format!("breakthrough progress {name} is not a number and its constant is unread: {why}")
             }
-            content_reader_core::scoped_variable::Constant::Value(_) => {
+            content_reader_script::scoped_variable::Constant::Value(_) => {
                 format!("breakthrough progress {name} is not a fixed-point script constant")
             }
         })
@@ -138,7 +138,7 @@ impl Renderer<'_, '_, '_> {
             }
             let operand = entry.value.scalar().unwrap_or_default();
             if catalog
-                .specialization(&content_reader_core::tokens::Token::c_str(operand))?
+                .specialization(&content_reader_parser::tokens::Token::c_str(operand))?
                 .is_none()
             {
                 continue;
@@ -170,7 +170,7 @@ impl Renderer<'_, '_, '_> {
             )
         };
         let mut gains = Vec::new();
-        for token in content_reader_core::special_projects::specialization_order(&tokens) {
+        for token in content_reader_military::special_projects::specialization_order(&tokens) {
             let operand = world
                 .token(token)
                 .map_err(|why| why.to_string())?
@@ -273,7 +273,7 @@ impl Renderer<'_, '_, '_> {
         };
         let name = match project {
             Some((owner, id)) => self.project_name(owner, id)?,
-            None => std::str::from_utf8(content_reader_core::parser::c_string(operand))
+            None => std::str::from_utf8(content_reader_parser::parser::c_string(operand))
                 .map_err(|_| "complete_special_project operand is not UTF-8")?
                 .to_owned(),
         };
@@ -283,7 +283,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )?;
-        if content_reader_core::parser::read_bool_field(children(item), "show_modifiers", true)
+        if content_reader_parser::parser::read_bool_field(children(item), "show_modifiers", true)
             && let Some((owner, id)) = project
         {
             if !text.ends_with('\n') {
@@ -468,7 +468,7 @@ impl Renderer<'_, '_, '_> {
         &self,
         operand: &[u8],
         scopes: Scopes,
-    ) -> Result<Option<(&content_reader_core::technology::Definition, Option<i32>)>, String> {
+    ) -> Result<Option<(&content_reader_military::technology::Definition, Option<i32>)>, String> {
         let catalog = self.technology_catalog()?;
         if let Some(template) = catalog.get(operand)? {
             return Ok(Some((template, None)));
@@ -522,7 +522,7 @@ impl Renderer<'_, '_, '_> {
 
     fn technology_name(
         &self,
-        template: &content_reader_core::technology::Definition,
+        template: &content_reader_military::technology::Definition,
         country: u32,
         scopes: Scopes,
         runtime: bool,
@@ -546,7 +546,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn set_technology(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let mut target = item.clone();
-        target.value = content_reader_core::parser::Value::Scalar(b"THIS".to_vec());
+        target.value = content_reader_parser::parser::Value::Scalar(b"THIS".to_vec());
         let country = self.country_target(&target, scopes)?.unwrap_or(0);
         let mut out = String::new();
         for field in children(item)
@@ -641,7 +641,7 @@ impl Renderer<'_, '_, '_> {
         let mut seen = std::collections::BTreeSet::new();
         for entry in fields.iter().filter(|field| field.keyword_is("category")) {
             let token =
-                content_reader_core::tokens::Token::c_str(entry.value.scalar().unwrap_or_default());
+                content_reader_parser::tokens::Token::c_str(entry.value.scalar().unwrap_or_default());
             if seen.insert(token) {
                 category.push(entry);
             }
@@ -678,10 +678,10 @@ impl Renderer<'_, '_, '_> {
             list.replace_range(index..index + 2, &format!(" {and}"));
         }
         let ahead = field(fields, "ahead_reduction")
-            .map(content_reader_core::modifiers::stored)
+            .map(content_reader_script::modifiers::stored)
             .unwrap_or(0);
         let bonus = field(fields, "bonus")
-            .map(content_reader_core::modifiers::stored)
+            .map(content_reader_script::modifiers::stored)
             .unwrap_or(0);
         let uses = field(fields, "uses")
             .and_then(|field| field.value.scalar())
@@ -750,7 +750,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let fields = children(item);
         let amount = field(fields, if daily { "amount" } else { "bonus" })
-            .map(content_reader_core::modifiers::stored)
+            .map(content_reader_script::modifiers::stored)
             .unwrap_or(0);
         let days = field(fields, "days")
             .and_then(|field| field.value.scalar())
@@ -957,7 +957,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let name = self.char_native_text(b"FACTION_ACCESS_TAB_REASEARCH", &[], scopes, false)?;
         self.char_native_text(
-            if content_reader_core::parser::c_string(scalar_operand(item)?) == b"yes" {
+            if content_reader_parser::parser::c_string(scalar_operand(item)?) == b"yes" {
                 b"FACTION_ACCESS_TAB_UNLOCK"
             } else {
                 b"FACTION_ACCESS_TAB_LOCK"
@@ -1000,7 +1000,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let amount = field(fields, "amount")
-            .map(content_reader_core::modifiers::stored)
+            .map(content_reader_script::modifiers::stored)
             .unwrap_or(0);
         let folder = field(fields, "folder")
             .and_then(|item| item.value.scalar())
@@ -1044,11 +1044,11 @@ impl Renderer<'_, '_, '_> {
             ));
         }
         let reduction = field(fields, "cost_reduction")
-            .map(content_reader_core::modifiers::stored)
+            .map(content_reader_script::modifiers::stored)
             .unwrap_or(0);
         let uses = field(fields, "uses")
             .and_then(|item| item.value.scalar())
-            .map(content_reader_core::fixed5::decimal_i32)
+            .map(content_reader_parser::fixed5::decimal_i32)
             .unwrap_or(1);
         let mut folders = Vec::new();
         for item in fields.iter().filter(|item| item.keyword_is("category")) {

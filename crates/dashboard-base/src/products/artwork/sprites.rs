@@ -70,7 +70,7 @@ pub struct SpriteArtworkReply {
 crate::reply_warnings!(SpriteArtworkReply);
 
 pub fn icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String> {
-    let key = std::str::from_utf8(content_reader_core::parser::c_string(authored))
+    let key = std::str::from_utf8(content_reader_parser::parser::c_string(authored))
         .map_err(|_| "authored icon key is not UTF-8".to_owned())?;
     if key.is_empty() {
         return Err("authored icon key is absent".into());
@@ -226,7 +226,7 @@ fn images(
     reply.warnings.extend(catalogue.refusal_lines());
     reply
         .warnings
-        .extend(content_reader_core::content::diagnostics::current().shader_warnings());
+        .extend(content_reader_layers::content::diagnostics::current().shader_warnings());
     crate::metadata::check_cancel(cancelled)?;
     check_reply_budget(&reply)?;
     Ok(reply)
@@ -271,7 +271,7 @@ mod tests {
         let colours = [[200, 20, 20, 255], [20, 200, 20, 255], [20, 20, 200, 255]];
         let strip = Rgba8Image { width: 3, height: 1, pixels: colours.concat() };
         std::fs::write(addon.0.join("gfx/strip.png"), png_bytes(&strip)).unwrap();
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[
             (&base.0, &[]),
             (&addon.0, &["interface"]),
         ])
@@ -371,7 +371,7 @@ mod tests {
                 .collect(),
         };
         std::fs::write(folder.0.join("strip.png"), png_bytes(&image)).unwrap();
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[
             (&base.0, &[]),
             (&folder.0, &["interface"]),
         ])
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn a_text_icon_is_drawn_from_its_stems_sprite_at_its_suffixs_frame_and_a_sprite_at_its_asked_frame() {
-        use content_reader_core::gui::native::sprites::{Plain, SpriteFacts, SpriteKind, Sprites};
+        use content_reader_gui::gui::native::sprites::{Plain, SpriteFacts, SpriteKind, Sprites};
         let facts = Sprites {
             sprites: vec![SpriteFacts {
                 name: b"GFX_Mixed_Mod".to_vec(),

@@ -2,7 +2,7 @@
 use super::{OccupationMarks, Source, drawn};
 use crate::{left_to_layers::LeftToLayers, resource_icons::tests::{Memory, Recording, strings_of, write}};
 use viewer_layer_core::{layers::{Inputs, Layer, View}, playhead_host::{MapSide, open, shared_maps_tests::Reads, units::Units}};
-use content_reader_core::occupation_modifiers::Definitions;
+use content_reader_politics::occupation_modifiers::Definitions;
 use playhead::{Settings, Timeline, pages::{Pages, Run}};
 use replay_columnar::{manifest::Status, store::Store, unit::{Encoder, Settings as Writing}};
 use replay_data::rows::{CountryLinkRow, CountryRow, Recorded, StateResistanceRow, StateRow, TableId, TableRows, tables};

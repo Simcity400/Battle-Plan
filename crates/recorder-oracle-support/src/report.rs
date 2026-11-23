@@ -127,7 +127,7 @@ pub fn is_load_hour(branch: &replay_frame::branches::BranchStart, hour: Hour) ->
 pub struct Report {
     pub country_emissions: Option<Vec<content_reader_save::SavedCountryEmission>>,
     pub canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
-    pub content_reads: Option<content_reader_core::content::UncoveredReads>,
+    pub content_reads: Option<content_reader_layers::content::UncoveredReads>,
     pub observed_refresh: Vec<replay_data::cadence::Cadence>,
     pub intel_walked: bool,
     pub forced_full: bool,

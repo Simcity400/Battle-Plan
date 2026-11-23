@@ -69,7 +69,7 @@ fn draw(
 }
 
 fn fixture() -> (TestDir, ModelLibrary, usize) {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let directory = TestDir::new();
     let root = &directory.0;
     std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
@@ -235,7 +235,7 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
             bound: 1.,
             convoy_radius: None,
             attachments: 0,
-            cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+            cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         });
         library.rigs.push(Arc::new(Rig {
             nodes: vec![entity_animation::Node {

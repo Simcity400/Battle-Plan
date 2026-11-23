@@ -61,7 +61,7 @@ pub(super) fn scrollbar_part_names(
     names
 }
 
-use content_reader_core::parser::c_string;
+use content_reader_parser::parser::c_string;
 
 pub(super) fn fixed(value: f32) -> i64 {
     let bias = if value >= 0.0 { 1.0f32 } else { 0.0 };
@@ -1285,8 +1285,8 @@ impl<'a> Walk<'a> {
                 let anchor = control_anchor(icon.orientation, content);
                 (
                     [
-                        content_reader_core::crt::truncate_f32(icon.position[0]).wrapping_add(anchor[0]),
-                        content_reader_core::crt::truncate_f32(icon.position[1]).wrapping_add(anchor[1]),
+                        content_reader_parser::crt::truncate_f32(icon.position[0]).wrapping_add(anchor[0]),
+                        content_reader_parser::crt::truncate_f32(icon.position[1]).wrapping_add(anchor[1]),
                     ],
                     drawable(&icon.sprite, icon.scale)?,
                 )

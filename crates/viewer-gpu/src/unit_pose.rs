@@ -1,5 +1,5 @@
 use crate::{province_map::HeightField, ribbon_geometry::{normalize, sub}};
-use content_reader_core::province_geometry::native_fixed_sqrt;
+use content_reader_map::province_geometry::native_fixed_sqrt;
 use content_reader_raids::{raids::RaidArrowKind, raids::RaidGraphicsDefines};
 const SCALE: i64 = 100_000;
 type Point = [i64; 2];

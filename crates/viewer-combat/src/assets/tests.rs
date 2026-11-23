@@ -33,7 +33,7 @@ fn custom_sea_declarations_follow_effective_strategic_templates() {
 
 #[test]
 fn combat_native_assets_follow_global_templates_and_scrollbars() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = NativeWindows::of(gui::native::Guis::new(vec![
         (
             "first.gui".into(),
@@ -73,7 +73,7 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
 #[test]
 fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
     use viewer_engagements::combat_selection::Selection;
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let opened: Vec<&[u8]> = [
         Selection::Land(0),
         Selection::Naval(0),
@@ -117,7 +117,7 @@ fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
 
 #[test]
 fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = tests::windows(
         br#"guiTypes={containerWindowType={name=landcombatview
             containerWindowType={name=header
@@ -138,7 +138,7 @@ pub(crate) fn synthetic_assets(
 
     static TABLES: OnceLock<executable_tables::Tables> = OnceLock::new();
     let tables = *TABLES.get_or_init(|| {
-        content_reader_core::test_game::executable()
+        content_reader_script::test_game::executable()
             .pinned_modifiers([
                 (modifier_keys::NAVAL_RETREAT_SPEED, "naval_retreat_speed"),
                 (modifier_keys::SUB_RETREAT_SPEED, "sub_retreat_speed"),
@@ -220,7 +220,7 @@ pub(crate) fn synthetic_assets(
     lazy.set_background(false);
     let flags = flag_set(
         &shared,
-        content_reader_core::flags::FlagSet::Normal,
+        content_reader_gui::flags::FlagSet::Normal,
         [1, 1],
         |_| {},
         &lazy,
@@ -337,7 +337,7 @@ fn lazy_portraits_publish_loaded_and_missing_resources() {
 
 #[test]
 fn combat_resources_use_native_texture_resolution_and_shared_pages() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_resources_{}_{:?}",
         std::process::id(),
@@ -390,7 +390,7 @@ fn combat_resources_use_native_texture_resolution_and_shared_pages() {
 
 #[test]
 fn combat_resources_name_corrupt_textures() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_refused_texture_{}_{:?}",
         std::process::id(),
@@ -426,7 +426,7 @@ fn combat_resources_name_corrupt_textures() {
 
 #[test]
 fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_unusable_sheets_{}_{:?}",
         std::process::id(),
@@ -436,7 +436,7 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
     std::fs::write(root.join("gfx/one.tga"), tga(10, 4)).unwrap();
     std::fs::write(root.join("gfx/interface/covered.tga"), tga(10, 4)).unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let read = content_reader_core::gui::native::sprites::read_sprites(
+    let read = content_reader_gui::gui::native::sprites::read_sprites(
         br#"spriteTypes = {
                 spriteType = { name = "GFX_negative" textureFile = "gfx/one.tga" noOfFrames = -2 }
                 spriteType = { name = "GFX_covered" textureFile = "gfx/interface/covered.tga" }
@@ -487,7 +487,7 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
 
 #[test]
 fn content_preload_uses_the_same_native_glyph_names_and_type_masks() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (assets, refusals) = unit_assets(&synthetic_subunits());
     assert!(refusals.is_empty());
     assert!(

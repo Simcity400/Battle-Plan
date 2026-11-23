@@ -698,7 +698,7 @@ mod tests {
         for name in [b"G\0!".as_slice(), b"\0!".as_slice()] {
             let report = run(
                 Value(Some(name.to_vec())),
-                Some(content_reader_core::parser::c_string(name).to_vec()),
+                Some(content_reader_parser::parser::c_string(name).to_vec()),
             );
             assert!(report.differences.is_empty(), "{:?}", report.differences);
             assert_eq!(

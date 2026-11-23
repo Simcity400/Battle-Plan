@@ -1,10 +1,8 @@
 use super::{Kind, Log};
-use content_reader_core::{
-    ResolvedLayers,
-    defines::Defines,
-    map::MapData,
-    terrain::{DefaultMap, TerrainDefinitions},
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::MapData;
+use content_reader_key_names::terrain::{DefaultMap, TerrainDefinitions};
 use content_reader_image::native::Decode;
 use content_reader_regions::regions::StrategicRegion;
 use std::{
@@ -152,7 +150,7 @@ fn trees_and_cities(
     log.notes("viewer.tree_assets", Kind::Warning, &warnings);
     let mut warnings = Vec::new();
     log.read("viewer.city_assets", || {
-        let (cities, styles) = content_reader_core::cities::read(layers)?;
+        let (cities, styles) = content_reader_map::cities::read(layers)?;
         let plan = viewer_buildings::sprawl::generate(
             &cities,
             &styles,

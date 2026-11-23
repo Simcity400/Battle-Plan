@@ -8,10 +8,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use content_reader_core::{
-    characters::LeaderTemplate, leader_traits::LeaderTraits, script_constants::Constants,
-    tag_aliases::TagAliases, trigger_keys::TriggerNames, unit_leader::Traits,
-};
+use content_reader_key_names::{characters::LeaderTemplate, tag_aliases::TagAliases, unit_leader::Traits};
+use content_reader_military::leader_traits::LeaderTraits;
+use content_reader_politics::script_constants::Constants;
+use content_reader_script::trigger_keys::TriggerNames;
 use replay_data::{
     Hour, rows::CharacterRow, rows::CountryAppearanceRow, rows::CountryCounterInputRow,
     rows::CountryLinkRow, rows::CountryRow, rows::InvasionPreparationRow, rows::LexicalTokenRow,
@@ -82,16 +82,16 @@ pub(crate) type AuthoredStates<'a> = (
     Result<(), &'a str>,
 );
 pub(crate) trait PreparedContent: Send + Sync {
-    fn ideas(&self) -> Result<&content_reader_core::ideas::IdeaContent, &str>;
-    fn mio_traits(&self) -> Result<&content_reader_core::mio_traits::Catalog, &str>;
-    fn equipment_groups(&self) -> Result<&content_reader_core::equipment::Groups, &str>;
-    fn special_projects(&self) -> Result<&content_reader_core::special_projects::Catalog, &str>;
+    fn ideas(&self) -> Result<&content_reader_politics::ideas::IdeaContent, &str>;
+    fn mio_traits(&self) -> Result<&content_reader_military::mio_traits::Catalog, &str>;
+    fn equipment_groups(&self) -> Result<&content_reader_key_names::equipment::Groups, &str>;
+    fn special_projects(&self) -> Result<&content_reader_military::special_projects::Catalog, &str>;
     fn authored_states(&self) -> AuthoredStates<'_>;
     fn continents(&self) -> Result<&[String], &str>;
-    fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, &str>;
+    fn ideologies(&self) -> Result<&content_reader_key_names::ideologies::Ideologies, &str>;
     fn triggers(&self) -> Result<&TriggerNames, &str>;
     fn character_traits(&self) -> Result<(&Traits, &LeaderTraits), &str>;
-    fn resources(&self) -> Result<(&content_reader_core::buildings::Buildings, [i64; 2]), &str>;
+    fn resources(&self) -> Result<(&content_reader_key_names::buildings::Buildings, [i64; 2]), &str>;
     fn leader_roles(&self) -> Result<&LeaderRoles, &str>;
     fn constants(&self) -> Result<&Constants, &str>;
     fn invasion_days(&self) -> Result<i32, &str>;
@@ -432,25 +432,25 @@ fn core_gap_of<'f>(
 }
 
 type TemplateNames<'a> = (
-    &'a content_reader_core::content::diagnostics::Once<
+    &'a content_reader_layers::content::diagnostics::Once<
         Result<content_reader_localisation::localisation::Localisation, String>,
     >,
-    &'a content_reader_core::ResolvedLayers,
+    &'a content_reader_layers::ResolvedLayers,
     &'a str,
 );
 
 #[derive(Clone, Copy)]
 pub struct GeographyInputs<'a> {
     pub neighbors:
-        &'a content_reader_core::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    pub terrain: &'a content_reader_core::content::diagnostics::Once<
-        Option<content_reader_core::movement::MovementMap>,
+        &'a content_reader_layers::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    pub terrain: &'a content_reader_layers::content::diagnostics::Once<
+        Option<content_reader_map::movement::MovementMap>,
     >,
-    pub layers: &'a content_reader_core::ResolvedLayers,
+    pub layers: &'a content_reader_layers::ResolvedLayers,
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
     pub state_error: Option<&'a str>,
-    pub defines: &'a content_reader_core::defines::Defines,
-    pub terrain_definitions: Option<&'a content_reader_core::terrain::TerrainDefinitions>,
+    pub defines: &'a content_reader_defines::defines::Defines,
+    pub terrain_definitions: Option<&'a content_reader_key_names::terrain::TerrainDefinitions>,
 }
 
 impl<'a> GeographyInputs<'a> {
@@ -458,7 +458,7 @@ impl<'a> GeographyInputs<'a> {
         self.neighbors
             .get_or_init(|| match self.state_error {
                 Some(why) => Err(why.to_owned()),
-                None => content_reader_core::province_graph::ProvinceGraph::read(self.layers)
+                None => content_reader_map::province_graph::ProvinceGraph::read(self.layers)
                     .and_then(|(graph, _)| graph.neighbor_states(self.state_provinces))
                     .map_err(|error| error.to_string()),
             })
@@ -466,11 +466,11 @@ impl<'a> GeographyInputs<'a> {
             .map_err(String::as_str)
     }
 
-    pub(crate) fn terrain(self) -> Option<&'a content_reader_core::movement::MovementMap> {
+    pub(crate) fn terrain(self) -> Option<&'a content_reader_map::movement::MovementMap> {
         self.terrain
             .get_or_init(|| {
                 self.terrain_definitions.and_then(|terrain| {
-                    content_reader_core::movement::MovementMap::read_with_terrain(
+                    content_reader_map::movement::MovementMap::read_with_terrain(
                         self.layers,
                         self.defines,
                         terrain,
@@ -499,22 +499,22 @@ pub struct World<'a> {
     pub(super) state_content: PreparedOperand<'a, Result<(), &'a str>>,
     pub(super) continents: PreparedOperand<'a, Result<&'a [String], &'a str>>,
     pub(super) ideologies:
-        PreparedOperand<'a, Result<&'a content_reader_core::ideologies::Ideologies, &'a str>>,
+        PreparedOperand<'a, Result<&'a content_reader_key_names::ideologies::Ideologies, &'a str>>,
     pub(super) impassable: PreparedOperand<'a, &'a BTreeSet<u32>>,
     neighbor_states: Result<&'a BTreeMap<u32, Vec<u32>>, &'a str>,
-    terrain: Option<&'a content_reader_core::movement::MovementMap>,
+    terrain: Option<&'a content_reader_map::movement::MovementMap>,
     lazy_geography: Option<GeographyInputs<'a>>,
     pub(super) dlcs: &'a BTreeSet<String>,
     pub(super) triggers: PreparedOperand<'a, Result<&'a TriggerNames, &'a str>>,
     pub(super) character_traits:
         PreparedOperand<'a, Result<(&'a Traits, &'a LeaderTraits), &'a str>>,
-    pub(super) ideas: PreparedOperand<'a, Result<&'a content_reader_core::ideas::IdeaContent, &'a str>>,
+    pub(super) ideas: PreparedOperand<'a, Result<&'a content_reader_politics::ideas::IdeaContent, &'a str>>,
     pub(super) mio_traits:
-        PreparedOperand<'a, Result<&'a content_reader_core::mio_traits::Catalog, &'a str>>,
+        PreparedOperand<'a, Result<&'a content_reader_military::mio_traits::Catalog, &'a str>>,
     pub(super) equipment_groups:
-        PreparedOperand<'a, Result<&'a content_reader_core::equipment::Groups, &'a str>>,
+        PreparedOperand<'a, Result<&'a content_reader_key_names::equipment::Groups, &'a str>>,
     pub(super) special_projects:
-        PreparedOperand<'a, Result<&'a content_reader_core::special_projects::Catalog, &'a str>>,
+        PreparedOperand<'a, Result<&'a content_reader_military::special_projects::Catalog, &'a str>>,
     character_tables: OnceLock<character_scope::Tables<'a>>,
     aliases: &'a Arc<TagAliases>,
     recorded: OnceLock<RecordedScopes<'a>>,
@@ -562,15 +562,15 @@ pub struct ContentFacts<'a> {
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
     pub state_content: Result<(), &'a str>,
     pub continents: Result<&'a [String], &'a str>,
-    pub ideologies: Result<&'a content_reader_core::ideologies::Ideologies, &'a str>,
+    pub ideologies: Result<&'a content_reader_key_names::ideologies::Ideologies, &'a str>,
     pub impassable: &'a BTreeSet<u32>,
     pub neighbor_states: Result<&'a BTreeMap<u32, Vec<u32>>, &'a str>,
-    pub terrain: Option<&'a content_reader_core::movement::MovementMap>,
+    pub terrain: Option<&'a content_reader_map::movement::MovementMap>,
     pub dlcs: &'a BTreeSet<String>,
     pub triggers: Result<&'a TriggerNames, &'a str>,
     pub character_traits: Result<(&'a Traits, &'a LeaderTraits), &'a str>,
     pub tag_aliases: &'a Arc<TagAliases>,
-    pub buildings: Result<&'a content_reader_core::buildings::Buildings, &'a str>,
+    pub buildings: Result<&'a content_reader_key_names::buildings::Buildings, &'a str>,
     pub resource_bonuses: Result<[i64; 2], &'a str>,
     pub leader_roles: Result<&'a LeaderRoles, &'a str>,
     pub invasion_prepare_days: Result<i32, &'a str>,
@@ -585,7 +585,7 @@ impl<'a> ContentFacts<'a> {
     ) -> Self {
         static STATES: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         static IMPASSABLE: BTreeSet<u32> = BTreeSet::new();
-        static BUILDINGS: OnceLock<content_reader_core::buildings::Buildings> = OnceLock::new();
+        static BUILDINGS: OnceLock<content_reader_key_names::buildings::Buildings> = OnceLock::new();
         Self {
             state_provinces: &STATES,
             state_content: Err("no recorded content geography is supplied"),
@@ -1408,7 +1408,7 @@ impl<'a> World<'a> {
             .map_or_else(|| self.neighbor_states, GeographyInputs::neighbors)
     }
 
-    fn terrain(&self) -> Option<&'a content_reader_core::movement::MovementMap> {
+    fn terrain(&self) -> Option<&'a content_reader_map::movement::MovementMap> {
         if let Some(content) = self.prepared_content {
             return content.geography().terrain();
         }
@@ -1522,8 +1522,8 @@ impl<'a> World<'a> {
     #[cfg(test)]
     pub(crate) fn with_organisation_content(
         mut self,
-        catalog: &'a content_reader_core::mio_traits::Catalog,
-        groups: &'a content_reader_core::equipment::Groups,
+        catalog: &'a content_reader_military::mio_traits::Catalog,
+        groups: &'a content_reader_key_names::equipment::Groups,
     ) -> Self {
         self.mio_traits = Ok(catalog).into();
         self.equipment_groups = Ok(groups).into();
@@ -1533,7 +1533,7 @@ impl<'a> World<'a> {
     #[cfg(test)]
     pub(crate) fn with_special_projects(
         mut self,
-        catalog: &'a content_reader_core::special_projects::Catalog,
+        catalog: &'a content_reader_military::special_projects::Catalog,
     ) -> Self {
         self.special_projects = Ok(catalog).into();
         self
@@ -2214,7 +2214,7 @@ impl<'a> World<'a> {
             let mut first = BTreeMap::new();
             for row in definitions.with_text(|row| &row.id, ID) {
                 let (row, id) = row.map_err(walked::<tables::TechnologyDefinitions>)?;
-                let name = content_reader_core::parser::c_string(id).to_ascii_lowercase();
+                let name = content_reader_parser::parser::c_string(id).to_ascii_lowercase();
                 first.entry(name.clone()).or_insert(row.database_index);
                 names.insert(row.database_index, name);
             }
@@ -2252,7 +2252,7 @@ impl<'a> World<'a> {
         })?;
         if techs.researched.contains(&(
             slot,
-            content_reader_core::parser::c_string(name).to_ascii_lowercase(),
+            content_reader_parser::parser::c_string(name).to_ascii_lowercase(),
         )) {
             return Ok(true);
         }
@@ -3528,7 +3528,7 @@ impl<'a> World<'a> {
         row: Leader<'_>,
         template: Option<RecordedTemplate>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
-    ) -> Result<Option<(usize, &'a content_reader_core::triggers::Triggers)>, Failure> {
+    ) -> Result<Option<(usize, &'a content_reader_script::triggers::Triggers)>, Failure> {
         let template = template.ok_or_else(|| -> Failure {
             format!(
                 "unit leader {} has a visibility input, but its character has no template",
@@ -3583,7 +3583,7 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(super) fn role_visible(&self, index: usize) -> &'a content_reader_core::triggers::Triggers {
+    pub(super) fn role_visible(&self, index: usize) -> &'a content_reader_script::triggers::Triggers {
         match self.leader_roles.map(|roles| &roles.templates[index].role) {
             Ok(Ok(Some(visible))) => visible,
             _ => unreachable!("leader role {index} is no content role"),
@@ -4154,10 +4154,10 @@ impl<'a> World<'a> {
 
     pub(crate) fn with_template_names(
         mut self,
-        names: &'a content_reader_core::content::diagnostics::Once<
+        names: &'a content_reader_layers::content::diagnostics::Once<
             Result<content_reader_localisation::localisation::Localisation, String>,
         >,
-        layers: &'a content_reader_core::ResolvedLayers,
+        layers: &'a content_reader_layers::ResolvedLayers,
         language: &'a str,
     ) -> Self {
         self.template_names = Some((names, layers, language));

@@ -12,13 +12,13 @@ fn a_debug_dump_loads_and_renders_on_the_main_thread_stack() {
     let executable = fs::read(game.join("hoi4.exe")).unwrap();
     assert_eq!(
         &engine_executable::build::ExecutableIdentity::of(&executable),
-        content_reader_core::test_game::tables().identity(),
+        content_reader_script::test_game::tables().identity(),
         "the dump fixture uses the synthetic game's executable"
     );
     let path = fixture.join("recording.battleplan");
     let replay = replay::campaign::Replay::open(fs::read(&path).unwrap()).unwrap();
     let block = replay.index.first().expect("the dump fixture records an hour");
-    let scratch = content_reader_core::test_support::Stack::new("debug-dump-stack");
+    let scratch = content_reader_layers::test_support::Stack::new("debug-dump-stack");
     let scratch_dir = scratch.base();
     fs::create_dir_all(&scratch_dir).unwrap();
     let out = scratch_dir.join("dump.png");

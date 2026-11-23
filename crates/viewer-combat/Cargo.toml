@@ -13,6 +13,15 @@ doctest = false
 test-support = []
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 viewer-engagements.workspace = true
 viewer-foundation.workspace = true
 viewer-gpu.workspace = true
@@ -26,7 +35,6 @@ map-content.workspace = true
 engine-characters.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-division-names.workspace = true
 content-reader-events.workspace = true
@@ -41,6 +49,9 @@ replay-frame.workspace = true
 dashboard-effects.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true
 dashboard-text = { workspace = true, features = ["test-support"] }
@@ -52,7 +63,6 @@ viewer-runtime = { workspace = true, features = ["test-support"] }
 viewer-unit-reads = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 engine-heap.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["test-support"] }
 content-reader-events = { workspace = true, features = ["test-support"] }
@@ -70,6 +80,9 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 map-content = { workspace = true, features = ["test-support"] }

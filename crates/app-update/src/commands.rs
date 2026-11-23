@@ -41,6 +41,10 @@ pub async fn app_update_install(app: AppHandle) -> Result<(), String> {
     blocking(app, |app, updates| updates.install(app)).await
 }
 
+pub fn install_now(app: &AppHandle) -> Result<(), String> {
+    updates(app).install(app)
+}
+
 #[tauri::command]
 pub async fn app_update_set_channel(
     app: AppHandle,

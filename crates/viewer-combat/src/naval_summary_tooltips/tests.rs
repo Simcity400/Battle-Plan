@@ -46,7 +46,7 @@ fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
 
 #[test]
 fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let loc: Localisation = [
         ("total_damage_dealt", "T $NUM$ $RATIO$;"),
         ("damage_dealt_light_guns", "L $NUM$ $RATIO$;"),
@@ -131,7 +131,7 @@ fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
 
 #[test]
 fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let loc: Localisation = [
         ("total_damage_dealt", "TOTAL $NUM$;"),
         ("damage_dealt_by_box", "BOX;"),
@@ -688,8 +688,8 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         &[(b"sortie_bonus", 1), (b"retreat_bonus", 2)],
         None,
     );
-    let authored = content_reader_core::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
-    let authored = content_reader_core::modifiers::targeted(&authored.items).modifiers;
+    let authored = content_reader_parser::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
+    let authored = content_reader_script::modifiers::targeted(&authored.items).modifiers;
     assert_eq!(
         screening_description(true, &census, &screening, &defines, "", Ok(&authored), Ok(&definitions), &NoIcons, &loc).unwrap(),
         (concat!("Battle Line: \u{11}H100%\u{11}!\nCombined: \u{11}H100%\u{11}!\n\n",

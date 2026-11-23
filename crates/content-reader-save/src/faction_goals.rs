@@ -1,5 +1,5 @@
 use crate::{SavedDate, block, bytes, field, integer, invalid, scalar};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -98,7 +98,7 @@ mod tests {
     use super::*;
     #[test]
     fn faction_goal_save_keeps_order_repeated_history_signed_slots_and_unset_dates() {
-        let doc = content_reader_core::parser::parse(br#"goal_status={manifest=mod_manifest goals={{goal=mod_goal status=active game_data=-1.1.1.1}{goal=other status=canceled game_data=1940.2.3.4}} completed_goals={mod_goal mod_goal} canceled_goals={other} extra_goal_slots={short_term=-2 medium_term=0 long_term=7} game_data={-1.1.1.1 1940.2.3.4}}"#).unwrap();
+        let doc = content_reader_parser::parser::parse(br#"goal_status={manifest=mod_manifest goals={{goal=mod_goal status=active game_data=-1.1.1.1}{goal=other status=canceled game_data=1940.2.3.4}} completed_goals={mod_goal mod_goal} canceled_goals={other} extra_goal_slots={short_term=-2 medium_term=0 long_term=7} game_data={-1.1.1.1 1940.2.3.4}}"#).unwrap();
         let status = parse(&doc.items).unwrap();
         assert_eq!(status.manifest.as_deref(), Some(b"mod_manifest".as_slice()));
         assert_eq!(

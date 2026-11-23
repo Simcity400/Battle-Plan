@@ -15,11 +15,13 @@ tauri-build = { version = "2", features = [] }
 serde_json.workspace = true
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-layers.workspace = true
 replay.workspace = true
 replay-files.workspace = true
 replay-settings.workspace = true
 app-update.workspace = true
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 replay-data.workspace = true
 recorder = { path = "../recorder" }
@@ -49,7 +51,11 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-raids = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }

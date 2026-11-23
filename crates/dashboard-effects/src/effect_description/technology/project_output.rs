@@ -78,7 +78,7 @@ impl Renderer<'_, '_, '_> {
     )]
     pub(in crate::effect_description) fn project_output_body(
         &mut self,
-        output: &content_reader_core::special_projects::Output,
+        output: &content_reader_military::special_projects::Output,
         item: &Item,
         scopes: Scopes,
         owner: u32,
@@ -202,7 +202,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(in crate::effect_description) fn project_iteration_body(
         &mut self,
-        output: &content_reader_core::special_projects::Output,
+        output: &content_reader_military::special_projects::Output,
         scopes: Scopes,
         owner: u32,
         id: u32,
@@ -302,8 +302,8 @@ impl Renderer<'_, '_, '_> {
                 key: None,
                 key_quoted: false,
                 operator: Default::default(),
-                value: content_reader_core::parser::Value::Block(Vec::new()),
-                kind: content_reader_core::parser::Kind::Open,
+                value: content_reader_parser::parser::Value::Block(Vec::new()),
+                kind: content_reader_parser::parser::Kind::Open,
             };
             match self.project_equipment_bonus(&blank, &output.equipment_bonus, scopes) {
                 Ok(text) => {
@@ -413,9 +413,9 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let mut bonus = item.clone();
         bonus.key = Some(b"bonus".to_vec());
-        bonus.value = content_reader_core::parser::Value::Block(equipment_bonus.to_vec());
+        bonus.value = content_reader_parser::parser::Value::Block(equipment_bonus.to_vec());
         let mut adapter = item.clone();
-        adapter.value = content_reader_core::parser::Value::Block(vec![bonus]);
+        adapter.value = content_reader_parser::parser::Value::Block(vec![bonus]);
         self.units_equipment_bonus(&adapter, scopes)
     }
 
@@ -611,7 +611,7 @@ impl Renderer<'_, '_, '_> {
                         .collect()
                 });
             for entry in entries {
-                let token = content_reader_core::parser::c_string(entry);
+                let token = content_reader_parser::parser::c_string(entry);
                 let name: &[u8] = match kind {
                     1 => {
                         let equipment = self

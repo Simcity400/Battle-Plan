@@ -1,6 +1,6 @@
 
 use super::{block, bytes, field, integer_list, invalid, null_permitted_handle, object_id};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

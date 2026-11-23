@@ -69,9 +69,9 @@ const POINT: Option<[f32; 2]> = Some([2.0, 3.0]);
 
 #[test]
 fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use crate::test_support::gui::{fixture, fixture_with};
-    let read = content_reader_core::gui::native::read;
+    let read = content_reader_gui::gui::native::read;
     let fallback = fixture_with(read(
         br#"guiTypes={textBoxType={name=defaultTextBox maxWidth=375}}"#,
     ));

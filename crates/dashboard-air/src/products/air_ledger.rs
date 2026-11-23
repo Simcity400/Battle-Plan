@@ -634,7 +634,7 @@ fn names(source: &Source, context: &LoadContext, fold: &Fold, warnings: &mut Vec
     let buildings = if buildings.is_empty() {
         Vec::new()
     } else {
-        let content = cat.content.layers.derived::<catalogue::CachedResult<content_reader_core::buildings::Buildings>>().get_or_init(|| content_reader_core::buildings::read(&cat.content.layers)).map_err(|error| error.to_string());
+        let content = cat.content.layers.derived::<catalogue::CachedResult<content_reader_key_names::buildings::Buildings>>().get_or_init(|| content_reader_key_names::buildings::read(&cat.content.layers)).map_err(|error| error.to_string());
         buildings
             .into_iter()
             .map(|id| {
@@ -646,7 +646,7 @@ fn names(source: &Source, context: &LoadContext, fold: &Fold, warnings: &mut Vec
     (regions, buildings)
 }
 
-fn building_name(cat: &catalogue::Catalogue, content: &content_reader_core::buildings::Buildings, token: &str) -> Result<String, String> {
+fn building_name(cat: &catalogue::Catalogue, content: &content_reader_key_names::buildings::Buildings, token: &str) -> Result<String, String> {
     let building = content.by_token(token).map_err(|error| error.to_string())?.ok_or_else(|| format!("Building {token} absent from the recorded stack"))?;
     cat.localised(&building.name, catalogue::View::Plain).ok_or_else(|| format!("Building {token} name unsupported"))
 }

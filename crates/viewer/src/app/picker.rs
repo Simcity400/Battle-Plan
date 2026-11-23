@@ -338,8 +338,8 @@ pub fn mode_hover(
     }
 }
 
-pub fn picks_region(kind: Option<content_reader_core::map::ProvinceKind>, region: Option<u32>) -> bool {
-    kind == Some(content_reader_core::map::ProvinceKind::Sea) && region.is_some()
+pub fn picks_region(kind: Option<content_reader_map::map::ProvinceKind>, region: Option<u32>) -> bool {
+    kind == Some(content_reader_map::map::ProvinceKind::Sea) && region.is_some()
 }
 
 pub fn four_buttons(document: &Document) -> bool {
@@ -1183,7 +1183,7 @@ mod tests {
 
     #[test]
     fn a_picked_region_hovers_as_the_region_builder_answers_its_mode() {
-        use content_reader_core::map::ProvinceKind::*;
+        use content_reader_map::map::ProvinceKind::*;
         use viewer_counter_products::map::province_tooltips::ModeHover;
         assert!(picks_region(Some(Sea), Some(40)));
         assert!(!picks_region(Some(Sea), None));

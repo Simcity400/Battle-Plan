@@ -5,7 +5,7 @@ use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, required_block,
     required_bytes, scalar,
 };
-use content_reader_core::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Value};
 #[path = "intel_network_auxiliary.rs"]
 pub mod network_auxiliary;
 #[path = "intel_sources.rs"]
@@ -382,7 +382,7 @@ fn parse_agency_upgrades(value: &Value) -> io::Result<Vec<AgencyUpgradeLevel>> {
                 String::from_utf8_lossy(token)
             ))
         };
-        if entry.operator != content_reader_core::parser::Operator::Equals {
+        if entry.operator != content_reader_parser::parser::Operator::Equals {
             return Err(refuse());
         }
         let level = integer(scalar(&entry.value).map_err(|_| refuse())?).map_err(|_| refuse())?;
@@ -1409,7 +1409,7 @@ mod tests {
             ("281474976710655.99996", i64::MAX),
         ] {
             let text = format!("effort={{stability={literal} war_support={literal}}}");
-            let tree = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+            let tree = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
             assert_eq!(
                 parse_propaganda_effort(&tree.items[0].value).unwrap(),
                 PropagandaEffort {
@@ -1443,7 +1443,7 @@ mod tests {
                     "stability"
                 };
                 let text = format!("effort={{{channel}={literal} {other}=0}}");
-                let tree = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+                let tree = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
                 assert!(
                     parse_propaganda_effort(&tree.items[0].value).is_err(),
                     "{channel}={literal}"
@@ -1454,7 +1454,7 @@ mod tests {
             b"effort={stability=0}".as_slice(),
             b"effort={war_support=0}",
         ] {
-            let tree = content_reader_core::parser::parse(text).unwrap();
+            let tree = content_reader_parser::parser::parse(text).unwrap();
             assert!(parse_propaganda_effort(&tree.items[0].value).is_err());
         }
     }
@@ -1493,7 +1493,7 @@ mod tests {
     use super::*;
 
     fn parsed(input: &[u8]) -> io::Result<Pack> {
-        parse(&content_reader_core::parser::parse(input)?.items)
+        parse(&content_reader_parser::parser::parse(input)?.items)
     }
 
     #[test]
@@ -2458,7 +2458,7 @@ mod tests {
     }
     #[test]
     fn operative_inherited_cooldown_fields_keep_reason_and_both_dates() {
-        let items = content_reader_core::parser::parse(
+        let items = content_reader_parser::parser::parse(
             br#"id={ id=27 type=4713 } state=on_cooldown
             cooldown_reason=forced_into_hiding leader_cooldown_start_date=1938.4.3.7
             leader_modifier_enable_date=1938.4.8.19"#,

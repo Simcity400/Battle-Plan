@@ -322,7 +322,7 @@ pub(super) fn bind(
 }
 
 pub(crate) fn draw(
-    root: &content_reader_core::gui::native::Element,
+    root: &content_reader_gui::gui::native::Element,
     layout: &viewer_native_gui::native_gui::Layout,
     origin: [i32; 2],
     resources: &impl crate::gui::CombatResources,

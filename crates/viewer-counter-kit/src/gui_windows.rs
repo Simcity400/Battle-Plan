@@ -1,5 +1,5 @@
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::io;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

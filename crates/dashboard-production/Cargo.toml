@@ -14,10 +14,14 @@ export-types = ["dashboard-base/export-types", "dashboard-world/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
 replay.workspace = true
 replay-lanes.workspace = true
 replay-recording.workspace = true
-content-reader-core = { workspace = true }
 content-reader-gfx = { workspace = true }
 content-reader-localisation = { workspace = true }
 dashboard-base = { workspace = true }
@@ -40,12 +44,12 @@ serde_json = { workspace = true }
 ts-rs = "11.1"
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true
 replay-journal = { workspace = true, features = ["test-support"] }
 replay-settings.workspace = true
 recorder-derive.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
@@ -64,6 +68,10 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 dashboard-economy = { workspace = true, features = ["export-types"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }

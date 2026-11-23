@@ -26,10 +26,10 @@ export function observedRole(viewId: string, template: Pick<DashboardTemplate, '
 export const flipFog = (options: MapOptions): MapOptions => ({ ...options, fog: !options.fog });
 
 export function campaignToggled(event: MapToggleEvent, update: (flip: (options: MapOptions) => MapOptions) => void,
-  client: DashboardClient, source: Pick<DashboardSource, 'id' | 'revision'> | null): Promise<void> {
-  if (event.viewId !== CAMPAIGN_MAP_VIEW) return Promise.resolve();
-  if (event.toggle.setting === 'fog') { update(flipFog); return Promise.resolve(); }
-  if (!source) return Promise.resolve();
+  client: DashboardClient, source: Pick<DashboardSource, 'id' | 'revision'> | null): Promise<string | null> {
+  if (event.viewId !== CAMPAIGN_MAP_VIEW) return Promise.resolve(null);
+  if (event.toggle.setting === 'fog') { update(flipFog); return Promise.resolve(null); }
+  if (!source) return Promise.resolve(null);
   return toggleMapSetting(client, { id: CAMPAIGN_MAP_VIEW, sourceId: source.id, revision: source.revision }, event.toggle, { scope: 'campaign' });
 }
 
@@ -59,17 +59,17 @@ export class PickerOptions {
   }
 }
 
-const settingWrites = new Map<string, Promise<void>>();
+const settingWrites = new Map<string, Promise<string | null>>();
 
 export function toggleMapSetting(client: DashboardClient, view: Pick<DashboardMapView, 'id' | 'sourceId' | 'revision'>,
-  toggle: MapToggle, target: MapSettingsTarget = { scope: 'widget', id: view.id }): Promise<void> {
+  toggle: MapToggle, target: MapSettingsTarget = { scope: 'widget', id: view.id }): Promise<string | null> {
   const write = async () => {
-    if (!client.flipMapSetting || toggle.setting === 'fog') return;
+    if (!client.flipMapSetting || toggle.setting === 'fog') return null;
     const signal = new AbortController().signal;
-    await client.flipMapSetting(view.sourceId, view.revision, toggle.setting, signal, target);
+    return (await client.flipMapSetting(view.sourceId, view.revision, toggle.setting, signal, target)).saveWarning ?? null;
   };
   const key = JSON.stringify([view.sourceId, view.revision, target]);
-  const next = (settingWrites.get(key) ?? Promise.resolve()).catch(() => undefined).then(write);
+  const next = (settingWrites.get(key) ?? Promise.resolve(null)).catch(() => null).then(write);
   settingWrites.set(key, next);
   void next.finally(() => { if (settingWrites.get(key) === next) settingWrites.delete(key); }).catch(() => undefined);
   return next;

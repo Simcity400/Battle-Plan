@@ -3,7 +3,7 @@ use crate::{
     catalogue::tests::folder_catalogue,
     triggers::{Combat, ContentFacts, Eval, World},
 };
-use content_reader_core::trigger_keys::TriggerNames;
+use content_reader_script::trigger_keys::TriggerNames;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::{
@@ -94,13 +94,13 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
         }
     }
     let names = TriggerNames {
-        scripted: content_reader_core::scripted_triggers::read(&content.layers.layers).unwrap(),
+        scripted: content_reader_key_names::scripted_triggers::read(&content.layers.layers).unwrap(),
         counts: Some(Default::default()),
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
     let roles = crate::triggers::LeaderRoles::new(
-        content_reader_core::characters::leader_templates(&content.layers.layers).unwrap(),
+        content_reader_key_names::characters::leader_templates(&content.layers.layers).unwrap(),
     );
     let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
     facts.leader_roles = Ok(&roles);
@@ -108,7 +108,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
     let side = Side::default();
     let evaluator = Evaluator::new(&world, Some(&side));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let items = content_reader_core::parser::parse(source.as_bytes())
+    let items = content_reader_parser::parser::parse(source.as_bytes())
         .unwrap()
         .items;
     let mut refusals = BTreeMap::new();
@@ -290,8 +290,8 @@ fn new_assignment_trigger_descriptions_use_native_arguments_and_inversion() {
 
 #[test]
 fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings() {
-    content_reader_core::test_game::with(|game| {
-        use content_reader_core::trigger_keys::Reader;
+    content_reader_script::test_game::with(|game| {
+        use content_reader_script::trigger_keys::Reader;
         game.trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
             .trigger("set_temp_variable", 0, Reader::Body, 0)
             .trigger("add_to_temp_variable", 0, Reader::Body, 0)
@@ -313,8 +313,8 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
     let defines = root.join("common/defines/test.lua");
     std::fs::create_dir_all(defines.parent().unwrap()).unwrap();
     std::fs::write(&defines, "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}").unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let resolved = content_reader_core::content::ResolvedContent {
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let resolved = content_reader_layers::content::ResolvedContent {
         layers,
         stats: Default::default(),
         changed: Vec::new(),
@@ -364,7 +364,7 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
     let text = ScriptedText::new(&frame, &localisation, &content, 0);
     let run_synthetic = |source: &str| {
         let evaluator = Evaluator::new(&world, Some(&side));
-        let items = content_reader_core::parser::parse(source.as_bytes())
+        let items = content_reader_parser::parser::parse(source.as_bytes())
             .unwrap()
             .items;
         let mut refusals = BTreeMap::new();

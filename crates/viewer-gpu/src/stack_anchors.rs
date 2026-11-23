@@ -1,6 +1,6 @@
 use super::province_map::HeightField;
 use viewer_foundation::unit_rules::STANDSTILL;
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use std::{collections::BTreeMap, io};
 
 pub struct StackAnchors {
@@ -12,7 +12,7 @@ impl StackAnchors {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut positions = BTreeMap::new();
         let mut scales = BTreeMap::new();
-        for stack in content_reader_core::positions::read_unit_stacks(layers)? {
+        for stack in content_reader_map::positions::read_unit_stacks(layers)? {
             positions.insert((stack.province, stack.kind), [stack.x, stack.y, stack.z]);
             scales.insert((stack.province, stack.kind), stack.scale);
         }

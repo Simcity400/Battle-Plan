@@ -15,9 +15,9 @@ use std::{
 };
 
 use eframe::wgpu;
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, gui::native::resources, gui::native::sprites,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_gui::gui::native::{resources, sprites};
 use content_reader_image::{dds, native::Decode};
 use shader_pipeline::gpu;
 
@@ -107,7 +107,7 @@ impl Assets {
                 }
                 let effect = if definition.effect.is_empty() {
                     shader_pipeline::library::Effect::from_compiled(
-                        Arc::new(content_reader_core::pdxshader::program::Program::default()),
+                        Arc::new(content_reader_gui::pdxshader::program::Program::default()),
                         Vec::new(),
                         Vec::new(),
                     )
@@ -542,7 +542,7 @@ impl Player {
 }
 
 fn forget_unknown(retained: &mut shader_scene::State) {
-    use content_reader_core::pdxshader::program::Stage;
+    use content_reader_gui::pdxshader::program::Stage;
     retained.stream.forget_program();
     for slot in 0..4 {
         retained.stream.forget_texture(slot, Stage::Pixel, None);

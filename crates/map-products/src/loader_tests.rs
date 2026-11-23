@@ -1,12 +1,12 @@
 use super::*;
 use content_witness::{Entry, Outcome};
-use content_reader_core::{content::ResolvedLayers, test_support::Stack};
+use content_reader_layers::{content::ResolvedLayers, test_support::Stack};
 use loader::Loader;
 use sha2::Digest;
 use std::path::Path;
 
 fn fixture(name: &str) -> Stack {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let stack = Stack::new(name);
     let base = stack.base();
     stack.write(
@@ -97,9 +97,9 @@ fn previous_inputs(
     user: &Path,
     language: &str,
 ) -> io::Result<ProductInputs> {
-    let map = Arc::new(content_reader_core::map::load(layers)?);
-    let (_, default_map) = content_reader_core::terrain::read(layers)?;
-    let defines = content_reader_core::defines::read(layers)?;
+    let map = Arc::new(content_reader_map::map::load(layers)?);
+    let (_, default_map) = content_reader_key_names::terrain::read(layers)?;
+    let defines = content_reader_defines::defines::read(layers)?;
     let audio = previous_audio_source(layers, &defines, user, &mut Vec::new());
     let heightmap = content_reader_image::bmp::decode_indexed(
         &layers.read(&format!("map/{}", default_map.heightmap))?,
@@ -113,30 +113,30 @@ fn previous_inputs(
         heightmap.height,
         [map.width, map.height],
     )?;
-    let traits = content_reader_core::unit_leader::Traits::registered(layers)?;
+    let traits = content_reader_key_names::unit_leader::Traits::registered(layers)?;
     let _sub_units =
-        content_reader_core::unit_leader::sub_units(layers).map_err(|error| error.to_string());
-    let country_traits = content_reader_core::leader_traits::read(layers)
+        content_reader_key_names::unit_leader::sub_units(layers).map_err(|error| error.to_string());
+    let country_traits = content_reader_military::leader_traits::read(layers)
         .map(|(traits, _)| Arc::new(traits))
         .map_err(|error| error.to_string());
-    let tactics = content_reader_core::combat_tactics::read(layers)?;
-    let mut scripted = content_reader_core::scripted_triggers::read(layers)?;
+    let tactics = content_reader_military::combat_tactics::read(layers)?;
+    let mut scripted = content_reader_key_names::scripted_triggers::read(layers)?;
     for template in scripted.templates.values_mut() {
         if let Ok(body) = &mut template.body {
-            content_reader_core::combat_tactics::resolve_phase_triggers(&tactics.phases, body);
+            content_reader_military::combat_tactics::resolve_phase_triggers(&tactics.phases, body);
         }
     }
-    let buildings = content_reader_core::buildings::read(layers)?;
-    let tag_aliases = Arc::new(content_reader_core::tag_aliases::read(layers)?);
-    let leader_roles = content_reader_core::characters::leader_templates(layers)
+    let buildings = content_reader_key_names::buildings::read(layers)?;
+    let tag_aliases = Arc::new(content_reader_key_names::tag_aliases::read(layers)?);
+    let leader_roles = content_reader_key_names::characters::leader_templates(layers)
         .map(dashboard_text::triggers::LeaderRoles::new)
         .map(Arc::new);
     let (states, _) = content_reader_states::states::read(layers, &defines, &map.definitions)?;
     let states = states.definitions();
-    let graph = match content_reader_core::province_graph::ProvinceGraph::read(layers) {
+    let graph = match content_reader_map::province_graph::ProvinceGraph::read(layers) {
         Ok((graph, _)) => Ok(graph),
         Err(error) => {
-            content_reader_core::province_geometry::ProvinceGeometry::read(layers)?;
+            content_reader_map::province_geometry::ProvinceGeometry::read(layers)?;
             Err(error.to_string())
         }
     };
@@ -152,7 +152,7 @@ fn previous_inputs(
     };
     let dlcs = layers.dlc_names()?;
     let resource_bonuses = dashboard_text::state_resources::resource_bonuses(&defines)?;
-    let continents = content_reader_core::terrain::read_default_map(layers)
+    let continents = content_reader_key_names::terrain::read_default_map(layers)
         .and_then(|map| layers.read(&map.file("continent")?))
         .and_then(|bytes| {
             content_reader_equipment_graphics::equipment_graphics::context::continent_names(&bytes)
@@ -162,9 +162,9 @@ fn previous_inputs(
         .int32("NNavy", "NAVAL_INVASION_PREPARE_DAYS")
         .map_err(|error| error.to_string());
     let script_constants =
-        content_reader_core::script_constants::read(layers).map_err(|error| error.to_string());
+        content_reader_politics::script_constants::read(layers).map_err(|error| error.to_string());
     let localisation = layers.artwork("map names", |stack| {
-        let rows = content_reader_core::adjacencies::read(stack)?;
+        let rows = content_reader_map::adjacencies::read(stack)?;
         viewer_map_text::name_pass::ProvinceGraph::build(
             map.width,
             map.height,
@@ -174,17 +174,17 @@ fn previous_inputs(
         content_reader_localisation::localisation::read(stack, language).map(Arc::new)
     })?;
     let mut anchors = BTreeMap::new();
-    for stack in content_reader_core::positions::read_unit_stacks(layers)? {
+    for stack in content_reader_map::positions::read_unit_stacks(layers)? {
         anchors.insert((stack.province, stack.kind), [stack.x, stack.y, stack.z]);
     }
     let fog = Arc::new(FogContent::load(layers, &map, &defines).map_err(|error| error.to_string()));
-    let buildings = content_reader_core::buildings::read(layers).map(|_| buildings)?;
-    let (ideologies, _) = content_reader_core::ideologies::read(layers)?;
-    let (resources, _) = content_reader_core::resources::read(layers)?;
+    let buildings = content_reader_key_names::buildings::read(layers).map(|_| buildings)?;
+    let (ideologies, _) = content_reader_key_names::ideologies::read(layers)?;
+    let (resources, _) = content_reader_key_names::resources::read(layers)?;
     let movement: io::Result<MovementContent> = (|| {
         Ok(MovementContent::new(
-            content_reader_core::movement::MovementMap::read(layers, &defines)?,
-            content_reader_core::movement::MovementDefines::read(&defines)?,
+            content_reader_map::movement::MovementMap::read(layers, &defines)?,
+            content_reader_map::movement::MovementDefines::read(&defines)?,
         ))
     })();
     let geometry = viewer_gpu::province_geometry::ProvinceGeometry::build(&map);
@@ -206,9 +206,9 @@ fn previous_inputs(
         }
     }
     let triggers = TriggerContent {
-        triggers: Arc::new(content_reader_core::trigger_keys::TriggerNames {
+        triggers: Arc::new(content_reader_script::trigger_keys::TriggerNames {
             scripted,
-            counts: Some(content_reader_core::trigger_keys::CountTriggerNames::new(
+            counts: Some(content_reader_key_names::key_name_products::count_trigger_names(
                 &buildings,
                 &ideologies,
                 &resources,
@@ -423,7 +423,7 @@ fn shared_loader_preserves_missing_and_refused_file_errors_and_their_precedence(
     let stack = fixture("product_loader_errors");
     let layers = stack.layers(&["map/unitstacks.txt"]);
     let missing = Loader::new(&layers).anchors(&layers).err().unwrap();
-    let old_missing = content_reader_core::positions::read_unit_stacks(&layers).unwrap_err();
+    let old_missing = content_reader_map::positions::read_unit_stacks(&layers).unwrap_err();
     assert_eq!(
         (missing.kind(), missing.to_string()),
         (old_missing.kind(), old_missing.to_string())
@@ -431,7 +431,7 @@ fn shared_loader_preserves_missing_and_refused_file_errors_and_their_precedence(
     stack.write(&stack.addon(), "map/unitstacks.txt", "1;0;NaN;2;3;0;1\n");
     let layers = stack.layers(&[]);
     let refused = Loader::new(&layers).anchors(&layers).err().unwrap();
-    let old_refused = content_reader_core::positions::read_unit_stacks(&layers).unwrap_err();
+    let old_refused = content_reader_map::positions::read_unit_stacks(&layers).unwrap_err();
     assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
     assert_eq!(
         (refused.kind(), refused.to_string()),
@@ -526,8 +526,8 @@ fn invalid_payload_witnesses_differ_while_original_errors_and_stamps_match() {
 }
 
 fn previous_audio_source(
-    layers: &content_reader_core::ResolvedLayers,
-    defines: &content_reader_core::defines::Defines,
+    layers: &content_reader_layers::ResolvedLayers,
+    defines: &content_reader_defines::defines::Defines,
     user: &std::path::Path,
     warnings: &mut Vec<String>,
 ) -> Option<Arc<viewer_audio::Source>> {
@@ -629,16 +629,16 @@ fn artwork_localisation_keeps_the_previous_named_fallback_and_renderer_isolation
     );
     let game = root.join("steamapps/common/Game");
     std::fs::create_dir_all(&game).unwrap();
-    let options = content_reader_core::ResolveOptions {
+    let options = content_reader_layers::ResolveOptions {
         game_dir: game,
         user_dir: stack.base(),
         cache_dir: root.join("cache"),
     };
     let mut layers = stack.layers(&[]);
-    content_reader_core::content::visual::apply(
+    content_reader_layers::content::visual::apply(
         &mut layers,
         &options,
-        &[content_reader_core::content::visual::Choice {
+        &[content_reader_layers::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Synthetic art".into(),
         }],

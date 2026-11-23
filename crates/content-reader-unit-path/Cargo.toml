@@ -10,13 +10,11 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-content-reader-core.workspace = true
-
-[dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = []
 
 [lints]
 workspace = true
@@ -25,6 +23,8 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-unit-path = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }

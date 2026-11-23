@@ -33,7 +33,7 @@ fn nested_balance_effects_keep_the_viewer_nato_preference() {
     ));
     let content = catalogue.scripted_content().unwrap();
     let effects = content.effects().unwrap();
-    let items = content_reader_core::parser::parse(b"custom_effect_tooltip=ENTRY_TOOLTIP")
+    let items = content_reader_parser::parser::parse(b"custom_effect_tooltip=ENTRY_TOOLTIP")
         .unwrap()
         .items;
     for nato in [false, true] {
@@ -68,7 +68,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let scopes = BalanceEffectScopes::new(&graph, MAX_SCRIPTED_NESTING);
-    let effects = content_reader_core::parser::parse(b"custom_effect_tooltip=ACTIVATION")
+    let effects = content_reader_parser::parser::parse(b"custom_effect_tooltip=ACTIVATION")
         .unwrap()
         .items;
     let why = scopes
@@ -77,7 +77,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
     assert!(why.contains("native stack exhaustion"), "{why}");
     scopes.set_depth(MAX_SCRIPTED_NESTING - 1);
     scopes.check_appended(&graph, MAX_SCRIPTED_NESTING - 1);
-    let effects = content_reader_core::parser::parse(b"custom_effect_tooltip=LOOP")
+    let effects = content_reader_parser::parser::parse(b"custom_effect_tooltip=LOOP")
         .unwrap()
         .items;
     let mut refused = Vec::new();
@@ -290,9 +290,9 @@ fn balance_nested_description_inherits_the_active_variable_session() {
     let evaluator = Evaluator::new(text.world().unwrap(), None);
     let caller = Scopes::of(Scope::Country(1));
     evaluator.begin_description();
-    let set = content_reader_core::triggers::read(
+    let set = content_reader_script::triggers::read(
         b"set_temp_variable={x=7}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&set, caller), Eval::True);
@@ -305,9 +305,9 @@ fn balance_nested_description_inherits_the_active_variable_session() {
         ),
         Ok("Activate:\nInherited\n".into())
     );
-    let check = content_reader_core::triggers::read(
+    let check = content_reader_script::triggers::read(
         b"check_variable={temp_var:x=7}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .items;
     assert_eq!(evaluator.evaluate(&check, caller), Eval::True);

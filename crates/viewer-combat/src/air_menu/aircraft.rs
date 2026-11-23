@@ -1,5 +1,5 @@
 use super::{Content, DecodedFrame};
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use replay_data::rows::{AirCountryRelationRow, AirWingRow, tables};
 use replay_derive::{
     air_mission_sources::{AirRegistrySources, MissionCountrySources},

@@ -1,11 +1,12 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     fields::invalid,
     key_names::KeyNames,
     parser::{
         self, c_string,
-        native::{self, Shape},
     },
     script_files,
     tokens::Token,
@@ -72,7 +73,7 @@ impl Terms {
                     .and_then(parser::read_bool)
                     .unwrap_or(out.annex);
             } else if key == b"threat" {
-                out.threat = content_reader_core::modifiers::read_fixed5(item).unwrap_or(out.threat);
+                out.threat = content_reader_script::modifiers::read_fixed5(item).unwrap_or(out.threat);
             } else if let Some(index) = [
                 b"take_states".as_slice(),
                 b"liberate",
@@ -95,7 +96,7 @@ impl Terms {
                 if let Some(value) = item
                     .value
                     .scalar()
-                    .and_then(|v| content_reader_core::crt::scan_i32(v).stored())
+                    .and_then(|v| content_reader_parser::crt::scan_i32(v).stored())
                 {
                     out.limits[index] = value;
                 }
@@ -117,7 +118,7 @@ impl Terms {
                 } else {
                     &mut out.threat_factors[index - 4]
                 };
-                let value = content_reader_core::modifiers::read_fixed5(item).unwrap_or(*factor);
+                let value = content_reader_script::modifiers::read_fixed5(item).unwrap_or(*factor);
                 *factor = value
                     .wrapping_mul(1000)
                     .wrapping_div(100_000)
@@ -132,7 +133,7 @@ impl Terms {
                 if let Some(value) = item
                     .value
                     .scalar()
-                    .and_then(|v| content_reader_core::crt::scan_i32(v).stored())
+                    .and_then(|v| content_reader_parser::crt::scan_i32(v).stored())
                 {
                     *field = value;
                 }
@@ -342,7 +343,7 @@ mod tests {
 
     #[test]
     fn wargoal_terms_keep_native_defaults_repeated_assignments_and_mod_definition_ambiguity() {
-        use content_reader_core::{test_game, trigger_keys::Reader};
+        use content_reader_script::{test_game, trigger_keys::Reader};
         test_game::with(|game| game.trigger("tag", 0, Reader::Assign, 0));
         let database = parse(b"@cost=25 wargoal_types={custom={annex=yes annex=invalid take_states_limit=3 take_states_cost=@cost take_states_cost=-12.5 liberate_threat_factor=50 expire=90 generate_base_cost=12 generate_per_state_cost=4 take_states={always=yes} allowed={always=yes} allowed={always=no} available={tag=MOD}}}", &KeyNames::default()).unwrap();
         let term = database.terms(b"custom").unwrap();
@@ -396,7 +397,7 @@ mod tests {
 
     #[test]
     fn war_naming_keeps_main_reader_forms_and_token_identity() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let database = parse(
             b"wargoal_types={First={instant_reward={set_country_flag=synthetic} take_states_limit=2 war_name=EARLY war_name=LATE} FIRST={war_name=LATE}}",
             &KeyNames::default(),
@@ -424,7 +425,7 @@ mod tests {
 
     #[test]
     fn wargoal_names_and_field_consumption() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let database = parse(
             b"@cost=8 \"wargoal_types\"={hidden={}} WARGOAL_TYPES={First={allowed={always=no} instant_reward={set_country_flag=synthetic} generate_base_cost=@cost} FIRST={annex=yes} other={take_states={always=yes} unknown={@lost=7} expire=@lost}}",
             &KeyNames::default(),

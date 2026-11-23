@@ -7,7 +7,7 @@ struct Content(std::path::PathBuf);
 
 impl Content {
     fn new(history: &[(&str, &str)]) -> Self {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

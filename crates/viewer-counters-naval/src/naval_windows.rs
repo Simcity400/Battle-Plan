@@ -1,7 +1,7 @@
 
 mod draw_parts;
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use crate::{air_grid, air_missions, bases, naval, naval_hovers, naval_markers, naval_missions};
 use crate::bases::NavalBaseIcon;
 use std::io;

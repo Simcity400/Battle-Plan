@@ -61,7 +61,7 @@ pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::cata
     ] {
         std::fs::write(folder.0.join("map/logs").join(name), bytes).unwrap();
     }
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
     let _reads = layers.report_uncovered_reads();
     (crate::catalogue::tests::layers_catalogue(layers), folder)
 }
@@ -145,7 +145,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    let ((warnings, cached), _) = content_reader_core::content::diagnostics::capture(|| {
+    let ((warnings, cached), _) = content_reader_layers::content::diagnostics::capture(|| {
         assert_eq!(
             text.expand("[ROOT.64.Neighbors]").as_deref(),
             Ok("Localized neighbors")
@@ -201,7 +201,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     for name in ["provinces.bmp", "terrain.bmp", "rivers.bmp"] {
         std::fs::remove_file(folder.0.join("map/logs").join(name)).unwrap();
     }
-    let (reused, _) = content_reader_core::content::diagnostics::capture(|| {
+    let (reused, _) = content_reader_layers::content::diagnostics::capture(|| {
         let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
         assert_eq!(
             next.expand("[ROOT.64.Neighbors]").as_deref(),
@@ -366,22 +366,22 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
     let warnings = vec![
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Warning,
+            kind: content_reader_parser::DiagnosticKind::Warning,
             message: "native template skip".into(),
             cause: None,
         },
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Misread,
+            kind: content_reader_parser::DiagnosticKind::Misread,
             message: "proven state recovery".into(),
             cause: Some(MisreadCause::InvalidImpassable),
         },
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Misread,
+            kind: content_reader_parser::DiagnosticKind::Misread,
             message: "unproven state recovery".into(),
             cause: None,
         },
         Diagnostic {
-            kind: content_reader_core::DiagnosticKind::Unsupported,
+            kind: content_reader_parser::DiagnosticKind::Unsupported,
             message: "unsupported state content".into(),
             cause: None,
         },
@@ -389,7 +389,7 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     assert!(
         cat.state_content
             .set(Ok(StateContent {
-                defines: content_reader_core::defines::read(&cat.content.layers).unwrap(),
+                defines: content_reader_defines::defines::read(&cat.content.layers).unwrap(),
                 states: Default::default(),
                 names: StateNames::new(),
                 warnings: warnings.clone(),
@@ -462,8 +462,8 @@ fn scripted_text_state_display_shares_precedence_language_and_cached_failures() 
 
 #[test]
 fn state_templates_accept_synthesized_unclaimed_bmp_provinces() {
-    content_reader_core::test_game::enter();
-    let stack = content_reader_core::test_support::Stack::new("state_templates_unclaimed_bmp");
+    content_reader_script::test_game::enter();
+    let stack = content_reader_layers::test_support::Stack::new("state_templates_unclaimed_bmp");
     let base = stack.base();
     stack.write(
         &base,
@@ -496,7 +496,7 @@ fn state_templates_accept_synthesized_unclaimed_bmp_provinces() {
     std::fs::write(base.join("map/provinces.bmp"), bmp).unwrap();
 
     let layers = stack.layers(&[]);
-    let defines = content_reader_core::defines::read(&layers).unwrap();
+    let defines = content_reader_defines::defines::read(&layers).unwrap();
     let (states, names, _) = read_state_templates(&layers, &defines).unwrap();
     assert_eq!(states.definitions()[&77].provinces, [1, 2]);
     assert_eq!(names[&77], Ok("SYNTH_STATE".into()));

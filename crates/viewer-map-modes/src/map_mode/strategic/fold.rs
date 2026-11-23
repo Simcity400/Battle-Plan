@@ -1,7 +1,7 @@
 use super::*;
 use map_display_data::landscape::Style;
 use viewer_scene_base::projection_fold::{RowFold, fields};
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use map_display_data::{landscape::ProvinceField, retained::Retained, value_index::ValueIndex};
 use replay_data::rows::{RowCodec, TableId, TableSchema};
 use replay_frame::frame::ViewIdentity;

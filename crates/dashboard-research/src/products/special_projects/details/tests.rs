@@ -262,7 +262,7 @@ fn followed_details_spell_choices_again_when_unchanged_rows_are_read_again() {
 
 #[test]
 fn a_chosen_option_sharing_its_token_with_an_option_of_another_name_is_withheld_by_name() {
-    use content_reader_core::special_projects::PrototypeOption;
+    use content_reader_military::special_projects::PrototypeOption;
     let option = |token: &str, name: Option<&str>| PrototypeOption { token: token.into(), name: name.map(Into::into), ..Default::default() };
     assert_eq!(option_name(&[option("first", Some("first_name")), option("FIRST", Some("first_name"))], "first"), Ok(Some("first_name".into())));
     assert!(option_name(&[option("first", Some("first_name")), option("first", None)], "first").unwrap_err().contains("another name"));

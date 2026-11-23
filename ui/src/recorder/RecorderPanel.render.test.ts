@@ -17,7 +17,7 @@ const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, 
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000,
   firstHour: null, savedBytes: 214 * MB, spoolBytes: 1229 * MB, startedAt: STARTED, stopping: false, problem: null, automatic: true,
-  session: null, flag: null, captureMode: 'full' };
+  session: null, flag: null, captureMode: 'full', revision: 0 };
 const flag = { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] };
 const START = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const NOW = engineHour({ year: 1941, month: 6, day: 12, hour: 1 })!;
@@ -68,6 +68,11 @@ test('the panel draws each state, and the Stop prompt covers everything under th
     assert.match(asking, /<div class="recorder-under is-covered" inert="">[\s\S]*This campaign/,
       'the prompt covers everything under the head and out of reach, and the panel keeps its height');
     assert.doesNotMatch(recordingPanel, /inert/);
+    const unshown = { text: 'Couldn’t show the recorder panel.', detail: 'the window couldn’t be sized', retry() {} };
+    const failing = render({ asking: true, windowFailures: [unshown], snapshot: { ...recording, problem: { text: 'The game stopped answering.', detail: '', failed: true } } });
+    const [reachable] = failing.split('<div class="recorder-under is-covered" inert="">');
+    assert.match(text(reachable!), /Couldn’t show the recorder panel\. .*Try again/, 'a failure line stays in reach while the prompt covers the rest');
+    assert.match(text(reachable!), /The game stopped answering\./);
     assert.doesNotMatch(asking, /is-danger/);
     const confirming = render({ asking: true, discarding: true });
     assert.match(text(confirming), /Discard this session \(2 h 14 min\)\? The earlier recording in this file is kept\. Cancel Discard/);
@@ -277,7 +282,7 @@ test('a downloaded update says so in words above the footer, and the footer glyp
   try {
     const { PanelView } = await vite.ssrLoadModule('/ui/src/recorder/RecorderPanel.tsx') as { PanelView: (props: PanelViewProps) => unknown };
     const state: UpdateState = { enabled: true, status: 'up-to-date', channel: 'stable', build: 'stable', currentVersion: '0.9.4', availableVersion: null,
-      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, downgrade: false };
+      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null, downgrade: false };
     const update = (change: Partial<UpdateState>, ask: PanelUpdate['ask'] = null): PanelUpdate =>
       ({ state: { ...state, ...change }, failure: null, ask, pending: false, press() {}, restart() {}, retry() {}, dismiss() {}, channel() {} });
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {
@@ -384,6 +389,12 @@ test('the Stop prompt beside the tray icon asks one question with Save focused, 
     assert.match(discarding, /aria-describedby="recorder-prompt-question recorder-prompt-consequence"/);
     assert.match(text(render({ discarding: true, quitting: true })), /^ ?Discard and quit\?/);
     assert.equal(text(render({ snapshot: { ...recording, stopping: true } })).trim(), '');
+    const lost = { text: 'Couldn’t save the recording.', detail: 'the reply was lost', retry() {} };
+    assert.match(text(render({ snapshot: { ...recording, stopping: true }, promptFailure: lost })), /Couldn’t save the recording\. .*Try again/,
+      'a failed reply outlives the prompt the status already retired, so the panel it keeps open isn’t blank');
+    const unclosed = { text: 'Couldn’t close the recorder panel.', detail: 'the request failed', retry() {} };
+    assert.match(text(render({ asking: false, windowFailures: [unclosed] })), /Couldn’t close the recorder panel\. .*Try again/,
+      'a panel that couldn’t close itself says so, with Try again, instead of standing blank');
   } finally { await vite.close(); }
 });
 

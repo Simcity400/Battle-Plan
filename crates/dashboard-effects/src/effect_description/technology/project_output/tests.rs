@@ -403,7 +403,7 @@ fn gap_research_grants_pending_output_uses_exact_selected_assignment_and_never_f
         cache.view(None),
     );
     let definitions =
-        content_reader_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+        content_reader_military::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
     let output = &definitions.projects["mod_project"].output;
     let absent = project_output_description(output, &context, 100, 8, Ok(None), Ok(None));
     assert!(!absent.text.contains("Scientist"));
@@ -438,7 +438,7 @@ fn iteration_output_follows_the_history_view_and_links_its_unlocks() {
     )
     .with_entity_links();
     let definitions =
-        content_reader_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+        content_reader_military::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
     let output = &definitions.projects["mod_project"].output;
     let scopes = |scientist| IterationScopes {
         country_seed: Some(5),
@@ -479,7 +479,7 @@ fn iteration_output_follows_the_history_view_and_links_its_unlocks() {
             1
         )])
     );
-    let empty = content_reader_core::special_projects::Output::default();
+    let empty = content_reader_military::special_projects::Output::default();
     let nothing = project_iteration_description(&empty, &context, 100, 8, scopes(Ok(None)));
     assert_eq!(
         (nothing.heading, nothing.sections.len(), nothing.no_changes),
@@ -506,7 +506,7 @@ fn iteration(fixture: &Fixture) -> IterationDescription {
     )
     .with_entity_links();
     let definitions =
-        content_reader_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+        content_reader_military::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
     project_iteration_description(
         &definitions.projects["mod_project"].output,
         &context,

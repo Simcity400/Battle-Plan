@@ -36,7 +36,7 @@ fn unit_scale_replay_layers() {
     let path = |name| PathBuf::from(std::env::var_os(name).expect(name));
     let document = Document::load(
         &path("BATTLEPLAN_UNIT_REPLAY"),
-        &content_reader_core::ResolveOptions {
+        &content_reader_layers::ResolveOptions {
             game_dir: path("BATTLEPLAN_UNIT_GAME"),
             user_dir: path("BATTLEPLAN_UNIT_USER"),
             cache_dir: path("BATTLEPLAN_UNIT_CACHE"),

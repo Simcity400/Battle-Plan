@@ -1,7 +1,7 @@
 use super::*;
 use content_reader_localisation::localisation::{argument_format, format_argument};
 
-pub(super) fn changes_nothing(output: &content_reader_core::special_projects::Output) -> bool {
+pub(super) fn changes_nothing(output: &content_reader_military::special_projects::Output) -> bool {
     output.sub_unit_bonus.is_empty()
         && output.equipment_bonus.is_empty()
         && output.enable_subunits.is_empty()

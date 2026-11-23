@@ -1,4 +1,6 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     fields::invalid,
@@ -6,11 +8,10 @@ use crate::{
     modifiers,
     parser::{
         c_string,
-        native::{self, Shape},
     },
     script_files,
 };
-use content_reader_core::ideologies::ColorReads;
+use content_reader_script::color_reads::ColorReads;
 use std::io;
 
 #[derive(Default)]
@@ -191,7 +192,7 @@ mod tests {
 
     #[test]
     fn state_category_names_and_consumption() {
-        content_reader_core::test_game::with(|game| {
+        content_reader_script::test_game::with(|game| {
             game.modifiers(["local_building_slots", "local_supplies"])
         });
         for (input, expected) in [
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn state_category_colours_replay_on_the_object() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let database = parse(
             b"state_categories={Syn={color={1 2 3}} plain={} SYN={color={0.5 0.25 0.125 0.75}} late={color={255 0 0}} LATE={color={0 0}}}",
             &KeyNames::default(),
@@ -265,7 +266,7 @@ mod tests {
 
     #[test]
     fn state_category_stack_order_and_replacement() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!("state-category-{}", std::process::id()));
         let _folder = Folder(root.clone());
         let base = root.join("base");
@@ -309,7 +310,7 @@ mod tests {
 
     #[test]
     fn uncertain_state_category_modifier_names_are_named() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic missing registry".into());
         let error = parse(b"state_categories={syn={unresolved_modifier={}}}", &names)

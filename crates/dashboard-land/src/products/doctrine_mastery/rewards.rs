@@ -4,7 +4,8 @@ use super::{LoadContext, Owner, owner_reads, spelled};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}, products::at_hour::{At, AtHour, Read}};
 use dashboard_effects::{ScriptedEffects, effect_description::{self, Context as Describing}};
 use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
-use content_reader_core::{doctrines::Database, tokens::Token};
+use content_reader_military::doctrines::Database;
+use content_reader_parser::tokens::Token;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -60,18 +61,18 @@ fn tables() -> BTreeSet<TableId> {
 }
 
 pub(super) fn reward_key(sub: &[u8], reward: &[u8]) -> Vec<u8> {
-    let mut key = content_reader_core::parser::c_string(sub).to_vec();
+    let mut key = content_reader_parser::parser::c_string(sub).to_vec();
     key.push(b'_');
-    key.extend_from_slice(content_reader_core::parser::c_string(reward));
+    key.extend_from_slice(content_reader_parser::parser::c_string(reward));
     key
 }
 
-fn benefits(reward: &content_reader_core::doctrines::RewardSource, key: &[u8], catalogue: &Catalogue) -> content_reader_core::doctrines::Benefits {
+fn benefits(reward: &content_reader_military::doctrines::RewardSource, key: &[u8], catalogue: &Catalogue) -> content_reader_military::doctrines::Benefits {
     let mut benefits = reward.benefits.clone();
     let mut description = key.to_vec();
     description.extend_from_slice(b"_desc");
     if benefits.prose.is_none() && std::str::from_utf8(&description).ok().and_then(|key| catalogue.localisation.get(key)).is_some() {
-        benefits.prose = Some(content_reader_core::gui::native::BoundLocalization::from_value(&content_reader_core::parser::Value::Scalar(description)));
+        benefits.prose = Some(content_reader_script::localization_binding::BoundLocalization::from_value(&content_reader_parser::parser::Value::Scalar(description)));
     }
     benefits
 }

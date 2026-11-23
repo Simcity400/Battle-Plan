@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
     let missing = || io::Error::other(USAGE);
     let recording = recording.ok_or_else(missing)?;
     let options = ContentOptions {
-        options: content_reader_core::ResolveOptions {
+        options: content_reader_layers::ResolveOptions {
             game_dir: game.ok_or_else(missing)?,
             user_dir: user.ok_or_else(missing)?,
             cache_dir: cache.ok_or_else(missing)?,

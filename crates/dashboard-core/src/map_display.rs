@@ -324,7 +324,7 @@ pub struct CampaignMapSettings {
     #[doc = " choice; at the root it shows none. Ids are matched against the installed catalogue,"]
     #[doc = " never joined to a path; a mod no longer installed keeps its name."]
     #[ts(type = "Array<{ id: string, name: string }> | null")]
-    pub visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
+    pub visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, TS)]
@@ -335,7 +335,7 @@ pub struct ResolvedMapSettings {
     pub counters: CounterFilter,
     #[doc = " The chosen visual mods as a set: sorted by id, without repeats, and empty when none."]
     #[ts(type = "Array<{ id: string, name: string }> | null")]
-    pub visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
+    pub visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
 }
 
 impl ResolvedMapSettings {

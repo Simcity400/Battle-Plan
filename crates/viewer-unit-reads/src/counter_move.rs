@@ -5,7 +5,7 @@ use viewer_foundation::tables::rows;
 use viewer_foundation::movement_timing::Etas;
 use viewer_runtime::unit_class::CounterClass;
 use viewer_runtime::unit_handle::Unit;
-use content_reader_core::movement::MovementMap;
+use content_reader_map::movement::MovementMap;
 use std::cell::Cell;
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::sync::{Arc, Mutex};

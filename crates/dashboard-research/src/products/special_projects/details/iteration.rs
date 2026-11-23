@@ -181,7 +181,7 @@ fn replaced(reads: &Reads<'_, '_>, owner: u32, id: u32, listed: i32) -> Result<b
     Ok(replaced)
 }
 
-fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
+fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_military::special_projects::PrototypeOption, String> {
     let reward = content.definitions.reward_named(&listing.definition, &listing.reward)?;
     let mut options = reward.options.iter().filter(|candidate| candidate.token.eq_ignore_ascii_case(&listing.option));
     let found = options.next().ok_or("Chosen option is absent from recorded content")?;
@@ -218,7 +218,7 @@ fn shown(text: &str, refusals: &mut BTreeMap<String, usize>) -> Option<Vec<GameR
     runs(text).map_err(|why| *refusals.entry(why).or_default() += 1).ok()
 }
 
-fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, accepted: dashboard_text::triggers::AcceptedProjects, out: &mut SpecialProjectIteration) -> Result<(), String> {
+fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_military::special_projects::PrototypeOption, accepted: dashboard_text::triggers::AcceptedProjects, out: &mut SpecialProjectIteration) -> Result<(), String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
     let project = &listing.project;

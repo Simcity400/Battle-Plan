@@ -52,13 +52,14 @@ use std::{
     io,
 };
 
-use content_reader_core::{ResolvedLayers, parser::Item, parser::Value};
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::parser::{Item, Value};
 
 #[cfg(test)]
-use content_reader_core::parser;
+use content_reader_parser::parser;
 
 pub(crate) const MONTH_DAYS: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-pub use content_reader_core::{parser::decimal::Decimal, parser::decimal::FIXED_SCALE};
+pub use content_reader_parser::parser::decimal::{Decimal, FIXED_SCALE};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -1502,7 +1503,7 @@ pub struct MapMembership {
 impl MapMembership {
     pub fn from_definition(bytes: &[u8]) -> io::Result<Self> {
         let mut provinces = BTreeMap::new();
-        for row in content_reader_core::map::definition_rows(bytes)? {
+        for row in content_reader_map::map::definition_rows(bytes)? {
             if provinces.insert(u32::from(row.id), None).is_some() {
                 return Err(invalid("duplicate province id in definition.csv"));
             }
@@ -1514,7 +1515,7 @@ impl MapMembership {
     }
 
     pub fn from_definitions(
-        definitions: &BTreeMap<u32, content_reader_core::map::ProvinceDefinition>,
+        definitions: &BTreeMap<u32, content_reader_map::map::ProvinceDefinition>,
     ) -> io::Result<Self> {
         if definitions.is_empty() {
             return Err(invalid("definition.csv contains no provinces"));
@@ -1624,9 +1625,9 @@ pub fn read_partial_state_history(
 }
 
 fn partial_map_membership(
-    provinces: &BTreeMap<u32, content_reader_core::map::ProvinceDefinition>,
+    provinces: &BTreeMap<u32, content_reader_map::map::ProvinceDefinition>,
     states: &content_reader_states::states::States,
-    notes: Vec<content_reader_core::Diagnostic>,
+    notes: Vec<content_reader_parser::Diagnostic>,
 ) -> io::Result<PartialMapMembership> {
     let mut known = MapMembership::from_definitions(provinces)?;
     let mut excluded_states = BTreeMap::new();
@@ -1679,12 +1680,12 @@ fn partial_map_membership(
 fn content_state_history(
     layers: &ResolvedLayers,
 ) -> io::Result<(
-    BTreeMap<u32, content_reader_core::map::ProvinceDefinition>,
+    BTreeMap<u32, content_reader_map::map::ProvinceDefinition>,
     content_reader_states::states::States,
-    Vec<content_reader_core::Diagnostic>,
+    Vec<content_reader_parser::Diagnostic>,
 )> {
-    let provinces = content_reader_core::map::load_definitions(layers)?;
-    let defines = content_reader_core::defines::read(layers)?;
+    let provinces = content_reader_map::map::load_definitions(layers)?;
+    let defines = content_reader_defines::defines::read(layers)?;
     let (states, notes) = content_reader_states::states::read(layers, &defines, &provinces)?;
     if states.definitions().is_empty() {
         return Err(invalid("verified content contains no state history"));
@@ -1694,12 +1695,12 @@ fn content_state_history(
 
 #[cfg(test)]
 fn history_fixture(input: &[u8]) -> content_reader_states::states::StateDefinition {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let context = content_reader_states::states::Context {
         resource: &|_| content_reader_states::states::Resource::Found,
         max_building_levels: 20,
         province_count: 1000,
-        names: &content_reader_core::key_names::KeyNames::default(),
+        names: &content_reader_script::key_names::KeyNames::default(),
     };
     content_reader_states::states::parse_states(input, &context)
         .unwrap()

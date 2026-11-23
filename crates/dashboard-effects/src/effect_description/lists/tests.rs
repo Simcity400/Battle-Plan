@@ -27,7 +27,7 @@ fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.scripted_effects = [
         b"outer".to_vec(),
         b"inner".to_vec(),
@@ -37,7 +37,7 @@ fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
     ]
     .into();
     names.countries = [b"AAA".to_vec(), b"BBB".to_vec()].into();
-    let mut database = content_reader_core::scripted_effects::ScriptedEffects::default();
+    let mut database = content_reader_key_names::scripted_effects::ScriptedEffects::default();
     database.read_file(b"outer={if={limit={always=yes} inner=no}} inner={army_experience=2} cycle={cycle=yes} guarded={if={limit={always=no} inner=yes}} scoped={army_experience=2 if={limit={tag=AAA} BBB={scoped=yes}}}", &names);
     let content = Content {
         key_names: Some(&names),
@@ -76,7 +76,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
                 entries: Vec::new(),
             }],
         ));
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let out = fixture.render_native(
         "meta_effect={X=2.60000 text={army_experience=[X] add_political_power=1}}",
         &mut fresh(),
@@ -237,9 +237,9 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
             .collect(),
     ));
     fixture.neighbors = Some((1..65).map(|id| (id, vec![id + 1])).collect());
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.scripted_effects.insert(b"walk".to_vec());
-    let mut database = content_reader_core::scripted_effects::ScriptedEffects::default();
+    let mut database = content_reader_key_names::scripted_effects::ScriptedEffects::default();
     database.read_file(b"walk={every_neighbor_state={walk=yes}}", &names);
     let mut graph = EventScopes::new(vec![EventScope::of(EventObject::State(1))]);
     let out = fixture.render(
@@ -270,14 +270,14 @@ fn own_like_scripted_keys_are_not_removed_from_unrelated_bodies() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.scripted_effects = [
         b"array".to_vec(),
         b"original_tag".to_vec(),
         b"prioritize".to_vec(),
     ]
     .into();
-    let mut database = content_reader_core::scripted_effects::ScriptedEffects::default();
+    let mut database = content_reader_key_names::scripted_effects::ScriptedEffects::default();
     database.read_file(b"array={army_experience=2} original_tag={army_experience=3} prioritize={army_experience=4}", &names);
     let out = fixture.render(
         "if={limit={always=yes} array=yes} effect_tooltip={original_tag=yes} prioritize=yes",
@@ -333,7 +333,7 @@ fn empty_overrides_keep_inherited_multiple_probe() {
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         for name in ["for_each_loop", "for_loop_effect", "while_loop_effect"] {
-            let item = content_reader_core::parser::parse(
+            let item = content_reader_parser::parser::parse(
                 format!("{name}={{army_experience=2 add_political_power=3}}").as_bytes(),
             )
             .unwrap()

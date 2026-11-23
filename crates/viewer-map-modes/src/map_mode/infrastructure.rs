@@ -1,7 +1,7 @@
 
 use super::{Inputs, LEVEL_GRADIENT, ModeDefines, complete, finish, region_table_len, style};
 use map_display_data::landscape::ModeLayer;
-use content_reader_core::buildings::Buildings;
+use content_reader_key_names::buildings::Buildings;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};

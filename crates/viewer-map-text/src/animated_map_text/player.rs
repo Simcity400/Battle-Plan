@@ -502,7 +502,7 @@ impl Player {
                 retained.stream.forget_program();
                 retained.stream.forget_texture(
                     0,
-                    content_reader_core::pdxshader::program::Stage::Pixel,
+                    content_reader_gui::pdxshader::program::Stage::Pixel,
                     None,
                 );
             }
@@ -543,9 +543,9 @@ fn free_look(
 
 fn popup_height(heights: HeightField<'_>, x: f32, z: f32) -> f32 {
     let column =
-        content_reader_core::crt::truncate_f32(x + 0.5).clamp(0, heights.width as i32 - 1) as usize;
+        content_reader_parser::crt::truncate_f32(x + 0.5).clamp(0, heights.width as i32 - 1) as usize;
     let bottom =
-        content_reader_core::crt::truncate_f32(z + 0.5).clamp(0, heights.height as i32 - 1) as usize;
+        content_reader_parser::crt::truncate_f32(z + 0.5).clamp(0, heights.height as i32 - 1) as usize;
     let row = heights.height as usize - 1 - bottom;
     (f32::from(heights.values[row * heights.width as usize + column]) * 0.1)
         .max(viewer_gpu::camera::WATER_HEIGHT)

@@ -33,12 +33,12 @@ use viewer_world::scene::Scene;
 pub(crate) struct MapSourceKey {
     recording: SourceKey,
     texture_quality: u8,
-    visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
+    visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
 }
 
 struct MapSource {
     texture_quality: u8,
-    visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
+    visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
     source: Arc<Source>,
     content: Option<Arc<Content>>,
     error: Option<String>,
@@ -121,7 +121,7 @@ struct LoadingSource {
     texture_quality: u8,
     key: MapSourceKey,
     config: Config,
-    visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
+    visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
     result: mpsc::Receiver<Result<Arc<Content>, String>>,
     alive: Arc<AtomicBool>,
 }
@@ -156,7 +156,6 @@ pub struct DashboardMaps {
     source_bindings: BTreeMap<RequestedSource, Result<Arc<Source>, String>>,
     opening_source: Option<OpeningSource>,
     views: BTreeMap<String, MapView>,
-    ended_exports: Vec<(u64, Result<String, String>)>,
     order: Vec<String>,
     loading: Option<LoadingSource>,
     fallbacks: crate::visual_fallback::Shared,
@@ -188,31 +187,20 @@ impl DashboardMaps {
     pub(crate) fn export_view(
         &mut self,
         id: &str,
-        path: String,
-        request: u64,
+        job: crate::host::ExportJob,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
-    ) -> Result<(), String> {
-        let view = self
-            .views
-            .get_mut(id)
-            .ok_or("The requested map widget is unavailable")?;
+    ) {
+        let Some(view) = self.views.get_mut(id) else {
+            return job.answer(Err("The requested map widget is unavailable".into()));
+        };
         if !view.viewer.has_map() {
-            return Err("Wait for the map widget to finish loading before exporting".into());
+            return job.answer(Err("Wait for the map widget to finish loading before exporting".into()));
         }
         let tables = view.viewer.tables();
-        engine_executable::executable_tables::scope(tables, || {
-            view.viewer.host_map_action(
-                dashboard_core::protocol::MapAction::Export {
-                    path,
-                    view_id: None,
-                    request,
-                },
-                ctx,
-                frame,
-            )
-        });
-        Ok(())
+        let mut job = job;
+        job.view_id = None;
+        engine_executable::executable_tables::scope(tables, || view.viewer.host_export(job, ctx, frame));
     }
 
     pub fn new(
@@ -234,7 +222,6 @@ impl DashboardMaps {
             source_bindings: BTreeMap::new(),
             opening_source: None,
             views: BTreeMap::new(),
-            ended_exports: Vec::new(),
             order: Vec::new(),
             loading: None,
             fallbacks: Default::default(),
@@ -261,6 +248,10 @@ impl DashboardMaps {
         for view in self.views.values_mut() {
             view.viewer.release_audio();
         }
+    }
+
+    pub fn holds_export(&self) -> bool {
+        self.views.values().any(|view| view.viewer.holds_export())
     }
 
     pub fn not_drawn(&mut self) {
@@ -332,8 +323,8 @@ impl DashboardMaps {
         &self,
     ) -> Vec<(
         MapSourceKey,
-        Vec<content_reader_core::content::visual::Choice>,
-        Vec<content_reader_core::content::visual::RecordedMod>,
+        Vec<content_reader_layers::content::visual::Choice>,
+        Vec<content_reader_layers::content::visual::RecordedMod>,
         String,
     )> {
         self.sources
@@ -350,7 +341,7 @@ impl DashboardMaps {
                     .identity
                     .mods
                     .iter()
-                    .map(|recorded| content_reader_core::content::visual::RecordedMod {
+                    .map(|recorded| content_reader_layers::content::visual::RecordedMod {
                         id: recorded.id.clone(),
                         name: recorded.display_name.clone(),
                     })
@@ -523,7 +514,6 @@ impl DashboardMaps {
         for id in removed {
             if let Some(mut view) = self.views.remove(&id) {
                 view.retire(frame);
-                self.ended_exports.extend(view.viewer.take_export_results());
             }
         }
         self.order = views.iter().map(|view| view.id.clone()).collect();
@@ -572,7 +562,6 @@ impl DashboardMaps {
             }
             if let Some(mut old) = self.views.remove(&target.id) {
                 old.retire(frame);
-                self.ended_exports.extend(old.viewer.take_export_results());
             }
             let target_id = target.id.clone();
             self.views.insert(
@@ -1030,14 +1019,6 @@ impl DashboardMaps {
         }
     }
 
-    pub fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
-        let mut ended = std::mem::take(&mut self.ended_exports);
-        for view in self.views.values_mut() {
-            ended.extend(view.viewer.take_export_results());
-        }
-        ended
-    }
-
     pub fn take_view_events(&mut self) -> Vec<(String, crate::app::picker::ViewEvent)> {
         std::mem::take(&mut self.view_events)
     }
@@ -1080,7 +1061,7 @@ impl DashboardMaps {
                     view.viewer.has_map()
                         && view.admission_error.is_none()
                         && view.error.is_none()
-                        && drawn_clip(&view.target, scale, ui.clip_rect()).is_some()
+                        && view_clip(view, scale, ui.clip_rect()).is_some()
                 })
             })
             .collect();
@@ -1103,7 +1084,7 @@ impl DashboardMaps {
                 continue;
             };
             let body = physical_rect(view.target.bounds, scale);
-            let Some(clip) = drawn_clip(&view.target, scale, ui.clip_rect()) else {
+            let Some(clip) = view_clip(view, scale, ui.clip_rect()) else {
                 continue;
             };
             let mut map_ui = ui.new_child(
@@ -1215,6 +1196,14 @@ fn audio_view(
         .filter(|id| shown(id))
         .or_else(|| order.iter().find(|id| shown(id)))
         .cloned()
+}
+
+fn view_clip(view: &MapView, scale: f32, panel: egui::Rect) -> Option<egui::Rect> {
+    if view.viewer.holds_export() {
+        let body = physical_rect(view.target.bounds, scale);
+        return body.is_positive().then_some(body);
+    }
+    drawn_clip(&view.target, scale, panel)
 }
 
 fn drawn_clip(target: &DashboardMapView, scale: f32, panel: egui::Rect) -> Option<egui::Rect> {
@@ -1473,17 +1462,23 @@ mod tests {
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
         maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
-        let export = dashboard_core::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
-        maps.views.get_mut(&target.id).unwrap().viewer.host_map_action(export, &ctx, &mut frame);
+        let (job, answers) = crate::host::tests::job("widget.png");
+        maps.export_view(&target.id, job, &ctx, &mut frame);
+        assert_eq!(crate::host::tests::taken(&answers), [Err("Wait for the map widget to finish loading before exporting".to_owned())], "a widget with no map yet refuses at once, by name");
+        let (job, answers) = crate::host::tests::job("gone.png");
+        maps.export_view("no-such-widget", job, &ctx, &mut frame);
+        assert_eq!(crate::host::tests::taken(&answers), [Err("The requested map widget is unavailable".to_owned())]);
+
+        let answers = maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png");
         maps.set_views(Some("page-1"), Vec::new(), &frame, &ctx);
         assert!(maps.views.is_empty());
-        assert_eq!(maps.take_export_results(), [(5, Err("Open a map and wait for any active export to finish".to_owned()))]);
-        assert!(maps.take_export_results().is_empty(), "answered once");
+        assert_eq!(crate::host::tests::taken(&answers), [Err("Capture widget.png failed: its map widget let its map go before its picture was saved".to_owned())], "a widget that goes answers its export");
 
         maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
-        maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png", 6);
+        let answers = maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png");
+        assert!(maps.holds_export(), "a widget’s admitted export keeps the map drawing while BattlePlan’s window is hidden");
         maps.not_drawn();
-        assert_eq!(maps.take_export_results(), [(6, Err("Capture widget.png failed: its map widget was not drawn before its picture was saved".to_owned()))]);
+        assert_eq!(crate::host::tests::taken(&answers), [Err("Capture widget.png failed: its map widget was not drawn before its picture was saved".to_owned())]);
     }
 
     #[test]

@@ -662,8 +662,8 @@ pub struct Page {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Font {
-    pub facts: content_reader_core::gui::native::fonts::FontFacts,
-    pub glyphs: content_reader_core::gui::native::fonts::GlyphSet,
+    pub facts: content_reader_gui::gui::native::fonts::FontFacts,
+    pub glyphs: content_reader_gui::gui::native::fonts::GlyphSet,
     pub pages: Vec<Option<Page>>,
     pub refusals: Vec<(super::native_gui::RefusalKind, String)>,
 }
@@ -738,10 +738,7 @@ impl Glyphs for Font {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn monospace(name: &str, width: i32, height: i32) -> Font {
-    use content_reader_core::{
-        gui::native::fonts::FontFacts, gui::native::fonts::Glyph as Record,
-        gui::native::fonts::GlyphSet,
-    };
+    use content_reader_gui::gui::native::fonts::{FontFacts, Glyph as Record, GlyphSet};
     let glyphs = (0x20u32..0x7F)
         .map(|code| {
             (

@@ -29,17 +29,17 @@ pub struct RailwayAdjacency {
 }
 
 impl RailwayAdjacency {
-    pub fn read(layers: &content_reader_core::ResolvedLayers) -> io::Result<Self> {
-        let files = content_reader_core::terrain::read_default_map(layers)?;
+    pub fn read(layers: &content_reader_layers::ResolvedLayers) -> io::Result<Self> {
+        let files = content_reader_key_names::terrain::read_default_map(layers)?;
         let definitions = layers.read(&files.file("definitions")?)?;
         let bitmap = layers.read(&files.file("provinces")?)?;
-        let authored = content_reader_core::movement::adjacency::read_authored(layers, &files)?;
+        let authored = content_reader_map::movement::adjacency::read_authored(layers, &files)?;
         Self::parse(&definitions, &bitmap, authored.as_deref())
     }
 
     pub fn parse(definitions: &[u8], bitmap: &[u8], authored: Option<&[u8]>) -> io::Result<Self> {
-        let mut definitions = content_reader_core::map::read_definitions(definitions)?;
-        let image = content_reader_core::map::decode_provinces_bmp(bitmap, &mut definitions)?;
+        let mut definitions = content_reader_map::map::read_definitions(definitions)?;
+        let image = content_reader_map::map::decode_provinces_bmp(bitmap, &mut definitions)?;
         Self::derive(
             &image,
             definitions.provinces.len(),
@@ -54,11 +54,11 @@ impl RailwayAdjacency {
     }
 
     fn derive(
-        image: &content_reader_core::map::ProvinceImage,
+        image: &content_reader_map::map::ProvinceImage,
         count: usize,
         authored: &[u8],
     ) -> io::Result<Self> {
-        use content_reader_core::movement::adjacency;
+        use content_reader_map::movement::adjacency;
         let width = image.width as usize;
         let ids: Vec<u32> = image
             .province_ids

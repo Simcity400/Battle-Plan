@@ -1,5 +1,5 @@
 
-use content_reader_core::map::{MapData, ProvinceKind};
+use content_reader_map::map::{MapData, ProvinceKind};
 use crate::land::{CounterTables, GunUnit, LandUnit};
 use dashboard_text::table_access::TokenKeys;
 use std::collections::BTreeSet;

@@ -6,4 +6,4 @@ Scoped variable parsing retains operands for a later evaluation on recorded data
 
 Country tag aliases reserve names in a separate pass and keep the first case-folded token. Duplicate bodies skip without adding definitions to the file table. Their score fields append modifiers into one mean-time object and participate only with at least one modifier. Without an original tag, target member or variable, every country slot is a candidate. Unsettled or unrepresentable alias bodies stay named gaps. An original-tag specifier may carry state through repeated assignments and unsupported target members are retained for named refusal.
 
-[Scope recognition](../../crates/content-reader-core/src/scope.rs) · [Scoped operands](../../crates/content-reader-core/src/scoped_variable.rs) · [Tag aliases](../../crates/content-reader-core/src/tag_aliases.rs)
+[Scope recognition](../../crates/content-reader-script/src/scope.rs) · [Scoped operands](../../crates/content-reader-script/src/scoped_variable.rs) · [Tag aliases](../../crates/content-reader-key-names/src/tag_aliases.rs)

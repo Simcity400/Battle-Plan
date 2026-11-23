@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use content_reader_core::{parser::Item, tokens::Token};
+use content_reader_parser::{parser::Item, tokens::Token};
 
 use super::{
     Eval, Failure, Scope, Scopes,
@@ -42,7 +42,7 @@ impl Evaluator<'_, '_> {
         let name = specialization
             .value
             .scalar()
-            .map(content_reader_core::parser::c_string)
+            .map(content_reader_parser::parser::c_string)
             .ok_or("has_scientist_level specialization is a block, not a token")?;
         let catalog = self.world().special_projects.map_err(Failure::from)?;
         if catalog.specialization(&Token::c_str(name))?.is_none() || character == 0 {

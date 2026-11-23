@@ -1,12 +1,13 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{collections::BTreeMap, io};
 
+use content_reader_script::native::{self, Kind, Misread, Shape};
 use crate::{
-    ResolvedLayers, combat_tactics,
+    ResolvedLayers,
     key_names::KeyNames,
     parser::{
         self, Item,
-        native::{self, Kind, Misread, Shape},
     },
     script_files,
 };
@@ -18,7 +19,7 @@ enum Node {
     Text,
     RandomList,
     Member,
-    Trigger(combat_tactics::Node),
+    Trigger(content_reader_script::trigger_grammar::Node),
 }
 
 struct File {
@@ -31,7 +32,7 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
     let mut entries = 0;
     let mut holds = false;
     let mut untraced: Option<(usize, Misread)> = None;
-    let mut shaper = combat_tactics::Shaper::new(Some(names));
+    let mut shaper = content_reader_script::trigger_grammar::Shaper::new(Some(names));
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -60,7 +61,7 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                     holds = true;
                     Shape::Object(Node::RandomList)
                 }
-                Some(b"trigger") => Shape::Body(Node::Trigger(combat_tactics::Node::Trigger)),
+                Some(b"trigger") => Shape::Body(Node::Trigger(content_reader_script::trigger_grammar::Node::Trigger)),
                 _ => Shape::Skip,
             },
             Node::RandomList
@@ -86,7 +87,7 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                     Shape::SkipIfOpen
                 }
                 Some(b"localization_key") => Shape::One,
-                Some(b"modifier") => Shape::Body(Node::Trigger(combat_tactics::Node::Modifier)),
+                Some(b"modifier") => Shape::Body(Node::Trigger(content_reader_script::trigger_grammar::Node::Modifier)),
                 _ => Shape::Skip,
             },
             Node::Trigger(node) => shaper.shape(node, field).map(Node::Trigger),
@@ -287,7 +288,7 @@ mod tests {
 
     #[test]
     fn unknown_name_warning_keeps_unsettled_kind() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let files = vec![(
             b"a = { name = Pick text = { random_list = { 1 = { localization_key = { bad = x } } } } }".to_vec(),
             "common/scripted_localisation/a.txt".to_owned(),
@@ -305,7 +306,7 @@ mod tests {
 
     #[test]
     fn random_lists_keep_weights_seeds_and_modifier_bodies() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/a.txt",
             r#"
@@ -354,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_text_trigger_skips_a_later_limit() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/a.txt",
             "defined_text = { name = T text = { trigger = { if = { limit = { always = yes } limit = { @v = yes always = yes } always = @v } } localization_key = X } }",
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn every_entry_of_the_file_loop_is_read_by_keyword() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "defined_text = { name = GetTitle text = { trigger = { always = yes } localization_key = X } } \
@@ -386,7 +387,7 @@ mod tests {
 
     #[test]
     fn text_blocks_are_read_by_their_own_readers() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "a = { name = A TEXT = { Unknown = { @one = Defined } } } \
@@ -402,7 +403,7 @@ mod tests {
 
     #[test]
     fn a_file_ending_in_a_definition_registers_the_empty_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "a = { name = A } @x = 1",
@@ -412,7 +413,7 @@ mod tests {
 
     #[test]
     fn names_are_stored_as_read_string_into_stores_them() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "a = { name = \"Two\nLines\" } @n = Named b = { name = @n } c = { name = { name = Inner } }",
@@ -423,7 +424,7 @@ mod tests {
 
     #[test]
     fn an_untraced_reader_leaves_the_rest_of_its_file_unknown() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[
             (
                 "common/scripted_localisation/a.txt",
@@ -442,7 +443,7 @@ mod tests {
 
     #[test]
     fn a_later_file_settles_the_names_it_defines() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[
             (
                 "common/scripted_localisation/a.txt",
@@ -466,7 +467,7 @@ mod tests {
 
     #[test]
     fn the_end_of_the_text_closes_the_entry() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = read(&[("common/scripted_localisation/mod.txt", "a = { name = Open ")]);
         assert_eq!(listed(&names), ["Open"]);
         assert!(names.warnings.is_empty(), "{:?}", names.warnings);

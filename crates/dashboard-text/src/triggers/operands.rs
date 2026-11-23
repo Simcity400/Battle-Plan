@@ -1,9 +1,6 @@
 use crate::triggers::Failure;
 
-use content_reader_core::{
-    fixed5::IntOperand, fixed5::decimal_fixed5, fixed5::decimal_i32, fixed5::int_operand,
-    fixed5::script_fixed5, parser::Item, parser::Operator, parser::Value, parser::read_bool,
-};
+use content_reader_parser::{fixed5::{IntOperand, decimal_fixed5, decimal_i32, int_operand, script_fixed5}, parser::{Item, Operator, Value, read_bool}};
 
 use super::{Scopes, eval::Evaluator};
 use crate::state_resources::ONE;

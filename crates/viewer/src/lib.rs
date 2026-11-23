@@ -298,7 +298,7 @@ struct Options {
     out: Option<PathBuf>,
     headless_dump: bool,
     playback_cost_end: Option<Hour>,
-    visual_mods: Vec<content_reader_core::content::visual::Choice>,
+    visual_mods: Vec<content_reader_layers::content::visual::Choice>,
     window_dump: bool,
     fly: Option<app::fly::Scripted>,
     fly_view: Option<controls::flight::View>,
@@ -628,7 +628,7 @@ impl Options {
                         .and_then(|value| value.into_string().ok())
                         .filter(|value| !value.is_empty())
                         .ok_or_else(|| invalid("--visual-mod needs a mod id, such as mod/name.mod"))?;
-                    options.visual_mods.push(content_reader_core::content::visual::Choice {
+                    options.visual_mods.push(content_reader_layers::content::visual::Choice {
                         name: id.clone(),
                         id,
                     });

@@ -44,7 +44,7 @@ fn target(body: &str, graph: EventScopes) -> Result<String, String> {
 fn relation(body: &str) -> Result<String, String> {
     let template = Template {
         name: b"SYN_TRIGGER".to_vec(),
-        body: Ok(content_reader_core::parser::parse(
+        body: Ok(content_reader_parser::parser::parse(
             b"custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}",
         )
         .unwrap()
@@ -134,7 +134,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         scripted_stack: Vec::new(),
         concise: None,
     };
-    let items = content_reader_core::parser::parse(body.as_bytes())
+    let items = content_reader_parser::parser::parse(body.as_bytes())
         .unwrap()
         .items;
     if template.is_some() {

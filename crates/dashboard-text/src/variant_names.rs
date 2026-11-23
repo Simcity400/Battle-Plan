@@ -66,7 +66,7 @@ pub fn compare_variants(
 }
 
 pub fn enabled_module_slots<'f>(
-    database: &content_reader_core::equipment::Database,
+    database: &content_reader_key_names::equipment::Database,
     index: usize,
     frame: impl Into<HourFrame<'f>>,
 ) -> Result<bool, String> {
@@ -91,7 +91,7 @@ pub fn enabled_module_slots<'f>(
 }
 
 pub fn variant_order<'f>(
-    database: &content_reader_core::equipment::Database,
+    database: &content_reader_key_names::equipment::Database,
     index: usize,
     variant: &VariantDefinitionRow,
     frame: impl Into<HourFrame<'f>>,

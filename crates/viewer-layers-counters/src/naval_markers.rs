@@ -3,7 +3,7 @@ use viewer_counter_kit::combat_markers::whole_of;
 use viewer_layer_core::{layers::{Carried, Change, Settling, Inputs, KeptAt, Keys, Layer, List, Num, Text, Upstream, View}, engagements::{Engagements, Index}};
 use super::land_markers::{bytes_of, held, held_as, opaque, u64s};
 use viewer_layer_core::playhead_host::mirror::{Mirror, Mirrors};
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{NavalCombatSideDetails, NavalProvinceCombatRow, TableId};

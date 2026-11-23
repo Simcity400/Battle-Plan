@@ -1,9 +1,7 @@
 use viewer_gpu::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu::{self, util::DeviceExt};
-use content_reader_core::{
-    ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
-    pdxshader::program::Stage,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::pdxshader::{DepthStencilState, RasterizerState, program::Stage};
 use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::cell::RefCell;

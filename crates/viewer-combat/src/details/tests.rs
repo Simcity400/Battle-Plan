@@ -87,7 +87,7 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
 
 #[test]
 fn combat_raster_initiative_border_rasterises_before_display_stretch() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use viewer_native_gui::{
         native_gui::{self, lifecycle::Tick},
         test_support::gui::{fixture, windows},
@@ -154,7 +154,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
 
 #[test]
 fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use viewer_native_gui::{
         native_gui::{Resources, lifecycle::Tick},
         test_support::gui::{fixture, windows},
@@ -536,12 +536,12 @@ fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
 
 #[test]
 fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut localisation = Localisation::default();
     localisation.language = "english".into();
     let names = content_reader_division_names::division_names::parse(
         br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     let mut row = LandCombatDivisionRow {
@@ -667,10 +667,10 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
 
 #[test]
 fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let names = content_reader_division_names::division_names::parse(
         br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     let row = |division, group: &[u8], order, ordered: u8| LandCombatDivisionRow {

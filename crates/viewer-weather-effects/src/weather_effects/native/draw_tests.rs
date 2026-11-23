@@ -219,7 +219,7 @@ fn weather_noop_binds_match_bytes_ranges_and_handles_over_many_frames() {
 
 #[test]
 fn weather_technique_names_are_cached_by_authored_flags_without_aliasing_programs() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let effect = effect(false);
     let names = [
         "Fixture",
@@ -306,7 +306,7 @@ fn inputs(trail: bool) -> Vec<VertexInput> {
 }
 
 fn effect(replacement: bool) -> Arc<Effect> {
-    let source = Arc::new(content_reader_core::pdxshader::program::read_with(b"weather-proof.shader", &|path| {
+    let source = Arc::new(content_reader_gui::pdxshader::program::read_with(b"weather-proof.shader", &|path| {
         Some(if path == b"weather-proof.shader" {
             b"RasterizerState Visible { CullMode = none } Effect Fixture { RasterizerState = Visible } Effect Alternate { RasterizerState = Visible } Effect FixtureTrail { RasterizerState = Visible } Effect FixtureTrailNoBillboard { RasterizerState = Visible } Effect UnknownScale { RasterizerState = Visible }".to_vec()
         } else { Vec::new() })
@@ -455,7 +455,7 @@ fn delta(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>) -> BTree
 #[test]
 #[ignore = "requires a GPU"]
 fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
     let image = |rgba: [u8; 4]| {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -723,7 +723,7 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
 #[test]
 #[ignore = "requires a GPU"]
 fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let _serial = viewer_gpu::test_support::serial();
     let instance =
         shader_pipeline::gpu::instance();

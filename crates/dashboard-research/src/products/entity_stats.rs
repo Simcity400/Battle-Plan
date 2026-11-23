@@ -8,11 +8,10 @@ use dashboard_base::{
         politics_content::{PoliticsContent, politics_content},
     },
 };
-use content_reader_core::{
-    combat_tactics::Tactic,
-    equipment::{Amount, Database, Equipment, ModuleDesign, RELIABILITY_STAT, ResourcePool, STAT_COUNT, StatComponents, StatGroup, StatValue},
-    fixed5::format_fixed5,
-};
+use content_reader_key_names::equipment::{Amount, Database, Equipment, ModuleDesign, ResourcePool, StatComponents, StatGroup, StatValue};
+use content_reader_military::combat_tactics::Tactic;
+use content_reader_parser::fixed5::format_fixed5;
+use content_reader_script::equipment_stats::{RELIABILITY_STAT, STAT_COUNT};
 use content_reader_localisation::localisation::{Argument, Localisation};
 use dashboard_text::subunit_requirements::Content as SubUnitSheets;
 use replay_data::rows::TableId;
@@ -173,7 +172,7 @@ impl<'l> Sheet<'l> {
     fn tactic(&mut self, tactic: &Tactic, warnings: &mut Vec<String>) {
         let mut attacker = false;
         for item in tactic.fields.iter().filter(|item| item.keyword_is("is_attacker")) {
-            match item.value.scalar().and_then(content_reader_core::parser::read_bool) {
+            match item.value.scalar().and_then(content_reader_parser::parser::read_bool) {
                 Some(value) => attacker = value,
                 None => warnings.push(format!("tactic {}'s is_attacker is not exactly yes or no; the game keeps {}", String::from_utf8_lossy(&tactic.token), if attacker { "yes" } else { "no" })),
             }
@@ -195,7 +194,7 @@ impl<'l> Sheet<'l> {
         }
     }
 
-    fn building(&mut self, building: &content_reader_core::buildings::BuildingType, defines: &content_reader_core::defines::Defines) {
+    fn building(&mut self, building: &content_reader_key_names::buildings::BuildingType, defines: &content_reader_defines::defines::Defines) {
         let scope = if building.provincial() { "Per province" } else { "Per state" };
         let maximum = building.base_maximum(defines).map(|level| level.to_string()).map_err(|why| format!("The building's maximum level is unavailable: {why}"));
         self.from(Some(scope.into())).push(Ok("Maximum level".into()), maximum);

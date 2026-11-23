@@ -1,7 +1,8 @@
 
 use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync::Arc};
 
-use content_reader_core::{ResolvedLayers, pdxshader};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::pdxshader;
 use content_reader_image::native::Decode;
 
 pub fn globals(map: [u32; 2], decode: Decode) -> Vec<String> {
@@ -71,7 +72,7 @@ impl<B> Default for Graph<B> {
     fn default() -> Self { Self { sources: BTreeMap::new(), errors: BTreeSet::new() } }
 }
 
-fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_core::content::Bytes>>(effect: &str, read: &dyn Fn(&str) -> io::Result<B>) -> Graph<B> {
+fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_layers::content::Bytes>>(effect: &str, read: &dyn Fn(&str) -> io::Result<B>) -> Graph<B> {
     let out = RefCell::new(Graph::default());
     let read = |path: &str| {
         if let Some(bytes) = out.borrow().sources.get(path) {
@@ -118,7 +119,7 @@ pub struct Audit {
     pub affected_passes: usize,
 }
 
-fn audit_paths<B: Clone + Eq + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_core::content::Bytes>>(
+fn audit_paths<B: Clone + Eq + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_layers::content::Bytes>>(
     layers: &ResolvedLayers,
     passes: &[(&str, &str, &str)],
     vanilla: &dyn Fn(&str) -> io::Result<B>,
@@ -188,8 +189,8 @@ fn passes_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]>>(read: &dyn Fn(&s
         .map(|&(name, path)| (name.into(), path.into()))
         .collect();
     let path = "gfx/maparrows/maparrows.txt";
-    let document = content_reader_core::parser::parse(&read(path)?)?;
-    let effect = |items: &[content_reader_core::parser::Item], kind: &str| -> io::Result<String> {
+    let document = content_reader_parser::parser::parse(&read(path)?)?;
+    let effect = |items: &[content_reader_parser::parser::Item], kind: &str| -> io::Result<String> {
         let value = items.iter().rev().find(|item| item.key.as_deref().is_some_and(|key| key.eq_ignore_ascii_case(b"effect")))
             .and_then(|item| item.value.scalar())
             .ok_or_else(|| invalid(format!("{path}: {kind} has no scalar effect; shader source audit cannot establish its source")))?;
@@ -258,7 +259,7 @@ mod tests {
 
     #[test]
     fn mesh_pass_point_samples_the_light_table() {
-        use content_reader_core::pdxshader::program::{Filter, Stage};
+        use content_reader_gui::pdxshader::program::{Filter, Stage};
 
         let samplers = super::super::mesh_shader::map_samplers();
         let light = &samplers[&shader_pipeline::binding(9, Stage::Pixel)];
@@ -294,7 +295,7 @@ mod tests {
 
     #[test]
     fn compatibility_policy3_shader_sources_keep_the_uncovered_read_note() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let layers = ResolvedLayers::from_folders_with_coverage_policy(&[], 3).unwrap();
         let files = [
             (
@@ -328,7 +329,7 @@ mod tests {
 
     #[test]
     fn recursive_shared_include_counts_all_passes_once_and_names_files() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let base = [
             ("root", "Includes = { \"a.fxh\" }"),
             ("gfx/FX/a.fxh", "Includes = { \"b.fxh\" }"),
@@ -354,7 +355,7 @@ mod tests {
 
     #[test]
     fn all_compiled_passes_report_changes_without_a_vanilla_only_gate() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let base = [
             ("root", "Includes = { \"shared.fxh\" }"),
             ("gfx/FX/shared.fxh", ""),
@@ -384,7 +385,7 @@ mod tests {
 
     #[test]
     fn removed_and_added_dependencies_and_hard_errors_are_not_silent() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let base = [
             ("root", "Includes = { \"old.fxh\" }"),
             ("gfx/FX/old.fxh", ""),

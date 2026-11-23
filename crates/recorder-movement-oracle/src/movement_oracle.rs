@@ -12,7 +12,8 @@ use engine_native::{
     capture_text::Owned as Descriptor, province_definition::MovementCensus,
     province_definition::read_movement_census, walk::Outcome,
 };
-use content_reader_core::{content::GatherOptions, content::gather, movement::MovementMap};
+use content_reader_layers::content::{GatherOptions, gather};
+use content_reader_map::movement::MovementMap;
 use serde_json::{Value, json};
 
 use crate::windows::{self, Process, ProcessMemory};
@@ -107,7 +108,7 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         &mounts,
         &content.expected_mounts,
     )?;
-    let defines = content_reader_core::defines::read(&content.layers).map_err(|e| e.to_string())?;
+    let defines = content_reader_defines::defines::read(&content.layers).map_err(|e| e.to_string())?;
     let map = MovementMap::read(&content.layers, &defines)
         .map_err(|e| format!("movement map refused: {e}"))?;
     let census =
@@ -398,7 +399,7 @@ mod tests {
         province_definition::MovementDefinition, province_neighbour as neighbour,
         province_neighbour::Record,
     };
-    use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
+    use content_reader_map::movement::{Neighbour, ProvinceTerrain};
 
     fn record(id: u32, kind: u8, flag: u8, distance: i64, crossing: [i32; 2]) -> Record {
         Record {

@@ -1,6 +1,6 @@
 use crate::skeleton_source::*;
 use crate::{ModelLibrary, ModelMesh, test_support::triangle_mesh};
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_image::native::Decode;
 use std::sync::Arc;
 
@@ -731,7 +731,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
             assert_eq!(
                 warnings,
                 [(
-                    content_reader_core::DiagnosticKind::Refused,
+                    content_reader_parser::DiagnosticKind::Refused,
                     format!(
                         "No mesh resolved for cracked ({failure}); those objects are not drawn."
                     )
@@ -869,7 +869,7 @@ fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
     assert_eq!(
         warnings,
         vec![(
-            content_reader_core::DiagnosticKind::Refused,
+            content_reader_parser::DiagnosticKind::Refused,
             "No mesh resolved for missing (no pdxmesh or entity declares it); those objects are not drawn.".into(),
         )]
     );

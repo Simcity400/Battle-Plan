@@ -1,4 +1,4 @@
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use std::io;
 
 use replay_derive::aircraft_count::{ONE, SortieDefines};

@@ -6,4 +6,4 @@ Read table columns with the native delimiters and compare the kind and coastal m
 
 Recorded country colors already include cosmetic identity and HSV changes. The content layer supplies only the autonomy rule for using the overlord's color. The rule uses the native database's folder roster and order. A malformed boolean leaves the previously read value, and an omitted field defaults false.
 
-[Province reader](../../crates/content-reader-core/src/map.rs)
+[Province reader](../../crates/content-reader-map/src/map.rs)

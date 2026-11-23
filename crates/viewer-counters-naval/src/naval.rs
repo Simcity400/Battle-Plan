@@ -2,7 +2,7 @@ use viewer_counter_kit::flotilla::{BARS_UNRECORDED, Flotilla, ItemIntel, NavalBa
 use viewer_native_gui::native_windows::NAVAL_BASE_WINDOW;
 use crate::base_windows;
 
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use crate::{air_grid, naval_members, naval_regional, naval_windows};
 use crate::bases::NavalBaseIcon;
 use replay_data::rows::tables;
@@ -25,7 +25,7 @@ use viewer_gpu::province_admission::Admission;
 use viewer_unit_reads::{counter_inputs, counter_move, counter_order};
 use viewer_unit_reads::counter_inputs::NativeInputs;
 #[cfg(test)]
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use viewer_native_gui::gui_resources::viewport;
 
 #[derive(Clone)]
@@ -38,7 +38,7 @@ pub struct ShipTables {
 }
 
 pub struct ShipInputs<'a> {
-    pub equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
+    pub equipment: Result<&'a content_reader_key_names::equipment::Database, &'a str>,
     pub tables: Arc<ShipTables>,
 }
 
@@ -256,7 +256,7 @@ pub struct NavalContext<'a> {
 #[derive(Clone, Copy)]
 pub struct NavalSources<'a> {
     pub type_tints: &'a type_tint::Index,
-    pub equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
+    pub equipment: Result<&'a content_reader_key_names::equipment::Database, &'a str>,
     pub vision: &'a Vision,
     pub native: &'a NativeInputs,
     pub country_ids: &'a BTreeMap<u32, u32>,
@@ -272,7 +272,7 @@ fn set_frame_argument(number: u32) -> i32 {
 
 pub fn ideology_frame(
     frame: &DecodedFrame,
-    ideologies: &content_reader_core::ideologies::Ideologies,
+    ideologies: &content_reader_key_names::ideologies::Ideologies,
     country_ids: &BTreeMap<u32, u32>,
     slot: u32,
 ) -> Result<Option<i32>, String> {

@@ -71,7 +71,7 @@ fn named_carriers_use_pool_country_and_roster_order() {
         let caller = Scopes::of(Scope::Country(1));
         let enter = |key| {
             evaluator.enter(
-                &content_reader_core::scope::parse(key, false, world.recorded()),
+                &content_reader_script::scope::parse(key, false, world.recorded()),
                 caller,
             )
         };
@@ -90,7 +90,7 @@ fn named_carriers_use_pool_country_and_roster_order() {
         ] {
             assert_eq!(
                 evaluator.enter(
-                    &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Owner),
+                    &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Owner),
                     Scopes::of(scope)
                 ),
                 Ok(Some(Scope::Country(owner)))
@@ -115,7 +115,7 @@ fn the_scripted_text_selection_holds_every_carrier_input() {
         let evaluator = Evaluator::new(world, None);
         assert_eq!(
             evaluator.enter(
-                &content_reader_core::scope::parse("mio:synthetic_mio", false, world.recorded()),
+                &content_reader_script::scope::parse("mio:synthetic_mio", false, world.recorded()),
                 Scopes::of(Scope::Country(1))
             ),
             Ok(Some(Scope::IndustrialOrganisation(MIO)))
@@ -123,7 +123,7 @@ fn the_scripted_text_selection_holds_every_carrier_input() {
         for (scope, owner) in [(Scope::Unit(UNIT), 1), (Scope::IndustrialOrganisation(MIO), 3)] {
             assert_eq!(
                 evaluator.enter(
-                    &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Owner),
+                    &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Owner),
                     Scopes::of(scope)
                 ),
                 Ok(Some(Scope::Country(owner)))
@@ -187,7 +187,7 @@ fn named_carriers_resolve_the_last_country() {
         let caller = Scopes::of(Scope::Country(24));
         assert_eq!(
             evaluator.enter(
-                &content_reader_core::scope::parse("sp:synthetic_project", false, world.recorded()),
+                &content_reader_script::scope::parse("sp:synthetic_project", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Project {
@@ -197,7 +197,7 @@ fn named_carriers_resolve_the_last_country() {
         );
         assert_eq!(
             evaluator.enter(
-                &content_reader_core::scope::parse("mio:synthetic_mio", false, world.recorded()),
+                &content_reader_script::scope::parse("mio:synthetic_mio", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::IndustrialOrganisation(MIO)))
@@ -213,7 +213,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         for key in ["sp:missing", "mio:missing"] {
-            let parsed = content_reader_core::scope::parse(key, false, world.recorded());
+            let parsed = content_reader_script::scope::parse(key, false, world.recorded());
             assert_eq!(
                 evaluator.enter(&parsed, Scopes::of(Scope::Country(1))),
                 Ok(Some(Scope::State(NULL_STATE)))
@@ -226,7 +226,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
         for key in ["unit:8", "raid:7"] {
             assert_eq!(
                 evaluator.enter(
-                    &content_reader_core::scope::parse(key, false, world.recorded()),
+                    &content_reader_script::scope::parse(key, false, world.recorded()),
                     Scopes::of(Scope::Country(1))
                 ),
                 Ok(None)
@@ -238,7 +238,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
     };
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let parsed = content_reader_core::scope::parse("sp:synthetic_project", false, world.recorded());
+        let parsed = content_reader_script::scope::parse("sp:synthetic_project", false, world.recorded());
         assert!(
             evaluator
                 .enter(&parsed, Scopes::of(Scope::Country(1)))
@@ -303,7 +303,7 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
             let entered = evaluator.event_scopes(at).unwrap();
             let selected = evaluator
                 .enter_scope(
-                    &content_reader_core::scope::parse("event_target:chosen", false, world.recorded()),
+                    &content_reader_script::scope::parse("event_target:chosen", false, world.recorded()),
                     entered,
                 )
                 .unwrap();
@@ -314,8 +314,8 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
                 assert_eq!(selected.this, scope);
                 assert_eq!(
                     evaluator.enter(
-                        &content_reader_core::scope::Scope::Keyword(
-                            content_reader_core::scope::Keyword::Prev
+                        &content_reader_script::scope::Scope::Keyword(
+                            content_reader_script::scope::Keyword::Prev
                         ),
                         selected
                     ),
@@ -346,7 +346,7 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
         let caller = evaluator.event_scopes(0).unwrap();
         assert_eq!(
             evaluator.enter(
-                &content_reader_core::scope::parse("event_target:raid", false, world.recorded()),
+                &content_reader_script::scope::parse("event_target:raid", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Country(1)))
@@ -357,7 +357,7 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
         );
         assert_eq!(
             evaluator.enter(
-                &content_reader_core::scope::parse("event_target:unit", false, world.recorded()),
+                &content_reader_script::scope::parse("event_target:unit", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Unit(UNIT)))
@@ -508,7 +508,7 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
             ("unit", "unit"),
             ("industrial_organisation", "organisation"),
         ] {
-            let parsed = content_reader_core::scope::parse(
+            let parsed = content_reader_script::scope::parse(
                 &format!("event_target:{name}"),
                 false,
                 world.recorded(),
@@ -521,7 +521,7 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
             );
         }
         let raid =
-            content_reader_core::scope::parse("event_target:raid_instance", false, world.recorded());
+            content_reader_script::scope::parse("event_target:raid_instance", false, world.recorded());
         assert_eq!(evaluator.enter(&raid, caller), Ok(Some(Scope::Country(1))));
         assert!(
             evaluator
@@ -689,7 +689,7 @@ fn named_organisations_read_their_own_size() {
         let named = |slot: u32| {
             evaluator
                 .enter(
-                    &content_reader_core::scope::parse("mio:SYNTHETIC_MIO", false, world.recorded()),
+                    &content_reader_script::scope::parse("mio:SYNTHETIC_MIO", false, world.recorded()),
                     Scopes::of(Scope::Country(slot)),
                 )
                 .unwrap()
@@ -699,7 +699,7 @@ fn named_organisations_read_their_own_size() {
         assert_eq!(named(2), Scope::IndustrialOrganisation(HELD));
         let owner = |scope: Scope| {
             evaluator.enter(
-                &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Owner),
+                &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Owner),
                 Scopes::of(scope),
             )
         };
@@ -831,7 +831,7 @@ fn project_built_in_variables_are_refused() {
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let scope = Scopes::of(Scope::Project { owner: 101, id: 9 });
-        for name in content_reader_core::variable_builtins::PROJECT.iter() {
+        for name in content_reader_script::variable_builtins::PROJECT.iter() {
             let value = world.evaluate(&items(&format!("check_variable = {{ {name} > 0 }}")), scope);
             assert!(
                 matches!(&value, Eval::Unknown(_)) && format!("{value:?}").contains("built-in"),

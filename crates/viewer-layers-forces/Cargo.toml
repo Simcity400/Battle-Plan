@@ -11,7 +11,6 @@ doctest = false
 
 [features]
 test-support = [
-    "content-reader-core/test-support",
     "engine-executable/test-support",
     "playhead/test-support",
     "replay-data/test-support",
@@ -31,7 +30,8 @@ test-support = [
 ]
 
 [dependencies]
-content-reader-core = { workspace = true }
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
 engine-executable = { workspace = true }
 foldhash = "0.2"
 map-products = { workspace = true }
@@ -66,7 +66,11 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-naval-path = { workspace = true, features = ["test-support"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }

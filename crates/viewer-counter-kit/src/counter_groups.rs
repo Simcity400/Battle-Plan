@@ -1,7 +1,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use viewer_gpu::icon_tracks::{Place, Track};
 
 #[derive(Clone, Copy, Debug, PartialEq)]

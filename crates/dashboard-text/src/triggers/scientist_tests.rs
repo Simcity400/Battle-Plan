@@ -70,7 +70,7 @@ fn with_scientists(frame: &DecodedFrame, check: impl FnOnce(&World)) {
         "specialization_land={} specialization_air={}",
     )]);
     let catalog =
-        content_reader_core::special_projects::Catalog::read(&catalogue.content.layers).unwrap();
+        content_reader_military::special_projects::Catalog::read(&catalogue.content.layers).unwrap();
     let dlcs = BTreeSet::new();
     let triggers = TriggerNames::default();
     let aliases = Arc::default();

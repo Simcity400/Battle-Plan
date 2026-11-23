@@ -33,7 +33,7 @@ pub struct Colors {
 }
 
 impl Colors {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let color = |name| -> io::Result<[f32; 4]> {
             let values = defines.numbers("NGraphics", name)?;
             let [r, g, b]: [f64; 3] = values.try_into().map_err(|_: Vec<f64>| {

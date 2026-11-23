@@ -1,8 +1,6 @@
 use eframe::wgpu::{self, util::DeviceExt};
-use content_reader_core::{
-    ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
-    pdxshader::program::Stage,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::pdxshader::{DepthStencilState, RasterizerState, program::Stage};
 use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::cell::RefCell;
@@ -2163,8 +2161,8 @@ mod tests {
     fn a_cover_change_after_a_still_frame_binds_into_the_groups_it_replaces() {
         use shader_pipeline::{Buffer, Compiled, Shader, VertexInput};
 
-        content_reader_core::test_game::enter();
-        let program = content_reader_core::pdxshader::program::read_with(b"terrain.shader", &|path| {
+        content_reader_script::test_game::enter();
+        let program = content_reader_gui::pdxshader::program::read_with(b"terrain.shader", &|path| {
             Some(if path == b"terrain.shader" {
                 b"Effect terrainunlit { }".to_vec()
             } else {
@@ -2275,11 +2273,11 @@ mod tests {
 
     #[test]
     fn coast_caps_lie_under_the_water_of_the_effect_drawn() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let program = |water: &str| {
             let text = format!("Code [[ static const float WATER_HEIGHT = {water}; ]]");
             Arc::new(
-                content_reader_core::pdxshader::program::read_with(b"terrain.shader", &|path| {
+                content_reader_gui::pdxshader::program::read_with(b"terrain.shader", &|path| {
                     Some(if path == b"terrain.shader" {
                         text.clone().into_bytes()
                     } else {

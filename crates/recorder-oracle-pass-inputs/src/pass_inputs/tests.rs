@@ -115,7 +115,7 @@ fn port_saved_strings_compare_first_nul_prefix_and_keep_ordered_empty_slots() {
         };
         let mut saved = counter_inputs::TaskForce {
             target_ship_types: vec![
-                content_reader_core::parser::c_string(stored).to_vec(),
+                content_reader_parser::parser::c_string(stored).to_vec(),
                 Vec::new(),
             ],
             ..Default::default()
@@ -266,7 +266,7 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 {suffix}}}}}}}}}}}"
         );
         save.naval_history = content_reader_save::naval_history::parse(
-            &content_reader_core::parser::parse(text.as_bytes())
+            &content_reader_parser::parser::parse(text.as_bytes())
                 .unwrap()
                 .items,
         )
@@ -349,7 +349,7 @@ fn template_hq_context_oracle_compares_target_deployment_pools_flags_and_refusal
       }
     }}}}"#;
     save.naval_history =
-        content_reader_save::naval_history::parse(&content_reader_core::parser::parse(text).unwrap().items)
+        content_reader_save::naval_history::parse(&content_reader_parser::parser::parse(text).unwrap().items)
             .unwrap();
     set(
         &mut frame,
@@ -464,7 +464,7 @@ fn template_hq_nearest_front_oracle_compares_nonnegative_words_and_negative_omis
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} field_marshal_group=no motorization_level=0 {suffix}}}}}}}}}}}"
         );
         save.naval_history = content_reader_save::naval_history::parse(
-            &content_reader_core::parser::parse(text.as_bytes())
+            &content_reader_parser::parser::parse(text.as_bytes())
                 .unwrap()
                 .items,
         )
@@ -518,7 +518,7 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
             "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 distance=31 {suffix}}}}}}}}}}}"
         );
         save.naval_history = content_reader_save::naval_history::parse(
-            &content_reader_core::parser::parse(text.as_bytes())
+            &content_reader_parser::parser::parse(text.as_bytes())
                 .unwrap()
                 .items,
         )

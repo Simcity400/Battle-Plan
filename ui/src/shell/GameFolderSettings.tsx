@@ -5,6 +5,7 @@ import type { ContentFolders } from './api';
 import type { DashboardClient } from '../dashboard/client';
 import { Icon } from '../components/Icons';
 import { FailureLine } from '../components/FailureLine';
+import { settingDraft } from './pendingWrites';
 
 type Kind = 'game' | 'user';
 export interface FolderFailure { field: Kind | null; text: string; detail?: string; retry?: () => void }
@@ -52,21 +53,22 @@ const FIELDS: { kind: Kind; label: string; help: string; missing: string }[] = [
   { kind: 'game', label: 'Game installation', help: 'The folder where the game is installed.', missing: 'Still needed: choose the game installation to finish setting up.' },
   { kind: 'user', label: 'Paradox user folder', help: 'The game’s user folder under Documents / Paradox Interactive. Contains settings and mod descriptors.', missing: 'Still needed: choose the Paradox user folder to finish setting up.' },
 ];
-let unsaved: Paths | null = null;
+const unsaved = settingDraft<Paths>('folders');
 
 export default function GameFolderSettings({ folders, unread = false, client, onFoldersChange }: { folders: ContentFolders | null; unread?: boolean; client: DashboardClient; onFoldersChange: (folders: ContentFolders) => void }) {
   const saved = (): Paths => ({ game: folders?.game ?? '', user: folders?.user ?? '' });
-  const [paths, setShown] = useState<Paths>(() => unsaved ?? saved());
+  const [paths, setShown] = useState<Paths>(() => unsaved.value() ?? saved());
   const [error, setError] = useState<FolderFailure | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const ready = !!client.setContentFolders;
   const canBrowse = !!client.chooseContentFolder;
   const setPaths = (next: Paths) => {
     const base = saved();
-    unsaved = next.game === base.game && next.user === base.user ? null : next;
+    unsaved.set(next.game === base.game && next.user === base.user ? null : next);
     setShown(next);
   };
-  useEffect(() => { if (folders && !unsaved) setShown({ game: folders.game, user: folders.user }); }, [folders]);
+  useEffect(() => { if (folders && !unsaved.value()) setShown({ game: folders.game, user: folders.user }); }, [folders]);
   const applying = useRef(false);
   const apply = async (next: Paths, kind: Kind) => {
     if (applying.current || !client.setContentFolders) return;
@@ -74,8 +76,8 @@ export default function GameFolderSettings({ folders, unread = false, client, on
     const game = next.game.trim(), user = next.user.trim();
     if (folders && game === folders.game && user === folders.user) { setError(null); return; }
     if (!game || !user) { setError(null); return; }
-    applying.current = true; setBusy(true); setError(null);
-    try { const applied = await client.setContentFolders(game, user); unsaved = null; onFoldersChange(applied); }
+    applying.current = true; setBusy(true); setError(null); setWarning(null);
+    try { const applied = await client.setContentFolders(game, user); unsaved.set(null); setWarning(applied.warning ?? null); onFoldersChange(applied); }
     catch (cause) { const failure = folderFailure(errorMessage(cause)); setError({ ...failure, retry: retryable(failure) ? () => void apply(next, kind) : undefined }); }
     finally { applying.current = false; setBusy(false); }
   };
@@ -99,6 +101,7 @@ export default function GameFolderSettings({ folders, unread = false, client, on
       onChange={value => setPaths({ ...paths, [field.kind]: value })}
       onCommit={() => void apply(paths, field.kind)}
       onBrowse={canBrowse ? () => void browse(field.kind) : undefined} />)}
+    {!error && warning && <div className="notice warning" role="status" data-detail={warning}><Icon name="alert" /><span>Folders changed, but Windows didn’t confirm the change reached the disk.</span></div>}
     {error && !error.field && <FailureLine className="folder-form-failure" message={error.text} detail={error.detail} retryDisabled={busy}
       onRetry={error.retry} />}
   </div>;

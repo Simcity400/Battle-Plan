@@ -1,11 +1,12 @@
 
 use std::{collections::BTreeMap, io};
 
+use content_reader_mesh::mesh::MeshProducts as _;
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     fields::{block, invalid},
     mesh::{self, Descriptors},
-    parser::native::{self, Shape},
     particles::{Catalog, Particle},
 };
 

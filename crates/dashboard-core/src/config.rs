@@ -1,6 +1,6 @@
 
 use crate::invalid;
-use content_reader_core::ResolveOptions;
+use content_reader_layers::ResolveOptions;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -38,17 +38,17 @@ impl Config {
         }
     }
 
-    pub fn save(&self) -> io::Result<()> {
+    pub fn save(&self) -> io::Result<replay_settings::exit::Applied> {
         self.resolve_options()?;
         self.save_folders_at(&Self::path()?)
     }
 
-    fn save_folders_at(&self, path: &Path) -> io::Result<()> {
-        locked(path, || {
-            replace(path, |stored| {
-                stored.game_dir = self.game_dir.clone();
-                stored.user_dir = self.user_dir.clone();
-            })
+    fn save_folders_at(&self, path: &Path) -> io::Result<replay_settings::exit::Applied> {
+        replay_settings::exit::EXIT.under_lock(&path.with_extension("lock"), replay_settings::exit::What::Change, |receipt| {
+            let mut config = Config::load_from(path)?;
+            config.game_dir = self.game_dir.clone();
+            config.user_dir = self.user_dir.clone();
+            receipt.replace(path, |out| serde_json::to_writer_pretty(out, &config).map_err(io::Error::from))
         })
     }
 
@@ -73,32 +73,6 @@ impl Config {
         .join("BattlePlan")
         .join("viewer"))
     }
-}
-
-fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let folder = path
-        .parent()
-        .ok_or_else(|| invalid("content preferences have no folder"))?;
-    fs::create_dir_all(folder)?;
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("lock"))?;
-    lock.lock()?;
-    work()
-}
-
-fn replace(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
-    let mut config = Config::load_from(path)?;
-    change(&mut config);
-    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-    let written = fs::write(&temporary, serde_json::to_vec_pretty(&config)?)
-        .and_then(|()| fs::rename(&temporary, path));
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    written
 }
 
 #[derive(Clone)]
@@ -138,7 +112,7 @@ mod tests {
         let path = folder.join("BattlePlan").join("content.json");
         assert_eq!(Config::load_from(&path).unwrap(), Config::default());
         for round in 0..2 {
-            Config {
+            let _ = Config {
                 game_dir: format!("G{round}").into(),
                 user_dir: format!("U{round}").into(),
                 older_game_dirs: vec!["old".into()],

@@ -112,14 +112,14 @@ pub fn prefixed(
 
 #[cfg(any(test, feature = "test-support"))]
 fn equipment_names(
-    content: &content_reader_core::equipment::Database,
+    content: &content_reader_key_names::equipment::Database,
     name: &str,
 ) -> Result<(String, String), String> {
     let kind = content
         .named(name)
         .ok_or_else(|| format!("equipment {name} is not in the content"))?;
     let text = |bytes: &[u8], what: &str| {
-        content_reader_core::parser::text(bytes)
+        content_reader_parser::parser::text(bytes)
             .map(str::to_owned)
             .map_err(|refused| format!("equipment {name} {what}: {refused}"))
     };
@@ -134,7 +134,7 @@ fn equipment_names(
 pub fn designer_entity(
     variant: &replay_data::rows::VariantDefinitionRow,
     equipment: &str,
-    content: &content_reader_core::equipment::Database,
+    content: &content_reader_key_names::equipment::Database,
     tag: &str,
     dlc_mask: u32,
     variant_model: &dyn Fn() -> Result<Option<String>, String>,

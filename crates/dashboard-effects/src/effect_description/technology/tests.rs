@@ -509,7 +509,7 @@ fn render_raid(fixture: &Fixture) -> Description {
         },
         EventScope::of(EventObject::Raid(RAID)),
     ]);
-    let items = content_reader_core::effect_keys::read_body(
+    let items = content_reader_script::effect_keys::read_body(
         b"raid_reduce_project_progress_ratio=0.03",
         content.key_names.unwrap(),
     )
@@ -708,7 +708,7 @@ fn technology_names_link_to_their_technology_only_when_asked() {
             "Mod technology",
         ),
     ] {
-        let items = content_reader_core::effect_keys::read_body(
+        let items = content_reader_script::effect_keys::read_body(
             body.as_bytes(),
             content.view(None).key_names.unwrap(),
         )
@@ -735,7 +735,7 @@ fn technology_names_link_to_their_technology_only_when_asked() {
             .collect();
         assert_eq!(links, [(EntityKind::Technology, token, index, name)], "{body}");
     }
-    let items = content_reader_core::effect_keys::read_body(
+    let items = content_reader_script::effect_keys::read_body(
         b"custom_effect_tooltip={localization_key=MOD_UNLOCK_LOWER TECH=mod_tech}",
         content.view(None).key_names.unwrap(),
     )
@@ -756,7 +756,7 @@ fn technology_names_link_to_their_technology_only_when_asked() {
             .any(|why| why.contains("the game's formatting changes the linked technology names")),
         "a case directive on a linked name withholds the text by name instead of dropping the link: {linked:?}"
     );
-    let items = content_reader_core::effect_keys::read_body(
+    let items = content_reader_script::effect_keys::read_body(
         b"custom_effect_tooltip={localization_key=MOD_UNLOCK_BOTH TECH=mod_tech OTHER={localization_key=MOD_UNLOCK_TECH TECH=mod_tech}}",
         content.view(None).key_names.unwrap(),
     )
