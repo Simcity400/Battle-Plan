@@ -1,7 +1,8 @@
 use super::*;
 use dashboard_follow::panel::ProductReader;
 use dashboard_query::{identity::Holders, timeline::Timeline};
-use replay::{campaign::Replay, cells::TableReader, columnar_frames::Recording};
+use replay::campaign::Replay;
+use replay_recording::{cells::TableReader, columnar_frames::Recording};
 use replay_columnar::store::Value;
 
 struct Track {

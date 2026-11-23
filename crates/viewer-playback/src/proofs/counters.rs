@@ -6,7 +6,7 @@ use crate::document::Document;
 use viewer_layer_core::{comparison::Compared, layers::Layer};
 use serde_json::json;
 use std::{collections::BTreeMap, io};
-use viewer_counters::map::counters::Member;
+use viewer_counters_land::members::Member;
 use viewer_unit_reads::counter_action::Action;
 
 pub fn make(document: &Document) -> Box<dyn Layer> {

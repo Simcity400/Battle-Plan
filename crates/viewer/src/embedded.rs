@@ -470,7 +470,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         if let Some(failed) = push.failed() {
             return Err(failed);
         }
-        let recording = replay::columnar_frames::Recording::open_path_as(path, replay::columnar_frames::Open::Saved).map_err(|error| error.to_string())?;
+        let recording = replay_recording::columnar_frames::Recording::open_path_as(path, replay_recording::columnar_frames::Open::Saved).map_err(|error| error.to_string())?;
         let capture = replay_data::scope::CaptureMode::from_byte(recording.root().identity.capture_mode).map_err(|error| error.to_string())?;
         let key = (crate::playhead_host::units::name(&recording), branch, clock);
         if let Some(host) = self.hosted(&key) {

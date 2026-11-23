@@ -38,13 +38,13 @@ impl Config {
         }
     }
 
-    pub fn save(&self) -> io::Result<replay::exit::Applied> {
+    pub fn save(&self) -> io::Result<replay_settings::exit::Applied> {
         self.resolve_options()?;
         self.save_folders_at(&Self::path()?)
     }
 
-    fn save_folders_at(&self, path: &Path) -> io::Result<replay::exit::Applied> {
-        replay::exit::EXIT.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
+    fn save_folders_at(&self, path: &Path) -> io::Result<replay_settings::exit::Applied> {
+        replay_settings::exit::EXIT.under_lock(&path.with_extension("lock"), replay_settings::exit::What::Change, |receipt| {
             let mut config = Config::load_from(path)?;
             config.game_dir = self.game_dir.clone();
             config.user_dir = self.user_dir.clone();

@@ -41,7 +41,7 @@ fn campaign(name: &str) -> (Units, Vec<DecodedFrame>) {
     put(&mut first, TableRows::StateResistance(vec![resistance(1, 3_000_000), resistance(2, 0)]));
     let strings = strings_of(&first, &TABLES);
     let mut frames = vec![first];
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -172,7 +172,7 @@ fn the_window_takes_the_layers_marks_where_it_draws_them_and_todays_where_it_doe
 
 #[test]
 fn outside_the_resistance_and_compliance_modes_it_declares_nothing() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let declared = |view: &View| {
         let mut layer = OccupationMarks::new(content());
         let mut inputs = Inputs::new(&kinds, "occupation_marks");

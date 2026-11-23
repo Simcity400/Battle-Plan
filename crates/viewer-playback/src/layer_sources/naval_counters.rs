@@ -36,9 +36,9 @@ impl Waters for crate::document::Content {
 }
 
 impl crate::document::Content {
-    pub fn ground(&self) -> viewer_counters::map::counters::SeaGround<'_> {
+    pub fn ground(&self) -> viewer_counters_naval::naval_members::SeaGround<'_> {
         let heights = viewer_gpu::province_map::HeightField { width: self.assets.heightmap.width, height: self.assets.heightmap.height, values: self.assets.heightmap_texels() };
-        viewer_counters::map::counters::SeaGround {
+        viewer_counters_naval::naval_members::SeaGround {
             content: &self.counters,
             map: &self.map,
             movement: self.movement.as_deref(),

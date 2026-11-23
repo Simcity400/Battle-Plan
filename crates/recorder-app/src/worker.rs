@@ -8,11 +8,11 @@ use recorder::controller::{
     self, CaptureOutcome, Control, Discovery, GameProcess, LoadedCampaign, Omission, Probe,
     Recording, Refusal, SetAside, Stage, Stop, Undiscarded, Waiting,
 };
-use replay::{
-    campaign::Replay,
+use replay::campaign::Replay;
+use replay_files::recording_files;
+use replay_settings::{
     exit::{Exit, Receipt, What},
     recorder_settings::RecorderSettings,
-    recording_files,
 };
 use replay_data::scope::CaptureMode;
 use serde_json::Value;
@@ -83,7 +83,7 @@ impl Default for Coordinator {
 
     #[cfg(not(test))]
     fn default() -> Self {
-        Self(&replay::exit::EXIT)
+        Self(&replay_settings::exit::EXIT)
     }
 }
 
@@ -584,7 +584,7 @@ impl Recorder {
         let options = content_reader_core::ResolveOptions {
             game_dir,
             user_dir,
-            cache_dir: replay::recorder_settings::directory(),
+            cache_dir: replay_settings::recorder_settings::directory(),
         };
         let content = Arc::new(FlagContent::load(&identity, &options)?);
         *cached = Some((session.to_path_buf(), Arc::clone(&content)));
@@ -1501,7 +1501,7 @@ impl Recorder {
         self.update(app, |inner| inner.unloading = true);
         let app_copy = app.clone();
         let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
-        let carried = replay::exit::Carry::current();
+        let carried = replay_settings::exit::Carry::current();
         let spawned = std::thread::Builder::new()
             .name("recorder-unload".into())
             .spawn(move || carried.run(|| {
@@ -1681,7 +1681,7 @@ impl AbandonedRetry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::recorder_settings::NextLoad;
+    use replay_settings::recorder_settings::NextLoad;
 
     const CAMPAIGN: &str = "00000000-0000-4000-8000-000000000000";
     const OTHER: &str = "00000000-0000-4000-8000-000000000001";
@@ -2460,7 +2460,7 @@ mod tests {
         let choose = |mut settings: RecorderSettings, record| {
             settings.campaigns.insert(
                 OTHER.to_owned(),
-                replay::recorder_settings::CampaignChoice {
+                replay_settings::recorder_settings::CampaignChoice {
                     record: Some(record),
                     ..Default::default()
                 },

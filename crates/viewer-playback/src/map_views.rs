@@ -4,7 +4,8 @@ use viewer_unit_reads::counter_move::SharedMovement;
 use viewer_native_gui::icon_windows::Pools;
 use viewer_gpu::province_schedule::Shared;
 use viewer_runtime::unit_handle::Unit;
-use viewer_counters::map::counters::{CounterSettings, naval_windows};
+use viewer_counter_kit::CounterSettings;
+use viewer_counters_naval::naval_windows;
 use viewer_native_gui::icon_windows::{PoolView, Retry};
 
 fn counter_owners(
@@ -155,8 +156,8 @@ pub struct Views {
     pub pings: PoolView,
     pub raids: PoolView,
     pub intel: viewer_raids::map::intel_icons::IntelView,
-    pub bases: viewer_counters::map::counters::BaseView,
-    pub land_combats: viewer_counters::map::counters::land_windows::View,
+    pub bases: viewer_counters_naval::base_windows::View,
+    pub land_combats: viewer_counter_kit::land_windows::View,
     pub resources: viewer_map_icons::resource_icons::ResourceIconView,
     pub occupation: viewer_map_icons::occupation_icons::OccupationIconView,
     pub adjacency_rules: PoolView,
@@ -222,7 +223,7 @@ impl Views {
 #[derive(Debug, Default)]
 pub struct Presentation {
     pub windows: Mutex<Views>,
-    pub counters: Mutex<viewer_counters::map::counters::Preparation>,
+    pub counters: Mutex<viewer_counters::counters::preparation::Preparation>,
     schedule: Shared,
     movement: SharedMovement,
 }
@@ -362,7 +363,9 @@ mod tests {
 
     #[test]
     fn the_memory_a_layout_was_laid_out_on_is_taken_with_it_and_the_two_alternate() {
-        use viewer_counters::map::counters::{BaseValues, Kinds, Layered};
+        use viewer_counter_kit::Kinds;
+        use viewer_counters::counters::layered::Layered;
+        use viewer_counters_naval::bases::BaseValues;
         let view = Presentation::default();
         let maker = view.sharing();
         let product = |memory: &Presentation| {

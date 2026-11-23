@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     },
 };
 
-const INSTANCE_MUTEX: &str = replay::recorder_settings::RECORDER_INSTANCE;
+const INSTANCE_MUTEX: &str = replay_settings::recorder_settings::RECORDER_INSTANCE;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "BattlePlan Recorder";
 const PERSONALIZE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";

@@ -18,7 +18,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-use viewer_counters::map::counters::Member;
+use viewer_counters_land::members::Member;
 use viewer_foundation::perspective::{Choice, Country, Sight, Vision};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
@@ -80,7 +80,7 @@ fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, hour: impl FnMut(
 }
 
 fn record_writing(hours: u32, writing: Writing, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, writing).unwrap());
     let mut memory = Memory::default();
@@ -166,7 +166,7 @@ fn fog_off() -> View {
 fn layer_seeing_all() -> Counters {
     let layer = Counters::new(Arc::new(Content::bare()));
     layer.set_vision(Choice { country: Country::Recorded, fog: false }, Arc::new(Vision::sharing(0, []).without_fog()));
-    layer.with_relations(Arc::new(viewer_counters::map::counters::type_tint::Index::default()))
+    layer.with_relations(Arc::new(viewer_counter_kit::type_tint::Index::default()))
 }
 
 fn side_for(units: Units) -> MapSide {
@@ -405,7 +405,7 @@ fn a_mode_without_land_counters_declares_nothing_and_a_mode_with_them_composes()
         _ => {}
     });
     let resources = View { map_mode: MapMode::Stock(Stock::Resources), ..fog_off() };
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "counters");
     layer_seeing_all().inputs(&resources, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "the resources mode draws no unit counters");
@@ -445,7 +445,7 @@ fn a_new_vision_takes_every_division_s_sight_again() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "counters");
     layer_seeing_all().inputs(&fog_off(), &mut inputs).unwrap();
     let declared: Vec<usize> = inputs.into_tables().into_keys().collect();
@@ -527,7 +527,7 @@ fn reading_side_with(fed: bool, more: impl Fn(u32, &mut Store)) -> MapSide {
     };
     let mut tables: Vec<TableId> = read();
     tables.extend(VISION_TABLES.iter().copied().filter(|table| !tables.contains(table)).collect::<Vec<_>>());
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -574,7 +574,7 @@ fn reading_side_with(fed: bool, more: impl Fn(u32, &mut Store)) -> MapSide {
         let neighbors = [(1, vec![2]), (2, vec![1, 3]), (3, vec![2, 4]), (4, vec![3, 9]), (9, vec![4])].into_iter().collect();
         Arc::new(viewer_layer_core::vision::Content::new(Ok(FogContent { topology: Topology { land: (1..=4).collect(), sea: std::collections::BTreeSet::from([9]), neighbors }, defines: test_defines() })))
     };
-    let counters = Counters::new(Arc::new(Content::bare())).with_relations(Arc::new(viewer_counters::map::counters::type_tint::Index::default())).reading_vision();
+    let counters = Counters::new(Arc::new(Content::bare())).with_relations(Arc::new(viewer_counter_kit::type_tint::Index::default())).reading_vision();
     let entry = open(units, quick()).unwrap();
     let counters: Box<dyn Layer> = if fed { Box::new(super::fed::Fed::new(counters)) } else { Box::new(counters) };
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(viewer_layer_core::vision::Vision::new(content)), counters];
@@ -709,7 +709,7 @@ fn a_compose_on_the_hosts_worker_validates_the_strategic_layout_with_the_recordi
     let entry = open(units, quick()).unwrap();
     let counters = Counters::new(Arc::new(Content { tables: Some(tables), ..Content::bare() }));
     counters.set_vision(Choice { country: Country::Recorded, fog: false }, Arc::new(Vision::sharing(0, []).without_fog()));
-    let counters = counters.with_relations(Arc::new(viewer_counters::map::counters::type_tint::Index::default()));
+    let counters = counters.with_relations(Arc::new(viewer_counter_kit::type_tint::Index::default()));
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(counters)], fog_off()).unwrap();
     entry.playhead().play(4.0);
     entry.playhead().seek(0);

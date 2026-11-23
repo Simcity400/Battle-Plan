@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use viewer_counters::map::counters::combat_markers::{CombatFields, Held, LandCombatDefines, MarkerJoins, MarkerOutcome, SideFields, TintHeld, land_marker, marker_tint, missing_of};
+use viewer_counter_kit::combat_markers::{CombatFields, Held, LandCombatDefines, MarkerJoins, MarkerOutcome, SideFields, TintHeld, land_marker, marker_tint, missing_of};
 use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{LAND, LAND_ICON, Provenance},
@@ -438,7 +438,7 @@ pub struct LandMarkers {
     applied_reads: u64,
 }
 
-pub type Product = viewer_counters::map::counters::combat_markers::LandMarkers;
+pub type Product = viewer_counter_kit::combat_markers::LandMarkers;
 
 impl LandMarkers {
     pub fn new(field: Arc<dyn Front>, index: Option<Index>) -> Self {

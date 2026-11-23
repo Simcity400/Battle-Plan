@@ -7,34 +7,16 @@ use std::{hint::black_box, time::Instant};
 mod foreign_unwind;
 
 static SERIAL: Mutex<()> = Mutex::new(());
-thread_local! {
-    static OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-pub(super) fn owns_observation() -> bool {
-    OWNER.get()
-}
 
 pub fn with_active_observer(check: impl FnOnce()) {
     Call::enter(SiteId::Land).run(check);
 }
 
 #[cfg(test)]
-struct Serial {
-    _serial: std::sync::MutexGuard<'static, ()>,
-}
-#[cfg(test)]
-fn serial() -> Serial {
-    let serial = SERIAL
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    OWNER.set(true);
-    Serial { _serial: serial }
-}
-#[cfg(test)]
-impl Drop for Serial {
-    fn drop(&mut self) {
-        OWNER.set(false);
-    }
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 pub fn fresh_demand() -> std::sync::MutexGuard<'static, ()> {
     let serial = SERIAL
@@ -2953,7 +2935,19 @@ fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
                 }
             });
         }
-        assert_eq!(drain(&mut output), Ok(count));
+        std::thread::scope(|threads| {
+            threads
+                .spawn(|| {
+                    assert_eq!(drain_interval(&mut output), Ok(Drain::Rows(count)));
+                    boundary(clock(3, 1));
+                    assert_eq!(CLOCK.lock().unwrap().unwrap().hour, 3);
+                    let lost = LOST.load(Ordering::Relaxed);
+                    lost_drain();
+                    assert_eq!(LOST.load(Ordering::Relaxed), lost + 1);
+                })
+                .join()
+                .unwrap();
+        });
         assert_eq!(output[count - 1].amount_raw, count as i64);
         assert_eq!(output[count - 1].variant, (count as u64) << 32 | 0x46);
     }

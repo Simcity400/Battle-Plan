@@ -106,7 +106,7 @@ fn put<R: RowCodec>(store: &mut Store, table: TableId, slot: u32, row: &R) {
 }
 
 fn record(name: &str, hours: u32) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -169,7 +169,7 @@ fn the_unit_selection_observer_reads_rows_at_the_head_and_holds_nothing_with_not
     let today = nothing(1);
     let mut head_rows = HeadRows::default();
     let both = || {
-        let mut selection = viewer_counters::map::unit_selection::Selection::default();
+        let mut selection = viewer_counters::unit_selection::Selection::default();
         selection.context(RECORDING.branch);
         let hit = Hit { ours: true, port: false, rect: [0.0; 4], kind: HitKind::Division, members: [1, 2].into(), layer: 0, plate: None };
         selection.click(Some(&hit), false);
@@ -242,7 +242,7 @@ fn the_click_reader_makes_no_family_the_view_cannot_click() {
     use super::{Clickable, click_tables, hidden_families};
     let hidden = hidden_families(Clickable::GROUND.shown);
     assert!(hidden.contains(&TableId::DivisionStatus) && hidden.contains(&TableId::AirWings) && hidden.contains(&TableId::NavalMissionLedgers));
-    let every = Clickable { shown: viewer_counters::map::counters::Shown::EVERY, air: true, divisions: true, raids: true };
+    let every = Clickable { shown: viewer_counters::counters::Shown::EVERY, air: true, divisions: true, raids: true };
     let mut learning = HeadRows::default();
     learning.clickable(every);
     learning.learned = vec![TableId::DivisionStatus, TableId::Characters];

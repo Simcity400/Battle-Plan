@@ -1,6 +1,7 @@
 use super::{Pages, Span, WorldPages};
 use crate::{Piece, changes::Changes, lane::Lane};
-use replay::columnar_frames::{Recording, fixtures};
+use replay_recording::columnar_frames::Recording;
+use replay_journal::fixtures;
 use replay_columnar::{store::Value, unit::BLOCK};
 use replay_data::rows::TableId;
 use std::sync::Arc;
@@ -76,7 +77,7 @@ fn a_span_of_hours_reads_back_to_its_restores_and_plays_only_the_span() {
 
 #[test]
 fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_added_since() {
-    use replay::columnar_frames::synthetic::{Input, Sample};
+    use replay_journal::synthetic::{Input, Sample};
     use replay_columnar::store::Value;
     use replay_data::rows::{CountryRow, DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
     let format = CAPTURE_ADDITIONS_FORMAT - 1;
@@ -134,7 +135,7 @@ fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_
 
 #[test]
 fn a_recording_of_an_earlier_format_crosses_its_piece_boundary_without_the_columns_added_since() {
-    use replay::columnar_frames::synthetic::{Input, Sample};
+    use replay_journal::synthetic::{Input, Sample};
     use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
     let table = TableId::Divisions;
     let runs = [(1, 0, 1), (2, 10_000, 1)];

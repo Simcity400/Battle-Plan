@@ -241,7 +241,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     });
     let mut hidden = View { fog: false, ..View::default() };
     hidden.overlay.bases = false;
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "base_counters");
     bases().inputs(&hidden, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "the base icons switched off declare nothing");
@@ -270,7 +270,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut layer = bases();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "base_counters");
     layer.inputs(&View::default(), &mut inputs).unwrap();

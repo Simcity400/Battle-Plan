@@ -8,4 +8,4 @@ Charts fold on the absolute hour grid. They use a suitable summary level when it
 
 Top-N ranks break ties by key. The last-value ranking uses the last bucket that has a value, so a key whose last observation was in a prior bucket does not qualify. A bucket split across pieces has distinct ordered positions. A recorded summary rank can select keys when the piece has at least the requested capacity. Otherwise each worker folds one key at a time in scratch storage, retains its top candidates per bin, and merges only those candidates. Log counts use an absolute grid of six-hour multiples and decode only the requested facets.
 
-[Lane reads and summaries](../../crates/replay/src/lanes.rs) · [Parity tests](../../crates/replay/src/lanes/tests.rs)
+[Lane reads and summaries](../../crates/replay-lanes/src/lanes.rs) · [Parity tests](../../crates/replay-lanes/src/lanes/tests.rs)

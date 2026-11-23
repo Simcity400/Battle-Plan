@@ -50,7 +50,7 @@ use std::{
 use dashboard_core::map_display::option_defaults;
 use viewer_runtime::diagnostics_panel::tooltip_warning_lines;
 use viewer_world::scene::SceneInput;
-use viewer_counters::map::counters::CounterReport;
+use viewer_counter_kit::CounterReport;
 use viewer_runtime::name_draw::Placements;
 use viewer_native_gui::sprites::Batch;
 use viewer_map_icons::labels::LabelReport;
@@ -479,7 +479,7 @@ fn mode_name(mode: replay_data::scope::CaptureMode) -> &'static str {
 }
 
 pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
-    if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
+    if let Some(replay_recording::control::ControlRecord::Partial { reason, .. }) = replay.partial() {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(egui::Color32::YELLOW, "Partial recording:");
             ui.colored_label(egui::Color32::YELLOW, reason);
@@ -607,7 +607,7 @@ fn prepared_naval_tooltip(
 
 fn radar_province(
     target: Option<MapHit>,
-    report: &viewer_counters::map::counters::CounterReport,
+    report: &viewer_counter_kit::CounterReport,
 ) -> Option<u32> {
     let MapHit::Base(index) = target? else {
         return None;
@@ -630,7 +630,7 @@ fn land_hover_matches_unit(
 #[cfg(test)]
 fn top_map_hit(
     point: [f32; 2],
-    report: &viewer_counters::map::counters::CounterReport,
+    report: &viewer_counter_kit::CounterReport,
     raids: &[viewer_raids::map::raids::tooltips::Hit],
     occupation: &[viewer_map_icons::occupation_icons::Hit],
     looks: Option<&free_icons::Looks>,
@@ -797,11 +797,11 @@ pub struct Viewer {
     overlay_routes_pending: bool,
     overlay_left: viewer_layers_political::left_to_layers::LeftToLayers,
     overlay_lay_ins: Option<std::sync::Arc<viewer_playback::side::LayIns>>,
-    overlay_layered: Option<(viewer_counters::map::counters::Layered, viewer_counters::map::counters::Kinds)>,
+    overlay_layered: Option<(viewer_counters::counters::layered::Layered, viewer_counter_kit::Kinds)>,
     overlay_shown: Option<(replay_data::BranchId, replay_data::Hour)>,
     overlay_view: Option<CounterView>,
     overlay_placed: Option<Camera>,
-    overlay_asked: Option<viewer_counters::map::counters::Shown>,
+    overlay_asked: Option<viewer_counters::counters::Shown>,
     overlay_placed_view: Option<([u32; 2], u32)>,
     overlay_shifts: viewer_native_gui::anchored::Shifts,
     overlay_camera_before: Option<Camera>,
@@ -845,9 +845,9 @@ pub struct Viewer {
     overlay_pools: viewer_native_gui::icon_windows::Pools,
 
     counter_view: CounterView,
-    unit_selection: viewer_counters::map::unit_selection::Selection,
-    air_selection: viewer_counters::map::air_selection::Selection,
-    fleet_selection: viewer_counters::map::naval_selection::Selection,
+    unit_selection: viewer_counters::unit_selection::Selection,
+    air_selection: viewer_counters::air_selection::Selection,
+    fleet_selection: viewer_counters::naval_selection::Selection,
     perspective: Choice,
     map_mode: viewer_map_modes::map_mode::MapMode,
     diplomatic_selected: Option<u32>,
@@ -3368,7 +3368,7 @@ impl Viewer {
     fn faction_pin_at(
         &self,
         point: [f32; 2],
-    ) -> Option<&viewer_counters::map::counters::faction_pings::PinHover> {
+    ) -> Option<&viewer_counter_kit::PinHover> {
         let MapHit::Pin(index) = self.map_hit(point)? else {
             return None;
         };
@@ -3630,7 +3630,7 @@ impl Viewer {
             ));
         }
         if let Some(MapHit::NavalRegionHover(index)) = target {
-            use viewer_counters::map::counters::NavalRegionalControl;
+            use viewer_counter_kit::NavalRegionalControl;
             let (region, control, rect) = {
                 let hit = self.counter_report.naval_region_hovers.get(index)?;
                 (hit.region, hit.control, hit.rect)
@@ -4448,7 +4448,7 @@ impl Viewer {
             }
             let boxed = box_press.take();
             if let Some(press) = boxed
-                && viewer_counters::map::box_selection::boxes(press.from_frame, frame_point(pos))
+                && viewer_counters::box_selection::boxes(press.from_frame, frame_point(pos))
             {
                 pressed_on = None;
                 box_releases.push((interface_at(press.from), at, this));
@@ -5565,7 +5565,7 @@ impl Viewer {
                 let mut fleet_added = false;
                 response.context_menu(|ui| {
                     let choices = match ours {
-                        Some(ours) => self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::fleet_choices(frame, ours)).unwrap_or_else(|| Err(std::io::Error::other("the fleets at the head are loading"))),
+                        Some(ours) => self.head_rows.clicks(head, frame, |frame| viewer_counters::naval_selection::fleet_choices(frame, ours)).unwrap_or_else(|| Err(std::io::Error::other("the fleets at the head are loading"))),
                         None => Err(std::io::Error::other("the viewing country is loading")),
                     };
                     match choices {
@@ -5848,7 +5848,7 @@ impl Viewer {
                                 self.click(document, click, frame, ui.ctx());
                             }
                             Some(MapHit::AirMission(index)) => {
-                                use viewer_counters::map::counters::AirMissionClick;
+                                use viewer_counter_kit::AirMissionClick;
                                 let hit = &self.counter_report.air_mission_hits[index];
                                 let mission = match hit.part.click() {
                                     AirMissionClick::SelectMission(mission) => mission,
@@ -7573,9 +7573,7 @@ pub(crate) mod tests {
 
     #[test]
     fn naval_regional_controls_own_hover_footprints_and_preserve_unsupported_blocking() {
-        use viewer_counters::map::counters::{
-            CounterReport, NavalRegionalControl, NavalRegionalHover,
-        };
+        use viewer_counter_kit::{CounterReport, NavalRegionalControl, NavalRegionalHover};
         let mut report = CounterReport::default();
         report.naval_region_hovers.push(NavalRegionalHover {
             region: 7,
@@ -7600,7 +7598,7 @@ pub(crate) mod tests {
 
     #[test]
     fn naval_mission_buttons_intercept_at_their_drawn_layer() {
-        use viewer_counters::map::counters::{CounterReport, NavalMissionHit};
+        use viewer_counter_kit::{CounterReport, NavalMissionHit};
         use viewer_native_gui::counter_hovers::unit_hits::Blocker;
         let mut report = CounterReport::default();
         report.naval_mission_hits.push(NavalMissionHit {
@@ -7627,7 +7625,7 @@ pub(crate) mod tests {
 
     #[test]
     fn prepared_naval_mission_hover_keeps_exact_text_and_missions_footprint() {
-        use viewer_counters::map::counters::NavalMissionHit;
+        use viewer_counter_kit::NavalMissionHit;
         use viewer_gpu::icon_tracks::IconFamily;
         use viewer_native_gui::free_icons::{Looks, Present};
         let mut report = CounterReport::default();
@@ -7674,7 +7672,7 @@ pub(crate) mod tests {
 
     #[test]
     fn prepared_naval_convoy_hover_uses_its_own_text_and_footprint() {
-        use viewer_counters::map::counters::{NavalRegionalControl, NavalRegionalHover};
+        use viewer_counter_kit::{NavalRegionalControl, NavalRegionalHover};
         let text = Arc::new(Tooltip {
             title: "Convoys".into(),
             body: "recorded client operands".into(),
@@ -7745,7 +7743,7 @@ pub(crate) mod tests {
     #[test]
     fn radar_toggle_hover_uses_the_top_base_and_never_a_covered_station() {
         use viewer_native_gui::counter_hovers::unit_hits::Blocker;
-        let mut report = viewer_counters::map::counters::CounterReport::default();
+        let mut report = viewer_counter_kit::CounterReport::default();
         report.base_hits.push(Blocker {
             rect: [0., 0., 20., 20.],
             layer: 1,
@@ -7786,7 +7784,7 @@ pub(crate) mod tests {
             counter_hovers::{task_force::{Control, Hover}, unit_hits::{Blocker, Hit, Kind}},
             sprites::layer,
         };
-        let mut report = viewer_counters::map::counters::CounterReport::default();
+        let mut report = viewer_counter_kit::CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
             port: false,
@@ -7876,7 +7874,7 @@ pub(crate) mod tests {
         use viewer_native_gui::{counter_hovers::unit_hits::{Blocker, Hit, Kind}, sprites::layer};
         let rect = [0.0, 0.0, 20.0, 20.0];
         let point = [5.0, 5.0];
-        let mut report = viewer_counters::map::counters::CounterReport::default();
+        let mut report = viewer_counter_kit::CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
             port: false,
@@ -7892,7 +7890,7 @@ pub(crate) mod tests {
         });
         report
             .faction_pin_hovers
-            .push(viewer_counters::map::counters::faction_pings::PinHover {
+            .push(viewer_counter_kit::PinHover {
                 rect,
                 theatre: (0, 0),
                 regions: Arc::from([1]),
@@ -7999,7 +7997,7 @@ pub(crate) mod tests {
         report.naval_marker_hovers[0].supported = false;
         report
             .faction_pin_hovers
-            .push(viewer_counters::map::counters::faction_pings::PinHover {
+            .push(viewer_counter_kit::PinHover {
                 rect,
                 theatre: (0, 0),
                 regions: Arc::from([1]),
@@ -8077,7 +8075,7 @@ pub(crate) mod tests {
             sprites::layer,
         };
         use viewer_gpu::icon_tracks::IconFamily;
-        let mut report = viewer_counters::map::counters::CounterReport::default();
+        let mut report = viewer_counter_kit::CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
             port: false,
@@ -8137,14 +8135,14 @@ pub(crate) mod tests {
             free_icons::{Looks, Present},
         };
         use viewer_gpu::icon_tracks::IconFamily;
-        let mut report = viewer_counters::map::counters::CounterReport::default();
+        let mut report = viewer_counter_kit::CounterReport::default();
         report.base_hits.push(Blocker {
             rect: [10., 10., 20., 20.],
             layer: 7,
         });
         report.air_grid_hits.insert(
             0,
-            viewer_counters::map::counters::AirGridHover {
+            viewer_counter_kit::AirGridHover {
                 family: IconFamily::Columns,
                 members: Some(Arc::new(vec![19])),
                 text: Arc::default(),
@@ -8531,7 +8529,8 @@ pub(crate) mod tests {
 
     #[test]
     fn unload_releases_campaign_map_admission_and_discards_a_late_loader() {
-        use replay::{campaign::Replay, spool::Record};
+        use replay::campaign::Replay;
+        use replay_capture_spool::spool::Record;
         use replay_data::{
             identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
             identity::SessionStart, identity::Verification,
@@ -8736,7 +8735,7 @@ pub(crate) mod tests {
         let controller = crate::embedded::Parent::new(window.clone(), received, Arc::new(|_| {}), service).attach(&ctx).unwrap();
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), Some(controller), None);
         assert!(!viewer.embedded.as_ref().unwrap().visible(), "the map’s window reports itself hidden, as it does once BattlePlan hides its own");
-        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
+        let exit: &'static replay_settings::exit::Exit = Box::leak(Box::new(replay_settings::exit::Exit::new()));
         let (job, answers) = crate::host::tests::job_under(exit, "map.png");
         viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
         let mut frame = eframe::Frame::_new_kittest();
@@ -9090,7 +9089,8 @@ pub(crate) mod tests {
 
     #[test]
     fn partial_recording_notice_names_the_failure_without_diagnostics() {
-        use replay::{spool::ControlRecord, spool::Record};
+        use replay_recording::control::ControlRecord;
+        use replay_capture_spool::spool::Record;
         let healthy = crate::playback::tests::fixture();
         let partial = healthy
             .append(recorder_derive::writers(), &[vec![
@@ -9128,7 +9128,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_map_recording_names_its_mode_and_what_it_leaves_out() {
-        use replay::{campaign::Replay, spool::Record};
+        use replay::campaign::Replay;
+        use replay_capture_spool::spool::Record;
         use replay_data::scope::CaptureMode;
         let healthy = crate::playback::tests::fixture();
         let mut session = healthy.sessions[0].clone();

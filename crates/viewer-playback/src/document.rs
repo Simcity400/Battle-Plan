@@ -72,7 +72,9 @@ use viewer_runtime::name_draw::Placements;
 use viewer_native_gui::sprites::Batch;
 use viewer_map_icons::labels::{self, LabelContent, LabelReport};
 use viewer_map_text::name_pass::{NameContent, PlacementInputs};
-use viewer_counters::map::counters::{self, CounterContent, CounterInputs, CounterReport};
+use viewer_counter_kit::{CounterInputs, CounterReport};
+use viewer_counters::counters;
+use viewer_counters::counters::CounterContent;
 use viewer_counter_products::map::orders;
 use viewer_gpu::{province_geometry::ProvinceGeometry, ribbon_content::{OrderAssets, OrderField}};
 use viewer_foundation::perspective;
@@ -246,7 +248,7 @@ pub struct Content {
     order_memo: Recent<(TableKey, u32, bool), OrderField>,
     trade_route_memo: Recent<(TableKey, u32), viewer_unit_models::trade_routes::TradeRoutes>,
     trade_route_stops: std::sync::Mutex<viewer_unit_models::trade_routes::KeptStops>,
-    type_tint_memo: counters::type_tint::Memo,
+    type_tint_memo: viewer_counter_kit::type_tint::Memo,
     mission_memo: counters::MissionMemo,
     overlay_carry: counters::Carry,
     pub province_geometry_build: Duration,
@@ -1724,7 +1726,7 @@ impl Document {
         let mut warnings = dashboard_base::metadata::build_warnings(&replay);
         warnings.extend(replay.compatibility_gaps());
         warnings.extend(replay.warnings.iter().cloned());
-        if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
+        if let Some(replay_recording::control::ControlRecord::Partial { reason, .. }) = replay.partial() {
             warnings.push(format!("Partial recording: {reason}"));
         }
         check_verification(
@@ -2243,7 +2245,7 @@ impl Document {
                         .unwrap_or_else(|error| error.into_inner())
                         .current()
                     {
-                        let _ = counters::warm_initial_flags(frame, &icons.read()?.counters);
+                        let _ = counters::initial_flags::warm_initial_flags(frame, &icons.read()?.counters);
                     }
                     Ok(())
                 })
@@ -3090,7 +3092,7 @@ impl Document {
                 order_memo: Recent::new(),
                 trade_route_memo: Recent::new(),
                 trade_route_stops: std::sync::Mutex::default(),
-                type_tint_memo: Keyed::new(counters::type_tint::TABLES),
+                type_tint_memo: Keyed::new(viewer_counter_kit::type_tint::TABLES),
                 mission_memo: Recent::new(),
                 overlay_carry: counters::Carry::default(),
                 province_geometry_build,
@@ -3281,7 +3283,7 @@ impl Document {
         ui_scale: f32,
         perspective: &perspective::Choice,
         omitted: Omissions,
-        counter_settings: counters::CounterSettings,
+        counter_settings: viewer_counter_kit::CounterSettings,
         mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<DumpOverlay<'_>> {
         self.hour()?.dump_overlay(
@@ -3436,8 +3438,8 @@ impl OverlayTables {
     pub fn land_combat_gaps(
         &self,
     ) -> (
-        &counters::combat_markers::Gaps,
-        &counters::combat_markers::Gaps,
+        &viewer_counter_kit::combat_markers::Gaps,
+        &viewer_counter_kit::combat_markers::Gaps,
     ) {
         self.counters.land_combat_gaps()
     }
@@ -4438,7 +4440,7 @@ impl<'a> Hour<'a> {
         engaged: Option<&crate::engaged_index::EngagedIndex>,
     ) -> io::Result<OverlayTables> {
         let ours = self.vision(perspective)?.ours();
-        self.hour_tables_with_raids(perspective, Arc::new(self.raid_icons(ours)), engaged, counters::Kinds::default())
+        self.hour_tables_with_raids(perspective, Arc::new(self.raid_icons(ours)), engaged, viewer_counter_kit::Kinds::default())
     }
 
     fn raid_icons(&self, ours: u32) -> raids::RaidIcons {
@@ -4451,7 +4453,7 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
-        left_out: counters::Kinds,
+        left_out: viewer_counter_kit::Kinds,
     ) -> io::Result<OverlayTables> {
         self.hour_tables_with_raids_profiled(
             perspective,
@@ -4468,7 +4470,7 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
-        left_out: counters::Kinds,
+        left_out: viewer_counter_kit::Kinds,
         spans: &mut viewer_runtime::profiling::BuilderSpans,
         radar: bool,
     ) -> io::Result<OverlayTables> {
@@ -4480,7 +4482,7 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
-        left_out: counters::Kinds,
+        left_out: viewer_counter_kit::Kinds,
         labels_by_layers: bool,
         spans: &mut viewer_runtime::profiling::BuilderSpans,
         radar: bool,
@@ -4495,7 +4497,7 @@ impl<'a> Hour<'a> {
         vision: Arc<perspective::Vision>,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&viewer_engagements::engagement_history::History>,
-        left_out: counters::Kinds,
+        left_out: viewer_counter_kit::Kinds,
         left: LeftToLayers,
         labels_by_layers: bool,
         need: counters::Need,
@@ -4515,7 +4517,7 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&viewer_engagements::engagement_history::History>,
-        left_out: counters::Kinds,
+        left_out: viewer_counter_kit::Kinds,
         labels_by_layers: bool,
         spans: &mut viewer_runtime::profiling::BuilderSpans,
         radar: bool,
@@ -4574,7 +4576,7 @@ impl<'a> Hour<'a> {
                     engaged,
                     self.air_rosters
                         .as_deref()
-                        .map(|rosters| rosters as &dyn counters::AirPasses),
+                        .map(|rosters| rosters as &dyn viewer_counters_naval::air_missions::AirPasses),
                     &self.type_tint_memo,
                     &self.mission_memo,
                     self.icons.raids.movement_reads(),
@@ -4582,7 +4584,7 @@ impl<'a> Hour<'a> {
                     left_out,
                     need,
                     &self.overlay_carry,
-                    self.air_rosters.clone().map(|rosters| rosters as Arc<dyn counters::AirPasses + Send + Sync>),
+                    self.air_rosters.clone().map(|rosters| rosters as Arc<dyn viewer_counters_naval::air_missions::AirPasses + Send + Sync>),
                     spans,
                 )
             })?,
@@ -4642,7 +4644,7 @@ impl<'a> Hour<'a> {
     fn counter_inputs<'b>(
         &'b self,
         windows: &'b viewer_native_gui::native_windows::NativeWindows,
-        display: &'b counters::CounterDisplay,
+        display: &'b viewer_counter_kit::CounterDisplay,
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
@@ -4811,7 +4813,7 @@ impl<'a> Hour<'a> {
                 .window_cache
                 .at(native_shader_draw::gui_viewport(viewport, ui_scale))
         })?;
-        let display = counters::CounterDisplay::default();
+        let display = viewer_counter_kit::CounterDisplay::default();
         let counter_inputs = self.counter_inputs(&windows, &display, camera, viewport, ui_scale, view);
         let label_at = labels::LabelProjection { camera, viewport, ui_scale };
         let mut read = None;
@@ -4983,7 +4985,7 @@ impl<'a> Hour<'a> {
         time: Option<f32>,
         prepare: impl FnOnce(
             &NativeWindows,
-        ) -> io::Result<Option<counters::gui_windows::WindowFlags<'s>>>,
+        ) -> io::Result<Option<viewer_counter_kit::gui_windows::WindowFlags<'s>>>,
         draw: impl FnOnce(&Context<'_, GuiAssets<'_>>) -> T,
     ) -> io::Result<T> {
         let windows = self
@@ -5021,7 +5023,7 @@ impl<'a> Hour<'a> {
         ui_scale: f32,
         perspective: &perspective::Choice,
         omitted: Omissions,
-        counter_settings: counters::CounterSettings,
+        counter_settings: viewer_counter_kit::CounterSettings,
         mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<DumpOverlay<'a>> {
         let layers = OverlayLayers::omitting(omitted);

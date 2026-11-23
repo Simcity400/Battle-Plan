@@ -67,8 +67,6 @@ pub(super) struct Chunked<T: PartialEq> {
 #[derive(Clone, Debug)]
 pub(super) struct ChunkDirectory<T> {
     values: ValueIndex<usize, Retained<Arc<[T]>>>,
-    #[cfg(any(test, feature = "test-support"))]
-    dense: Option<Vec<Arc<[T]>>>,
 }
 impl<T: PartialEq> PartialEq for ChunkDirectory<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -77,24 +75,12 @@ impl<T: PartialEq> PartialEq for ChunkDirectory<T> {
 }
 impl<T: PartialEq> ChunkDirectory<T> {
     fn new(values: ValueIndex<usize, Retained<Arc<[T]>>>) -> Self {
-        Self {
-            values,
-            #[cfg(any(test, feature = "test-support"))]
-            dense: None,
-        }
+        Self { values }
     }
     pub(super) fn len(&self) -> usize {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(dense) = &self.dense {
-            return dense.len();
-        }
         self.values.len()
     }
     pub(super) fn get(&self, index: usize) -> Option<&Arc<[T]>> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(dense) = &self.dense {
-            return dense.get(index);
-        }
         self.values.get(&index).map(|value| &**value)
     }
     pub(super) fn last(&self) -> Option<&Arc<[T]>> {
@@ -106,15 +92,6 @@ impl<T: PartialEq> ChunkDirectory<T> {
     pub(super) fn changed_pages(&self, previous: &Self) -> io::Result<CopyIndex<usize, ()>> {
         let mut changed = CopyIndex::default();
         let mut error = None;
-        #[cfg(any(test, feature = "test-support"))]
-        if self.dense.is_some() || previous.dense.is_some() {
-            for index in 0..self.len().max(previous.len()) {
-                if self.get(index) != previous.get(index) {
-                    changed = changed.inserted(index, ())?;
-                }
-            }
-            return Ok(changed);
-        }
         self.values.visit_changes(&previous.values, |index, _, _| {
             if error.is_none() {
                 match changed.inserted(*index, ()) {
@@ -127,18 +104,6 @@ impl<T: PartialEq> ChunkDirectory<T> {
             Some(error) => Err(error),
             None => Ok(changed),
         }
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    fn mutable(&mut self) -> &mut Vec<Arc<[T]>> {
-        if self.dense.is_none() {
-            self.dense = Some(
-                self.values
-                    .values()
-                    .map(|value| (**value).clone())
-                    .collect(),
-            );
-        }
-        self.dense.as_mut().unwrap()
     }
 }
 impl<T: PartialEq> Chunked<T> {
@@ -231,13 +196,6 @@ impl<T: Clone + PartialEq> Chunked<T> {
             }
         }
         let mut values = self.chunks.values.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(dense) = &self.chunks.dense {
-            values = ValueIndex::default();
-            for (index, chunk) in dense.iter().enumerate() {
-                values = values.inserted(index, Retained::new(chunk.clone()))?;
-            }
-        }
         let mut edits = Vec::with_capacity(touched.len());
         for (&index, _) in touched.iter() {
             let base = self.chunks.get(index).expect("checked chunk index");
@@ -291,16 +249,33 @@ impl<T: Clone + PartialEq> Chunked<T> {
     pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
         self.chunks.iter().flat_map(|chunk| chunk.iter())
     }
-    pub(super) fn get_mut(&mut self, id: usize) -> &mut T {
-        let mask = (1usize << self.shift) - 1;
-        let chunk = &mut Arc::make_mut(&mut self.chunks).mutable()[id >> self.shift];
-        &mut Arc::make_mut(chunk)[id & mask]
+
+    pub(super) fn edit(&mut self, id: usize, edit: impl FnOnce(&mut T)) {
+        let index = id >> self.shift;
+        let offset = id & ((1usize << self.shift) - 1);
+        let mut chunk = self.chunks.get(index).unwrap().to_vec();
+        edit(&mut chunk[offset]);
+        let values = self
+            .chunks
+            .values
+            .inserted(index, Retained::new(chunk.into()))
+            .unwrap();
+        self.chunks = Arc::new(ChunkDirectory::new(values));
     }
-    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        Arc::make_mut(&mut self.chunks)
-            .mutable()
-            .iter_mut()
-            .flat_map(|chunk| Arc::make_mut(chunk).iter_mut())
+
+    pub(super) fn edit_all(&mut self, mut edit: impl FnMut(&mut T)) {
+        let edits: Vec<_> = self
+            .chunks
+            .values
+            .iter()
+            .map(|(&index, chunk)| {
+                let mut chunk = chunk.to_vec();
+                chunk.iter_mut().for_each(&mut edit);
+                (index, Some(Retained::new(chunk.into())))
+            })
+            .collect();
+        let values = self.chunks.values.patched(&edits).unwrap();
+        self.chunks = Arc::new(ChunkDirectory::new(values));
     }
 }
 

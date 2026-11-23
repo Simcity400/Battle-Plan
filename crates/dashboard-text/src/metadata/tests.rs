@@ -174,7 +174,7 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
     }
     let mut segment = records(1, vec![source(1, 100, Some(1))]);
     for record in &mut segment {
-        if let replay::spool::Record::SessionStart(session) = record {
+        if let replay_capture_spool::spool::Record::SessionStart(session) = record {
             session.identity.verification = replay_data::identity::Verification::Unverified {
                 reason: "synthetic launcher roster".into(),
                 launcher: Default::default(),
@@ -448,7 +448,9 @@ fn link_tags_contradictory_raw_links_and_conflicting_slots_never_reach_a_scan() 
 
 #[test]
 fn metadata_partial_marker_keeps_the_failure_separate_from_known_and_unknown_hour_gaps() {
-    use replay::{campaign::SeekResult, spool::ControlRecord, spool::Record};
+    use replay::campaign::SeekResult;
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::Gap;
     for failed_hour in [Some(1017), None] {
         let mut records = records(1, vec![source(1, 1000, Some(1))]);
@@ -1012,7 +1014,8 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
 
 #[test]
 fn recorded_gap_and_partial_reasons_and_campaign_identity_stay_exact() {
-    use replay::{spool::ControlRecord, spool::Record};
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::Gap;
     let campaign = vec![0xa5; 1024 * 1024];
     let reason = "synthetic gap".to_owned() + &"\u{e9}".repeat(1024 * 1024);
@@ -1107,7 +1110,7 @@ fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
     );
     let recording = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), std::slice::from_ref(&input)).unwrap();
     let mut malformed = input;
-    let replay::spool::Record::Frame(frame) = &mut malformed[3] else {
+    let replay_capture_spool::spool::Record::Frame(frame) = &mut malformed[3] else {
         unreachable!();
     };
     frame.tables[TableId::Countries.index()] = TableUpdate::Unchanged { baseline: 99 };

@@ -17,7 +17,7 @@ use mirror::{Mirror, Mirrors};
 use playhead::{Consumer, Declared, Lanes, Playhead, Reader, Settings, Step, pages::Pages};
 use replay_columnar::state::Kind;
 use replay_data::{Hour, rows::TableId};
-use viewer_counters::map::counters::Kinds;
+use viewer_counter_kit::Kinds;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,

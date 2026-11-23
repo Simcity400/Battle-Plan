@@ -1,4 +1,4 @@
-use replay::exit::{Exit, Receipt, What};
+use replay_settings::exit::{Exit, Receipt, What};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -67,7 +67,7 @@ impl Verdict {
             Self::Unreached => Some(Self::UNREACHED),
             Self::Blind => Some(Self::BLIND),
             Self::Closing => Some(Self::CLOSING),
-            Self::Saving => Some(replay::exit::BUSY),
+            Self::Saving => Some(replay_settings::exit::BUSY),
             Self::Late => Some(Self::LATE),
         }
     }
@@ -278,7 +278,7 @@ pub struct Leaving {
 
 impl Default for Leaving {
     fn default() -> Self {
-        Self::gated(&replay::exit::EXIT)
+        Self::gated(&replay_settings::exit::EXIT)
     }
 }
 
@@ -738,7 +738,7 @@ impl Leaving {
 #[cfg(test)]
 mod tests {
     use super::{About, Answered, Ask, Batch, Closing, Leaving, RELOADING, REPLACED, Reach, UNWATCHED, Unanswered, Verdict};
-    use replay::exit::{Exit, What};
+    use replay_settings::exit::{Exit, What};
     use std::sync::{
         Arc, Mutex,
         mpsc::{Receiver, Sender, channel},
@@ -1290,7 +1290,7 @@ mod tests {
 
     fn committed(leaving: &Leaving, writes: &Exit, how: &str) {
         assert!(leaving.lock().exiting(), "{how}: BattlePlan committed to exit");
-        assert_eq!(writes.admit(What::Change).err().map(|error| error.to_string()), Some(replay::exit::CLOSED.to_owned()), "{how}: no write is admitted once it has");
+        assert_eq!(writes.admit(What::Change).err().map(|error| error.to_string()), Some(replay_settings::exit::CLOSED.to_owned()), "{how}: no write is admitted once it has");
         assert_eq!(leaving.install(|| unreachable!("{how}: no installer starts once BattlePlan exits")), Err(Verdict::CLOSING.to_owned()), "{how}");
         assert_eq!(leaving.close_requested(), Closing::Through, "{how}");
     }

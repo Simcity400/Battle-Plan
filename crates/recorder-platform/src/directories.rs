@@ -12,7 +12,7 @@ use windows_sys::Win32::System::{
 };
 
 pub fn default_capture_directory() -> PathBuf {
-    replay::recorder_settings::default_save_folder()
+    replay_settings::recorder_settings::default_save_folder()
 }
 
 pub fn resolve_user_directory() -> Result<PathBuf, String> {

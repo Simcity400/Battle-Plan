@@ -7,7 +7,7 @@ use dashboard_query::{
     read::{self, Keys, Read},
 };
 use game_model::calendar::HOUR_EPOCH;
-use replay::{lanes, points};
+use replay_lanes::{lanes, points};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, cells_rows};
@@ -182,7 +182,7 @@ fn literal(bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(bytes).ok().filter(|text| !text.is_empty()).map(str::to_owned)
 }
 
-fn literals(recording: &replay::columnar_frames::Recording, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
+fn literals(recording: &replay_recording::columnar_frames::Recording, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
         return Ok(HashMap::new());
     }
@@ -588,7 +588,7 @@ fn completed(query: &Query<'_>, run: u32, from: i32, to: i32) -> io::Result<Hash
         .collect())
 }
 
-fn rows_at(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<(i32, u128), OperationRow>> {
+fn rows_at(recording: &replay_recording::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<(i32, u128), OperationRow>> {
     let format = recording.format();
     let mut rows = HashMap::new();
     if asks.is_empty() {

@@ -1,10 +1,8 @@
 
 use super::native::{Pair, World, pair};
 use dashboard_query::cost;
-use replay::{
-    columnar_frames::Recording,
-    lanes::{self, Cell, History, Keys},
-};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{self, LocalPlayerRow, TableId, WarOverviewCountryRow, WarOwnedRelationRow, WarRelationRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::{

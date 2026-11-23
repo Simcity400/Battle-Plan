@@ -18,7 +18,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-use viewer_counters::map::counters::{Gun, GunMember};
+use viewer_counters_land::gun_members::{Gun, GunMember};
 use viewer_foundation::perspective::{Choice, Country, Vision};
 use dashboard_text::table_access::TokenKeys;
 use viewer_map_modes::map_mode::{MapMode, Stock};
@@ -73,7 +73,7 @@ fn column(table: TableId, field: &str) -> usize {
 }
 
 fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();
@@ -179,7 +179,7 @@ fn layer_seeing_all() -> GunCounters {
     let subunits = TokenKeys::new(&["railway_gun".to_owned()]);
     let layer = GunCounters::new(Arc::new(Content::bare(subunits, |province| (5..10).contains(&province))));
     layer.set_vision(Choice { country: Country::Recorded, fog: false }, Arc::new(Vision::sharing(0, []).without_fog()));
-    layer.set_relations(Arc::new(viewer_counters::map::counters::type_tint::Index::default()));
+    layer.set_relations(Arc::new(viewer_counter_kit::type_tint::Index::default()));
     layer.set_hostility(Arc::new(Hostility::new()));
     layer
 }
@@ -420,7 +420,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     let resources = View { map_mode: MapMode::Stock(Stock::Resources), ..fog_off() };
     let mut guns_off = fog_off();
     guns_off.overlay.counters.railway_guns = false;
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     for view in [&resources, &guns_off] {
         let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "gun_counters");
         layer_seeing_all().inputs(view, &mut inputs).unwrap();
@@ -451,7 +451,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "gun_counters");
     layer_seeing_all().inputs(&fog_off(), &mut inputs).unwrap();
     assert_eq!(inputs.into_tables().len(), TABLES.len());

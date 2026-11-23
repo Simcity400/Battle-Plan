@@ -10,7 +10,8 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use viewer_counters::map::counters::{Kinds, Layered, Need, Shown};
+use viewer_counter_kit::Kinds;
+use viewer_counters::counters::{Need, Shown, layered::Layered};
 use viewer_engagements::engagement_history::History;
 use viewer_unit_reads::counter_move::MovedHours;
 use viewer_gpu::camera::Camera;
@@ -189,16 +190,16 @@ pub struct Ask {
 }
 
 impl Ask {
-    fn need(&self, defines: &viewer_counters::map::counters::CounterDefines) -> Need {
+    fn need(&self, defines: &viewer_counter_kit::CounterDefines) -> Need {
         Need { air_missions: false, by_key: self.camera.free().is_none(), shown: self.shown(defines) }
     }
 
-    pub fn shown(&self, defines: &viewer_counters::map::counters::CounterDefines) -> Shown {
+    pub fn shown(&self, defines: &viewer_counter_kit::CounterDefines) -> Shown {
         shown(&self.camera, self.target, &self.view, defines)
     }
 }
 
-pub fn shown(camera: &Camera, target: Option<f32>, view: &CounterView, defines: &viewer_counters::map::counters::CounterDefines) -> Shown {
+pub fn shown(camera: &Camera, target: Option<f32>, view: &CounterView, defines: &viewer_counter_kit::CounterDefines) -> Shown {
     let height = camera.free().is_none().then_some(camera.height);
     Shown::at(height, target, &view.visibility, defines)
 }

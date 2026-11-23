@@ -14,7 +14,7 @@ use content_reader_core::{
 use content_reader_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
 use recorder_platform::games::{Discovery, GameProcess, OtherGames, choose_game};
-use replay::recorder_settings::RecorderSettings;
+use replay_settings::recorder_settings::RecorderSettings;
 use replay_data::identity::IdentityCodec;
 use replay_data::{identity::SessionStart, scope::CaptureMode};
 use replay_data::{witness::TerminalWitness, witness::WITNESS_FILE_NAME};
@@ -364,7 +364,7 @@ fn background_naming<T>(work: impl FnOnce() -> T) -> T {
 type AheadResult = (replay_io::Live, Option<Localisation>, Duration);
 
 struct FinalizingAhead {
-    packing: Option<Arc<replay::packing::Packing>>,
+    packing: Option<Arc<replay_settings::packing::Packing>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<AheadResult>>,
     asked: Arc<AtomicBool>,
@@ -412,7 +412,7 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
-        let packing = replay::packing::Packing::new()
+        let packing = replay_settings::packing::Packing::new()
             .map(Arc::new)
             .inspect_err(|error| {
                 eprintln!("Continuous packing could not start; journal retained: {error}");
@@ -423,7 +423,7 @@ impl FinalizingAhead {
                 let _ = idle.handle.wait(200);
             });
         }
-        let carried = replay::exit::Carry::current();
+        let carried = replay_settings::exit::Carry::current();
         let thread = packing.clone().and_then(|packing| std::thread::Builder::new()
             .name("finalize ahead".into())
             .spawn(move || carried.run(|| {
@@ -460,7 +460,7 @@ impl FinalizingAhead {
                         report: None,
                     };
                     let grew = {
-                        let _phase = replay::packing::Packing::phase(replay::packing::Phase::Drain);
+                        let _phase = replay_settings::packing::Packing::phase(replay_settings::packing::Phase::Drain);
                         match live.advance(&session, &target, &saves, naming, &stopped) {
                             Ok(grew) => grew,
                             Err(error) => {
@@ -977,7 +977,7 @@ fn recompress(args: &[OsString]) -> Result<(), String> {
     let path = Path::new(path);
     let megabytes = |bytes: u64| bytes as f64 / (1 << 20) as f64;
     let mut shown = None;
-    let outcome = replay::recompress::recompress_file(path, level, false, |progress| {
+    let outcome = replay_files::recompress::recompress_file(path, level, false, |progress| {
         let percent = progress.units * 100 / progress.total.max(1);
         if shown != Some(percent) {
             shown = Some(percent);
@@ -992,7 +992,7 @@ fn recompress(args: &[OsString]) -> Result<(), String> {
         true
     });
     match outcome {
-        Ok(replay::recompress::Outcome::Replaced { before, after, unflushed }) => {
+        Ok(replay_files::recompress::Outcome::Replaced { before, after, unflushed }) => {
             println!(
                 "{}: compressed at level {level}, {:.1} MB to {:.1} MB",
                 path.display(),
@@ -1004,7 +1004,7 @@ fn recompress(args: &[OsString]) -> Result<(), String> {
                 None => Ok(()),
             }
         }
-        Ok(replay::recompress::Outcome::AlreadyAt(level)) => {
+        Ok(replay_files::recompress::Outcome::AlreadyAt(level)) => {
             println!("{}: at level {level} already; left as it is", path.display());
             Ok(())
         }
@@ -1013,7 +1013,7 @@ fn recompress(args: &[OsString]) -> Result<(), String> {
 }
 
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
-    if args.first().is_some_and(|arg| replay::recording_files::is_recording(Path::new(arg))) {
+    if args.first().is_some_and(|arg| replay_files::recording_files::is_recording(Path::new(arg))) {
         return crate::metrics::command(args);
     }
     let command = if args
@@ -1031,7 +1031,7 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
         return crate::player_commands::command(args);
     }
     if command == "features" {
-        println!("features: {}", replay::FEATURES.join(", "));
+        println!("features: {}", replay_journal::FEATURES.join(", "));
         return Ok(());
     }
     if command == "inspect" {
@@ -2053,7 +2053,7 @@ pub(crate) fn capture(
         .parent()
         .ok_or("game executable has no folder")?
         .to_owned();
-    let facts_cache = replay::recorder_settings::directory();
+    let facts_cache = replay_settings::recorder_settings::directory();
     let gather_options = GatherOptions {
         game_dir,
         user_dir: user.to_owned(),
@@ -5107,7 +5107,7 @@ fn installed_content() -> Result<content_reader_core::ResolveOptions, String> {
     Ok(content_reader_core::ResolveOptions {
         game_dir,
         user_dir,
-        cache_dir: replay::recorder_settings::directory(),
+        cache_dir: replay_settings::recorder_settings::directory(),
     })
 }
 
@@ -5562,7 +5562,7 @@ mod tests {
         let session = output.join("sessions").join(format!("{start}-1"));
         fs::create_dir_all(session.join("bin")).unwrap();
         fs::write(session.join("bin/collector.dll"), b"synthetic collector").unwrap();
-        let replay::spool::Record::SessionStart(mut started) = allocation_records().remove(0)
+        let replay_capture_spool::spool::Record::SessionStart(mut started) = allocation_records().remove(0)
         else {
             unreachable!()
         };
@@ -5680,7 +5680,7 @@ mod tests {
         let recording = Replay::open(fs::read(&finalized.replays[0]).unwrap()).unwrap();
         assert_eq!(
             recording.recovery_notes,
-            [replay::campaign::RecoveryNote {
+            [replay_recording::records::RecoveryNote {
                 session: Some(7),
                 segment: 0,
                 valid_bytes: 0,
@@ -6763,7 +6763,7 @@ mod tests {
         let end = records
             .iter()
             .position(
-                |record| matches!(record, replay::spool::Record::Frame(frame) if frame.hour == 4),
+                |record| matches!(record, replay_capture_spool::spool::Record::Frame(frame) if frame.hour == 4),
             )
             .unwrap();
         crate::test_support::write_capture(
@@ -6827,7 +6827,7 @@ mod tests {
         let end = records
             .iter()
             .position(
-                |record| matches!(record, replay::spool::Record::Frame(frame) if frame.hour == 4),
+                |record| matches!(record, replay_capture_spool::spool::Record::Frame(frame) if frame.hour == 4),
             )
             .unwrap();
         write_campaign_journal(&session, &records[..end]);
@@ -7041,7 +7041,7 @@ mod tests {
             let directory = root.join("session");
             let target = root.join("output");
             let records = allocation_records();
-            let replay::spool::Record::SessionStart(session) = &records[0] else {
+            let replay_capture_spool::spool::Record::SessionStart(session) = &records[0] else {
                 unreachable!()
             };
             write_campaign_journal(&directory, &records);
@@ -7209,7 +7209,7 @@ mod tests {
                 let seed = fs::read(&recording).unwrap();
                 let directory = root.join("sessions").join("2");
                 let records = load_segment_records(10, 5..=6, RELOAD);
-                let replay::spool::Record::SessionStart(session) = &records[0] else {
+                let replay_capture_spool::spool::Record::SessionStart(session) = &records[0] else {
                     unreachable!()
                 };
                 write_capture(&directory.join(campaign), 0, &records, true);
@@ -8199,7 +8199,8 @@ mod tests {
             ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
             write_campaign_journal,
         };
-        use replay::{spool::ControlRecord, spool::Record};
+        use replay_recording::control::ControlRecord;
+        use replay_capture_spool::spool::Record;
         const LATER: &str = "00000000-0000-4000-8000-000000000001";
         let first = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         assert!(LATER < first, "the later campaign's UUID sorts first");

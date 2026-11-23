@@ -203,7 +203,7 @@ pub fn write_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
-    warn(path, write_png_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, scene, device, queue, path)?);
+    warn(path, write_png_under(&replay_settings::exit::EXIT.admit(replay_settings::exit::What::Export)?, scene, device, queue, path)?);
     Ok(())
 }
 
@@ -214,7 +214,7 @@ fn warn(path: &Path, warning: Option<String>) {
 }
 
 pub fn write_png_under(
-    receipt: &replay::exit::Receipt<'_>,
+    receipt: &replay_settings::exit::Receipt<'_>,
     scene: &Scene,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -232,12 +232,12 @@ pub fn write_texture_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
-    warn(path, write_texture_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, texture, device, queue, path)?);
+    warn(path, write_texture_under(&replay_settings::exit::EXIT.admit(replay_settings::exit::What::Export)?, texture, device, queue, path)?);
     Ok(())
 }
 
 fn write_texture_under(
-    receipt: &replay::exit::Receipt<'_>,
+    receipt: &replay_settings::exit::Receipt<'_>,
     texture: &wgpu::Texture,
     device: &wgpu::Device,
     queue: &wgpu::Queue,

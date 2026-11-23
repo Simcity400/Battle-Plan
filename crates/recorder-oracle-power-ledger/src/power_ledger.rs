@@ -347,10 +347,8 @@ mod tests {
 
     #[test]
     fn shared_holder_unlinked_relink_and_late_revision_settle_once_in_derived_tables() {
-        use replay::{
-            campaign::{Replay, SeekResult},
-            spool::Record,
-        };
+        use replay::campaign::{Replay, SeekResult};
+        use replay_capture_spool::spool::Record;
         use replay_data::identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification};
         use replay_frame::{
             branches::{BranchReason, BranchStart, Parentage},

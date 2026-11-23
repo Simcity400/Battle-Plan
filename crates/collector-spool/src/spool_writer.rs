@@ -1,5 +1,5 @@
 use collector_memory::terminal::Context;
-use replay::spool::{FileBackend, Record, SealedRecord, SegmentBackend, SegmentedSpool};
+use replay_capture_spool::spool::{FileBackend, Record, SealedRecord, SegmentBackend, SegmentedSpool};
 use replay_frame::frame::EncodedFrame;
 use std::{
     collections::VecDeque,
@@ -1534,7 +1534,7 @@ mod tests {
 
     #[test]
     fn the_budget_admits_the_maximum_record_with_context_and_inflight_storage() {
-        let batch = replay::spool::MAX_RECORD_BYTES + replay::spool::RECORD_HEADER_BYTES + 4096;
+        let batch = replay_capture_spool::spool::MAX_RECORD_BYTES + replay_capture_spool::spool::RECORD_HEADER_BYTES + 4096;
         let budget = budget_for(MIN_BUDGET, batch);
         assert_eq!(budget, 2 * batch);
         assert!(batch <= budget - batch);

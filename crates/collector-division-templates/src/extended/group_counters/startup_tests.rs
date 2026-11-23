@@ -3,7 +3,7 @@ use engine_native::{
     cequipment_variant_pool, creference_registry as registry, reference_bucket as bucket,
     template_hq_context as hq,
 };
-use replay::{spool::Record, spool::encode_record};
+use replay_capture_spool::spool::{Record, encode_record};
 use replay_frame::{
     frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableInput,
 };

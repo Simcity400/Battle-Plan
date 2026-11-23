@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, atomic::Ordering, mpsc},
     thread,
 };
-use viewer_counters::map::counters::BaseValues;
+use viewer_counters_naval::bases::BaseValues;
 use viewer_foundation::perspective::{Choice, Vision};
 
 enum Job {

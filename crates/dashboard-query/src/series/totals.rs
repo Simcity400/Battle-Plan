@@ -5,7 +5,7 @@ use crate::{
     read,
 };
 use dashboard_declare::{Column, RunningTotal};
-use replay::lanes::Runs;
+use replay_lanes::lanes::Runs;
 use replay_columnar::{manifest::Status, summary::Source};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -219,7 +219,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let recording = self.query.replay.recording();
         let table = self.series.table;
         let snapshot = |at: i32, wanted: &[usize], keys: read::Keys<'_>| -> io::Result<Option<HashMap<u128, Vec<Option<i64>>>>> {
-            let read = crate::cost::storage(|| replay::lanes::at_keys(recording, stretch.run, table, at, Some(wanted), keys))?;
+            let read = crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, stretch.run, table, at, Some(wanted), keys))?;
             if !matches!(read.status, Status::Complete) {
                 return Ok(None);
             }

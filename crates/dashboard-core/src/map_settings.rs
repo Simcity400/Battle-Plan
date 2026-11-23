@@ -196,17 +196,17 @@ impl Store {
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<Option<String>> {
         self.check().map_err(crate::invalid)?;
-        self.update_at(&replay::exit::EXIT, &path()?, key, choose)
+        self.update_at(&replay_settings::exit::EXIT, &path()?, key, choose)
     }
 
     fn update_at(
         &mut self,
-        exit: &replay::exit::Exit,
+        exit: &replay_settings::exit::Exit,
         path: &std::path::Path,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<Option<String>> {
-        let applied = exit.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
+        let applied = exit.under_lock(&path.with_extension("lock"), replay_settings::exit::What::Change, |receipt| {
             let saved = Self {
                 entries: Self::load_from(path)?.entries,
                 game: self.game,
@@ -791,7 +791,7 @@ mod tests {
             rivers: Some(false),
             ..Default::default()
         });
-        let writes = replay::exit::Exit::new();
+        let writes = replay_settings::exit::Exit::new();
         first
             .update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
             .unwrap();
@@ -816,7 +816,7 @@ mod tests {
         assert_eq!(saved.preferences("campaign-a"), night_off);
         writes.seal();
         let refused = second.update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(rivers_off.clone())).unwrap_err();
-        assert_eq!(refused.to_string(), replay::exit::CLOSED, "a save asked for once BattlePlan closes is refused, never cut off part way");
+        assert_eq!(refused.to_string(), replay_settings::exit::CLOSED, "a save asked for once BattlePlan closes is refused, never cut off part way");
         assert_eq!(Store::load_from(&path).unwrap().preferences("campaign-a"), night_off);
         std::fs::remove_dir_all(&folder).unwrap();
     }

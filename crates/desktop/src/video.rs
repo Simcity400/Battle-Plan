@@ -120,8 +120,8 @@ fn update(
     fallback: Option<&VideoSettings>,
     change: impl FnOnce(&mut VideoSettings),
 ) -> Result<(VideoSettings, Option<String>), String> {
-    replay::exit::EXIT
-        .under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
+    replay_settings::exit::EXIT
+        .under_lock(&path.with_extension("lock"), replay_settings::exit::What::Change, |receipt| {
             let mut settings = match load_from(path) {
                 Ok(saved) => saved,
                 Err(error) => fallback.cloned().ok_or_else(|| io::Error::other(error))?,

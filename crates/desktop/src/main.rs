@@ -160,7 +160,7 @@ pub(crate) fn replay_path(path: &str) -> Result<String, String> {
     if path.contains('\0') {
         return Err("The recording path holds a NUL character".into());
     }
-    if !replay::recording_files::is_recording(std::path::Path::new(path)) {
+    if !replay_files::recording_files::is_recording(std::path::Path::new(path)) {
         return Err("Choose a BattlePlan recording.".into());
     }
     Ok(path.to_owned())
@@ -727,7 +727,7 @@ impl app_update::session::Ending for SessionEnding {
     }
 
     fn saving(&self) -> Option<&'static str> {
-        replay::exit::EXIT.held().map(saving)
+        replay_settings::exit::EXIT.held().map(saving)
     }
 
     fn check_drafts(&self, answer: Box<dyn FnOnce(app_update::session::Drafts) + Send>) {
@@ -751,10 +751,10 @@ impl app_update::session::Ending for SessionEnding {
 
 const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
-fn saving(held: replay::exit::What) -> &'static str {
+fn saving(held: replay_settings::exit::What) -> &'static str {
     match held {
-        replay::exit::What::Install => "Starting the update before BattlePlan closes…",
-        replay::exit::What::Export => "Saving the map picture before BattlePlan closes…",
+        replay_settings::exit::What::Install => "Starting the update before BattlePlan closes…",
+        replay_settings::exit::What::Export => "Saving the map picture before BattlePlan closes…",
         _ => "Saving your changes before BattlePlan closes…",
     }
 }
@@ -793,7 +793,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
     let done = app_update::session::Done::new()?;
     let exiting: &'static Exiting = EXITING.get_or_init(|| Exiting { done, app: std::sync::OnceLock::new() });
     std::thread::Builder::new().name("ordered exit".into()).spawn(move || {
-        let exit = &replay::exit::EXIT;
+        let exit = &replay_settings::exit::EXIT;
         exit.wait_sealed();
         app_update::saving::wait_until_empty(app_update::app_name(), &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving), &|| exiting.done.awaited());
         app_update::control::stop();

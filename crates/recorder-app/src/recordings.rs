@@ -1,10 +1,8 @@
 use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
-use replay::{
-    campaign::Replay,
-    recorder_settings::{self, RecorderSettings},
-    recording_files,
-};
+use replay::campaign::Replay;
+use replay_settings::recorder_settings::{self, RecorderSettings};
+use replay_files::recording_files;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -524,7 +522,7 @@ impl Library {
                 sessions.sort();
                 Some(NameKey {
                     recordings: cache.recordings(target).0.clone(),
-                    unsaved: recording_files::listing(&replay::publication::unsaved_folder(target))
+                    unsaved: recording_files::listing(&replay_settings::publication::unsaved_folder(target))
                         .ok(),
                     sessions: sessions
                         .iter()
@@ -628,7 +626,7 @@ impl Library {
                 Some((bytes, time, span, level)) if (*bytes, *time) == version => (*span, *level),
                 _ => {
                     let span = Replay::read_hour_span(&path).ok().flatten();
-                    let level = replay::recompress::level_of(&path).ok().flatten();
+                    let level = replay_files::recompress::level_of(&path).ok().flatten();
                     cache
                         .spans
                         .insert(path.clone(), (version.0, version.1, span, level));
@@ -778,9 +776,9 @@ mod tests {
     }
 
     fn journal(campaign: &Path, segment: u32, bytes: usize) {
-        let mut name = [0; replay::columnar_journal::SEGMENT_NAME_BYTES];
+        let mut name = [0; replay_journal::columnar_journal::SEGMENT_NAME_BYTES];
         write(
-            &campaign.join(replay::columnar_journal::segment_name(
+            &campaign.join(replay_journal::columnar_journal::segment_name(
                 0, segment, &mut name,
             )),
             bytes,
@@ -1148,7 +1146,7 @@ mod tests {
         let map = format!("{CAMPAIGN} (2)");
         settings.campaigns.insert(
             CAMPAIGN.into(),
-            replay::recorder_settings::CampaignChoice {
+            replay_settings::recorder_settings::CampaignChoice {
                 folder: Some(map.clone()),
                 ..Default::default()
             },
@@ -1164,13 +1162,13 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let staged = replay::publication::unsaved_path(&root, CAMPAIGN);
+        let staged = replay_settings::publication::unsaved_path(&root, CAMPAIGN);
         recording(&staged, CAMPAIGN, 100);
         let running = root.join("sessions").join("2-2");
         journal(&running.join(CAMPAIGN), 0, 4000);
         let target = root.join(&map);
         recording(
-            &replay::publication::unsaved_path(&target, CAMPAIGN),
+            &replay_settings::publication::unsaved_path(&target, CAMPAIGN),
             CAMPAIGN,
             100,
         );
@@ -1234,7 +1232,7 @@ mod tests {
         };
         let session = root.join("sessions/1-1");
         fs::create_dir_all(&session).unwrap();
-        let waiting = replay::publication::unsaved_path(&root, CAMPAIGN);
+        let waiting = replay_settings::publication::unsaved_path(&root, CAMPAIGN);
         recording(&waiting, CAMPAIGN, 100);
         fs::write(
             session.join("completed.json"),

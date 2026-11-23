@@ -130,7 +130,7 @@ fn output_frame(
 }
 
 fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
     };

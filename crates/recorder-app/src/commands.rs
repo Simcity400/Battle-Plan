@@ -6,7 +6,7 @@ use crate::{
     startup,
     worker::{Recorder, recordings_changed, save_folder},
 };
-use replay::{
+use replay_settings::{
     exit::What,
     recorder_settings::{NextLoad, RecorderSettings},
 };
@@ -91,8 +91,8 @@ impl Startup for Windows {
 fn patched(
     start_with_windows: Option<bool>,
     startup: &dyn Startup,
-    save: impl FnOnce() -> std::io::Result<replay::exit::Applied<RecorderSettings>>,
-) -> std::io::Result<replay::exit::Applied<RecorderSettings>> {
+    save: impl FnOnce() -> std::io::Result<replay_settings::exit::Applied<RecorderSettings>>,
+) -> std::io::Result<replay_settings::exit::Applied<RecorderSettings>> {
     let before = start_with_windows.map(|_| startup.read()).transpose().map_err(std::io::Error::other)?;
     if let Some(enabled) = start_with_windows {
         startup.set(enabled).map_err(std::io::Error::other)?;
@@ -206,7 +206,7 @@ pub struct SettingsPatch {
     start_with_windows: Option<bool>,
     start_with_replay: Option<bool>,
     capture_mode: Option<String>,
-    compression: Option<replay::compression::Compression>,
+    compression: Option<replay_settings::compression::Compression>,
     auto_compress: Option<bool>,
 }
 
@@ -279,7 +279,7 @@ pub async fn set_campaign_choice(
     Ok(view)
 }
 
-fn admitted(app: &AppHandle) -> Result<(panel::Request, replay::exit::Receipt<'static>), String> {
+fn admitted(app: &AppHandle) -> Result<(panel::Request, replay_settings::exit::Receipt<'static>), String> {
     let request = panel::request(app);
     let receipt = app.state::<Arc<Recorder>>().admit(What::Change)?;
     Ok((request, receipt))
@@ -523,7 +523,7 @@ fn recording_file(path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| format!("Couldn’t find that recording: {path}: {error}"))?;
-    if !path.is_file() || !replay::recording_files::is_recording(&path) {
+    if !path.is_file() || !replay_files::recording_files::is_recording(&path) {
         return Err("Choose a BattlePlan recording.".into());
     }
     Ok(plain_path(path))
@@ -593,7 +593,7 @@ pub async fn open_replay(path: Option<String>) -> Result<(), String> {
 mod tests {
     use super::{Startup, patched, plain_path};
     use crate::startup::RunValue;
-    use replay::{exit::Exit, recorder_settings::RecorderSettings};
+    use replay_settings::{exit::Exit, recorder_settings::RecorderSettings};
     use std::{cell::RefCell, ffi::OsStr, path::PathBuf};
 
     const OURS: &str = "\"C:\\this\\recorder.exe\"";
@@ -664,7 +664,7 @@ mod tests {
 
         let registry = Registry::holding(None);
         let unconfirmed = patched(Some(true), &registry, || {
-            Ok(replay::exit::Applied::unconfirmed(&std::io::Error::other("the disk didn’t answer")).with(RecorderSettings::default(), ()))
+            Ok(replay_settings::exit::Applied::unconfirmed(&std::io::Error::other("the disk didn’t answer")).with(RecorderSettings::default(), ()))
         });
         assert!(unconfirmed.is_ok_and(|applied| applied.warning.is_some()), "an unconfirmed save is applied, and says so");
         assert_eq!(
@@ -676,14 +676,14 @@ mod tests {
 
     #[test]
     fn a_settings_change_admitted_on_arrival_is_saved_though_quit_seals_while_it_waits_on_the_settings_lock() {
-        use replay::exit::What;
+        use replay_settings::exit::What;
         let folder = std::env::temp_dir().join(format!("battleplan-recorder-arrival-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         let path = folder.join("recorder.json");
         let exit: &'static Exit = Box::leak(Box::new(Exit::new()));
         let mut lock = path.as_os_str().to_owned();
         lock.push(".lock");
-        let another_writer = replay::exit::lock_file(std::path::Path::new(&lock)).unwrap();
+        let another_writer = replay_settings::exit::lock_file(std::path::Path::new(&lock)).unwrap();
         let receipt = exit.admit(What::Change).unwrap();
         let (started, waiting) = std::sync::mpsc::channel();
         let writer = {

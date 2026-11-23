@@ -1,7 +1,5 @@
-use replay::{
-    recorder_settings::RecorderSettings,
-    recording_files::{self, NamesLock},
-};
+use replay_settings::recorder_settings::RecorderSettings;
+use replay_files::recording_files::{self, NamesLock};
 use replay_data::identity::is_campaign_uuid;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,7 +31,7 @@ pub fn start_recorder() {
         return;
     }
     let mut command = Command::new(&executable);
-    command.arg(replay::recorder_settings::STARTED_WITH_REPLAY);
+    command.arg(replay_settings::recorder_settings::STARTED_WITH_REPLAY);
     if let Err(refusal) = launch_independently(&mut command) {
         eprintln!("{refusal}");
         std::thread::spawn(move || {
@@ -53,7 +51,7 @@ fn recorder_running() -> bool {
         Foundation::CloseHandle,
         System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE},
     };
-    let name: Vec<u16> = std::ffi::OsStr::new(replay::recorder_settings::RECORDER_INSTANCE).encode_wide().chain([0]).collect();
+    let name: Vec<u16> = std::ffi::OsStr::new(replay_settings::recorder_settings::RECORDER_INSTANCE).encode_wide().chain([0]).collect();
     let held = unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
     if held.is_null() {
         return false;
@@ -155,13 +153,13 @@ impl<T> Warned<T> {
     }
 }
 
-fn saved(applied: replay::exit::Applied<RecorderSettings>) -> Warned<RecorderSettings> {
+fn saved(applied: replay_settings::exit::Applied<RecorderSettings>) -> Warned<RecorderSettings> {
     Warned::new(applied.value, applied.warning)
 }
 
 #[tauri::command]
 pub async fn set_recording_compression(
-    compression: replay::compression::Compression,
+    compression: replay_settings::compression::Compression,
 ) -> Result<Warned<RecorderSettings>, String> {
     blocking(move || {
         RecorderSettings::update(|settings| settings.choose_compression(compression))
@@ -373,7 +371,7 @@ mod tests {
         let bytes = replay::campaign::fixtures::encode_records(
             recorder_derive::writers(),
             CAMPAIGN.as_bytes().to_vec(),
-            &[vec![replay::spool::Record::SessionStart(session)]],
+            &[vec![replay_capture_spool::spool::Record::SessionStart(session)]],
         )
         .unwrap();
         std::fs::write(path, bytes).unwrap();

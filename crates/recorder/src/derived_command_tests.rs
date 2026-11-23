@@ -1,5 +1,6 @@
 use replay::campaign::Replay;
-use replay::{spool::ControlRecord, spool::Record};
+use replay_recording::control::ControlRecord;
+use replay_capture_spool::spool::Record;
 use replay_data::{day_night, day_night::Clock, rows::Recorded, rows::TableId};
 use replay_data::{
     identity::Roster, identity::Verification, rows::DayNightClock, rows::ProvinceTemperature,

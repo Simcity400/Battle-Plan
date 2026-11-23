@@ -1,4 +1,4 @@
-use replay::commands::Category;
+use replay_recording::command_packet::Category;
 
 pub(super) const CATEGORIES: [(Category, &[u64]); 18] = [
     (

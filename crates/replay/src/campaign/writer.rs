@@ -1,8 +1,16 @@
 
-use super::{Revision, records::Records};
+use super::Revision;
+use replay_recording::records::Records;
 #[cfg(any(test, feature = "recording"))]
-use crate::{columnar_file::{FileWriter, Settings}, columnar_frames::schema as tables, identity::IdentityCodec};
-use crate::{columnar_frames::Recording, format::FormatVersion};
+use replay_journal::columnar_file::FileWriter;
+#[cfg(any(test, feature = "recording"))]
+use replay_settings::compression::Settings;
+#[cfg(any(test, feature = "recording"))]
+use replay_recording::schema::schema as tables;
+#[cfg(any(test, feature = "recording"))]
+use replay_data::identity::IdentityCodec;
+use replay_recording::columnar_frames::Recording;
+use replay_data::format::FormatVersion;
 use replay_columnar::{
     container::{ContainerWriter, Root, SectionKey, Tags, schema},
     envelope::{self, Kind},
@@ -24,11 +32,11 @@ pub struct Addition<'a> {
 }
 
 pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
-    revise_under(&crate::exit::EXIT, path, recording, addition, saved, level)
+    revise_under(&replay_settings::exit::EXIT, path, recording, addition, saved, level)
 }
 
-pub(crate) fn revise_under(exit: &crate::exit::Exit, path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
-    let _receipt = exit.admit(crate::exit::What::Change)?;
+pub(crate) fn revise_under(exit: &replay_settings::exit::Exit, path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
+    let _receipt = exit.admit(replay_settings::exit::What::Change)?;
     let (root, before): (&Root, Revision) = (recording.root(), recording.revision());
     let records = match addition.records.filter(|records| !records.is_empty()) {
         Some(records) => Some(records.encode(FormatVersion::read(recording.format())?)?),

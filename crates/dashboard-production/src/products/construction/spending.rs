@@ -3,7 +3,7 @@ use dashboard_base::products::{Country, validate_country};
 use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Line, ProjectKind, SpendingGap, gap_of, missing};
 use dashboard_base::{Source, products::{LoadContext, Product}, queries::country_ids::Names};
 use dashboard_query::{Query, identity::Holder, series::MissingSpan};
-use replay::lanes::{Cell, Keys};
+use replay_lanes::lanes::{Cell, Keys};
 use replay_data::rows::{TableId, TagHolderRow, key_field};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -171,7 +171,7 @@ pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<Le
             let run_first = recording.run(stretch.run)?.first_hour;
             let read_from = if stretch.first > run_first { stretch.first - 1 } else { stretch.first };
             let history = dashboard_query::cost::storage(|| {
-                replay::lanes::history(recording, stretch.run, TableId::ConstructionSpend, &[total], Keys::Range(low, high), read_from, stretch.last)
+                replay_lanes::lanes::history(recording, stretch.run, TableId::ConstructionSpend, &[total], Keys::Range(low, high), read_from, stretch.last)
             })?;
             for (key, steps) in &history.keys {
                 let cells: Vec<(i32, Option<Cell>)> = steps.iter().map(|step| (step.hour, step.cells.as_ref().map(|cells| cells[0]))).collect();

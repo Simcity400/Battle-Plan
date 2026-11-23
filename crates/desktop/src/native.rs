@@ -80,7 +80,7 @@ impl Inner {
         }
         self.pending.action_room()?;
         dashboard_core::protocol::validate_export(&path, view_id.as_deref()).map_err(str::to_owned)?;
-        let receipt = replay::exit::EXIT.admit(replay::exit::What::Export).map_err(|error| error.to_string())?;
+        let receipt = replay_settings::exit::EXIT.admit(replay_settings::exit::What::Export).map_err(|error| error.to_string())?;
         let (answer, answered) = tokio::sync::oneshot::channel();
         let reply = viewer::host::Reply::new(move |result| drop(answer.send(result)));
         let job = viewer::host::ExportJob::new(path, view_id, receipt, reply);

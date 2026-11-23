@@ -11,7 +11,7 @@ use dashboard_query::{
     series::{Line, NavigationKey, Part, SeriesKeyReply},
 };
 use content_reader_core::unit_leader::SubUnits;
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::{store::TableView, summary};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
