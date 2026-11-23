@@ -29,15 +29,20 @@ const isOutputRun = (run: ConstructionOutputRun) => typeof run === 'object' && r
 const isLevels = (levels: LevelsBuilt) => typeof levels === 'object' && levels != null && optionalInt(levels.hour) && int(levels.knownAt)
   && int(levels.count) && levels.count > 0 && typeof levels.repair === 'boolean' && typeof levels.carried === 'boolean';
 const inOrder = <T>(list: readonly T[], first: (item: T) => number, last: (item: T) => number) => list.every((item, index) => index === 0 || last(list[index - 1]) < first(item));
+const isHourSpan = (span: unknown): span is [number, number] => Array.isArray(span) && span.length === 2 && int(span[0]) && int(span[1]) && span[0] <= span[1];
+const isUnreadSpans = (spans: unknown) => spans === undefined || (Array.isArray(spans) && spans.every(isHourSpan) && inOrder(spans, span => span[0], span => span[1]));
+const inSpans = (spans: readonly [number, number][] | undefined, hour: number) => spans?.some(([first, last]) => first <= hour && hour <= last) ?? false;
 const isProject = (project: ConstructionProject) => typeof project === 'object' && project != null && typeof project.id === 'string'
-  && (project.kind === 'building' || project.kind === 'railway') && typeof project.tag === 'string'
-  && (project.source === 'census' || project.source === 'outputAlone') && optionalInt(project.censusRead) && optionalInt(project.queueOrdinal)
+  && (project.kind === 'building' || project.kind === 'railway' || project.kind === 'unknown') && typeof project.tag === 'string'
+  && (project.source === 'census' || project.source === 'outputAlone' || project.source === 'unknown') && optionalInt(project.censusRead) && optionalInt(project.queueOrdinal)
   && optionalInt(project.building) && (project.repair == null || typeof project.repair === 'boolean')
   && [project.state, project.toState, project.province, project.routeProvinces, project.baseLevel, project.targetLevel, project.createdHour].every(optionalInt)
   && (project.costRaw == null || RAW.test(project.costRaw)) && int(project.firstRead)
   && (project.outputOrigin == null || (typeof project.outputOrigin.tag === 'string'
     && [project.outputOrigin.building, project.outputOrigin.state, project.outputOrigin.toState, project.outputOrigin.province].every(optionalInt)))
   && typeof project.earlierUnknown === 'boolean' && optionalInt(project.firstRepairTick)
+  && isUnreadSpans(project.builtUnread)
+  && isUnreadSpans(project.repairedUnread)
   && Array.isArray(project.runs) && project.runs.every(isRun) && inOrder(project.runs, run => run.firstHour, run => run.lastHour)
   && [project.built, project.unaccounted, project.possible, project.added].every(list => Array.isArray(list) && list.every(isLevels))
   && Array.isArray(project.outputs) && project.outputs.every(isOutputRun) && inOrder(project.outputs, run => run.from, run => run.to)
@@ -80,8 +85,9 @@ export interface ConstructionLog {
   states: StateNameAt;
 }
 
+const kindRank = (kind: ConstructionProject['kind']) => kind === 'building' ? 0 : kind === 'railway' ? 1 : 2;
 const scanOrder = (a: ConstructionProject, b: ConstructionProject) => a.firstRead - b.firstRead
-  || Number(a.kind === 'railway') - Number(b.kind === 'railway') || a.id.length - b.id.length || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  || kindRank(a.kind) - kindRank(b.kind) || a.id.length - b.id.length || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 function joined<T>(a: readonly T[], b: readonly T[], first: (item: T) => number, last: (item: T) => number, same: (x: T, y: T) => boolean, extend: (x: T, y: T) => T): T[] {
   const out = [...a];
@@ -98,10 +104,35 @@ const sameOutput = (x: ConstructionOutputRun, y: ConstructionOutputRun) => x.con
   && x.reason === y.reason && x.beforeObservation === y.beforeObservation;
 
 export function joinProject(a: ConstructionProject, b: ConstructionProject): ConstructionProject {
-  const counts = (x: readonly LevelsBuilt[], y: readonly LevelsBuilt[]) => [...x, ...y.filter(levels => !levels.carried)];
+  const counts = (x: readonly LevelsBuilt[], y: readonly LevelsBuilt[]) => {
+    const prior = [0, 0];
+    for (const levels of x) prior[levels.repair ? 1 : 0] += levels.count;
+    const out = [...x];
+    for (const levels of y) {
+      const side = levels.repair ? 1 : 0;
+      if (!levels.carried) {
+        prior[side] += levels.count;
+        out.push(levels);
+        continue;
+      }
+      const delta = levels.count - prior[side];
+      if (delta > 0) {
+        prior[side] += delta;
+        out.push(prior[side] === delta ? levels : { ...levels, count: delta, carried: false });
+      }
+    }
+    return out;
+  };
   const origin = a.outputOrigin ?? (a.source === 'outputAlone' && b.source === 'census'
     ? { tag: a.tag, building: a.building, state: a.state, toState: a.toState, province: a.province } : b.outputOrigin);
-  return { ...b, outputOrigin: origin, repair: a.repair ?? b.repair,
+  const mergeSpans = (x?: readonly [number, number][], y?: readonly [number, number][]) =>
+    joined(x ?? [], y ?? [], span => span[0], span => span[1], () => true, (first, second): [number, number] => [first[0], second[1]]);
+  const builtUnread = mergeSpans(a.builtUnread, b.builtUnread);
+  const repairedUnread = mergeSpans(a.repairedUnread, b.repairedUnread);
+  return { ...b, kind: b.kind === 'unknown' ? a.kind : b.kind, source: b.source === 'unknown' ? a.source : b.source,
+    outputOrigin: origin, repair: a.repair ?? b.repair,
+    ...(builtUnread.length ? { builtUnread } : { builtUnread: undefined }),
+    ...(repairedUnread.length ? { repairedUnread } : { repairedUnread: undefined }),
     runs: joined(a.runs, b.runs, run => run.firstHour, run => run.lastHour, sameRun, (x, y) => ({ ...x, lastHour: y.lastHour })),
     outputs: joined(a.outputs, b.outputs, run => run.from, run => run.to, sameOutput, (x, y) => ({ ...x, to: y.to })),
     built: counts(a.built, b.built), unaccounted: counts(a.unaccounted, b.unaccounted), possible: counts(a.possible, b.possible), added: counts(a.added, b.added),
@@ -150,6 +181,7 @@ export interface ProjectAt {
   project: ConstructionProject;
   status: Status;
   earlierUnknown: boolean;
+  countersUnread: boolean;
   built: number;
   unknown: number;
   possible: number;
@@ -188,14 +220,18 @@ export function projectAt(project: ConstructionProject, hour: number): ProjectAt
   const repaired = runs.some(item => item.repairLevels > 0) || known.some(levels => levels.repair)
     || (project.firstRepairTick != null && project.firstRepairTick <= hour);
   const builtNew = runs.some(item => item.remaining > 0) || known.some(levels => !levels.repair);
-  const kind: ProjectKind = project.source === 'outputAlone' ? 'unknown' : repaired && builtNew ? 'repairThenNew' : repaired ? 'repair' : 'new';
+  const kind: ProjectKind = project.source === 'outputAlone' || project.source === 'unknown' ? 'unknown'
+    : repaired && builtNew ? 'repairThenNew' : repaired ? 'repair' : builtNew || project.repair === false ? 'new' : 'unknown';
+  const builtUnread = inSpans(project.builtUnread, hour);
+  const repairedUnread = inSpans(project.repairedUnread, hour);
+  const countersUnread = kind === 'repair' ? repairedUnread : kind === 'new' ? builtUnread : builtUnread || repairedUnread;
   const repairing = run != null && run.repairLevels > 0;
   const dated = (levels: LevelsBuilt) => levels.hour ?? levels.knownAt;
   const latest = events.reduce<LevelsBuilt | null>((found, levels) => !found || levels.knownAt > found.knownAt
     || (levels.knownAt === found.knownAt && dated(levels) > dated(found)) ? levels : found, null);
   const [changed, changedBy] = end ? [end.hour ?? end.knownAt, end.hour == null]
     : latest ? [latest.hour ?? latest.knownAt, latest.hour == null] : [project.createdHour ?? project.firstRead, project.createdHour == null];
-  return { project, status, earlierUnknown: project.earlierUnknown, built: count, unknown, possible, levels, added: sum(project.added, hour), kind, repairing, run, last, changed, changedBy,
+  return { project, status, earlierUnknown: project.earlierUnknown, countersUnread, built: count, unknown, possible, levels, added: sum(project.added, hour), kind, repairing, run, last, changed, changedBy,
     stage: count + unknown + possible + (end ? 1 : 0) + (project.outputOrigin && project.source === 'census' ? 1 : 0) };
 }
 
@@ -246,7 +282,7 @@ function projectRows(log: ConstructionLog, filter: LogFilter, order: 'change' | 
 
 const rowState = (row: LogRow<ProjectAt>) => {
   const at = row.item, project = at.project;
-  return JSON.stringify([row.hour, row.by ?? false, at.status, at.kind, at.repairing, at.earlierUnknown, project.source, project.tag, project.building,
+  return JSON.stringify([row.hour, row.by ?? false, at.status, at.kind, at.repairing, at.earlierUnknown, at.countersUnread, project.source, project.tag, project.building,
     project.state, project.toState, project.province]);
 };
 
@@ -268,6 +304,8 @@ function* projectChanges(project: ConstructionProject): Generator<number> {
   if (project.end) yield project.end.knownAt;
   yield* shapeChanges(project.runs);
   for (const levels of [project.built, project.unaccounted, project.possible, project.added]) for (const level of levels) yield level.knownAt;
+  for (const [first, last] of project.builtUnread ?? []) { yield first; yield last + 1; }
+  for (const [first, last] of project.repairedUnread ?? []) { yield first; yield last + 1; }
 }
 
 export function constructionPlayback(log: ConstructionLog, filter: LogFilter, order: 'change' | 'start') {
@@ -328,8 +366,8 @@ export function kindLabel(kind: ProjectKind): string {
 }
 
 export function levelsLabel(at: ProjectAt): string | null {
-  if (at.project.source === 'outputAlone') return null;
-  if (at.earlierUnknown || at.unknown > 0 || at.possible > 0) return builtLabel(at);
+  if (at.project.source === 'outputAlone' || at.project.source === 'unknown') return null;
+  if (at.countersUnread || at.earlierUnknown || at.unknown > 0 || at.possible > 0) return builtLabel(at);
   if (at.levels <= 1) return null;
   return (at.status === 'building' || at.status === 'unread') && at.built > 0 ? builtLabel(at) : `×${at.levels}`;
 }
@@ -349,8 +387,9 @@ export function describeRow(log: ConstructionLog, row: LogRow<ProjectAt>, countr
 }
 
 export function builtLabel(at: ProjectAt): string {
-  if (at.project.source === 'outputAlone') return 'Not recorded';
-  const more = at.earlierUnknown ? '+' : '';
+  if (at.project.source === 'outputAlone' || at.project.source === 'unknown') return 'Not recorded';
+  if (at.countersUnread && at.built === 0 && at.unknown === 0 && at.possible === 0) return 'Not recorded';
+  const more = at.earlierUnknown || at.countersUnread ? '+' : '';
   const extra = at.unknown + at.possible;
   const built = extra ? `${at.built}–${at.built + extra}` : at.built;
   const total = at.possible ? `${at.levels}–${at.levels + at.possible}` : at.levels;
@@ -427,9 +466,11 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   const type = projectType(log, project);
   const end = project.end && project.end.knownAt <= hour ? project.end : null;
   const pending = at.status === 'unread' ? 'Not recorded' : 'Not yet';
-  const rows: TooltipRow[] = project.createdHour == null
-    ? [{ label: 'Source', value: 'Known from output' }, { label: 'First evidence', value: dayLabel(project.firstRead) }]
-    : [{ label: 'Started', value: dayLabel(project.createdHour) }];
+  const rows: TooltipRow[] = project.createdHour != null
+    ? [{ label: 'Started', value: dayLabel(project.createdHour) }]
+    : project.source === 'census'
+      ? [{ label: 'Started', value: 'Not recorded', tone: 'muted' }, { label: 'First seen', value: dayLabel(project.firstRead) }]
+      : [{ label: 'Source', value: project.source === 'unknown' ? 'Not recorded' : 'Known from output', ...(project.source === 'unknown' ? { tone: 'muted' as const } : {}) }, { label: 'First evidence', value: dayLabel(project.firstRead) }];
   const dated = (risen: number | null, knownAt: number) => risen != null ? dayLabel(risen) : `by ${dayLabel(knownAt)}`;
   if (at.kind === 'repairThenNew') {
     const latest = project.built.filter(levels => levels.repair && !levels.carried && levels.knownAt <= hour)
@@ -445,8 +486,9 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   } else rows.push({ label: at.kind === 'repairThenNew' ? 'Built' : 'Finished', value: pending, tone: 'muted' });
   const unit = project.kind === 'railway' ? 'segment' : 'level';
   const done = at.kind === 'repair' ? 'Levels repaired' : at.kind === 'repairThenNew' ? 'Levels repaired and built'
-    : project.kind === 'railway' ? 'Segments built' : 'Levels built';
-  rows.push({ label: done, value: builtLabel(at) });
+    : project.kind === 'railway' ? 'Segments built' : project.kind === 'unknown' ? 'Progress' : 'Levels built';
+  const builtValue = builtLabel(at);
+  rows.push({ label: done, value: builtValue, ...(builtValue === 'Not recorded' ? { tone: 'muted' as const } : {}) });
   if (at.added || at.possible) {
     const added = at.possible ? `${at.added}–${at.added + at.possible}` : at.added;
     rows.push({ label: 'Added while under way', value: `${added} ${unit}${at.added + at.possible === 1 ? '' : 's'}`, tone: 'muted' });
@@ -458,7 +500,7 @@ export function projectTooltip(log: ConstructionLog, at: ProjectAt, hour: number
   const scale = Math.round(Math.log10(log.manifest.costScale));
   if (project.costRaw != null) {
     const cost = formatAmount(project.costRaw, scale, 0);
-    rows.push(project.kind === 'railway' ? { label: 'Route cost', value: cost } : { label: `Cost per ${unit}`, value: cost });
+    rows.push(project.kind === 'railway' ? { label: 'Route cost', value: cost } : project.kind === 'unknown' ? { label: 'Cost', value: cost } : { label: `Cost per ${unit}`, value: cost });
   }
   const output = outputAt(project, hour);
   if (output) {

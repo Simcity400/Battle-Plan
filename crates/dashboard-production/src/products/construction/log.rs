@@ -118,6 +118,7 @@ pub struct OutputOrigin {
 pub enum ProjectSource {
     Census,
     OutputAlone,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -152,6 +153,14 @@ pub struct ConstructionProject {
     pub runs: Vec<ProjectRun>,
     #[doc = " New levels built and levels repaired (`repair`)."]
     pub built: Vec<LevelsBuilt>,
+    #[doc = " Hour spans where a non-output-alone step had an unrecorded built counter."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub built_unread: Option<Vec<(i32, i32)>>,
+    #[doc = " Hour spans where a non-output-alone step had an unrecorded repaired counter."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub repaired_unread: Option<Vec<(i32, i32)>>,
     #[doc = " Levels that cannot be told built or dropped."]
     pub unaccounted: Vec<LevelsBuilt>,
     #[doc = " New levels it may have both built and had added."]
@@ -366,16 +375,22 @@ fn shown<'a>(steps: &'a [Step], to: i32) -> Vec<(i32, i32, &'a [Cell])> {
 
 pub(crate) fn rise_hours(steps: &[Step]) -> Vec<i32> {
     let mut out = Vec::new();
-    let mut held: Option<(i64, i64)> = None;
+    let mut held: (Option<i64>, Option<i64>) = (None, None);
     for step in steps {
         let Some(cells) = step.cells.as_deref() else { continue };
-        let now = (number(cells, col::BUILT).unwrap_or(0), number(cells, col::REPAIRED).unwrap_or(0));
-        if let Some(before) = held
-            && (now.0 > before.0 || now.1 > before.1)
-        {
+        let built = number(cells, col::BUILT);
+        let repaired = number(cells, col::REPAIRED);
+        let rose = matches!((held.0, built), (Some(before), Some(now)) if now > before)
+            || matches!((held.1, repaired), (Some(before), Some(now)) if now > before);
+        if rose {
             out.push(step.hour);
         }
-        held = Some(now);
+        if let Some(now) = built {
+            held.0 = Some(now);
+        }
+        if let Some(now) = repaired {
+            held.1 = Some(now);
+        }
     }
     out
 }
@@ -407,7 +422,7 @@ fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
     for &(at, _, cells) in shown {
-        let now = number(cells, column).unwrap_or(0);
+        let Some(now) = number(cells, column) else { continue };
         match held {
             None if now > 0 => out.push(LevelsBuilt { hour: None, known_at: at, count: u32::try_from(now).unwrap_or(u32::MAX), repair, carried: true }),
             Some(before) if now > before => {
@@ -442,21 +457,34 @@ pub(crate) fn assemble<'r>(
     let shown = shown(steps, to);
     let (Some(&(_, _, first)), Some(&(last_at, _, last))) = (shown.first(), shown.last()) else { return Assembled::Hidden };
     let first_read = hour(last, col::FIRST_READ).unwrap_or(shown[0].0);
-    let country = id32(last, col::COUNTRY).unwrap_or(0);
+    let Some(country) = id32(last, col::COUNTRY) else { return Assembled::Unnamed };
     let Some(owner) = tag(country, first_read) else { return Assembled::Unnamed };
-    let alone = |cells: &[Cell]| number(cells, col::OUTPUT_ALONE) == Some(1);
-    let output_origin = (alone(first) && !alone(last)).then(|| OutputOrigin {
+    let output_alone = |cells: &[Cell]| match number(cells, col::OUTPUT_ALONE) {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    };
+    let output_origin = (output_alone(first) == Some(true) && output_alone(last) == Some(false)).then(|| OutputOrigin {
         tag: id32(first, col::COUNTRY).and_then(|country| tag(country, first_read)).unwrap_or_else(|| owner.clone()),
         building: id32(first, col::BUILDING_TYPE),
         state: id32(first, col::TARGET_STATE),
         to_state: id32(first, col::TO_STATE),
         province: id32(first, col::PROVINCE),
     });
-    let census = !alone(last);
-    let open = |cells: &[Cell]| number(cells, col::END).is_none_or(|end| end == i64::from(P::OPEN));
+    let source = match output_alone(last) {
+        Some(false) => ProjectSource::Census,
+        Some(true) => ProjectSource::OutputAlone,
+        None => ProjectSource::Unknown,
+    };
+    let kind = match number(last, col::KIND).and_then(|value| u8::try_from(value).ok()) {
+        Some(P::BUILDING) => ProjectKind::Building,
+        Some(P::RAILWAY) => ProjectKind::Railway,
+        _ => ProjectKind::Unknown,
+    };
+    let open = |cells: &[Cell]| number(cells, col::END) == Some(i64::from(P::OPEN));
     let mut runs: Vec<ProjectRun> = Vec::new();
     for &(at, through, cells) in &shown {
-        if alone(cells) || !open(cells) {
+        if output_alone(cells) != Some(false) || !open(cells) {
             continue;
         }
         let (Some(factories), Some(remaining), Some(repair_levels)) = (hour(cells, col::FACTORIES), hour(cells, col::REMAINING), hour(cells, col::REPAIR_LEVELS)) else { continue };
@@ -495,17 +523,37 @@ pub(crate) fn assemble<'r>(
     let built = |at: i32| rises(at).map(|rises| rises.built.clone());
     let repaired = |at: i32| rises(at).map(|rises| rises.repaired.clone());
     let undated = |_: i32| -> Option<Vec<ConstructionRise>> { None };
-    let census_first = shown.iter().find(|(_, _, cells)| !alone(cells)).map(|(_, _, cells)| *cells);
+    let census_first = shown.iter().find(|(_, _, cells)| output_alone(cells) == Some(false)).map(|(_, _, cells)| *cells);
+    let counter_unread = |column: usize| -> Option<Vec<(i32, i32)>> {
+        let mut spans: Vec<(i32, i32)> = Vec::new();
+        let mut uncertain_since: Option<i32> = None;
+        for &(at, _, cells) in &shown {
+            if output_alone(cells) == Some(true) {
+                continue;
+            }
+            if number(cells, column).is_some() {
+                if let Some(start) = uncertain_since.take() {
+                    spans.push((start, at - 1));
+                }
+            } else {
+                uncertain_since.get_or_insert(at);
+            }
+        }
+        if let Some(start) = uncertain_since {
+            spans.push((start, to));
+        }
+        (!spans.is_empty()).then_some(spans)
+    };
     Assembled::Project(Box::new(ConstructionProject {
         id: id.to_string(),
-        kind: if number(last, col::KIND) == Some(i64::from(P::RAILWAY)) { ProjectKind::Railway } else { ProjectKind::Building },
-        source: if census { ProjectSource::Census } else { ProjectSource::OutputAlone },
+        kind,
+        source,
         census_read: hour(last, col::CENSUS_READ),
         output_origin,
         queue_ordinal: id32(last, col::QUEUE_ORDINAL),
         tag: owner,
         building: id32(last, col::BUILDING_TYPE),
-        repair: census_first.map(|cells| number(cells, col::REPAIR_LEVELS).is_some_and(|levels| levels > 0)),
+        repair: census_first.and_then(|cells| number(cells, col::REPAIR_LEVELS).map(|levels| levels > 0)),
         state: id32(last, col::TARGET_STATE),
         to_state: id32(last, col::TO_STATE),
         province: id32(last, col::PROVINCE),
@@ -518,6 +566,8 @@ pub(crate) fn assemble<'r>(
         earlier_unknown: number(last, col::EARLIER_UNKNOWN) == Some(1),
         runs,
         built: merged(rises_of(&shown, col::BUILT, false, &built), rises_of(&shown, col::REPAIRED, true, &repaired)),
+        built_unread: counter_unread(col::BUILT),
+        repaired_unread: counter_unread(col::REPAIRED),
         unaccounted: merged(rises_of(&shown, col::UNACCOUNTED_NEW, false, &undated), rises_of(&shown, col::UNACCOUNTED_REPAIR, true, &undated)),
         possible: rises_of(&shown, col::POSSIBLE, false, &undated),
         added: merged(rises_of(&shown, col::ADDED_NEW, false, &undated), rises_of(&shown, col::ADDED_REPAIR, true, &undated)),

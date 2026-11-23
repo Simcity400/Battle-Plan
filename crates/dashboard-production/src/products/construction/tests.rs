@@ -146,6 +146,51 @@ fn an_output_alone_line_keeps_its_origin_and_an_unresolved_owner_is_left_out() {
 }
 
 #[test]
+fn unread_project_counters_and_classification_fields_stay_unknown_never_defaulted() {
+    let none = |_: i32| -> Option<&Rises> { None };
+    let mut unread_built = census(2, 2, 0, 0, &[]);
+    unread_built.retain(|(column, _)| *column != col::BUILT);
+    let Assembled::Project(partial) = assemble(
+        10,
+        &[step(100, &census(2, 2, 0, 0, &[])), step(110, &unread_built), step(120, &census(2, 2, 0, 0, &[]))],
+        129,
+        &none,
+        &tag,
+    ) else { panic!("named") };
+    assert!(partial.built.is_empty());
+    assert_eq!(partial.built_unread, Some(vec![(110, 119)]), "an unread built counter records only the unread hour spans");
+    assert_eq!(partial.repaired_unread, None, "a recorded zero repaired counter is not marked unread");
+
+    let mut unread_fields = census(2, 2, 0, 0, &[]);
+    unread_fields.retain(|(column, _)| !matches!(*column, col::KIND | col::OUTPUT_ALONE | col::REPAIR_LEVELS | col::END));
+    let Assembled::Project(unknown) = assemble(11, &[step(100, &unread_fields)], 105, &none, &tag) else { panic!("named") };
+    assert_eq!(unknown.kind, ProjectKind::Unknown, "unread kind is unknown, not building");
+    assert_eq!(unknown.source, ProjectSource::Unknown, "unread output_alone is unknown, not census");
+    assert_eq!(unknown.repair, None, "unread repair_levels stays absent, never false");
+    assert!(unknown.runs.is_empty(), "unread end or output_alone never fabricates an open run");
+
+    let mut unread_repair = census(2, 2, 0, 0, &[]);
+    unread_repair.retain(|(column, _)| *column != col::REPAIR_LEVELS);
+    let Assembled::Project(no_repair) = assemble(12, &[step(100, &unread_repair)], 105, &none, &tag) else { panic!("named") };
+    assert_eq!(no_repair.source, ProjectSource::Census);
+    assert_eq!(no_repair.repair, None, "a census line with unread repair_levels leaves repair absent");
+
+    let mut unread_end = census(2, 2, 0, 0, &[]);
+    unread_end.retain(|(column, _)| *column != col::END);
+    let Assembled::Project(no_end) = assemble(13, &[step(100, &unread_end)], 105, &none, &tag) else { panic!("named") };
+    assert!(no_end.runs.is_empty(), "a census line with unread end never fabricates an open run");
+
+    let mut unread_built = census(2, 2, 0, 0, &[]);
+    unread_built.retain(|(column, _)| *column != col::BUILT);
+    let gone = Step { hour: 106, cells: None };
+    let Assembled::Project(disappeared) = assemble(14, &[step(100, &census(2, 1, 0, 1, &[])), step(104, &unread_built), gone.clone()], 120, &none, &tag) else { panic!("named") };
+    assert_eq!(disappeared.built_unread, Some(vec![(104, 120)]), "unread final counter stays uncertain through window end after the row disappears");
+
+    let Assembled::Project(resolved) = assemble(15, &[step(100, &census(2, 1, 0, 1, &[])), step(104, &unread_built), gone, step(108, &census(2, 0, 0, 2, &[]))], 120, &none, &tag) else { panic!("named") };
+    assert_eq!(resolved.built_unread, Some(vec![(104, 107)]), "a later recorded counter resolves the earlier unread span");
+}
+
+#[test]
 fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_unknown() {
     let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50);
     assert_eq!(first, [(60, Some(50)), (80, Some(50))]);

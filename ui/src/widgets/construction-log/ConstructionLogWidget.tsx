@@ -156,8 +156,9 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
       </span>
       <span className="construction-title">
         <span className="construction-building"><span className="construction-name">{typeName(type)}</span>
-          {at.project.source !== 'outputAlone' && <span className="construction-levels"><LiveText live={painted} at={liveKey(at.project.id, 'levels')} /></span>}
-          {at.project.source === 'outputAlone' && <span className="construction-levels">Known from output</span>}</span>
+          {at.project.source === 'census' && <span className="construction-levels"><LiveText live={painted} at={liveKey(at.project.id, 'levels')} /></span>}
+          {at.project.source === 'outputAlone' && <span className="construction-levels">Known from output</span>}
+          {at.project.source === 'unknown' && <span className="construction-levels">Source not recorded</span>}</span>
         <span className="construction-place">
           {!oneCountry && <span className="construction-place-country">{flag}{named('construction-name-pending is-short')}<span aria-hidden="true">·</span></span>}
           <span className="construction-ellipsis">{placeTitle(at.project, log.states)}</span>
