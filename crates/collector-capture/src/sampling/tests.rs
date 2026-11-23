@@ -2762,12 +2762,31 @@ fn divisions_split_from_any_pooled_storage_matches_the_whole_direct_walk() {
     }
 }
 
+fn run_naval_observer_test_in_child(test: &str) -> bool {
+    const CHILD: &str = "BATTLEPLAN_NAVAL_ACQUISITION_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        return false;
+    }
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD, "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    true
+}
+
 #[test]
 fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     use collector_naval_results::{
         naval_result_sources as sources,
         naval_result_sources::{Entry, tests::Observation},
     };
+    if run_naval_observer_test_in_child(
+        "sampling::tests::no_frame_acquisition_marks_naval_sources_unavailable_before_reuse",
+    ) {
+        return;
+    }
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
@@ -2821,6 +2840,11 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
         naval_result_sources as sources,
         naval_result_sources::{Entry, tests::Observation},
     };
+    if run_naval_observer_test_in_child(
+        "sampling::tests::contained_acquisition_failure_marks_the_naval_event_interval_unavailable",
+    ) {
+        return;
+    }
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
