@@ -4982,12 +4982,19 @@ mod tests {
     #[test]
     fn status_reads_active_log_without_allocating_or_popping_spilled_records() {
         let _guard = staging_test();
-        let previous_lanes = REQUIRED_LANES.load(Ordering::Relaxed);
+        clear_staging();
+        struct Cleanup(usize);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                REQUIRED_LANES.store(self.0, Ordering::Relaxed);
+                clear_staging();
+            }
+        }
+        let _cleanup = Cleanup(REQUIRED_LANES.load(Ordering::Relaxed));
         let target_lanes = thread_slots().max(257);
         REQUIRED_LANES.store(target_lanes, Ordering::Relaxed);
         // SAFETY: Unit test owns politics staging with no concurrent teardown.
         unsafe { resize(8, 16) };
-        REQUIRED_LANES.store(previous_lanes, Ordering::Relaxed);
         let active = log().unwrap();
         assert!(active.lanes.len() >= 257);
         active
@@ -5038,7 +5045,5 @@ mod tests {
             parsed["required_entries_per_lane"].as_array().unwrap().len(),
             active.lanes.len()
         );
-        // SAFETY: Unit test owns politics staging cleanup with hooks disabled.
-        unsafe { release() };
     }
 }
