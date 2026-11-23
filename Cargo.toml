@@ -420,9 +420,6 @@ opt-level = 0
 [profile.ci.package."*"]
 opt-level = 1
 
-[profile.ci.package.dashboard-query]
-opt-level = 1
-
 [profile.release-lto]
 inherits = "release"
 lto = "fat"
