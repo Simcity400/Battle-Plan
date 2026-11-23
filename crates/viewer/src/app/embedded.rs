@@ -54,7 +54,7 @@ impl Viewer {
                         self.dashboard = Some(Box::new(dashboard));
                     }
                     Err(error) => {
-                        self.refuse_exports(pending.actions, &format!("The map widgets could not start: {error}"));
+                        self.refuse_exports(pending.exports, &format!("The map widgets could not start: {error}"));
                         self.error = Some(error.to_string());
                         self.report_embedded(ctx);
                         return;
@@ -86,6 +86,9 @@ impl Viewer {
         let actions = pending.actions;
         for action in actions {
             self.host_map_action(action, ctx, frame);
+        }
+        for job in pending.exports {
+            self.host_export(job, ctx, frame);
         }
         {
             let _other_cost = replay_frame::cpu::scope("frame.fly-aircraft", Some("other"));
@@ -348,12 +351,36 @@ impl Viewer {
         }
     }
 
-    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard_core::protocol::MapAction>, why: &str) {
-        for action in actions {
-            if let dashboard_core::protocol::MapAction::Export { request, .. } = action {
-                self.export_results.push((request, Err(why.to_owned())));
-            }
+    fn refuse_exports(&mut self, jobs: Vec<crate::host::ExportJob>, why: &str) {
+        for job in jobs {
+            job.answer(Err(why.to_owned()));
         }
+    }
+
+    pub(crate) fn host_export(&mut self, job: crate::host::ExportJob, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(id) = job.view_id.clone() {
+            match self.dashboard.as_mut() {
+                Some(dashboard) => dashboard.export_view(&id, job, ctx, frame),
+                None => job.answer(Err("The requested map widget is unavailable".into())),
+            }
+            return;
+        }
+        if self.document.is_none() || self.capture.is_some() {
+            job.answer(Err("Open a map and wait for any active export to finish".into()));
+            return;
+        }
+        self.capture = Some(Capture {
+            path: PathBuf::from(&job.path),
+            remaining: 0,
+            pinned: None,
+            exit: false,
+            time: crate::suite_input::capture_clock(),
+            step: 0.0,
+            frames: 1,
+            index: 0,
+            paced: false,
+            export: Some(job),
+        });
     }
 
     pub(crate) fn host_map_action(
@@ -401,41 +428,6 @@ impl Viewer {
             MapAction::Configure { options } => {
                 self.host_perspective(&options);
                 self.apply_host_options(&options);
-            }
-            MapAction::Export {
-                path,
-                view_id: Some(id),
-                request,
-            } => {
-                let refused = match self.dashboard.as_mut() {
-                    Some(dashboard) => dashboard.export_view(&id, path, request, ctx, frame).err(),
-                    None => Some("The requested map widget is unavailable".into()),
-                };
-                if let Some(why) = refused {
-                    self.export_results.push((request, Err(why)));
-                }
-            }
-            MapAction::Export {
-                path,
-                view_id: None,
-                request,
-            } => {
-                if self.document.is_some() && self.capture.is_none() {
-                    self.capture = Some(Capture {
-                        path: PathBuf::from(path),
-                        remaining: 0,
-                        pinned: None,
-                        exit: false,
-                        time: crate::suite_input::capture_clock(),
-                        step: 0.0,
-                        frames: 1,
-                        index: 0,
-                        paced: false,
-                        request: Some(request),
-                    });
-                } else {
-                    self.export_results.push((request, Err("Open a map and wait for any active export to finish".into())));
-                }
             }
             MapAction::Folders { game, user } => {
                 self.config.game_dir = PathBuf::from(game);

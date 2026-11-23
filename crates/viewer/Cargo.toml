@@ -19,6 +19,7 @@ content-reader-parser.workspace = true
 content-reader-politics.workspace = true
 content-reader-script.workspace = true
 replay.workspace = true
+replay-settings.workspace = true
 replay-files.workspace = true
 replay-recording.workspace = true
 viewer-counter-kit.workspace = true

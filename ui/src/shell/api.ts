@@ -1,4 +1,6 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri, transformCallback } from '@tauri-apps/api/core';
+import type { CloseBatch, CloseRequests } from './closeGuard.ts';
+import { lastInstallAttempt, watchedDocument } from './installAttempt';
 import { listen } from '@tauri-apps/api/event';
 import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
 import type { MapPlayback } from '../dashboard/mapPlayback';
@@ -29,11 +31,12 @@ export interface DesktopState {
 }
 
 export interface MapOptions { country: string | null; countrySlot?: number | null; countryPinned?: boolean; fog: boolean; mapMode?: string | null; mapModeSlots?: string[]; pickerHidden?: boolean; observed?: number | null }
-export interface ContentFolders { game: string; user: string; contentReady: boolean }
+export interface ContentFolders { game: string; user: string; contentReady: boolean; warning?: string | null }
 export interface MapDetails extends ContentFolders { error: string | null; path: string | null; branch: string | null; hour: number | null; messages: string[] }
 export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'unload'; path: string } | { kind: 'cameraMode'; mode: CameraMode; overlays: boolean } | { kind: 'flyAircraft'; aircraft: string | null } | { kind: 'refreshVisualMods' };
 export function mapAction(action: MapAction): Promise<void> { requireDesktop(); return invoke('map_action', { action }); }
-export function exportMap(viewId?: string): Promise<string | null> { requireDesktop(); return invoke('export_map', { viewId: viewId ?? null }); }
+export interface SavedExport { message: string; warning: string | null }
+export function exportMap(viewId?: string): Promise<SavedExport | null> { requireDesktop(); return invoke('export_map', { viewId: viewId ?? null }); }
 
 export interface MapBounds {
   x: number;
@@ -83,19 +86,35 @@ export function seekMap(path: string, revision: string, branch: string, hour: nu
   return invoke<void>('seek_map', { path, revision, branch, hour, playback });
 }
 
-export function setUnsavedWork(unsaved: boolean): Promise<void> {
-  if (!desktopAvailable) return Promise.resolve();
-  return invoke<void>('set_unsaved_work', { unsaved });
+let closeWatches = 0;
+
+export function closeRequests(onBatch: (batch: CloseBatch) => boolean): CloseRequests {
+  if (!desktopAvailable) return { watch: () => Promise.resolve(), refresh: (_givingUpRestarts: boolean) => Promise.reject('BattlePlan’s desktop host isn’t here, so the page can’t ask it what stands.') };
+  const seq = ++closeWatches;
+  const callback = transformCallback<CloseBatch>(batch => onBatch(batch) === true);
+  let watched: number | null = null;
+  return {
+    watch: async () => {
+      const document = await invoke<number>('close_watch_document');
+      watched = document;
+      watchedDocument(document);
+      await invoke<void>('watch_close_requests', { document, seq, callback });
+    },
+    refresh: async (givingUpRestarts: boolean) => {
+      if (watched === null) throw 'This page hasn’t watched for BattlePlan closing yet, so it can’t ask again what stands.';
+      return await invoke<number>('refresh_close_requests', { document: watched, seq, attempt: givingUpRestarts ? lastInstallAttempt() : 0 });
+    },
+  };
 }
 
-export function onCloseRequested(callback: () => void): Promise<() => void> {
-  if (!desktopAvailable) return Promise.resolve(() => {});
-  return listen('close-requested', () => callback());
-}
-
-export function closeDiscardingUnsavedWork(): Promise<void> {
+export function answerCloseQuestion(id: number, stays: boolean, basis: readonly number[]): Promise<boolean> {
   requireDesktop();
-  return invoke<void>('close_discarding_unsaved_work');
+  return invoke<boolean>('answer_close_question', { id, stays, basis });
+}
+
+export function leaveApp(): Promise<void> {
+  requireDesktop();
+  return invoke<void>('leave_app');
 }
 
 export { errorMessage } from './errors';

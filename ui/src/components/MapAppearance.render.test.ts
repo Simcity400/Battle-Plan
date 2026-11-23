@@ -15,7 +15,7 @@ test('each map setting inherits on its own and offers its own reset', async () =
   const audio = { master: 100, ambient: 50, units: 100, combat: 100, interface: 100, voice: 100 };
   const inherits = { graphics: {}, audio: {}, counters: null, visualMods: null };
   const reply = { settings: inherits, inheritedSettings: { graphics, audio, counters: { kind: 'all' }, visualMods: null },
-    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts: [1, 4], gameGraphics: graphics, gameSettingsError: null };
+    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts: [1, 4], gameGraphics: graphics, gameSettingsError: null, saveWarning: null };
   const host = globalThis as typeof globalThis & { __mapGraphics?: { reply: unknown; draft: unknown } };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'map-graphics-fixture', enforce: 'pre',
@@ -68,7 +68,7 @@ test('every installed mod can be chosen and a chosen mod no longer installed kee
     mods: [{ id: 'workshop/1', name: 'Total Conversion', recordedId: '1', source: 'F:/workshop/1', problem: null },
       { id: 'mod/broken.mod', name: 'Broken Pack', recordedId: 'broken.mod', source: '', problem: 'its folder missing cannot be read' }],
     recordedMods: [{ recordedId: '1', name: 'Total Conversion' }], appliedMods: [], appliedNotes: ['Visual mod Gone Terrain is not installed, so it is not shown.'],
-    sampleCounts: [1, 4], gameGraphics: null, gameSettingsError: null };
+    sampleCounts: [1, 4], gameGraphics: null, gameSettingsError: null, saveWarning: null };
   const host = globalThis as typeof globalThis & { __mapGraphics?: { reply: unknown; draft: unknown } };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'map-mods-fixture', enforce: 'pre',
@@ -109,7 +109,7 @@ test('every installed mod can be chosen and a chosen mod no longer installed kee
 test('anti-aliasing is unavailable only when the renderer has said its adapter lacks it', async () => {
   const settings = { graphics: { samples: 8 }, audio: {}, counters: null, visualMods: null };
   const reply = (sampleCounts: number[] | null) => ({ settings, inheritedSettings: { graphics: { samples: 4 }, audio: {}, counters: { kind: 'all' }, visualMods: null },
-    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts, gameGraphics: null, gameSettingsError: null });
+    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts, gameGraphics: null, gameSettingsError: null, saveWarning: null });
   const host = globalThis as typeof globalThis & { __mapGraphics?: { reply: unknown; draft: unknown } };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'map-samples-fixture', enforce: 'pre',
@@ -141,7 +141,7 @@ test('every scope applies a change at once and saves its own scope without losin
   type Target = import('../dashboard/client').MapSettingsTarget;
   const settings = { graphics: { dayNight: null, borders: false }, audio: { voice: 40 }, counters: null, visualMods: null } as unknown as Settings;
   const reply = { settings, inheritedSettings: { graphics: { dayNight: true }, audio: {}, counters: { kind: 'all' }, visualMods: null },
-    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts: [1, 4], gameGraphics: null, gameSettingsError: null } as unknown as Reply;
+    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts: [1, 4], gameGraphics: null, gameSettingsError: null, saveWarning: null } as unknown as Reply;
   const host = globalThis as typeof globalThis & { __mapGraphics?: { reply: Reply; draft: Settings };
     __mapGraphicsActions?: { setGraphics: (key: string, value: unknown) => void; setCounters: (value: string) => void } };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

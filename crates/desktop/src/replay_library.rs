@@ -147,16 +147,16 @@ fn stamp(folder: &Path) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn set_replay_folder(folder: String) -> Result<ReplayLibrary, String> {
+pub async fn set_replay_folder(folder: String) -> Result<crate::recorder::Warned<ReplayLibrary>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if folder.is_empty() || folder.len() > 32_000 {
             return Err("Choose a recordings folder.".into());
         }
         let library = scan(Path::new(&folder))?;
         let chosen = PathBuf::from(folder);
-        RecorderSettings::update(|shared| shared.choose_save_folder(chosen))
+        let applied = RecorderSettings::update(|shared| shared.choose_save_folder(chosen))
             .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))?;
-        Ok(library)
+        Ok(crate::recorder::Warned::new(library, applied.warning))
     })
     .await
     .map_err(|e| e.to_string())?

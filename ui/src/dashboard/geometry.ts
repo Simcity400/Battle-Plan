@@ -83,7 +83,7 @@ export class MapViewsStore {
     return () => { if (this.toggleFailures.get(viewId) === entry) this.toggleFailures.delete(viewId); };
   }
 
-  saveToggle(view: DashboardMapView, toggle: MapToggle, save: () => Promise<void>): void {
+  saveToggle(view: DashboardMapView, toggle: MapToggle, save: () => Promise<string | null>): void {
     const recording = `${view.sourceId}:${view.revision}`;
     const key = JSON.stringify([view.id, recording, toggle.setting]);
     const sequence = ++this.toggleSaved;
@@ -94,7 +94,7 @@ export class MapViewsStore {
       const listener = this.toggleFailures.get(view.id);
       if (listener?.recording === recording) listener.report(toggle.setting, failure);
     };
-    save().then(() => tell(null), (error: unknown) => tell(new ShownError(
+    save().then(warning => tell(warning ? new ShownError(`${TOGGLE_NAMES[toggle.setting]}: changed, but Windows didn’t confirm the change reached the disk.`, warning) : null), (error: unknown) => tell(new ShownError(
       `${TOGGLE_NAMES[toggle.setting]}: this change may not have been kept. Toggling it again makes a new change.`, errorMessage(error))));
   }
 

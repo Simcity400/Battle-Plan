@@ -215,6 +215,7 @@ pub struct ContentFolders {
     game: String,
     user: String,
     content_ready: bool,
+    warning: Option<String>,
 }
 
 impl ContentFolders {
@@ -223,6 +224,7 @@ impl ContentFolders {
             game: config.game_dir.to_string_lossy().into_owned(),
             user: config.user_dir.to_string_lossy().into_owned(),
             content_ready: config.resolve_options().is_ok(),
+            warning: None,
         }
     }
 }
@@ -253,11 +255,12 @@ pub async fn set_content_folders(
         let mut config = dashboard_core::config::Config::load().map_err(|error| error.to_string())?;
         config.game_dir = game.trim().into();
         config.user_dir = user.trim().into();
-        config.save().map_err(|error| error.to_string())?;
-        host_config().map(|(config, _)| config)
+        let applied = config.save().map_err(|error| error.to_string())?;
+        host_config().map(|(config, _)| (config, applied.warning))
     })
     .await
     .map_err(|error| error.to_string())??;
+    let (config, warning) = config;
     *service
         .configured
         .lock()
@@ -267,7 +270,7 @@ pub async fn set_content_folders(
     window
         .state::<crate::popout::PopOuts>()
         .set_folders(&config);
-    Ok(ContentFolders::of(&config))
+    Ok(ContentFolders { warning, ..ContentFolders::of(&config) })
 }
 
 pub fn receive_data(app: &AppHandle, event: DataEvent) {

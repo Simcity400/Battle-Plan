@@ -260,6 +260,11 @@ mod tests {
         let gap = Gap { branch: 1, first_hour: LATER + 30, last_hour: LATER + 40, reason: "recovered".into() };
         let partial = ControlRecord::Partial { session: 1, reason: "the capture failed".into(), failed_hour: Some(LATER + 41) };
         let added = Records { gaps: vec![gap.clone()], controls: vec![partial.clone()], ..Records::default() };
+        let closed = replay_settings::exit::Exit::new();
+        closed.seal();
+        let refused = writer::revise_under(&closed, &path, &opened, &Addition { records: Some(&added), ..Addition::default() }, false, 3).unwrap_err();
+        assert_eq!(refused.to_string(), replay_settings::exit::CLOSED, "an addition asked for once BattlePlan closes is refused, never cut off before its footer");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         writer::revise(&path, &opened, &Addition { records: Some(&added), ..Addition::default() }, false, 3).unwrap();
         drop(opened);
         let reopened = Replay::open_path_as(&path, Open::Newest).unwrap();

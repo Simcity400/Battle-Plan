@@ -13,7 +13,7 @@ use windows_sys::Win32::{
         MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
     },
     System::LibraryLoader::GetModuleHandleW,
-    UI::{Input::KeyboardAndMouse::SetFocus, WindowsAndMessaging::*},
+    UI::WindowsAndMessaging::*,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,14 +91,13 @@ impl Shell {
             unsafe { ShowWindowAsync(hwnd as HWND, SW_HIDE) };
         }
     }
+}
 
-    pub fn raise(&self) {
-        let hwnd = self.hwnd();
-        if hwnd != 0 {
-            unsafe {
-                ShowWindow(hwnd as HWND, SW_SHOW);
-                SetForegroundWindow(hwnd as HWND);
-            }
+pub fn raise(hwnd: usize) {
+    if hwnd != 0 {
+        unsafe {
+            ShowWindow(hwnd as HWND, SW_SHOW);
+            SetForegroundWindow(hwnd as HWND);
         }
     }
 }
@@ -363,7 +362,7 @@ unsafe extern "system" fn window_proc(
             WM_SETFOCUS => {
                 let child = GetWindow(hwnd, GW_CHILD);
                 if !child.is_null() {
-                    SetFocus(child);
+                    PostMessageW(child, viewer::host::WM_TAKE_FOCUS, 0, 0);
                 }
                 0
             }

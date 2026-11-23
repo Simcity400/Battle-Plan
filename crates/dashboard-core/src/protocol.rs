@@ -91,10 +91,6 @@ pub enum NativeEvent {
         view_id: String,
         toggle: MapToggle,
     },
-    Export {
-        request: u64,
-        answer: Result<String, String>,
-    },
     ObserveCountry {
         #[serde(rename = "viewId")]
         view_id: String,
@@ -156,12 +152,6 @@ pub enum MapAction {
     },
     Configure {
         options: MapOptions,
-    },
-    Export {
-        path: String,
-        #[serde(rename = "viewId")]
-        view_id: Option<String>,
-        request: u64,
     },
     Inspect,
     Folders {
@@ -344,15 +334,6 @@ impl MapAction {
                 }
                 options.validate_modes()?;
             }
-            Self::Export { path, view_id, .. } => {
-                validate_local_path(path)?;
-                if view_id
-                    .as_ref()
-                    .is_some_and(|id| id.is_empty() || id.len() > 128 || id.contains('\0'))
-                {
-                    return Err("Invalid map widget id");
-                }
-            }
             Self::Folders { game, user } => {
                 validate_local_path(game)?;
                 validate_local_path(user)?;
@@ -385,6 +366,14 @@ impl MapAction {
         }
         Ok(())
     }
+}
+
+pub fn validate_export(path: &str, view_id: Option<&str>) -> Result<(), &'static str> {
+    validate_local_path(path)?;
+    if view_id.is_some_and(|id| id.is_empty() || id.len() > 128 || id.contains('\0')) {
+        return Err("Invalid map widget id");
+    }
+    Ok(())
 }
 
 fn validate_local_path(path: &str) -> Result<(), &'static str> {
@@ -994,26 +983,10 @@ b"
 
     #[test]
     fn widget_exports_keep_their_target_and_reject_invalid_ids() {
-        for view_id in [None, Some("campaign-map".into())] {
-            assert!(
-                MapAction::Export {
-                    path: "C:/map.png".into(),
-                    view_id,
-                    request: 1,
-                }
-                .validate()
-                .is_ok()
-            );
+        for view_id in [None, Some("campaign-map")] {
+            assert!(super::validate_export("C:/map.png", view_id).is_ok());
         }
-        assert!(
-            MapAction::Export {
-                path: "C:/map.png".into(),
-                view_id: Some(String::new()),
-                request: 1,
-            }
-            .validate()
-            .is_err()
-        );
+        assert!(super::validate_export("C:/map.png", Some("")).is_err());
     }
 
     #[test]

@@ -450,15 +450,12 @@ impl Inner {
         }
         let mut store = self.map_settings.lock().map_err(|e| e.to_string())?;
         store.check()?;
+        let mut save_warning = None;
         if let Some(settings) = settings {
-            store
-                .save(key.clone(), settings)
-                .map_err(|e| e.to_string())?;
+            save_warning = store.save(key.clone(), settings).map_err(|e| e.to_string())?;
         }
         if let Some(setting) = flip {
-            store
-                .flip(key.clone(), setting)
-                .map_err(|e| e.to_string())?;
+            save_warning = store.flip(key.clone(), setting).map_err(|e| e.to_string())?.or(save_warning);
         }
         let replay = source.as_ref().map(|source| source.replay_ref());
         let recorded = replay
@@ -487,6 +484,7 @@ impl Inner {
             sample_counts,
             game_graphics: store.game().map(|game| game.graphics),
             game_settings_error: store.game_error(),
+            save_warning,
             presentation_generation: 0,
         };
         drop(store);

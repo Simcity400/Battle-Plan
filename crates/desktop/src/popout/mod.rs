@@ -114,7 +114,6 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
         MapAction::RefreshVisualMods => Some(Mirror::RefreshVisualMods),
         MapAction::Unload { .. }
         | MapAction::Configure { .. }
-        | MapAction::Export { .. }
         | MapAction::Inspect
         | MapAction::Folders { .. }
         | MapAction::CameraMode { .. }
@@ -432,7 +431,9 @@ impl Owner {
                 }
             }
             Effect::Raise => {
-                self.shared.with(|_, popout| popout.shell.raise());
+                if let Some(hwnd) = self.shared.with(|_, popout| popout.shell.hwnd()) {
+                    shell::raise(hwnd);
+                }
             }
             Effect::Release(generation) => {
                 let current = {
@@ -696,7 +697,7 @@ pub fn popout_fly_aircraft(
     running(&popouts, Some(generation))?.map_action(MapAction::FlyAircraft { aircraft })
 }
 
-pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
     let generation = generation.ok_or("The map isn’t popped out")?;
     running(popouts, Some(generation))?.export(path, None)
 }
@@ -739,11 +740,6 @@ mod tests {
             MapAction::Unload { path: "a".into() },
             MapAction::Configure {
                 options: Default::default(),
-            },
-            MapAction::Export {
-                path: "a.png".into(),
-                view_id: None,
-                request: 1,
             },
             MapAction::Inspect,
             MapAction::Folders {

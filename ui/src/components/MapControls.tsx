@@ -10,7 +10,7 @@ import CameraModeControl from './CameraModeControl';
 import AircraftPicker from './AircraftPicker';
 import type { AircraftChoice } from '../dashboard/aircraftChoice';
 import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
-import type { MapOptions, ReplayMetadata } from '../shell/api';
+import type { MapOptions, ReplayMetadata, SavedExport } from '../shell/api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from './Icons';
 import { FailureLine } from './FailureLine';
@@ -38,6 +38,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   const { trigger, open } = menu;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<(PlainFailure & { retry?: () => void }) | null>(null);
+  const [saved, setSaved] = useState<SavedExport | null>(null);
   const branch = metadata?.branches.find(item => item.id === branchId);
   const labels = historyLabels(metadata?.branches ?? []);
 
@@ -50,8 +51,8 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   };
   const exportImage = async (view?: string) => {
     menu.close();
-    setBusy(true); setError(null);
-    try { await afterPaint(); await exportMap(view); }
+    setBusy(true); setError(null); setSaved(null);
+    try { await afterPaint(); const answer = await exportMap(view); setSaved(answer); if (answer?.warning) menu.popup.current?.showPopover(); }
     catch (cause) { failed(view === 'popout' ? 'Couldn’t export the pop-out map.' : 'Couldn’t export the map.', cause, () => void exportImage(view)); menu.popup.current?.showPopover(); }
     finally { setBusy(false); }
   };
@@ -76,6 +77,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
       </div>}
       <div className="map-menu-section">
         <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available in the desktop app'} onClick={() => void exportImage(viewId)}><Icon name="save" />Export map image</button>
+        {saved && <p className="map-menu-note" role="status" data-detail={saved.warning ?? undefined}>{saved.warning ? `${saved.message}, but Windows didn’t confirm it reached the disk.` : saved.message}</p>}
         {problem && <FailureLine className="map-menu-error" message={problem.text} detail={problem.detail}
           onRetry={popoutStopped ? undefined : onPopoutRetry} onDismiss={popoutStopped || onPopoutRetry ? undefined : () => setDismissed(popoutProblem ?? null)} />}
         {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run('Couldn’t restart the pop-out map.', () => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}

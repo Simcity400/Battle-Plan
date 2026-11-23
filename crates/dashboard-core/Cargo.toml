@@ -18,6 +18,7 @@ content-reader-layers.workspace = true
 content-reader-parser.workspace = true
 replay-capture-spool = { workspace = true, optional = true }
 replay.workspace = true
+replay-settings.workspace = true
 recorder-derive = { workspace = true, optional = true }
 engine-allocation.workspace = true
 engine-executable.workspace = true

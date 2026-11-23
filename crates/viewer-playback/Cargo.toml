@@ -101,6 +101,7 @@ playhead = { path = "../playhead" }
 png = { workspace = true }
 pollster = { workspace = true }
 replay = { workspace = true }
+replay-settings.workspace = true
 replay-capture-spool = { workspace = true, optional = true }
 replay-recording.workspace = true
 replay-columnar = { workspace = true }

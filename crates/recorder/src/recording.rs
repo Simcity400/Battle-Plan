@@ -185,7 +185,7 @@ fn settle(
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| failure_text(session, "not in a capture root"))?;
-    let mut requests = std::mem::take(&mut *locked(&settling.requests));
+    let mut requests = latest_choices(std::mem::take(&mut *locked(&settling.requests)));
     let requests = &mut requests;
     let mut changed = false;
     let campaigns = live.unsaved_campaigns();
@@ -233,7 +233,7 @@ fn settle(
                 discard_recording(root, target, &campaign)
             });
             let Some(discarded) = discarded else {
-                locked(&settling.requests).push((campaign, true));
+                requeue(settling, campaign, true);
                 continue;
             };
             settled.remove(&campaign);
@@ -267,7 +267,7 @@ fn settle(
                     (replay_io::Unsaved::default(), Some(waiting), false),
                 );
                 if let Some(request) = request {
-                    locked(&settling.requests).push((campaign, request));
+                    requeue(settling, campaign, request);
                 }
                 continue;
             };
@@ -333,7 +333,7 @@ fn settle(
             }
         });
         let Some(result) = result else {
-            locked(&settling.requests).push((campaign, discard));
+            requeue(settling, campaign, discard);
             continue;
         };
         locked(&settling.done).push(match result {
@@ -421,9 +421,10 @@ impl FinalizingAhead {
                 let _ = idle.handle.wait(200);
             });
         }
+        let carried = replay_settings::exit::Carry::current();
         let thread = packing.clone().and_then(|packing| std::thread::Builder::new()
             .name("finalize ahead".into())
-            .spawn(move || {
+            .spawn(move || carried.run(|| {
                 let _pass_progress = progress_io::passes(&session);
                 packing.run(|| {
                 let localisation = content_reader_localisation::localisation::read(&layers, &language)
@@ -484,7 +485,7 @@ impl FinalizingAhead {
                     }
                 }
                 (live, localisation, writing)
-            }) })
+            }) }))
             .ok());
         Self {
             packing,
@@ -598,11 +599,22 @@ fn requested_stop_counter(control: &Control, directory: &Path) -> Option<u64> {
         .filter(|qpc| *qpc != 0)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stop {
+    Save(Option<String>),
+    Discard(String),
+}
+
+#[derive(Debug, Default)]
+struct Ending {
+    stop: Option<Stop>,
+    sealed: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct Control {
-    stop: AtomicBool,
+    ending: std::sync::Mutex<Ending>,
     stop_qpc: std::sync::atomic::AtomicU64,
-    discard: AtomicBool,
     set_aside: std::sync::Mutex<Vec<(String, bool)>>,
     accepting: AtomicBool,
 }
@@ -610,9 +622,11 @@ pub struct Control {
 impl Control {
     pub const fn new() -> Self {
         Self {
-            stop: AtomicBool::new(false),
+            ending: std::sync::Mutex::new(Ending {
+                stop: None,
+                sealed: false,
+            }),
             stop_qpc: std::sync::atomic::AtomicU64::new(0),
-            discard: AtomicBool::new(false),
             set_aside: std::sync::Mutex::new(Vec::new()),
             accepting: AtomicBool::new(false),
         }
@@ -637,32 +651,69 @@ impl Control {
         std::mem::take(&mut *requests)
     }
 
-    pub fn stop(&self, discard: bool) {
+    pub fn stop(&self, stop: Stop) -> bool {
+        let mut ending = locked(&self.ending);
+        if let Some(asked) = &ending.stop {
+            return *asked == stop;
+        }
+        if ending.sealed {
+            return false;
+        }
         if let Some(qpc) = performance_counter() {
             let _ = self
                 .stop_qpc
                 .compare_exchange(0, qpc, Ordering::AcqRel, Ordering::Acquire);
         }
-        self.discard.store(discard, Ordering::Release);
-        self.stop.store(true, Ordering::Release);
+        ending.stop = Some(stop);
+        true
     }
 
     pub fn stopping(&self) -> bool {
-        self.stop.load(Ordering::Acquire)
+        locked(&self.ending).stop.is_some()
     }
 
-    pub fn discarding(&self) -> bool {
-        self.discard.load(Ordering::Acquire)
+    pub fn seal(&self) -> Option<Stop> {
+        let mut ending = locked(&self.ending);
+        ending.sealed = true;
+        ending.stop.clone()
     }
 
     pub fn reset(&self) {
-        self.stop.store(false, Ordering::Release);
+        *locked(&self.ending) = Ending::default();
         self.stop_qpc.store(0, Ordering::Release);
-        self.discard.store(false, Ordering::Release);
         let mut requests = locked(&self.set_aside);
         self.accepting.store(false, Ordering::Release);
         requests.clear();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Undiscarded {
+    Unread,
+    Another,
+}
+
+impl Undiscarded {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Unread => "the campaign in progress couldn’t be identified",
+            Self::Another => "another campaign was loaded before Discard reached the recorder",
+        }
+    }
+}
+
+fn discard_target<'a>(
+    ending: Option<&'a Stop>,
+    read_at_stop: Option<&str>,
+) -> Option<Result<&'a str, Undiscarded>> {
+    let Some(Stop::Discard(asked)) = ending else {
+        return None;
+    };
+    Some(match read_at_stop {
+        Some(read) if read == asked => Ok(asked.as_str()),
+        Some(_) => Err(Undiscarded::Another),
+        None => Err(Undiscarded::Unread),
+    })
 }
 
 #[derive(Debug)]
@@ -692,7 +743,7 @@ pub struct CaptureOutcome {
     pub process_exited: bool,
     pub replays: Vec<PathBuf>,
     pub discarded: bool,
-    pub undiscarded: bool,
+    pub undiscarded: Option<Undiscarded>,
     pub rerouted: bool,
     pub omitted: Vec<Omission>,
     pub waiting: Vec<String>,
@@ -711,10 +762,38 @@ pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLEPLAN_VERSION"
     _ => env!("CARGO_PKG_VERSION"),
 };
 
-static CONSOLE: Control = Control::new();
+struct Console {
+    quit: AtomicBool,
+    capture: Control,
+}
+
+impl Console {
+    const fn new() -> Self {
+        Self {
+            quit: AtomicBool::new(false),
+            capture: Control::new(),
+        }
+    }
+
+    fn interrupt(&self) {
+        self.quit.store(true, Ordering::Release);
+        self.capture.stop(Stop::Save(None));
+    }
+
+    fn quitting(&self) -> bool {
+        self.quit.load(Ordering::Acquire)
+    }
+
+    fn next_capture(&self) -> Option<&Control> {
+        self.capture.reset();
+        (!self.quitting()).then_some(&self.capture)
+    }
+}
+
+static CONSOLE: Console = Console::new();
 unsafe extern "system" fn console_control(kind: u32) -> i32 {
     if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {
-        CONSOLE.stop(false);
+        CONSOLE.interrupt();
         1
     } else {
         0
@@ -1569,7 +1648,7 @@ fn record(options: Options) -> Result<(), String> {
     println!("Waiting for hoi4.exe. Recording is passive; Ctrl+C detaches and finalizes.");
     let mut several_named = None;
     loop {
-        if CONSOLE.stopping() {
+        if CONSOLE.quitting() {
             return Ok(());
         }
         let game = match discover_game()? {
@@ -1592,14 +1671,17 @@ fn record(options: Options) -> Result<(), String> {
         let Some(process) = Process::open_selected(&game, true)? else {
             continue;
         };
-        let outcome = capture(process, &cli_capture(&options, &user), &CONSOLE, &|stage| {
+        let Some(control) = CONSOLE.next_capture() else {
+            return Ok(());
+        };
+        let outcome = capture(process, &cli_capture(&options, &user), control, &|stage| {
             if let Stage::Unloading(observation) = stage {
                 if let Err(error) = observation.finish() {
                     eprintln!("Collector warning: {error}");
                 }
             }
         })?;
-        if outcome.detach_requested || options.once || CONSOLE.stopping() {
+        if outcome.detach_requested || options.once || CONSOLE.quitting() {
             return Ok(());
         }
         println!("Waiting for the next game process.");
@@ -2243,7 +2325,7 @@ pub(crate) fn capture(
     control.accept_requests();
     let mut admitted: Option<(String, i64)> =
         opening.map(|(campaign, load)| (campaign.to_owned(), load));
-    let mut stop_read = None;
+    let mut read_at_stop: Option<Option<String>> = None;
     let mut closing = Vec::new();
     let capture_ended = Arc::new(AtomicBool::new(false));
     loop {
@@ -2254,7 +2336,7 @@ pub(crate) fn capture(
             stop_load = system_times();
             if control.stopping() && admit_staged.is_some() {
                 let now = loaded.and_then(|loaded| loaded());
-                stop_read = Some(now.is_some());
+                read_at_stop = Some(now.as_ref().map(|(campaign, _)| campaign.clone()));
                 if let Some((campaign, load)) = now {
                     if let Some((left, _)) = admitted
                         .replace((campaign.clone(), load))
@@ -2382,10 +2464,6 @@ pub(crate) fn capture(
         stop_load = system_times();
     }
     ahead.promote();
-    let unanswered = control.end_requests();
-    if let Some(settling) = &settling {
-        answer_ending(settling, unanswered);
-    }
     capture_ended.store(true, Ordering::Release);
     ahead.stop.store(true, Ordering::Release);
     for worker in closing {
@@ -2393,7 +2471,8 @@ pub(crate) fn capture(
     }
     let packing = ahead.packing.clone();
     let join_began = Instant::now();
-    let (mut ahead, localisation) = finish_ahead(ahead, settling.as_deref());
+    let (mut ahead, localisation, unanswered) = finish_ahead(ahead, settling.as_deref());
+    let mut decisions: BTreeMap<String, bool> = unanswered.into_iter().collect();
     let join_seconds = join_began.elapsed().as_secs_f64();
     if !process.handle.signaled()? {
         detach.set()?;
@@ -2404,23 +2483,31 @@ pub(crate) fn capture(
                     "detach timed out {}; collector may still be loaded",
                     end.describe(&directory)
                 );
-                if !control.discarding() {
-                    return Err(format!("{timed_out}; spool retained and not finalized"));
-                }
-                let current = in_progress(
-                    admitted.as_ref().map(|(campaign, _)| campaign.as_str()),
-                    stop_read,
-                    status_campaign(&status_path),
-                );
+                decisions.extend(control.end_requests());
+                let timed_out = with_lost_decisions(timed_out, &decisions);
+                let ending = control.seal();
+                let read = read_at_stop.as_ref().and_then(Option::as_deref);
+                let discarded = match discard_target(ending.as_ref(), read) {
+                    None => {
+                        return Err(format!("{timed_out}; spool retained and not finalized"));
+                    }
+                    Some(Err(undiscarded)) => {
+                        return Err(format!(
+                            "{timed_out}; spool retained and not finalized, and nothing was discarded: {}",
+                            undiscarded.reason()
+                        ));
+                    }
+                    Some(Ok(discarded)) => discarded,
+                };
                 let besides = others_admitted(
                     admit.is_some().then_some(&admission.admitted),
-                    current.as_deref(),
+                    Some(discarded),
                 );
                 let dropped = dropped_by_discard(
                     &directory,
                     target,
                     &ahead,
-                    current.as_deref(),
+                    Some(discarded),
                     besides,
                     &mut Vec::new(),
                 );
@@ -2446,7 +2533,8 @@ pub(crate) fn capture(
     let spool_final = process_exited || done.handle.signaled()?;
     HistoryRequest::retire_session(&directory, false, process_exited);
     print_status(&status_path);
-    requested_detach |= control.stopping() || detach.handle.signaled()?;
+    let ending = control.seal();
+    requested_detach |= ending.is_some() || detach.handle.signaled()?;
     if requested_detach && !stop_observed {
         stop_qpc = requested_stop_counter(control, &directory);
         stop_load = system_times();
@@ -2463,10 +2551,10 @@ pub(crate) fn capture(
     }
     let current = in_progress(
         admitted.as_ref().map(|(campaign, _)| campaign.as_str()),
-        stop_read,
+        read_at_stop.as_ref().map(Option::is_some),
         status_campaign(&status_path),
     );
-    if stop_read == Some(false) && admitted.is_some() && current.is_none() {
+    if read_at_stop == Some(None) && admitted.is_some() && current.is_none() {
         println!(
             "The campaign in progress could not be read when Stop was chosen, so Stop neither saves nor discards one."
         );
@@ -2485,6 +2573,20 @@ pub(crate) fn capture(
             .drain(..)
             .map(|error| format!("a load could not be admitted, so it is not published: {error}")),
     );
+    decisions.extend(control.end_requests());
+    let recorded_here = replay_io::written_campaigns(&directory)?;
+    decisions.retain(|campaign, &mut discard| {
+        let here = recorded_here.contains(campaign);
+        if !here {
+            settle_decision(output, target, campaign, discard, naming, settling.as_deref(), &mut outcome.issues);
+        } else if discard {
+            ahead.forget_save(campaign);
+        }
+        here
+    });
+    if let Some(settling) = &settling {
+        report_set_aside(settling, stage);
+    }
     for warning in &outcome.warnings {
         eprintln!("Collector warning: {warning}");
     }
@@ -2509,22 +2611,27 @@ pub(crate) fn capture(
             .issues
             .push(format!("incomplete status publication failed: {error}"));
     }
-    let discarding = control.discarding();
-    let (dropped, others_keep) = if discarding {
-        let besides = others_admitted(
-            admit.is_some().then_some(&admission.admitted),
-            current.as_deref(),
-        );
-        dropped_by_discard(
-            &directory,
-            target,
-            &ahead,
-            current.as_deref(),
-            besides,
-            &mut outcome.issues,
-        )?
-    } else {
-        (Vec::new(), false)
+    let discard = discard_target(ending.as_ref(), read_at_stop.flatten().as_deref());
+    let discarding = discard.is_some();
+    let discarded = discard.and_then(Result::ok);
+    let undiscarded = discard.and_then(Result::err);
+    let current = stopped_on(ending.as_ref(), discarding, discarded, current);
+    let (dropped, others_keep) = match discarded {
+        Some(discarded) => {
+            let besides = others_admitted(
+                admit.is_some().then_some(&admission.admitted),
+                Some(discarded),
+            );
+            dropped_by_discard(
+                &directory,
+                target,
+                &ahead,
+                Some(discarded),
+                besides,
+                &mut outcome.issues,
+            )?
+        }
+        None => (Vec::new(), false),
     };
     note_discards(&directory, target, &dropped)?;
     match game_facts.finish() {
@@ -2536,12 +2643,15 @@ pub(crate) fn capture(
                 .push(format!("The recording carries no game facts: {error}"));
         }
     }
-    if discarding && others_keep {
+    if let Some(undiscarded) = undiscarded {
+        println!("Nothing is discarded: {}.", undiscarded.reason());
+    }
+    if discarded.is_some() && others_keep {
         if let Some(current) = dropped.first() {
             println!("Discarding campaign {current} of this session.");
         }
         discard_dropped(&directory, target, &mut ahead, &dropped)?;
-    } else if discarding {
+    } else if discarded.is_some() {
         if process_exited {
             println!("Game process exited; discarding this session.");
         } else {
@@ -2592,11 +2702,13 @@ pub(crate) fn capture(
     }
     let auto = auto_save.is_none_or(|auto_save| auto_save());
     let destination = |campaign: &str| {
-        if saved_at_end(
+        if let Some(decided) = decided_destination(&decisions, campaign) {
+            decided
+        } else if saved_at_end(
             campaign,
             current.as_deref(),
             auto,
-            control.stopping(),
+            ending.is_some(),
             discarding,
         ) {
             replay_io::Destination::Recording
@@ -2676,7 +2788,8 @@ pub(crate) fn capture(
                 detach_requested: requested_detach,
                 process_exited,
                 replays: continued,
-                discarded: discarding,
+                discarded: discarded.is_some(),
+                undiscarded,
                 rerouted,
                 ..CaptureOutcome::default()
             }),
@@ -2734,6 +2847,11 @@ pub(crate) fn capture(
         None => Default::default(),
     };
     finalized.extend(continued);
+    for (campaign, _) in decisions.iter().filter(|(_, discard)| **discard) {
+        if let Err(error) = discard_recording(output, target, campaign) {
+            outcome.issues.push(format!("campaign {campaign} wasn’t discarded: {error}"));
+        }
+    }
     let waiting: Vec<(String, Value)> = spooled
         .iter()
         .filter(|campaign| {
@@ -2784,8 +2902,8 @@ pub(crate) fn capture(
             detach_requested: requested_detach,
             process_exited,
             replays: finalized,
-            discarded: discarding && current.is_some(),
-            undiscarded: discarding && current.is_none(),
+            discarded: discarded.is_some(),
+            undiscarded,
             rerouted,
             omitted,
             waiting: waiting.into_iter().map(|(campaign, _)| campaign).collect(),
@@ -2912,6 +3030,14 @@ fn in_progress(
     }
 }
 
+fn stopped_on(ending: Option<&Stop>, discarding: bool, discarded: Option<&str>, current: Option<String>) -> Option<String> {
+    match ending {
+        _ if discarding => discarded.map(str::to_owned),
+        Some(Stop::Save(Some(confirmed))) => Some(confirmed.clone()),
+        _ => current,
+    }
+}
+
 fn saved_at_end(
     campaign: &str,
     current: Option<&str>,
@@ -2923,25 +3049,56 @@ fn saved_at_end(
     !(discard && in_progress) && (auto_save || (stop && !discard && in_progress))
 }
 
+fn with_lost_decisions(timed_out: String, decisions: &BTreeMap<String, bool>) -> String {
+    if decisions.is_empty() {
+        return timed_out;
+    }
+    let lost: Vec<String> = decisions.iter().map(|(campaign, &discard)| format!("{} of campaign {campaign}", if discard { "Discard" } else { "Save" })).collect();
+    format!("{timed_out}; not carried out, so choose again once the session is taken up: {}", lost.join(", "))
+}
+
+fn latest_choices(requests: Vec<(String, bool)>) -> Vec<(String, bool)> {
+    let mut seen = BTreeSet::new();
+    let mut latest: Vec<_> = requests.into_iter().rev().filter(|(campaign, _)| seen.insert(campaign.clone())).collect();
+    latest.reverse();
+    latest
+}
+
+fn requeue(settling: &Settling, campaign: String, discard: bool) {
+    let mut requests = locked(&settling.requests);
+    if !requests.iter().any(|(asked, _)| *asked == campaign) {
+        requests.insert(0, (campaign, discard));
+    }
+}
+
 fn finish_ahead(
     ahead: FinalizingAhead,
     settling: Option<&Settling>,
-) -> (replay_io::Live, Option<Localisation>) {
-    let ahead = ahead.finish();
-    if let Some(settling) = settling {
-        let unanswered = std::mem::take(&mut *locked(&settling.requests));
-        answer_ending(settling, unanswered);
-    }
-    ahead
+) -> (replay_io::Live, Option<Localisation>, Vec<(String, bool)>) {
+    let (live, localisation) = ahead.finish();
+    let unanswered = settling.map(|settling| std::mem::take(&mut *locked(&settling.requests))).unwrap_or_default();
+    (live, localisation, unanswered)
 }
 
-fn answer_ending(settling: &Settling, requests: Vec<(String, bool)>) {
-    locked(&settling.done).extend(requests.into_iter().map(|(campaign, _)| {
-        SetAside::Failed(
-            campaign,
-            "the session was ending; choose Save or Discard again".to_owned(),
-        )
-    }));
+fn decided_destination(decisions: &BTreeMap<String, bool>, campaign: &str) -> Option<replay_io::Destination> {
+    decisions.get(campaign).map(|&discard| if discard { replay_io::Destination::Unsaved } else { replay_io::Destination::Recording })
+}
+
+fn settle_decision(root: &Path, target: &Path, campaign: &str, discard: bool, naming: replay_io::Naming<'_>, settling: Option<&Settling>, issues: &mut Vec<String>) {
+    let settled = if discard {
+        discard_recording(root, target, campaign).map(|()| SetAside::Discarded(campaign.to_owned()))
+    } else {
+        save_recording(root, target, campaign, naming).map(|saved| SetAside::Saved(campaign.to_owned(), saved))
+    };
+    let done = settled.unwrap_or_else(|error| SetAside::Failed(campaign.to_owned(), error));
+    match settling {
+        Some(settling) => locked(&settling.done).push(done),
+        None => {
+            if let SetAside::Failed(campaign, error) = done {
+                issues.push(format!("campaign {campaign}: {error}"));
+            }
+        }
+    }
 }
 
 fn report_set_aside(settling: &Settling, stage: &dyn Fn(Stage<'_>)) {
@@ -5167,23 +5324,40 @@ pub struct SavedWaiting {
     pub by_tag: Option<String>,
 }
 
-pub fn save_waiting(session: &Path, campaign: &str) -> Result<SavedWaiting, String> {
-    save_waiting_with(session, campaign, &mut WaitingNames::installed())
+pub struct WaitingLock {
+    session: PathBuf,
+    campaign: String,
+    target: PathBuf,
+    _lock: File,
 }
 
-fn save_waiting_with(
-    session: &Path,
-    campaign: &str,
-    names: &mut WaitingNames,
-) -> Result<SavedWaiting, String> {
+pub fn lock_waiting(session: &Path, campaign: &str) -> Result<WaitingLock, String> {
+    let target = waiting_target(session, campaign)?;
+    fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
+    let lock = finalization_lock(&target)?;
+    if waiting_target(session, campaign)? != target {
+        return Err(format!("{campaign} moved while BattlePlan Recorder waited to act on it; choose again"));
+    }
+    Ok(WaitingLock { session: session.to_owned(), campaign: campaign.to_owned(), target, _lock: lock })
+}
+
+impl WaitingLock {
+    pub fn save(&self) -> Result<SavedWaiting, String> {
+        save_waiting_with(self, &mut WaitingNames::installed())
+    }
+
+    pub fn discard(&self) -> Result<(), String> {
+        discard_recording(root_of(&self.session)?, &self.target, &self.campaign)
+    }
+}
+
+fn save_waiting_with(locked: &WaitingLock, names: &mut WaitingNames) -> Result<SavedWaiting, String> {
+    let (session, campaign, target) = (&locked.session, locked.campaign.as_str(), &locked.target);
     replay_io::with_packing(|| {
-        let target = waiting_target(session, campaign)?;
         let localisation = names.localisation(session);
         if let Err(why) = &localisation {
             eprintln!("Countries are named by tag: {why}");
         }
-        fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
-        let _lock = finalization_lock(&target)?;
         let settings = RecorderSettings::path();
         let refusal = Mutex::new(None::<String>);
         let report = |why: Option<&str>| {
@@ -5196,7 +5370,7 @@ fn save_waiting_with(
             settings: &settings,
             report: Some(&report),
         };
-        let recording = save_recording(root_of(session)?, &target, campaign, naming)?;
+        let recording = save_recording(root_of(session)?, target, campaign, naming)?;
         let by_tag = localisation.err().or_else(|| {
             refusal
                 .lock()
@@ -5207,12 +5381,6 @@ fn save_waiting_with(
     })
 }
 
-pub fn discard_waiting(session: &Path, campaign: &str) -> Result<(), String> {
-    let target = waiting_target(session, campaign)?;
-    fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
-    let _lock = finalization_lock(&target)?;
-    discard_recording(root_of(session)?, &target, campaign)
-}
 
 #[cfg(test)]
 mod tests {
@@ -5545,6 +5713,11 @@ mod tests {
             take_over(&output, &orphan, (4242, 99)).unwrap();
             let armed = DetachOnDrop::arm(&orphan.config, orphan.cancel_file()).unwrap();
             let control = Control::new();
+            let asked = if discard {
+                Stop::Discard("campaign".into())
+            } else {
+                Stop::Save(None)
+            };
             let looks = Cell::new(0);
             let finished = || {
                 looks.set(looks.get() + 1);
@@ -5552,7 +5725,7 @@ mod tests {
             };
             let stopping = || {
                 if looks.get() == 2 {
-                    control.stop(discard);
+                    control.stop(asked.clone());
                 }
                 control.stopping()
             };
@@ -5560,7 +5733,7 @@ mod tests {
             assert!(goes_on, "Stop (discard: {discard}) left the session taken over unended");
             assert!(events.detach.handle.signaled().unwrap());
             assert!(!orphan.cancel_file().exists(), "Stop drains the collector");
-            assert!(control.stopping() && control.discarding() == discard);
+            assert_eq!(control.seal(), Some(asked));
             drop(armed);
             assert!(orphan.cancel_file().is_file());
             drop((claim, events));
@@ -5851,6 +6024,43 @@ mod tests {
     }
 
     #[test]
+    fn discard_drops_only_the_campaign_the_user_confirmed_and_only_while_it_is_in_progress() {
+        let confirmed = Stop::Discard("a".into());
+        assert_eq!(discard_target(Some(&confirmed), Some("a")), Some(Ok("a")));
+        assert_eq!(
+            discard_target(Some(&confirmed), Some("b")),
+            Some(Err(Undiscarded::Another)),
+            "the game loaded b before the stop was taken up, so b’s hours stay"
+        );
+        assert_eq!(
+            discard_target(Some(&confirmed), None),
+            Some(Err(Undiscarded::Unread))
+        );
+        assert_eq!(discard_target(Some(&Stop::Save(None)), Some("a")), None);
+        let read = || Some("b".to_owned());
+        assert_eq!(stopped_on(Some(&Stop::Save(Some("a".into()))), false, None, read()).as_deref(), Some("a"), "a Save keeps the campaign the user confirmed, though the game has loaded another since");
+        assert_eq!(stopped_on(Some(&Stop::Save(None)), false, None, read()).as_deref(), Some("b"), "a Save that names none, as Ctrl+C and a quit ask, keeps the one in progress");
+        assert_eq!(stopped_on(Some(&confirmed), true, Some("a"), read()).as_deref(), Some("a"));
+        assert_eq!(discard_target(None, Some("a")), None);
+    }
+
+    #[test]
+    fn a_discard_whose_stop_time_read_failed_keeps_the_campaign_it_last_saw() {
+        let confirmed = Stop::Discard("a".into());
+        let failed_read = None;
+        assert_eq!(
+            in_progress(Some("a"), Some(false), Some("a".into())).as_deref(),
+            Some("a"),
+            "a Save still keeps the campaign the recorder last saw"
+        );
+        assert_eq!(
+            discard_target(Some(&confirmed), failed_read),
+            Some(Err(Undiscarded::Unread)),
+            "but deleting its hours needs the game to name it at Stop"
+        );
+    }
+
+    #[test]
     fn stop_acts_on_no_campaign_when_it_cannot_read_the_one_the_game_left_for() {
         let written = |campaign: &str| Some(campaign.to_owned());
         assert_eq!(
@@ -5939,7 +6149,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_the_finalizer_stopped_before_acting_on_are_answered() {
+    fn requests_the_finalizer_stopped_before_acting_on_decide_their_campaigns_destination() {
         let settling = Settling::default();
         locked(&settling.requests).push(("forwarded".to_owned(), false));
         let unstarted = FinalizingAhead {
@@ -5949,15 +6159,32 @@ mod tests {
             asked: Arc::default(),
             names: Arc::default(),
         };
-        finish_ahead(unstarted, Some(&settling));
+        let (_, _, unanswered) = finish_ahead(unstarted, Some(&settling));
         assert!(locked(&settling.requests).is_empty());
+        assert_eq!(unanswered, [("forwarded".to_owned(), false)], "a request the ending session never took is handed to its final destinations");
+        assert!(take_done(&settling).is_empty(), "and it is never answered as a failure");
+        locked(&settling.requests).push(("newer".to_owned(), false));
+        requeue(&settling, "newer".to_owned(), true);
+        requeue(&settling, "retried".to_owned(), true);
+        assert_eq!(*locked(&settling.requests), [("retried".to_owned(), true), ("newer".to_owned(), false)], "a retry goes ahead of what was accepted after it, and never over a newer choice for its campaign");
+        locked(&settling.requests).clear();
         assert_eq!(
-            take_done(&settling),
-            [SetAside::Failed(
-                "forwarded".to_owned(),
-                "the session was ending; choose Save or Discard again".to_owned()
-            )]
+            latest_choices(vec![("a".to_owned(), true), ("b".to_owned(), false), ("a".to_owned(), false)]),
+            [("b".to_owned(), false), ("a".to_owned(), false)],
+            "a Discard and a later Save in one batch act as the Save alone, so a failed release can't keep the Discard"
         );
+        let mut decisions: BTreeMap<String, bool> = unanswered.into_iter().collect();
+        decisions.extend([("forwarded".to_owned(), true), ("dropped".to_owned(), true)]);
+        assert_eq!(
+            with_lost_decisions("detach timed out".to_owned(), &decisions),
+            "detach timed out; not carried out, so choose again once the session is taken up: Discard of campaign dropped, Discard of campaign forwarded",
+            "a timeout names every decision it lost, not only the first"
+        );
+        assert_eq!(with_lost_decisions("detach timed out".to_owned(), &BTreeMap::new()), "detach timed out");
+        assert_eq!(decided_destination(&decisions, "forwarded"), Some(replay_io::Destination::Unsaved), "a decision taken after one already forwarded wins: this later Discard keeps the campaign out of the recordings, to be rolled back");
+        assert_eq!(decided_destination(&BTreeMap::from([("kept".to_owned(), false)]), "kept"), Some(replay_io::Destination::Recording), "an accepted Save publishes, whatever Auto save says");
+        assert_eq!(decided_destination(&decisions, "dropped"), Some(replay_io::Destination::Unsaved), "an accepted Discard is never published, even with Auto save on");
+        assert_eq!(decided_destination(&decisions, "other"), None);
     }
 
     #[test]
@@ -7738,17 +7965,44 @@ mod tests {
     }
 
     #[test]
-    fn control_requests_discard_only_when_asked_and_resets_between_captures() {
+    fn ctrl_c_quits_the_command_line_recorder_after_a_capture_sealed_its_ending_and_between_games() {
+        let console = Console::new();
+        let first = console.next_capture().expect("nothing asked to quit yet");
+        assert_eq!(first.seal(), None, "the game exited by itself");
+        console.interrupt();
+        assert!(console.quitting(), "Ctrl+C during finalization is kept for after it");
+        assert!(console.next_capture().is_none(), "and no next game is recorded");
+
+        let console = Console::new();
+        let first = console.next_capture().unwrap();
+        console.interrupt();
+        assert_eq!(first.seal(), Some(Stop::Save(None)), "Ctrl+C while recording saves the capture");
+        assert!(console.next_capture().is_none());
+    }
+
+    #[test]
+    fn control_keeps_the_first_stop_until_the_capture_seals_its_ending_and_resets_between_captures()
+    {
         let control = Control::new();
-        assert!(!control.stopping() && !control.discarding());
-        control.stop(false);
-        assert!(control.stopping() && !control.discarding());
+        assert!(!control.stopping());
+        assert!(control.stop(Stop::Save(None)));
+        assert!(control.stop(Stop::Save(None)), "the same stop asked again stands");
+        assert!(
+            !control.stop(Stop::Discard("a".into())),
+            "a later Discard can’t turn the save into one"
+        );
+        assert_eq!(control.seal(), Some(Stop::Save(None)));
         control.reset();
-        assert!(!control.stopping() && !control.discarding());
-        control.stop(true);
-        assert!(control.stopping() && control.discarding());
+        assert!(!control.stopping());
+        assert_eq!(control.seal(), None, "a capture that ends by itself keeps what it has");
+        assert!(
+            !control.stop(Stop::Discard("a".into())),
+            "a stop after that is refused"
+        );
+        assert!(!control.stopping());
         control.reset();
-        assert!(!control.stopping() && !control.discarding());
+        assert!(control.stop(Stop::Discard("a".into())));
+        assert_eq!(control.seal(), Some(Stop::Discard("a".into())));
     }
 
     fn finalize_with(session: &Path, target: &Path, live: replay_io::Live) -> replay_io::Finalized {

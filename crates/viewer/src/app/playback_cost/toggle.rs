@@ -78,7 +78,7 @@ pub(super) fn viewer(
         frames: 1,
         index: 0,
         paced: true,
-        request: None,
+        export: None,
     });
     Ok(viewer)
 }
@@ -92,6 +92,7 @@ fn save(key: &str, set: &[Choice]) -> io::Result<()> {
             ..Default::default()
         },
     )
+    .map(drop)
 }
 
 pub(super) fn frame(

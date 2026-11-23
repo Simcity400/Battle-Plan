@@ -35,7 +35,7 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
 }
 
 function MapMuteButton() {
-  const { muted, error, set, retry } = useMapMuted();
+  const { muted, error, warning, set, retry } = useMapMuted();
   if (!desktopAvailable) return null;
   if (muted == null && !error) return <span className="header-mute-slot" aria-hidden="true" />;
   if (muted == null) return <button type="button" className="icon-button header-mute is-unavailable" onClick={retry}
@@ -43,8 +43,8 @@ function MapMuteButton() {
     <Icon name="volume" /><span className="header-mute-alert" aria-hidden="true" /></button>;
   const label = muted ? 'Unmute map audio' : 'Mute map audio';
   return <button type="button" className="icon-button header-mute" aria-pressed={muted} onClick={() => set(!muted)}
-    aria-label={label} aria-description={error ? 'Couldn’t change map audio.' : undefined} data-detail={error ?? undefined}
-    data-tooltip={error ? `${label} · Couldn’t change map audio` : label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
+    aria-label={label} aria-description={error ? 'Couldn’t change map audio.' : warning ? 'Changed, but Windows didn’t confirm it was saved.' : undefined} data-detail={error ?? warning ?? undefined}
+    data-tooltip={error ? `${label} · Couldn’t change map audio` : warning ? `${label} · Changed, but not confirmed saved` : label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
 }
 
 export function LayoutMenu({ layouts, activeId, disabled, onChoose, onEdit }: {
