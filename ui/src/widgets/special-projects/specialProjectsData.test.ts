@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyPicture, historyProject, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -553,6 +553,19 @@ test('R5-S1: a status that ends before a later read stops where it ends, and the
   assert.deepEqual(drawn(130), [199], 'the status read at the head draws on to the head');
   assert.deepEqual(drawn(131), [130], 'once a later read lacks it, the bar ends at its last status');
   assert.notEqual(historyPicture([ending], 130, () => undefined, -Infinity, 199), historyPicture([ending], 131, () => undefined, -Infinity, 199));
+});
+
+test('R5-S1, R5-S5: the followed History installs again when a status ends or a read repeats, never as a running status grows, and holds open runs to the head', () => {
+  const data = fixture();
+  const status = { ...data.projects[0].statuses[0], firstHour: 120, lastHour: 130, readHour: 120, state: 'running' as const };
+  const at = (head: number, lastStatus: number, reads = [{ owner: 9, firstHour: 120, lastHour: head, readHour: 120 }]) => ({ ...data, available: [{ firstHour: 100, lastHour: head }],
+    partial: [], unresolved: [], reads, projects: [{ ...data.projects[0], statuses: [{ ...status, lastHour: lastStatus }] }] });
+  assert.equal(historyStructure(at(131, 131)), historyStructure(at(130, 130)), 'a running status that grows needs no install');
+  assert.notEqual(historyStructure(at(131, 130)), historyStructure(at(130, 130)), 'R5-S1: a status that ends before the head installs');
+  const reread = at(131, 131, [{ owner: 9, firstHour: 120, lastHour: 130, readHour: 120 }, { owner: 9, firstHour: 131, lastHour: 131, readHour: 131 }]);
+  assert.notEqual(historyStructure(reread), historyStructure(at(130, 130)), 'R5-S5: a repeated read installs, so tooltips name it');
+  const held = heldThrough(at(131, 130), 140);
+  assert.deepEqual([held.available[0].lastHour, held.reads[0].lastHour, held.projects[0].statuses[0].lastHour], [140, 140, 130], 'open runs hold to the head; an ended status stays ended');
 });
 
 test('R3-S5: a completion dated outside the project status stays drawn once the project gains a status', () => {

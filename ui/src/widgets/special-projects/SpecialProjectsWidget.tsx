@@ -1,5 +1,5 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, HTMLAttributes, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -29,7 +29,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useRecordedRows, useShownHour } from '../../dashboard/widgetPerf';
+import { useRecordedRows, useShownEachFrame } from '../../dashboard/widgetPerf';
 import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
@@ -176,7 +176,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   }, [following, runtime.clock]);
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe } : undefined,
     [following, runtime.clock, axisOffset, subscribe]);
-  const shown = useShownHour();
+  useShownEachFrame(runtime.clock, view === 'live' ? live.shownAt : null, live.live);
   const membershipUnknown = membershipAt(at);
   const historyMembershipUnknown = resolved.unobserved.some(span => span.firstHour <= at && first <= span.lastHour);
   const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, active && following && view === 'history' && tags.length > 1,
@@ -210,15 +210,10 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     const empty = () => historyUnrecorded([reply], from, at, () => membership) ?? 'No special projects yet.';
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : empty())), ...projects];
   }) ?? [], [notes, at, from, openTo, labelAt, labelHour, resolved.memberships, view]);
-  useLayoutEffect(() => {
-    if (view !== 'history' || !data) return;
-    const report = () => shown(history.latest().hour);
-    report();
-    return history.subscribe(report);
-  }, [view, data, history.latest, history.subscribe, shown]);
+  useShownEachFrame(runtime.clock, view === 'history' && data ? () => history.latest().through : null, history);
   const openMenu = (shown: ProjectRecord, x: number, y: number, hour: number) => {
     if (!track) return;
-    const project = (view === 'live' ? live.current()?.projects.find(project => project.id === shown.id) : undefined) ?? shown;
+    const project = (view === 'live' ? (live.inspected()?.data ?? live.current())?.projects.find(project => project.id === shown.id) : undefined) ?? shown;
     const start = jumpItem(runtime, track.id, project.firstRead);
     menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(project.firstRead)}` },
       ...completions(project, hour).map(entry => ({ ...jumpItem(runtime, track.id, entry.date), label: `Jump to completion · ${dayLabel(entry.date)}` }))]);
@@ -286,13 +281,13 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     barHeight={18} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} labelMenu
     tooltip={(lane, span, hour) => {
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const shown = history.latest(), reply = shown.replies[country], head = shown.hour ?? at;
+      const shown = history.latest(), reply = shown.replies[country], head = shown.through ?? at;
       return id === null || !reply ? null : historyTooltip(reply, id, span, hour, head, resolved.memberships.get(reply.tag));
     }}
     onContextMenu={(_hour, x, y, lane) => {
       if (!lane) return;
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const shown = history.latest(), reply = shown.replies[country], head = shown.hour ?? at;
+      const shown = history.latest(), reply = shown.replies[country], head = shown.through ?? at;
       const project = id === null || !reply ? null : historyProject(reply, id, head, resolved.memberships.get(reply.tag));
       if (project) openMenu(project, x, y, head);
     }} />;

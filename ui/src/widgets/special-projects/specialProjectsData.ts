@@ -328,6 +328,29 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
   return history;
 }
 
+export const HISTORY_PANEL = 'special-projects-history';
+
+const replyHead = (reply: SpecialProjectsReply) => Math.max(-Infinity, ...[reply.available, reply.partial, reply.unresolved].flat().map(span => span.lastHour));
+
+export function historyStructure(reply: SpecialProjectsReply): string {
+  const head = replyHead(reply);
+  const end = (span: { lastHour: number }) => span.lastHour >= head ? 'open' : span.lastHour;
+  const spans = (runs: readonly HourSpan[]) => runs.map(run => [run.firstHour, end(run)]);
+  return JSON.stringify([reply.tag, reply.unavailable, reply.warnings, spans(reply.available), spans(reply.partial), spans(reply.unresolved),
+    reply.identities.map(run => [run.firstHour, end(run), run.slot, run.countryId]), reply.reads.map(read => [read.owner, read.firstHour, end(read), read.readHour]),
+    reply.projects.map(project => [project.id, project.firstRead, project.firstState, project.entries, project.attempts,
+      project.statuses.map(run => [run.firstHour, end(run), run.readHour, run.presentation, run.progress, run.state, run.iterations, run.scientistRead, run.lastScientistRead])]),
+    reply.presentations, reply.people, reply.iterationTexts]);
+}
+
+export function heldThrough(reply: SpecialProjectsReply, through: number): SpecialProjectsReply {
+  const head = replyHead(reply);
+  if (!(through > head)) return reply;
+  const extend = <T extends { lastHour: number }>(runs: readonly T[]) => runs.map(run => run.lastHour >= head ? { ...run, lastHour: through } : run);
+  return { ...reply, available: extend(reply.available), partial: extend(reply.partial), unresolved: extend(reply.unresolved), identities: extend(reply.identities),
+    reads: extend(reply.reads), projects: reply.projects.map(project => ({ ...project, statuses: extend(project.statuses) })) };
+}
+
 export function historyPicture(data: readonly SpecialProjectsReply[], hour: number, membership: (reply: SpecialProjectsReply) => readonly HourSpan[] | undefined,
   from = -Infinity, openTo?: number): string {
   return JSON.stringify(data.map(reply => {

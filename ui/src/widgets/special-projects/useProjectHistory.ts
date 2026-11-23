@@ -9,9 +9,9 @@ import { asFailure } from '../../dashboard/queryError.ts';
 import type { Failure } from '../../dashboard/queryError';
 import { useFollowedAll } from '../scoreboard/followedAll.ts';
 import type { SpecialProjectsReply } from '../../generated/dashboard';
-import { validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { HISTORY_PANEL, heldThrough, validateSpecialProjectsReply } from './specialProjectsData.ts';
 
-export interface HistoryReading { replies: readonly (SpecialProjectsReply | undefined)[]; hour: number | null; error?: Failure }
+export interface HistoryReading { replies: readonly (SpecialProjectsReply | undefined)[]; hour: number | null; through: number | null; error?: Failure }
 
 export interface ProjectHistoryFeed {
   replies: SpecialProjectsReply[] | undefined;
@@ -38,7 +38,7 @@ export function useProjectHistory(runtime: WidgetRuntime, track: BoundTrack | un
   const followed = following && active && !!track;
   const store = useMemo(() => followed && track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null,
     [followed, runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const queries = useMemo(() => followed ? params.map(param => ({ ...param, panel: 'special-projects' })) : [], [followed, params]);
+  const queries = useMemo(() => followed ? params.map(param => ({ ...param, panel: HISTORY_PANEL })) : [], [followed, params]);
   const all = useFollowedAll(store, queries, root);
   const read = useCallback((): HistoryReading => {
     let error = all.failure !== undefined ? asFailure(new Error(all.failure)) : all.reason !== undefined ? asFailure(new Error(all.reason)) : undefined;
@@ -46,12 +46,12 @@ export function useProjectHistory(runtime: WidgetRuntime, track: BoundTrack | un
       if (!entry?.panel) return undefined;
       const shown = panelReply(entry.panel, validateSpecialProjectsReply);
       error ??= shown.error;
-      return shown.data;
+      return shown.data && heldThrough(shown.data, entry.through);
     });
-    const hour = all.entries.find(entry => entry?.panel)?.hour ?? null;
-    return { replies, hour, ...error ? { error } : {} };
+    const held = all.entries.find(entry => entry?.panel);
+    return { replies, hour: held?.hour ?? null, through: held?.through ?? null, ...error ? { error } : {} };
   }, [all]);
-  const [shown, setShown] = useState<{ key: string; reading: HistoryReading }>({ key: '', reading: { replies: [], hour: null } });
+  const [shown, setShown] = useState<{ key: string; reading: HistoryReading }>({ key: '', reading: { replies: [], hour: null, through: null } });
   useLayoutEffect(() => {
     if (!followed) return;
     const update = () => {
@@ -64,8 +64,8 @@ export function useProjectHistory(runtime: WidgetRuntime, track: BoundTrack | un
   const requests = useMemo(() => !followed && track ? params.map(param => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
     params: { ...param, hour: at } })) : [], [followed, track, params, at]);
   const asked = useProducts<SpecialProjectsReply>(runtime.client, requests, active && !followed, validateSpecialProjectsReply, track?.source);
-  const askedLatest = useRef<HistoryReading>({ replies: [], hour: null });
-  askedLatest.current = { replies: asked.data ?? [], hour: asked.data ? at : null };
+  const askedLatest = useRef<HistoryReading>({ replies: [], hour: null, through: null });
+  askedLatest.current = { replies: asked.data ?? [], hour: asked.data ? at : null, through: asked.data ? at : null };
   const askedRead = useCallback(() => askedLatest.current, []);
   const quiet = useCallback(() => () => {}, []);
   const noRetry = useCallback(() => {}, []);

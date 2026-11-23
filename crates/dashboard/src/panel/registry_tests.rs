@@ -56,7 +56,7 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
         frame
     });
     let (source, load) = source_with_content(frames.into(), &root);
-    for name in ["special-project-details", "special-project-rewards", "special-projects", "doctrine-mastery", "research-slots", "production-lines-at", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance", "occupied-states"] {
+    for name in ["special-project-details", "special-project-rewards", "special-projects", "special-projects-history", "doctrine-mastery", "research-slots", "production-lines-at", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance", "occupied-states"] {
         let mut params = json!({"branchId": "1", "panel": name});
         match name {
             "nuclear-arsenal" | "game-score" | "occupation-reserve-manpower" | "lend-lease-balance" | "occupied-states" => {}
