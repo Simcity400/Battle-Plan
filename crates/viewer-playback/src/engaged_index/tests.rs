@@ -1142,6 +1142,104 @@ fn mid_campaign_gap_recovers_recording_manager_cache_through_index() {
 }
 
 #[test]
+fn gap_alias_recovery_and_post_switch_narrowing_through_index() {
+    use replay_data::rows::{CombatEngagementRefreshRow, CountryLinkRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let allied: &[(u32, u32)] = &[(2, 3)];
+    let observer_frame = |observer: u32, extra_links: &[(u32, u32)]| {
+        let mut frame = naval_frame(6, &[1], allied, 0, [0, 0]);
+        *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+            vec![LocalPlayerRow {
+                country: 0,
+                observer_country: observer,
+            }],
+        ));
+        if !extra_links.is_empty() {
+            let mut links: Vec<_> = (1..=6)
+                .map(|slot| CountryLinkRow {
+                    id: slot,
+                    canonical_slot: slot,
+                })
+                .collect();
+            for &(id, canonical_slot) in extra_links {
+                links.push(CountryLinkRow { id, canonical_slot });
+            }
+            *frame.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(links));
+        }
+        frame
+    };
+
+    let aliased = &[(101, 3), (202, 3)];
+    let split = &[(101, 3), (202, 4)];
+    let mut alias_pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    let a10 = observer_frame(101, aliased);
+    let mut a11 = observer_frame(101, aliased);
+    *a11.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 100,
+                side: 0,
+                viewer: 101,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 100,
+                side: 1,
+                viewer: 101,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+        ]),
+    );
+    let a12 = observer_frame(202, split);
+    let mut a13 = observer_frame(202, split);
+    *a13.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Unavailable {
+        reason: "witness unavailable".into(),
+    };
+    alias_pass.fold_hour(3, 10, Some(&a10), None, false);
+    alias_pass.fold_hour(3, 11, Some(&a11), None, false);
+    alias_pass.fold_hour(3, 12, Some(&a12), None, false);
+    alias_pass.fold_hour(3, 13, Some(&a13), None, false);
+    let alias_idx = index(&alias_pass);
+    assert_eq!(flags(&alias_idx, &mut a11, 11, 3).land[&100], Engaged::Yes);
+    assert_eq!(
+        flags(&alias_idx, &mut a13, 13, 4).land[&100],
+        Engaged::Ambiguous(engaged::Ambiguity::Scope)
+    );
+
+    let mut narrow_pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    let n10 = observer_frame(4, &[]);
+    let n11 = observer_frame(3, &[]);
+    let mut n12 = observer_frame(3, &[]);
+    *n12.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+            target: 3,
+            side: 0,
+            viewer: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        }]),
+    );
+    let n13 = observer_frame(3, &[]);
+    let n14 = observer_frame(4, &[]);
+    let mut n15 = observer_frame(4, &[]);
+    *n15.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Unavailable {
+        reason: "witness unavailable".into(),
+    };
+    narrow_pass.fold_hour(3, 10, Some(&n10), None, false);
+    narrow_pass.fold_hour(3, 11, Some(&n11), None, false);
+    narrow_pass.fold_hour(3, 12, Some(&n12), None, false);
+    narrow_pass.fold_hour(3, 13, Some(&n13), None, false);
+    narrow_pass.fold_hour(3, 14, Some(&n14), None, false);
+    narrow_pass.fold_hour(3, 15, Some(&n15), None, false);
+    let narrow_idx = index(&narrow_pass);
+    assert_eq!(flags(&narrow_idx, &mut n12, 12, 3).land[&100], Engaged::Yes);
+    assert_eq!(flags(&narrow_idx, &mut n15, 15, 4).land[&100], Engaged::No);
+}
+
+#[test]
 fn unidentified_hourly_viewer_keeps_independently_witnessed_side_refresh() {
     use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
     use replay_frame::frame::TableView;

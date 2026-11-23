@@ -406,6 +406,53 @@ fn push_unique<T: Copy + PartialEq>(list: &mut Vec<T>, item: T) {
     }
 }
 
+fn push_viewer_aliases(
+    before_links: &BTreeMap<u32, u32>,
+    now_links: &BTreeMap<u32, u32>,
+    viewer: CandidateViewer,
+    recording: bool,
+    out: &mut Vec<CandidateViewer>,
+) -> bool {
+    match viewer {
+        CandidateViewer::RawLocal(0) => {
+            push_unique(out, CandidateViewer::RawLocal(0));
+            true
+        }
+        CandidateViewer::RawLocal(raw) => {
+            let (Some(&before_slot), Some(&now_slot)) =
+                (before_links.get(&raw), now_links.get(&raw))
+            else {
+                return false;
+            };
+            push_unique(out, CandidateViewer::RawLocal(raw));
+            for (links, slot) in [(before_links, before_slot), (now_links, now_slot)] {
+                for (&other, &other_slot) in links {
+                    if other != 0 && other_slot == slot {
+                        push_unique(out, CandidateViewer::RawLocal(other));
+                    }
+                }
+            }
+            true
+        }
+        CandidateViewer::Slot(slot) => {
+            if recording && (before_links.is_empty() || now_links.is_empty()) {
+                return false;
+            }
+            push_unique(out, CandidateViewer::Slot(slot));
+            if recording {
+                for links in [before_links, now_links] {
+                    for (&other, &other_slot) in links {
+                        if other != 0 && other_slot == slot {
+                            push_unique(out, CandidateViewer::RawLocal(other));
+                        }
+                    }
+                }
+            }
+            true
+        }
+    }
+}
+
 impl Previous {
     fn every_side(&self, sample: &Sample<'_>) -> EverySide {
         let mut other_proven = false;
@@ -998,6 +1045,8 @@ impl History {
             };
             held.insert(*key, value);
         }
+        let complete_recording =
+            sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. });
         let manager_viewers = match continuity {
             Continuity::Load => primary_viewer.map(|v| vec![v]),
             Continuity::Gap => (!sample.recording)
@@ -1005,46 +1054,81 @@ impl History {
                 .flatten()
                 .map(|v| vec![v]),
             Continuity::Next => next.and_then(|prev_state| {
-                if sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }) {
-                    match prev_state.manager_viewers.as_ref() {
-                        Some(prev) => {
-                            let mut known = prev.clone();
-                            for &raw in local_viewers {
-                                push_unique(&mut known, CandidateViewer::RawLocal(raw));
+                let sweep_possible = |tick_viewer: CandidateViewer| {
+                    !complete_recording
+                        || local_viewers.iter().any(|&raw| {
+                            candidate_relation(
+                                &prev_state.links,
+                                CandidateViewer::RawLocal(raw),
+                                sample.links,
+                                tick_viewer,
+                            ) != ViewerRelation::Different
+                        })
+                };
+                match (prev_state.manager_viewers.as_deref(), primary_viewer) {
+                    (Some(prev), Some(pv)) => {
+                        let mut known = Vec::new();
+                        for &cached in prev {
+                            for tick_viewer in std::iter::once(pv).chain(secondary_viewer) {
+                                match candidate_relation(
+                                    &prev_state.links,
+                                    cached,
+                                    sample.links,
+                                    tick_viewer,
+                                ) {
+                                    ViewerRelation::Same => push_unique(&mut known, cached),
+                                    ViewerRelation::Different => {
+                                        if sweep_possible(tick_viewer) {
+                                            push_unique(&mut known, tick_viewer);
+                                        }
+                                    }
+                                    ViewerRelation::Unknown => {
+                                        push_unique(&mut known, cached);
+                                        if sweep_possible(tick_viewer) {
+                                            push_unique(&mut known, tick_viewer);
+                                        }
+                                    }
+                                }
                             }
-                            Some(known)
                         }
-                        None => primary_viewer.map(|pv| {
-                            let mut known = vec![pv];
-                            if let Some(alt) = secondary_viewer {
-                                push_unique(&mut known, alt);
-                            }
+                        if known.is_empty() {
+                            return None;
+                        }
+                        if complete_recording {
                             for &raw in local_viewers {
                                 push_unique(&mut known, CandidateViewer::RawLocal(raw));
                             }
-                            known
-                        }),
+                        }
+                        Some(known)
                     }
-                } else if every.is_some_and(|e| e.other_proven) {
-                    primary_viewer.map(|v| {
-                        let mut known = vec![v];
-                        if let Some(alt) = secondary_viewer {
-                            push_unique(&mut known, alt);
+                    (Some(prev), None) if complete_recording => {
+                        let mut known = prev.to_vec();
+                        for &raw in local_viewers {
+                            push_unique(&mut known, CandidateViewer::RawLocal(raw));
                         }
-                        known
-                    })
-                } else {
-                    primary_viewer.map(|pv| {
-                        let mut known = prev_state
-                            .manager_viewers
-                            .clone()
-                            .unwrap_or_default();
-                        push_unique(&mut known, pv);
-                        if let Some(alt) = secondary_viewer {
-                            push_unique(&mut known, alt);
+                        Some(known)
+                    }
+                    (None, Some(pv)) => {
+                        let mut known = Vec::new();
+                        for tick_viewer in std::iter::once(pv).chain(secondary_viewer) {
+                            if !push_viewer_aliases(
+                                &prev_state.links,
+                                sample.links,
+                                tick_viewer,
+                                sample.recording,
+                                &mut known,
+                            ) {
+                                return None;
+                            }
                         }
-                        known
-                    })
+                        if complete_recording {
+                            for &raw in local_viewers {
+                                push_unique(&mut known, CandidateViewer::RawLocal(raw));
+                            }
+                        }
+                        Some(known)
+                    }
+                    _ => None,
                 }
             }),
         };
