@@ -139,7 +139,7 @@ fn lookup(rows: &[(Vec<u8>, EventObject)], name: &[u8]) -> Option<EventObject> {
         .map(|(_, value)| *value)
 }
 
-pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure> {
+pub fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure> {
     let scope = graph.scopes.get(at).ok_or("event scope is not given")?;
     let selected = |link| {
         linked(graph, at, link)
@@ -172,7 +172,7 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure>
     })
 }
 
-pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), Failure> {
+pub fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), Failure> {
     if !graph.tooltip_targets.is_empty() {
         let owner = terminal(graph, at, false)?;
         graph.tooltip_targets.remove(&owner);
@@ -309,7 +309,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.description_depth.set(self.description_depth.get() + 1);
     }
 
-    pub(crate) fn begin_description_in(&self, scopes: Scopes) {
+    pub fn begin_description_in(&self, scopes: Scopes) {
         let outer = self.description_depth.get() == 0 && self.checking.get() == 0;
         self.begin_description();
         if outer {
@@ -369,7 +369,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    pub(crate) fn save_global_tooltip_target(
+    pub fn save_global_tooltip_target(
         &self,
         name: &[u8],
         scopes: Scopes,
@@ -609,7 +609,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(index)
     }
 
-    pub(crate) fn fresh_country_scope(
+    pub fn fresh_country_scope(
         &self,
         country: Option<u32>,
         from: Option<Scopes>,
@@ -666,7 +666,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.event_scopes(index)
     }
 
-    pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
+    pub fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
         };

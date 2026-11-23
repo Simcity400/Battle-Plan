@@ -80,7 +80,7 @@ fn frame(hour: i32) -> DecodedFrame {
 
 fn recording() -> Source {
     let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "production".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
@@ -367,7 +367,7 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
     }
 
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])])
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])])
         .unwrap()
         .into_timelines(&Default::default())
         .unwrap();

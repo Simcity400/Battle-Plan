@@ -818,7 +818,7 @@ pub mod tests {
             last_hour: 104,
             reason: "flush failed".into(),
         }));
-        Replay::from_records_derived(b"campaign".to_vec(), &[records]).unwrap()
+        Replay::from_records_derived(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap()
     }
 
     fn read_back(derived: &[DecodedFrame], branch: BranchId, hour: Hour) -> DecodedFrame {
@@ -949,7 +949,7 @@ pub mod tests {
                 hour: 200,
             };
         }
-        let replay = Replay::from_records(b"campaign".to_vec(), &[first, second, third]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[first, second, third]).unwrap();
         let mut playback = Playback::new(replay).unwrap();
         assert!(matches!(
             playback.replay().branches[2].parent,
@@ -970,7 +970,7 @@ pub mod tests {
             records(2, &[102, 103, 104]),
             records(3, &[105, 106]),
         ];
-        let replay = Replay::from_records(b"campaign".to_vec(), &segments)
+        let replay = Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &segments)
             .unwrap()
             .into_timelines(&Default::default())
             .unwrap();
@@ -1017,7 +1017,7 @@ pub mod tests {
                 reason: "queue full".into(),
             }));
         }
-        let replay = Replay::from_records(b"campaign".to_vec(), &[records]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap();
         let mut playback = Playback::new(replay).unwrap();
         assert_eq!(playback.range(1), Some((98, 103)));
         assert_eq!(playback.hour(), 98);
@@ -1071,7 +1071,7 @@ pub mod tests {
     #[test]
     fn every_reader_opened_hands_out_its_playheads_one_lanes_roster_sampler() {
         use crate::layers::sounds::tests::{quick, record_runs, units};
-        let replay = Arc::new(Replay::from_records(b"campaign".to_vec(), &[records(1, &[100, 101, 102])]).unwrap());
+        let replay = Arc::new(Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records(1, &[100, 101, 102])]).unwrap());
         let entry = crate::playhead_host::open(units(record_runs(&[(100, 3)], &[], |_, _| {}), "every reader hands out the lanes rosters"), quick()).unwrap();
         let lanes = entry.rosters(&replay).expect("the recording holds a block at the playhead's first hour");
         let campaign = Playback::unloaded(Arc::clone(&replay)).unwrap();

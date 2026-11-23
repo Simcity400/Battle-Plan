@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use super::complete_test_frame as complete_frame;
 use crate::scope::tests::positive_frame as frame;
 use replay_data::{
     rows::FactionMemberRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
@@ -228,16 +229,6 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
             .unwrap_err()
             .contains("not read this hour, so the values carried from an earlier hour cannot answer this exactly")
     );
-}
-
-pub(super) fn complete_frame() -> DecodedFrame {
-    let mut frame = frame();
-    for id in TableId::ALL {
-        if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
-            *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
-        }
-    }
-    frame
 }
 
 fn with_party(mut frame: DecodedFrame) -> DecodedFrame {

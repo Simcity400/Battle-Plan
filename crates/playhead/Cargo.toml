@@ -28,6 +28,9 @@ required-features = ["bench"]
 name = "log-lane-bench"
 required-features = ["bench"]
 
+[dev-dependencies]
+recorder-derive.workspace = true
+
 [lints]
 workspace = true
 

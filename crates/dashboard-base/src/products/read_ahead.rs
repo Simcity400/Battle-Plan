@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use job_priority::SpawnCarried as _;
 use super::{ContentOptions, politics_content};
 use crate::{

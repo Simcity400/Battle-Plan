@@ -78,7 +78,7 @@ const WATCHED: [TableId; 2] = [TableId::Countries, TableId::WorldTension];
 
 #[test]
 fn frames_read_on_are_the_writer_s_tables_at_every_hour_of_every_run() {
-    let (bytes, expected) = fixtures::churned(&CHURNED);
+    let (bytes, expected) = fixtures::churned(recorder_derive::writers(), &CHURNED);
     let disk = Saved::new(&bytes);
     for file in [opened(bytes.clone()), disk.open()] {
         assert_eq!(file.run_count(), 5);
@@ -114,7 +114,7 @@ fn a_derived_table_reads_back_as_its_writer_wrote_it_whatever_the_hours_say() {
         ..Default::default()
     };
     let streams = [TableId::Countries, TableId::CountryStabilityInputs, derived, TableId::CountryStability];
-    let (bytes, _) = fixtures::written(b"derived", &[(1, FIRST, 1)], &streams, |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"derived", &[(1, FIRST, 1)], &streams, |synthetic, _, ordinal| {
         let rows = [CountryRow { id: 9, tag: b"GER".to_vec(), political_power_raw: Some(power(ordinal)), ..Default::default() }];
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         let read = std::slice::from_ref(&inputs);
@@ -151,7 +151,7 @@ fn a_table_whose_row_cannot_say_not_recorded_is_withheld_by_name_not_the_hour() 
     use crate::rows::{CountryExperienceUnsayableRow, CountryRow, Recorded};
     let withheld = TableId::CountryExperience;
     let countries = [CountryRow { id: 9, tag: b"GER".to_vec(), ..Default::default() }];
-    let (bytes, _) = fixtures::written(b"withheld", &[(1, 100, 1)], &[TableId::Countries], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"withheld", &[(1, 100, 1)], &[TableId::Countries], |synthetic, _, ordinal| {
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         let owned = if ordinal % 2 == 0 { Recorded::NotRecorded } else { Recorded::Value(5) };
         let rows = [CountryExperienceUnsayableRow { country: 9, army_raw: owned, ..Default::default() }];
@@ -174,7 +174,7 @@ fn a_table_whose_row_cannot_say_not_recorded_is_withheld_by_name_not_the_hour() 
 
 #[test]
 fn a_frame_sought_at_any_hour_is_the_one_reading_on_reaches() {
-    let (bytes, expected) = fixtures::churned(&CHURNED);
+    let (bytes, expected) = fixtures::churned(recorder_derive::writers(), &CHURNED);
     let file = opened(bytes);
     let mut starts = Vec::new();
     for run in 0..file.run_count() {
@@ -194,7 +194,7 @@ fn a_frame_sought_at_any_hour_is_the_one_reading_on_reaches() {
 
 #[test]
 fn frames_moved_forward_by_days_go_on_and_are_the_ones_sought() {
-    let (bytes, _) = fixtures::churned(&[(1, 0, 7)]);
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &[(1, 0, 7)]);
     let file = opened(bytes);
     let ordinals = file.run(0).unwrap().ordinals;
     let block = envelope::UNIT_ORDINALS;
@@ -285,13 +285,13 @@ fn took_each_path([rebuilt, held, dropped]: [Spent; 3]) {
 
 #[test]
 fn a_view_patched_at_every_hour_is_the_view_built_from_every_cell_held_or_dropped() {
-    let (bytes, _) = fixtures::churned(&CHURNED);
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &CHURNED);
     took_each_path(three_ways(&opened(bytes), &WATCHED, |_, _| {}));
 }
 
 #[test]
 fn a_view_patched_through_inserts_deletes_packs_and_status_changes_is_the_view_built_from_every_cell() {
-    let (bytes, _) = fixtures::edited(3);
+    let (bytes, _) = fixtures::edited(recorder_derive::writers(), 3);
     let countries = TableId::Countries;
     let (mut packs, mut taken, mut returned, mut statuses) = (0_u32, 0_u32, 0_u32, 0_u32);
     let (mut gone, mut status) = (Vec::new(), None);
@@ -335,7 +335,7 @@ fn watched_edits(now: &TableRows, before: &TableRows) -> (Vec<u128>, Vec<u128>) 
 fn an_hour_stepped_to_names_what_it_changed_and_no_other_move_does() {
     use crate::frame::{ChangeDiscontinuity, HourInput, TableChanges};
     let runs = [(1, 0, 3), (2, 50_000, 1)];
-    let (bytes, seen) = fixtures::churned(&runs);
+    let (bytes, seen) = fixtures::churned(recorder_derive::writers(), &runs);
     let file = opened(bytes);
     let countries = TableId::Countries;
     let unwritten = 1_u64 << (0..).find(|&field| countries.field_name(field) == Some("political_power_raw")).unwrap();
@@ -440,7 +440,7 @@ fn an_hour_stepped_to_names_what_it_changed_and_no_other_move_does() {
 
 #[test]
 fn strings_that_return_on_later_blocks_are_read_after_a_seek() {
-    let (bytes, _) = fixtures::churned(&[(1, 0, 6)]);
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &[(1, 0, 6)]);
     let file = opened(bytes);
     let mut frames = Frames::new(&file, &WATCHED).unwrap();
     let mut tags = |hour: u32| {
@@ -462,7 +462,7 @@ fn strings_that_return_on_later_blocks_are_read_after_a_seek() {
 
 #[test]
 fn a_damaged_part_refuses_its_table_by_name_and_no_other() {
-    let (bytes, expected) = fixtures::churned(&[(1, 0, 4)]);
+    let (bytes, expected) = fixtures::churned(recorder_derive::writers(), &[(1, 0, 4)]);
     let clean = opened(bytes.clone());
     let entry = clean.table_entry(0, 1, TableId::Countries.index()).unwrap();
     let frame = &entry.unit.parts[0].frames[0];
@@ -498,7 +498,7 @@ fn a_damaged_part_refuses_its_table_by_name_and_no_other() {
 #[test]
 fn torn_tails_choose_the_last_committed_root_for_both_inputs() {
     let runs = [(1, 0, 10)];
-    let (mut bytes, _) = recording(&runs, every(&runs), |_| {});
+    let (mut bytes, _) = recording(recorder_derive::writers(), &runs, every(&runs), |_| {});
     let original = bytes.len();
     append_revision(&mut bytes, 2);
     let committed = bytes.len();
@@ -517,7 +517,7 @@ fn torn_tails_choose_the_last_committed_root_for_both_inputs() {
 #[test]
 fn an_open_recording_keeps_its_revision_while_its_file_grows() {
     let runs = [(1, 0, 10)];
-    let (mut bytes, _) = recording(&runs, every(&runs), |_| {});
+    let (mut bytes, _) = recording(recorder_derive::writers(), &runs, every(&runs), |_| {});
     let disk = Saved::new(&bytes);
     let pinned = disk.open();
     let before = bytes.len();
@@ -532,7 +532,7 @@ fn an_open_recording_keeps_its_revision_while_its_file_grows() {
 fn root_and_run_lists_hold_many_short_runs() {
     for count in [4, 256] {
         let runs: Vec<_> = (0..count).map(|run| (run as u64, 0, 1)).collect();
-        let file = opened(recording(&runs, every(&runs), |_| {}).0);
+        let file = opened(recording(recorder_derive::writers(), &runs, every(&runs), |_| {}).0);
         assert_eq!(file.hours(), count as u64);
         assert_eq!(file.run_count(), count as u32);
         assert_eq!(file.segments().len(), count);
@@ -604,7 +604,7 @@ fn another_schema_is_refused_naming_both_digests() {
     before_logs.insert(TableId::DivisionModelInputs.index() + 1, vec![Column::I32]);
     for theirs in [[0xab; 32], envelope::schema_digest(&before_logs)] {
         let runs = [(1, 0, 3)];
-        let (bytes, _) = recording(&runs, every(&runs), |_| {});
+        let (bytes, _) = recording(recorder_derive::writers(), &runs, every(&runs), |_| {});
         refused_naming_both(naming_schema(bytes, theirs), &theirs);
     }
 }
@@ -626,7 +626,7 @@ fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
     ];
     let partial = |ordinal: u32| ordinal % envelope::UNIT_ORDINALS >= envelope::UNIT_ORDINALS - 10;
     let runs = [(1, 100, envelope::SPAN_BLOCKS + 1)];
-    let (bytes, _) = fixtures::written_at(format, b"format 141", &runs, &[TableId::States, TableId::Countries], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, format, b"format 141", &runs, &[TableId::States, TableId::Countries], |synthetic, _, ordinal| {
         synthetic.table(TableId::States, Input::Snapshot { rows: &states, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         let input = match partial(ordinal) {
@@ -726,7 +726,7 @@ fn a_log_reads_at_an_hour_as_the_rows_it_lists() {
     let listed = |ordinal: u32| -> Vec<(u128, i64)> {
         (0..480_u32).filter(|&id| 3 * id <= ordinal && ordinal < 3 * id + id % 40 + 1).map(|id| (u128::from(id), i64::from(id * 7))).collect()
     };
-    let (bytes, _) = fixtures::written(b"log at an hour", &[(1, 0, 2)], &[], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"log at an hour", &[(1, 0, 2)], &[], |synthetic, _, ordinal| {
         let rows: Vec<NuclearStrikeRow> = listed(ordinal)
             .into_iter()
             .map(|(id, province)| NuclearStrikeRow { id: id as u64, hour: id as i32 * 3, province: province as u32, nuke_type: id as u32 % 3, ..Default::default() })
@@ -775,7 +775,7 @@ fn a_log_read_in_part_lists_its_rows() {
     use crate::rows::{NuclearStrikeRow, TABLE_COUNT};
     const PROVINCE: usize = 3;
     let strike = |id: u64| NuclearStrikeRow { id, hour: id as i32, province: id as u32 * 7, ..Default::default() };
-    let bytes = fixtures::recorded(b"log read in part", 3, |ordinal| {
+    let bytes = fixtures::recorded(recorder_derive::writers(), b"log read in part", 3, |ordinal| {
         let mut tables: [TableInput; TABLE_COUNT] = std::array::from_fn(|_| TableInput::Sampled(TableView::Unavailable { reason: "outside the fixture".into() }));
         tables[TableId::NuclearStrikes.index()] = TableInput::Sampled(match ordinal {
             0 => TableView::Complete(TableRows::NuclearStrikes(vec![strike(1)])),
@@ -844,6 +844,7 @@ fn format_143_recording_opens_withholds_variant_tables_and_unverified_required_t
     }];
     let runs = [(1, 100, 1)];
     let (bytes, _) = fixtures::written_at(
+        recorder_derive::writers_within,
         format,
         b"format 143",
         &runs,

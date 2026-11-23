@@ -1,4 +1,5 @@
 
+use dashboard_effects::ScriptedEffects;
 use super::token;
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour}}};
 use crate::products::country_people::{self, Links};

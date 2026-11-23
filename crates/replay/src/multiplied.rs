@@ -579,7 +579,7 @@ impl Synthetic {
 
 pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path) -> io::Result<()> {
     let kinds = schema()?;
-    let derived = derived_tables(kinds.len());
+    let derived = derived_mask();
     let mut scan = scan_journal(directory, capture, &kinds, &derived, &REMOVED, true, true)?;
     let at = start_segment(&scan.scanned, block)?;
     let appends: Vec<Vec<u8>> = scan.scanned[..at].iter_mut().flat_map(|held| std::mem::take(&mut held.appends)).collect();
@@ -836,12 +836,8 @@ fn journal_candidates(
     Ok((candidates, false))
 }
 
-fn derived_tables(tables: usize) -> Vec<bool> {
-    let mut derived = vec![false; tables];
-    for table in recorder_derive::writers().tables() {
-        derived[table] = true;
-    }
-    derived
+fn derived_mask() -> Vec<bool> {
+    TableId::ALL.into_iter().map(TableId::is_derived).collect()
 }
 
 struct Scanned {
@@ -1113,7 +1109,7 @@ impl Multiplied {
         let _label = label();
         let kinds = schema()?;
         let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
-        let derived = derived_tables(kinds.len());
+        let derived = derived_mask();
         let one_run = start.is_some() || factors.factor.iter().any(|&factor| factor > 1);
         let Scan { journal, exact, mut scanned, segments, partial } = scan_journal(directory, capture, &kinds, &derived, removed, false, one_run)?;
         for (table, partial) in partial.into_iter().enumerate() {

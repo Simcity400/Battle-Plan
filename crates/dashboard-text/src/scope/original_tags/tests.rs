@@ -82,7 +82,7 @@ fn original_tag_lists_derive_requested_exact_snapshots_without_history() {
     for frame in frames {
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records]).unwrap();
     let derived = OriginalTagLists::derive(
         &replay,
         1,

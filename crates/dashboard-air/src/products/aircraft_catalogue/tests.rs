@@ -61,7 +61,7 @@ fn recording(branches: Vec<Vec<DecodedFrame>>) -> Source {
             revision: "1".into(),
         },
         "synthetic.battleplan".into(),
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &branches).unwrap()),
+        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &branches).unwrap()),
         &AtomicBool::new(false),
     )
     .unwrap()

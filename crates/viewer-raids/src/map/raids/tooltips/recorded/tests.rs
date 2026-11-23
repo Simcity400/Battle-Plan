@@ -313,7 +313,8 @@ fn scripted_content_with_files(
     };
     let scripted =
         dashboard_text::scripted_text::ScriptedContent::read(Arc::new(content), String::new())
-            .unwrap();
+            .unwrap()
+            .with_effect_describer(dashboard_effects::effect_describer);
     (scripted, root)
 }
 
