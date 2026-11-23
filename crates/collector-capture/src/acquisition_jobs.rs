@@ -3188,9 +3188,12 @@ mod tests {
     #[test]
     fn the_score_walk_resolves_countries_through_the_hours_snapshot() {
         use engine_native::{
-            ccountry, cgame_state, cstrategic_air, cstrategic_air_manager, cstrategic_region,
+            ccountry,
+            cgame_state,
+            cstrategic_region,
             memory::SliceMemory,
         };
+        use engine_native_air::{cstrategic_air, cstrategic_air_manager};
         use engine_raid_inputs::raid_air_scores::COMBAT_DELAY_RVA;
         const MEMORY: usize = 0x1000_0000;
         const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA.0;

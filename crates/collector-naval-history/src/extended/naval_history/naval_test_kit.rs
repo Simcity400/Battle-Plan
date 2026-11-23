@@ -87,11 +87,11 @@ pub fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         0x40000,
-        engine_native::cstrategic_air_manager::VTABLE_RVA.0 as u64,
+        engine_native_air::cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
-        0x40000 + engine_native::cstrategic_air_manager::COUNTRY_AIR,
+        0x40000 + engine_native_air::cstrategic_air_manager::COUNTRY_AIR,
         0x41000,
         3,
     );

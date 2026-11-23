@@ -1688,11 +1688,11 @@ fn copy_air_base_registrations(
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_primary = match engine_sites::at(base, engine_native::cair_wing::VTABLE_RVA) {
+    let expected_primary = match engine_sites::at(base, engine_native_air::cair_wing::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_secondary = match engine_sites::at(base, engine_native::cair_wing::SECONDARY_VTABLE_RVA)
+    let expected_secondary = match engine_sites::at(base, engine_native_air::cair_wing::SECONDARY_VTABLE_RVA)
     {
         Some(expected) => expected as u64,
         None => return false,
@@ -1951,7 +1951,7 @@ fn copy_air_base_registrations(
                             let backlink = match bspan(
                                 log,
                                 memory,
-                                wing.checked_add(engine_native::cair_wing::POOL),
+                                wing.checked_add(engine_native_air::cair_wing::POOL),
                                 8,
                                 AIR_REGISTRATIONS_MASK,
                             ) {

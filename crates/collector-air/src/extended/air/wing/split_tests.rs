@@ -1,10 +1,8 @@
 use super::*;
 use crate::unit_fixture as fixture;
 use collector_observers::wing_changes::Watches;
-use engine_native::{
-    air_mission, cair_wing_pool, cgame_state, cpdx_array::Array, cstrategic_air,
-    cstrategic_air_manager,
-};
+use engine_native_air::{air_mission, cstrategic_air, cstrategic_air_manager};
+use engine_native::{cair_wing_pool, cgame_state, cpdx_array::Array};
 
 const COUNTRIES: u32 = 5_000;
 const WINGS: usize = 12_000;

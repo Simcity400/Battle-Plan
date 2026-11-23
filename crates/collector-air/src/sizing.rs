@@ -15,13 +15,13 @@ pub fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
 pub fn observe_game_score(
     memory: &impl Memory,
     base: usize,
-) -> std::io::Result<Option<engine_native::game_score_inputs::ArenaSizing>> {
+) -> std::io::Result<Option<engine_native_air::game_score_inputs::ArenaSizing>> {
     match demand_game_state(memory, base) {
         Ok(Some(state)) => {
-            engine_native::game_score_inputs::arena_demand(memory, base, state).map(Some)
+            engine_native_air::game_score_inputs::arena_demand(memory, base, state).map(Some)
         }
         Ok(None) => Ok(None),
-        Err(reason) => engine_native::game_score_inputs::ArenaSizing::unavailable(reason).map(Some),
+        Err(reason) => engine_native_air::game_score_inputs::ArenaSizing::unavailable(reason).map(Some),
     }
 }
 
@@ -38,7 +38,7 @@ pub fn observe_ace_names(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let walked = engine_native::cace::count(memory, base, state);
+    let walked = engine_native_air::cace::count(memory, base, state);
     let aces = match walked.outcome {
         engine_native::walk::Outcome::Rows { len } => len,
         engine_native::walk::Outcome::Truncated { len, unread_rows } => len
@@ -55,7 +55,7 @@ pub fn observe_ace_names(
 static AIR_WING_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
 static CARRIER_HINT: [AtomicUsize; 12] = [const { AtomicUsize::new(0) }; 12];
 
-pub fn carrier_demand() -> engine_native::cair_base::CarrierDemand {
+pub fn carrier_demand() -> engine_native_air::cair_base::CarrierDemand {
     let [
         bases,
         registrations,
@@ -70,7 +70,7 @@ pub fn carrier_demand() -> engine_native::cair_base::CarrierDemand {
         raw_spans,
         raw_bytes,
     ] = std::array::from_fn(|index| CARRIER_HINT[index].load(Ordering::Relaxed));
-    engine_native::cair_base::CarrierDemand {
+    engine_native_air::cair_base::CarrierDemand {
         bases,
         registrations,
         pools,
@@ -87,7 +87,7 @@ pub fn carrier_demand() -> engine_native::cair_base::CarrierDemand {
     }
 }
 
-pub fn note_carrier_demand(demand: engine_native::cair_base::CarrierDemand) -> bool {
+pub fn note_carrier_demand(demand: engine_native_air::cair_base::CarrierDemand) -> bool {
     let mut changed = false;
     for (hint, count) in CARRIER_HINT.iter().zip([
         demand.bases,
@@ -123,5 +123,5 @@ pub fn observe_air_wing_names(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_native::cair_wing::name_demand(memory, base, state).map(Some)
+    engine_native_air::cair_wing::name_demand(memory, base, state).map(Some)
 }

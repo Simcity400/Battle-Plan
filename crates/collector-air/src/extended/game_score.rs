@@ -4,7 +4,8 @@ use collector_primitives::{
 };
 use collector_projection::table_conversion::{table, table_iter, unavailable};
 use engine_allocation::{collect_vec, copy_vec, owned_vec};
-use engine_native::{Memory, game_score_inputs as native, walk::Outcome};
+use engine_native::{Memory, walk::Outcome};
+use engine_native_air::game_score_inputs as native;
 use replay_data::{format::GAME_SCORE_DISABLED_REASON, rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -255,7 +256,7 @@ impl AirInputs {
         &mut self,
         memory: &impl Memory,
         pointer: usize,
-        row: &engine_native::cair_wing::ScoreLeaf,
+        row: &engine_native_air::cair_wing::ScoreLeaf,
     ) {
         if !self.enabled {
             return;

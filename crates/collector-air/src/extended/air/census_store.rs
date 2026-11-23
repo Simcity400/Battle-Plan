@@ -1,6 +1,7 @@
 pub use collector_observers::air_base_carry_changes::registration::Census as Counts;
 use collector_raw::raw::Span;
-use engine_native::{cair_base, cpdx_array::Array};
+use engine_native_air::cair_base;
+use engine_native::cpdx_array::Array;
 use std::collections::HashMap;
 
 pub const SLOT_ARRAYS: usize = 3;

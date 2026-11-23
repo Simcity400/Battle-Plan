@@ -858,9 +858,9 @@ pub fn visit_sources<const TERMINAL: bool>(
     }
     let air_base = ptr(memory, ship, 0x730)?;
     if air_base != 0 {
-        auth(memory, base, air_base, engine_native::cair_base::VTABLE_RVA)?;
-        row.air_base = field(memory, air_base, engine_native::cair_base::HANDLE)?;
-        row.air_base_maximum = field(memory, air_base, engine_native::cair_base::CAPACITY)?;
+        auth(memory, base, air_base, engine_native_air::cair_base::VTABLE_RVA)?;
+        row.air_base = field(memory, air_base, engine_native_air::cair_base::HANDLE)?;
+        row.air_base_maximum = field(memory, air_base, engine_native_air::cair_base::CAPACITY)?;
     }
     let equipment = add(ship, engine_native::cship::EQUIPMENT_POOL)?;
     let variants = engine_native::cequipment_variant::pool::entries(memory, base, equipment)?;

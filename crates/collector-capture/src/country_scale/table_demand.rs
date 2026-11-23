@@ -45,7 +45,7 @@ pub unsafe fn presize_periodic(
     };
     if capacity_census {
         accept(
-            rows(engine_native::cair_wing::count(memory, base, state))
+            rows(engine_native_air::cair_wing::count(memory, base, state))
                 .map(|count| map.raise_air_wings(count)),
         );
         let naval = engine_native::cfleet::count(memory, base, state);

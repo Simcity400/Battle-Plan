@@ -4,7 +4,6 @@ use engine_deployment::{carmy_upgrades_requests, cupgrade_delivery, manpower_val
 use engine_native::cequipment_variant;
 use engine_native::{
     Memory,
-    cair_wing,
     cair_wing_pool,
     carmy,
     cbuilding,
@@ -27,7 +26,6 @@ use engine_native::{
     crelation,
     crelation_status,
     cstate,
-    cstrategic_air,
     cunit,
     cwar_relation,
     equipment_entry,
@@ -37,6 +35,7 @@ use engine_native::{
     read_slice,
     walk,
 };
+use engine_native_air::{cair_wing, cstrategic_air};
 use engine_native_intelligence::{coperation, coperation_instance};
 use engine_peace::peace_conference;
 use engine_production::{

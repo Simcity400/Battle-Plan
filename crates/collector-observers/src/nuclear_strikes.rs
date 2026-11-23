@@ -390,7 +390,7 @@ struct Crew {
     before: i32,
 }
 fn crew_manpower(memory: &impl Memory, wing: usize) -> Result<i32, &'static str> {
-    wing.checked_add(engine_native::cair_wing::ACQUIRED_MANPOWER)
+    wing.checked_add(engine_native_air::cair_wing::ACQUIRED_MANPOWER)
         .and_then(|at| engine_native::read(memory, at))
         .ok_or("nuclear strike wing manpower unreadable")
 }
@@ -398,7 +398,7 @@ fn crew(wing: usize) -> Result<Crew, &'static str> {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let vtable = engine_sites::at(
         BASE.load(Ordering::Relaxed),
-        engine_native::cair_wing::VTABLE_RVA,
+        engine_native_air::cair_wing::VTABLE_RVA,
     )
     .ok_or("nuclear strike wing unauthenticated")?;
     if engine_native::read::<u64>(&memory, wing) != Some(vtable as u64) {

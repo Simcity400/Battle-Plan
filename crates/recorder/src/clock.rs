@@ -1,10 +1,6 @@
 use crate::controller::{Probe, probe_withheld};
-use engine_native::{
-    Memory,
-    camera_root::{self, Camera},
-    cgame_state::{self, Clock},
-    command_inputs,
-};
+use engine_native::{Memory, camera_root::{self, Camera}, cgame_state::{self, Clock}};
+use engine_native_air::command_inputs;
 use serde_json::{Map, Value, json};
 use std::{
     ffi::OsString,

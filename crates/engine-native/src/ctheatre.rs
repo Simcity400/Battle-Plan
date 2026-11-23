@@ -1,4 +1,3 @@
-pub use crate::cair_wing::{WingMembership, read_wing_membership};
 
 use crate::{
     Memory, cair_group, cair_theatre,  carmy, carmy_group, ccontroller_area, ccountry,

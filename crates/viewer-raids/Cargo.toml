@@ -13,6 +13,7 @@ doctest = false
 test-support = ["viewer-native-gui/test-support", "viewer-unit-reads/test-support"]
 
 [dependencies]
+engine-native-air.workspace = true
 content-reader-defines.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true

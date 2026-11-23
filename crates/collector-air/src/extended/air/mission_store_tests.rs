@@ -1,10 +1,15 @@
 use super::*;
 use collector_missions::mission_changes::{Counts, Watches};
-use engine_native::{
-    cair_regional_mission::FailureContext, cair_regional_mission::Row,
-    cair_regional_mission::walk_carried, cair_regional_mission::walk_with_diagnostic,
-    cgame_state as gs, cpdx_array, cstrategic_air, memory::SliceMemory,
+use engine_native_air::{
+    cair_regional_mission::{
+        FailureContext,
+        Row,
+        walk_carried,
+        walk_with_diagnostic,
+    },
+    cstrategic_air,
 };
+use engine_native::{cgame_state as gs, cpdx_array, memory::SliceMemory};
 use std::cell::RefCell;
 
 const GS: usize = 0x1000;
@@ -235,7 +240,7 @@ fn walk(world: &World, store: &mut MissionStore, watches: &Watches) -> Hour {
 
 fn fresh(world: &World, census: &[WingIdentity]) -> (Outcome, Vec<Row>) {
     let mut rows = Vec::new();
-    let outcome = engine_native::cair_regional_mission::walk_with_diagnostic(
+    let outcome = engine_native_air::cair_regional_mission::walk_with_diagnostic(
         &SliceMemory {
             base: 0,
             bytes: &world.bytes,
@@ -455,7 +460,7 @@ fn a_writer_that_keeps_every_header_is_still_seen() {
     first_hour(&world, &mut store, &watches);
     let headers = |world: &World| {
         let at = air(3) + cstrategic_air::REGIONAL_MISSIONS;
-        world.bytes[at..at + engine_native::cair_regional_mission::HEADERS].to_vec()
+        world.bytes[at..at + engine_native_air::cair_regional_mission::HEADERS].to_vec()
     };
     let before = headers(&world);
     let replacement = world.wing(3, 5);

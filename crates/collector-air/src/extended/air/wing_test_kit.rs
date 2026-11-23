@@ -29,8 +29,12 @@ fn header(bytes: &mut [u8], at: usize, data: usize, count: u32) {
 }
 
 pub fn fixture() -> Vec<u8> {
+    use engine_native_air::cair_wing;
     use engine_native::{
-        cair_wing, ccountry, cequipment_variant, cequipment_variant_pool, equipment_entry,
+        ccountry,
+        cequipment_variant,
+        cequipment_variant_pool,
+        equipment_entry,
     };
     let mut bytes = vec![0; 0x40000];
     header(
@@ -61,11 +65,11 @@ pub fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         MANAGER,
-        engine_native::cstrategic_air_manager::VTABLE_RVA.0 as u64,
+        engine_native_air::cstrategic_air_manager::VTABLE_RVA.0 as u64,
     );
     header(
         &mut bytes,
-        MANAGER + engine_native::cstrategic_air_manager::COUNTRY_AIR,
+        MANAGER + engine_native_air::cstrategic_air_manager::COUNTRY_AIR,
         0x38000,
         2,
     );
@@ -74,16 +78,16 @@ pub fn fixture() -> Vec<u8> {
     p64(
         &mut bytes,
         OWNER_AIR,
-        engine_native::cstrategic_air::VTABLE_RVA.0 as u64,
+        engine_native_air::cstrategic_air::VTABLE_RVA.0 as u64,
     );
     p32(
         &mut bytes,
-        OWNER_AIR + engine_native::cstrategic_air::COUNTRY,
+        OWNER_AIR + engine_native_air::cstrategic_air::COUNTRY,
         1,
     );
     header(
         &mut bytes,
-        OWNER_AIR + engine_native::cstrategic_air::POOLS,
+        OWNER_AIR + engine_native_air::cstrategic_air::POOLS,
         0x38100,
         1,
     );
@@ -127,12 +131,12 @@ pub fn fixture() -> Vec<u8> {
         p32(&mut bytes, wing + cair_wing::PLANE_COUNT, 10);
         p32(
             &mut bytes,
-            wing + cair_wing::MISSION + engine_native::air_mission::ENABLED_MASK,
+            wing + cair_wing::MISSION + engine_native_air::air_mission::ENABLED_MASK,
             0xff,
         );
         p64(
             &mut bytes,
-            wing + cair_wing::MISSION + engine_native::air_mission::REGION,
+            wing + cair_wing::MISSION + engine_native_air::air_mission::REGION,
             0,
         );
         p32(&mut bytes, wing + cair_wing::COUNTRY_OVERRIDE, 0);
@@ -191,11 +195,11 @@ pub struct Split {
     pub equipment_outcome: Outcome,
     pub equipment: Vec<replay_data::rows::WingEquipmentRow>,
     pub cumulative_outcome: Outcome,
-    pub cumulative: Vec<engine_native::cair_wing::CumulativeRow>,
+    pub cumulative: Vec<engine_native_air::cair_wing::CumulativeRow>,
 }
 
 fn collect_typed(memory: &impl Memory, _capacity: &Capacities) -> Split {
-    use engine_native::cair_wing;
+    use engine_native_air::cair_wing;
     let mut collected: Vec<(usize, usize, cair_wing::Row)> = Vec::new();
     let mut wing_rows = Vec::new();
     let outcome = cair_wing::walk_with(

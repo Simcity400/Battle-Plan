@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-air.workspace = true
 content-reader-map.workspace = true
 content-reader-parser.workspace = true
 engine-native.workspace = true

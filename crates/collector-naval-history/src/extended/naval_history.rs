@@ -7,10 +7,22 @@ use collector_projection::table_conversion::{table, unavailable};
 use collector_raw::raw::RawLog;
 use engine_allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
 use engine_native::{
-    Memory, cair_group, cair_theatre, cair_wing, cgame_date, cgame_state, corders_group,
-    cpdx_array::Array, cprovince, cstrategic_region, csub_unit_definition, ctheater_group,
-    ctheatre, msvc_string, walk::Outcome,
+    Memory,
+    cair_group,
+    cair_theatre,
+    cgame_date,
+    cgame_state,
+    corders_group,
+    cpdx_array::Array,
+    cprovince,
+    cstrategic_region,
+    csub_unit_definition,
+    ctheater_group,
+    ctheatre,
+    msvc_string,
+    walk::Outcome,
 };
+use engine_native_air::cair_wing;
 use engine_naval_history::{
     cdominance_values, cnaval_combat_results, cnaval_region_dominance, csunk_convoy_info,
     csunk_ship_info, naval_dominance_entry,
@@ -382,7 +394,7 @@ pub struct Captured {
     theatre_names: Arena<u8>,
     sunk_names: Arena<u8>,
     orders_sources: CaptureRows<ctheatre::OrdersMembership>,
-    wing_sources: CaptureRows<ctheatre::WingMembership>,
+    wing_sources: CaptureRows<engine_native_air::cair_wing::WingMembership>,
     orders_finished: bool,
     wings_finished: bool,
     source_ticks: [u64; 3],

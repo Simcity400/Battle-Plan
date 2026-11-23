@@ -1,6 +1,7 @@
 use super::{BaseWitness, WingIdentity};
 use engine_allocation as allocation;
-use engine_native::{Memory, cair_base, cair_wing, cpdx_array::Array, read};
+use engine_native::{Memory, cpdx_array::Array, read};
+use engine_native_air::{cair_base, cair_wing};
 use replay_data::rows::AirTransferInputRow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

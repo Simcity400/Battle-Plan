@@ -1,10 +1,13 @@
 use super::*;
 use crate::extended::fog;
 use collector_observers::air_base_carry_changes::Watches;
-use engine_native::{
-    cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cprovince,
-    cstate, cstrategic_air_manager,
+use engine_native_air::{
+    cair_base,
+    cair_wing,
+    ccountry_air_container,
+    cstrategic_air_manager,
 };
+use engine_native::{cair_wing_pool, ccountry, cgame_state, cprovince, cstate};
 use std::hint::black_box;
 use std::time::Instant;
 

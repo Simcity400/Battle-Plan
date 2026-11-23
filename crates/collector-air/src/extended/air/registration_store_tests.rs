@@ -3,7 +3,8 @@ use super::*;
 use crate::extended::fog;
 #[cfg(test)]
 use collector_observers::air_base_carry_changes::Watches;
-use engine_native::{cair_base, cair_wing_pool};
+use engine_native_air::cair_base;
+use engine_native::cair_wing_pool;
 use std::cell::RefCell;
 
 pub const B0_HANDLE: u64 = (0x41 << 32) | cair_base::TYPE as u64;

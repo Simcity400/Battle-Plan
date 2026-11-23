@@ -69,10 +69,10 @@ pub(super) fn compare_raid_countries(
     Ok(())
 }
 
-type RaidRule = fn(&engine_native::raid_speed_inputs::Raid, i32) -> bool;
+type RaidRule = fn(&engine_native_air::raid_speed_inputs::Raid, i32) -> bool;
 
-fn raid_flying(raid: &engine_native::raid_speed_inputs::Raid, hour: i32) -> bool {
-    engine_native::raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
+fn raid_flying(raid: &engine_native_air::raid_speed_inputs::Raid, hour: i32) -> bool {
+    engine_native_air::raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
 }
 
 fn saved_end_hour(raid: &saved::Raid) -> io::Result<Option<i32>> {
@@ -99,7 +99,7 @@ fn raid_census(
     let mut expected = BTreeMap::new();
     for (&id, &raid) in &raids {
         let end_hour = saved_end_hour(raid)?;
-        let live = engine_native::raid_speed_inputs::Raid {
+        let live = engine_native_air::raid_speed_inputs::Raid {
             pointer: 0,
             reference_type: id as u32,
             id: (id >> 32) as u32,
@@ -148,7 +148,7 @@ pub(super) fn compare_raid_equipment(
     pack: &saved::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
-    let (raids, expected) = raid_census(pack, frame.hour, engine_native::raid_equipment::recorded)?;
+    let (raids, expected) = raid_census(pack, frame.hour, engine_native_air::raid_equipment::recorded)?;
     let archetype_of: Option<BTreeMap<u64, u32>> = complete::<tables::VariantDefinitions>(frame)
         .ok()
         .map(|rows| {
@@ -347,9 +347,9 @@ pub fn compare_raid_tooltip_operands(
     air: &content_reader_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
-    use engine_native::raid_tooltip_operands::*;
+    use engine_native_air::raid_tooltip_operands::*;
     let (_, expected) = raid_census(pack, frame.hour, |raid, _| {
-        raid.phase != engine_native::craid_instance::PHASE_ENDED
+        raid.phase != engine_native_air::craid_instance::PHASE_ENDED
     })?;
     let rows = complete::<tables::RaidTooltipOperands>(frame)?;
     let mut ordinal = BTreeMap::<u64, u32>::new();
@@ -469,7 +469,7 @@ fn compare_raid_wing_names(
     air: &content_reader_save::air::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
-    use engine_native::raid_tooltip_operands::*;
+    use engine_native_air::raid_tooltip_operands::*;
     let mut names = BTreeMap::<u64, BTreeMap<u32, i64>>::new();
     let mut resolution = BTreeMap::<u64, BTreeMap<u32, i64>>::new();
     let mut ambiguous_resolution = BTreeSet::new();

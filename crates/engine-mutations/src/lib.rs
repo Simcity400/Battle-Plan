@@ -6,11 +6,33 @@ use engine_focus::cnational_focus_progress;
 #[cfg(test)]
 use engine_native::carmy;
 use engine_native::{
-    Memory, allocation, cair_base, cair_wing_pool, ccharacter, ccountry, ccountry_air_container,
-    ccountry_characters, cdiplomacy_status, cequipment_production_license, cfaction, cgame_state,
-    clicensed_production_status, cpdx_array, cpolitical_party, cpolitical_status, cprovince,
-    creferenced_division_template, crelation, crelation_status, cstate, cstrategic_air,
-    cstrategic_air_manager, province_definition, read,
+    Memory,
+    allocation,
+    cair_wing_pool,
+    ccharacter,
+    ccountry,
+    ccountry_characters,
+    cdiplomacy_status,
+    cequipment_production_license,
+    cfaction,
+    cgame_state,
+    clicensed_production_status,
+    cpdx_array,
+    cpolitical_party,
+    cpolitical_status,
+    cprovince,
+    creferenced_division_template,
+    crelation,
+    crelation_status,
+    cstate,
+    province_definition,
+    read,
+};
+use engine_native_air::{
+    cair_base,
+    ccountry_air_container,
+    cstrategic_air,
+    cstrategic_air_manager,
 };
 use engine_projects::{nproject_cprogram_status, nproject_cproject};
 use engine_railways::{cprovince_railway_info, crailway_manager};

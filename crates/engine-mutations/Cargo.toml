@@ -13,6 +13,7 @@ doctest = false
 alloc-fault-injection = ["engine-native/alloc-fault-injection"]
 
 [dependencies]
+engine-native-air.workspace = true
 engine-sites.workspace = true
 engine-deployment.workspace = true
 engine-focus.workspace = true

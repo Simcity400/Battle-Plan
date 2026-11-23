@@ -22,7 +22,7 @@ pub struct AirWingJob {
     pub(super) equipment: Vec<rows::WingEquipmentRow>,
     pub(super) cumulative: Vec<cair_wing::CumulativeRow>,
     pub(super) memberships: Vec<WingMembershipRead>,
-    pub naval_memberships: Vec<engine_native::ctheatre::WingMembership>,
+    pub naval_memberships: Vec<engine_native_air::cair_wing::WingMembership>,
     pub naval_membership_outcome: Outcome,
     pub game_score: crate::extended::game_score::AirInputs,
     pub(super) game_score_enabled: bool,
@@ -612,7 +612,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                 source.mask.set(0);
                 let started = qpc();
                 job.memberships[membership_len] =
-                    match engine_native::ctheatre::read_wing_membership(&source, pointer, row) {
+                    match engine_native_air::cair_wing::read_wing_membership(&source, pointer, row) {
                         Ok(value) => WingMembershipRead { value, error: None },
                         Err(reason) => WingMembershipRead {
                             error: Some(reason),

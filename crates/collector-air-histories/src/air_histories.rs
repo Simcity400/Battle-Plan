@@ -1871,11 +1871,11 @@ mod tests {
         qword(
             &mut image,
             MANAGER,
-            (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA.0) as u64,
+            (BASE + engine_native_air::cstrategic_air_manager::VTABLE_RVA.0) as u64,
         );
         vector(
             &mut image,
-            MANAGER + engine_native::cstrategic_air_manager::COUNTRY_AIR,
+            MANAGER + engine_native_air::cstrategic_air_manager::COUNTRY_AIR,
             ROOTS,
             (PARTS + 1) as u32,
         );

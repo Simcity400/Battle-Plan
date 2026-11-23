@@ -16,6 +16,7 @@ naval_tree_changes = []
 raid_intel_changes = ["naval_tree_changes"]
 
 [dependencies]
+engine-native-air.workspace = true
 engine-sites.workspace = true
 engine-scripts.workspace = true
 engine-allocation.workspace = true

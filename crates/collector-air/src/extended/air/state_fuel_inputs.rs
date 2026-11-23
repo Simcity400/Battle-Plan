@@ -2,11 +2,14 @@ use super::{AirBasesJob, bases::HeldSegment};
 use cair_base::{CarrierIndexedCertificate, CarrierPool, CarrierRegistration, ContainerFuel};
 use collector_raw::raw::RawLog;
 use engine_native::{
-    Memory, cair_base, cair_wing_pool, ccountry, ccountry_air_container as container,
+    Memory,
+    cair_wing_pool,
+    ccountry,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
 };
+use engine_native_air::{cair_base, ccountry_air_container as container};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 

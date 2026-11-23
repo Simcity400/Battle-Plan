@@ -78,19 +78,19 @@ pub fn wing(
         return Ok(None);
     };
     let Some(primary) = secondary
-        .checked_sub(engine_native::cair_wing::SECONDARY)
+        .checked_sub(engine_native_air::cair_wing::SECONDARY)
         .filter(|p| *p != 0)
     else {
         return Ok(None);
     };
-    auth(memory, base, primary, engine_native::cair_wing::VTABLE_RVA)?;
+    auth(memory, base, primary, engine_native_air::cair_wing::VTABLE_RVA)?;
     auth(
         memory,
         base,
         secondary,
-        engine_native::cair_wing::SECONDARY_VTABLE_RVA,
+        engine_native_air::cair_wing::SECONDARY_VTABLE_RVA,
     )?;
-    if field::<u64>(memory, primary, engine_native::cair_wing::REFERENCE_TYPE)? != reference {
+    if field::<u64>(memory, primary, engine_native_air::cair_wing::REFERENCE_TYPE)? != reference {
         return Err("naval air wing reference mismatch");
     }
     Ok(Some(primary))
@@ -134,12 +134,12 @@ pub fn read(
     let Some(air_base) = engine_native_parts::creference_registry::resolve(memory, base, base_reference)? else {
         return Ok(row);
     };
-    auth(memory, base, air_base, engine_native::cair_base::VTABLE_RVA)?;
-    if field::<u64>(memory, air_base, engine_native::cair_base::HANDLE)? != base_reference {
+    auth(memory, base, air_base, engine_native_air::cair_base::VTABLE_RVA)?;
+    if field::<u64>(memory, air_base, engine_native_air::cair_base::HANDLE)? != base_reference {
         return Err("naval air base reference mismatch");
     }
     row.source = 2;
-    let carrier_reference = field(memory, air_base, engine_native::cair_base::HOST_REFERENCE)?;
+    let carrier_reference = field(memory, air_base, engine_native_air::cair_base::HOST_REFERENCE)?;
     let Some(carrier) = engine_native_parts::creference_registry::resolve(memory, base, carrier_reference)?
     else {
         return Ok(row);
@@ -161,7 +161,7 @@ pub fn read(
     for index in 0..wings.count {
         let reference = field(memory, element(wings, index, 8)?, 0)?;
         if let Some(primary) = wing(memory, base, reference)? {
-            let pool = ptr(memory, primary, engine_native::cair_wing::POOL)?;
+            let pool = ptr(memory, primary, engine_native_air::cair_wing::POOL)?;
             auth(memory, base, pool, engine_native_parts::cair_wing_pool::VTABLE_RVA)?;
             let definition = ptr(memory, pool, engine_native_parts::cair_wing_pool::DEFINITION)?;
             auth(
@@ -210,14 +210,14 @@ pub fn read(
     } else {
         countries.resolve(crowd_country)?.canonical_slot
     };
-    let containers = array(memory, air_base, engine_native::cair_base::COUNTRY_CONTAINERS, 8)?;
+    let containers = array(memory, air_base, engine_native_air::cair_base::COUNTRY_CONTAINERS, 8)?;
     let container = ptr(memory, element(containers, slot, 8)?, 0)?;
     if container != 0 {
         auth(
             memory,
             base,
             container,
-            engine_native::ccountry_air_container::VTABLE_RVA,
+            engine_native_air::ccountry_air_container::VTABLE_RVA,
         )?;
         row.container_present = 1;
         row.base_crowding = field(memory, container, 0xd8)?;
@@ -391,8 +391,8 @@ mod tests {
             result.bytes[0x3000 + slot * 24 + 4] = 1;
             result.q(0x3000 + slot * 24 + 8, HANDLE);
             result.q(0x3000 + slot * 24 + 16, (WING + 0x10) as u64);
-            result.q(WING, engine_native::cair_wing::VTABLE_RVA.0 as u64);
-            result.q(WING + 0x10, engine_native::cair_wing::SECONDARY_VTABLE_RVA.0 as u64);
+            result.q(WING, engine_native_air::cair_wing::VTABLE_RVA.0 as u64);
+            result.q(WING + 0x10, engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0 as u64);
             result.q(WING + 0x18, HANDLE);
             result.array(WING + 0x9f8, 0x5000, 2);
             for (index, count) in [i32::MIN, i32::MAX].into_iter().enumerate() {

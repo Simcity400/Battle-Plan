@@ -4,10 +4,8 @@ use engine_map_air::{
     map_air_carrier_operands, map_air_country_region_modifier, map_air_rocket_slots,
     map_air_sortie_inputs as native,
 };
-use engine_native::{
-    Memory, cair_regional_mission::WingIdentity, ccountry, cpdx_array::Array, walk::Buffer,
-    walk::Outcome,
-};
+use engine_native::{Memory, ccountry, cpdx_array::Array, walk::{Buffer, Outcome}};
+use engine_native_air::cair_regional_mission::WingIdentity;
 use replay_data::{
     rows::AIR_MISSION_MAP_FLAGS, rows::AIR_MISSION_REACHED_IDS, rows::AirMissionInputRow,
     rows::AirSortieBaseCountryRow, rows::AirSortieModifierMetadataRow, rows::AirSortieModifierRow,
@@ -91,7 +89,7 @@ struct Mission {
     region: Option<u32>,
     membership: bool,
     operands: native::Mission,
-    execution: Option<engine_native::cair_wing::fuel_inputs::Inputs>,
+    execution: Option<engine_native_air::cair_wing::fuel_inputs::Inputs>,
     definition_map_flags: u64,
     reached_start: usize,
     reached_len: usize,
@@ -536,7 +534,7 @@ impl Sorties {
                 *pointer = mission.pointer;
             }
             if chunk.iter().all(|mission| mission.execution.is_some()) {
-                let mut execution = [engine_native::cair_wing::fuel_inputs::Inputs::default();
+                let mut execution = [engine_native_air::cair_wing::fuel_inputs::Inputs::default();
                     native::MISSION_BATCH];
                 for (row, mission) in execution.iter_mut().zip(chunk.iter()) {
                     *row = mission

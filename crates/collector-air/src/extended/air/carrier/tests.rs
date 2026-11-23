@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(test)]
-use engine_native::{cair_base::CarrierPoolFuel, cair_base::ContainerFuel};
+use engine_native_air::cair_base::{CarrierPoolFuel, ContainerFuel};
 
 #[cfg(test)]
 fn lengths() -> CarrierLengths {
@@ -374,7 +374,7 @@ fn inconsistent_output_lengths_cannot_certify_optional_prefixes() {
 }
 
 const COHERENT_HOST_BASE: usize = 0x42000;
-pub const COHERENT_HOST_HANDLE: u64 = (0x43_u64 << 32) | engine_native::cair_base::TYPE as u64;
+pub const COHERENT_HOST_HANDLE: u64 = (0x43_u64 << 32) | engine_native_air::cair_base::TYPE as u64;
 const COHERENT_INDEXED: usize = 0x74000;
 pub const COHERENT_DENSE: usize = 0x74400;
 const COHERENT_CONTAINER_A: usize = 0x74800;
@@ -473,9 +473,17 @@ fn coherent_header(bytes: &mut [u8], address: usize, data: usize, count: u32) {
 
 pub fn coherent_carrier_fixture() -> Vec<u8> {
     use super::super::air_bases_test_kit as kit;
+    use engine_native_air::{
+        cair_base,
+        ccountry_air_container as container,
+        cstrategic_air,
+    };
     use engine_native::{
-        cair_base, cair_wing_pool, ccountry_air_container as container, cname_group_member,
-        creference_registry as registry, cship, cstrategic_air, csub_unit_definition as definition,
+        cair_wing_pool,
+        cname_group_member,
+        creference_registry as registry,
+        cship,
+        csub_unit_definition as definition,
         reference_bucket as bucket,
     };
     let mut bytes = kit::fixture();
@@ -663,7 +671,8 @@ pub fn coherent_carrier_parts() -> (super::super::Captured, crate::extended::fog
 #[cfg(test)]
 fn coherent_carrier_scale_fixture(countries: usize) -> Vec<u8> {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{ccountry, ccountry_air_container as container, cgame_state};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_air::ccountry_air_container as container;
     let mut bytes = coherent_carrier_fixture();
     let slots = countries + 1;
     let country_table = bytes.len();
@@ -998,12 +1007,12 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
 
     kit::put64(
         &mut bytes,
-        COHERENT_CONTAINER_A + engine_native::ccountry_air_container::FUEL_DEMAND_RAW,
+        COHERENT_CONTAINER_A + engine_native_air::ccountry_air_container::FUEL_DEMAND_RAW,
         (-31_i64) as u64,
     );
     kit::put64(
         &mut bytes,
-        COHERENT_CONTAINER_A + engine_native::ccountry_air_container::FUEL_ALLOCATED_RAW,
+        COHERENT_CONTAINER_A + engine_native_air::ccountry_air_container::FUEL_ALLOCATED_RAW,
         (-37_i64) as u64,
     );
     coherent_carrier_stage(&mut job, &bytes);
@@ -1206,7 +1215,7 @@ pub fn coherent_assert_complete_carrier_packets(
 #[test]
 fn native_later_host_names_survive_an_earlier_registration_header_failure() {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{cair_base, cstrategic_air_manager};
+    use engine_native_air::{cair_base, cstrategic_air_manager};
     const SECOND_BASE: usize = 0x44000;
     const SECOND_HANDLE: u64 = (0x45_u64 << 32) | cair_base::TYPE as u64;
     const HOST_VECTOR: usize = 0x32000;
@@ -1307,7 +1316,8 @@ fn native_later_host_names_survive_an_earlier_registration_header_failure() {
 #[test]
 fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure() {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{cair_wing, cair_wing_pool};
+    use engine_native_air::cair_wing;
+    use engine_native::cair_wing_pool;
     const HOST_WINGS: usize = 0x76000;
     let mut bytes = coherent_carrier_fixture();
     coherent_header(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS, 0, 0);

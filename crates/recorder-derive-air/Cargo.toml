@@ -13,6 +13,7 @@ doctest = false
 test-support = ["recorder-derive-framework/test-support"]
 
 [dependencies]
+engine-native-air.workspace = true
 engine-native.workspace = true
 recorder-derive-framework.workspace = true
 replay-columnar.workspace = true

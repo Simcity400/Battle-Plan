@@ -56,7 +56,7 @@ pub struct MapDemand {
     pub states: Result<usize, &'static str>,
     pub provinces: Result<usize, &'static str>,
     pub(crate) rail_levels: Result<usize, &'static str>,
-    pub carrier: Result<engine_native::cair_base::CarrierDemand, &'static str>,
+    pub carrier: Result<engine_native_air::cair_base::CarrierDemand, &'static str>,
     pub navies: navies::Demand,
 }
 
@@ -100,7 +100,7 @@ pub fn observe_map(memory: &impl Memory, base: usize) -> Result<Option<MapDemand
         rail_levels: engine_railways::crailway_manager::selected_inputs::demand(
             memory, base, state,
         ),
-        carrier: engine_native::cair_base::carrier_demand(memory, base, state),
+        carrier: engine_native_air::cair_base::carrier_demand(memory, base, state),
         navies: navies::observe(memory, base, state),
     }))
 }
@@ -166,10 +166,10 @@ pub fn observe_raid_arenas(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    let parents = engine_native::craid_system::required_type_tokens(memory, base, state)?;
+    let parents = engine_native_air::craid_system::required_type_tokens(memory, base, state)?;
     let player = engine_visibility::cplayer_status_cache::required_tokens(memory, base, state);
     let reservation_words =
-        engine_native::raid_launch_inputs::required_reservations(memory, base, state)?;
+        engine_native_air::raid_launch_inputs::required_reservations(memory, base, state)?;
     let facility_rows = match engine_raid_inputs::raid_facilities::count(memory, base, state) {
         engine_native::walk::Outcome::Rows { len } => Ok(len),
         engine_native::walk::Outcome::Truncated { len, unread_rows } => len
@@ -1125,7 +1125,7 @@ mod tests {
                 let count = if address == 0x1000 + cgame_state::COUNTRIES {
                     5_001
                 } else if self.manager != 0
-                    && address == self.manager + engine_native::cstrategic_air_manager::COUNTRY_AIR
+                    && address == self.manager + engine_native_air::cstrategic_air_manager::COUNTRY_AIR
                 {
                     self.slots
                 } else {
@@ -1452,7 +1452,7 @@ mod tests {
                 }
                 a if (AIR_MANAGER..AIR_MANAGER + 8).contains(&a) => word(
                     AIR_MANAGER,
-                    (BASE + engine_native::cstrategic_air_manager::VTABLE_RVA.0) as u64,
+                    (BASE + engine_native_air::cstrategic_air_manager::VTABLE_RVA.0) as u64,
                 ),
                 a if (AIR_MANAGER + 0x30..AIR_MANAGER + 0x40).contains(&a) => {
                     match a - AIR_MANAGER - 0x30 {
@@ -1471,11 +1471,11 @@ mod tests {
                 a if (AIR_OBJECTS + AIR_OBJECT..AIR_OBJECTS + slots * AIR_OBJECT).contains(&a) => {
                     let slot = (a - AIR_OBJECTS) / AIR_OBJECT;
                     let object = AIR_OBJECTS + slot * AIR_OBJECT;
-                    let table = engine_native::cstrategic_air::HISTORY_TABLE;
+                    let table = engine_native_air::cstrategic_air::HISTORY_TABLE;
                     match a - object {
                         0..8 => word(
                             object,
-                            (BASE + engine_native::cstrategic_air::VTABLE_RVA.0) as u64,
+                            (BASE + engine_native_air::cstrategic_air::VTABLE_RVA.0) as u64,
                         ),
                         o if (0x90..0x94).contains(&o) => word(object + 0x90, slot as u64),
                         o if (table..table + 8).contains(&o) => word(

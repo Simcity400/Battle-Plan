@@ -335,7 +335,8 @@ fn copy_stats_owners(
     base: usize,
     game_state: usize,
 ) {
-    use engine_native::{ccountry, cstrategic_air, cstrategic_air_manager};
+    use engine_native::ccountry;
+    use engine_native_air::{cstrategic_air, cstrategic_air_manager};
     let countries = match sspan(
         log,
         memory,

@@ -1,5 +1,6 @@
 use collector_hooks::hook::Hook;
-use engine_native::{Memory, cair_wing as wing, cpdx_array::Array};
+use engine_native::{Memory, cpdx_array::Array};
+use engine_native_air::cair_wing as wing;
 use std::{
     collections::HashMap,
     ops::Range,

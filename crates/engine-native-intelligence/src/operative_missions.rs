@@ -48,7 +48,7 @@ const CLIENT_COUNTRY: usize = 0x520;
 const CLIENT_COUNTRY_FALLBACK: usize = 0x524;
 
 fn warning_handles(memory: &impl Memory, base: usize) -> Result<Vec<u64>, &'static str> {
-    use engine_native::command_inputs::{IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA};
+    use engine_native_air::command_inputs::{IDLER_RVA, IN_GAME_IDLER_VTABLE_RVA};
     let idler = field::<u64>(memory, site(base, IDLER_RVA)?, 0)? as usize;
     if idler == 0
         || read::<u64>(memory, idler)

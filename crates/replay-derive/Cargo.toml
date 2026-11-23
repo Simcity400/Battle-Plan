@@ -13,6 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-native-air.workspace = true
 engine-native-naval.workspace = true
 game-model.workspace = true
 engine-executable.workspace = true

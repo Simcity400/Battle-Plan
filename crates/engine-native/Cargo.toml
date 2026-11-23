@@ -27,6 +27,7 @@ engine-executable.workspace = true
 replay-spool.workspace = true
 
 [dev-dependencies]
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-native-naval = { workspace = true, features = ["test-support"] }
 engine-native-intelligence = { workspace = true, features = ["test-support"] }
 engine-native-land = { workspace = true, features = ["test-support"] }

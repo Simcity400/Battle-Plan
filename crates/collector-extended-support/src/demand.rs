@@ -43,7 +43,7 @@ pub fn demand_air_game_state(
         return Ok(None);
     }
     let slots = manager
-        .checked_add(engine_native::cstrategic_air_manager::COUNTRY_AIR)
+        .checked_add(engine_native_air::cstrategic_air_manager::COUNTRY_AIR)
         .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
         .ok_or("input demand strategic air country roster unreadable or invalid")?;
     let countries = state

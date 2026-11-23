@@ -148,7 +148,7 @@ impl Captured {
     }
 }
 
-pub fn scope(row: &engine_native::craid_target::Row) -> RaidScope {
+pub fn scope(row: &engine_native_air::craid_target::Row) -> RaidScope {
     RaidScope {
         province: row.province,
         state: row.state,

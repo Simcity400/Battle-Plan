@@ -209,11 +209,11 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         MANAGER,
-        &(engine_native::cstrategic_air_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_air::cstrategic_air_manager::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
-        MANAGER + engine_native::cstrategic_air_manager::STATE_AIR_BASES,
+        MANAGER + engine_native_air::cstrategic_air_manager::STATE_AIR_BASES,
         0x11600,
         1,
     );
@@ -238,21 +238,21 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         CONTAINER,
-        &(engine_native::ccountry_air_container::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_air::ccountry_air_container::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        CONTAINER + engine_native::ccountry_air_container::COUNTRY,
+        CONTAINER + engine_native_air::ccountry_air_container::COUNTRY,
         &2_u32.to_le_bytes(),
     );
     put(
         &mut bytes,
-        CONTAINER + engine_native::ccountry_air_container::CAPACITY_RAW,
-        &engine_native::ccountry_air_container::INITIAL_CAPACITY_RAW.to_le_bytes(),
+        CONTAINER + engine_native_air::ccountry_air_container::CAPACITY_RAW,
+        &engine_native_air::ccountry_air_container::INITIAL_CAPACITY_RAW.to_le_bytes(),
     );
     array(
         &mut bytes,
-        CONTAINER + engine_native::ccountry_air_container::POOLS,
+        CONTAINER + engine_native_air::ccountry_air_container::POOLS,
         0x11800,
         1,
     );
@@ -272,21 +272,21 @@ fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         WING,
-        &(engine_native::cair_wing::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_air::cair_wing::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine_native::cair_wing::SECONDARY,
-        &(engine_native::cair_wing::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
+        WING + engine_native_air::cair_wing::SECONDARY,
+        &(engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine_native::cair_wing::REFERENCE_TYPE,
-        &((77_u64 << 32) | u64::from(engine_native::cair_wing::TYPE)).to_le_bytes(),
+        WING + engine_native_air::cair_wing::REFERENCE_TYPE,
+        &((77_u64 << 32) | u64::from(engine_native_air::cair_wing::TYPE)).to_le_bytes(),
     );
     put(
         &mut bytes,
-        WING + engine_native::cair_wing::POOL,
+        WING + engine_native_air::cair_wing::POOL,
         &(POOL as u64).to_le_bytes(),
     );
     bytes
@@ -388,8 +388,8 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
         &[rows::AirBaseRegistrationRow {
             base: (4 << 32) | u64::from(cair_base::TYPE),
             slot: 1,
-            capacity_raw: engine_native::ccountry_air_container::INITIAL_CAPACITY_RAW,
-            wings: vec![(77 << 32) | u64::from(engine_native::cair_wing::TYPE)],
+            capacity_raw: engine_native_air::ccountry_air_container::INITIAL_CAPACITY_RAW,
+            wings: vec![(77 << 32) | u64::from(engine_native_air::cair_wing::TYPE)],
             carrier: rows::Recorded::Value(None),
             transport_planes: rows::Recorded::Value(rows::Retired),
             fuel_demand_raw: rows::Recorded::Value(None),

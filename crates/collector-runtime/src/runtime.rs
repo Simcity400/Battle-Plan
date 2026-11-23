@@ -3790,7 +3790,7 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine_native::Memory,
         base: usize,
-    ) -> Option<io::Result<engine_native::game_score_inputs::ArenaSizing>> {
+    ) -> Option<io::Result<engine_native_air::game_score_inputs::ArenaSizing>> {
         if self
             .last_game_score
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
@@ -8719,7 +8719,8 @@ mod tests {
 
     #[test]
     fn raid_path_memo_growth_presizes_before_refresh() {
-        use engine_native::{Memory, craid_system};
+        use engine_native::Memory;
+        use engine_native_air::craid_system;
         use engine_raid_inputs::raid_path_memo;
         use std::cell::Cell;
         struct Memo {

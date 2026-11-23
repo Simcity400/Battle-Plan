@@ -95,7 +95,8 @@ fn history(
 }
 
 pub fn fixture() -> Vec<u8> {
-    use engine_native::{ccountry, cgame_state, cstrategic_air, cstrategic_air_manager};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_air::{cstrategic_air, cstrategic_air_manager};
     let mut bytes = vec![0; 0x82000];
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 3);
     p64(&mut bytes, CTAB, 0);
@@ -146,7 +147,8 @@ pub fn fixture() -> Vec<u8> {
 }
 
 pub fn add_reserved_alias_and_null_slot(bytes: &mut [u8]) {
-    use engine_native::{ccountry, cgame_state, cstrategic_air_manager};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_air::cstrategic_air_manager;
     const RESERVED: usize = 0x20100;
     header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
     p64(bytes, CTAB, RESERVED as u64);
@@ -199,7 +201,7 @@ pub fn mod_fixture(count: usize) -> Vec<u8> {
     bytes.resize(data + count * 8, 0);
     header(
         &mut bytes,
-        AIR + engine_native::cstrategic_air::HISTORY_TABLE,
+        AIR + engine_native_air::cstrategic_air::HISTORY_TABLE,
         data,
         count as u32,
     );

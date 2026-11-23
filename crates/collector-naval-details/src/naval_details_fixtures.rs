@@ -168,13 +168,13 @@ impl Fixture {
                 + engine_native::reference_bucket::DISTANCE,
             &[255],
         );
-        this.u64(WING, (IMAGE + engine_native::cair_wing::VTABLE_RVA.0) as u64);
+        this.u64(WING, (IMAGE + engine_native_air::cair_wing::VTABLE_RVA.0) as u64);
         this.u64(
-            WING + engine_native::cair_wing::SECONDARY,
-            (IMAGE + engine_native::cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
+            WING + engine_native_air::cair_wing::SECONDARY,
+            (IMAGE + engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
         );
-        this.u64(WING + engine_native::cair_wing::REFERENCE_TYPE, WING_HANDLE);
-        this.u64(WING + engine_native::cair_wing::POOL, (WING + 0x100) as u64);
+        this.u64(WING + engine_native_air::cair_wing::REFERENCE_TYPE, WING_HANDLE);
+        this.u64(WING + engine_native_air::cair_wing::POOL, (WING + 0x100) as u64);
         this.u64(
             WING + 0x100,
             (IMAGE + engine_native::cair_wing_pool::VTABLE_RVA.0) as u64,
@@ -195,7 +195,7 @@ impl Fixture {
         this.register(
             SHIP_BUCKETS,
             WING_HANDLE,
-            WING + engine_native::cair_wing::SECONDARY,
+            WING + engine_native_air::cair_wing::SECONDARY,
             &mut occupied,
         );
         let mut next_ship_id = 1_u32;
@@ -774,43 +774,43 @@ pub fn live_shape() -> LiveShape {
                 memory.register(SHIP_BUCKETS, reference, pointer, &mut occupied);
                 reference
             };
-            let base_handle = handle(engine_native::cair_base::TYPE, air_base, &mut memory);
+            let base_handle = handle(engine_native_air::cair_base::TYPE, air_base, &mut memory);
             let wing_handle = handle(
-                engine_native::cair_wing::TYPE,
-                wing + engine_native::cair_wing::SECONDARY,
+                engine_native_air::cair_wing::TYPE,
+                wing + engine_native_air::cair_wing::SECONDARY,
                 &mut memory,
             );
             memory.u64(
                 air_base,
-                (IMAGE + engine_native::cair_base::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_air::cair_base::VTABLE_RVA.0) as u64,
             );
-            memory.u64(air_base + engine_native::cair_base::HANDLE, base_handle);
+            memory.u64(air_base + engine_native_air::cair_base::HANDLE, base_handle);
             memory.u64(
-                air_base + engine_native::cair_base::HOST_REFERENCE,
+                air_base + engine_native_air::cair_base::HOST_REFERENCE,
                 ship_handle,
             );
             memory.array(
-                air_base + engine_native::cair_base::COUNTRY_CONTAINERS,
+                air_base + engine_native_air::cair_base::COUNTRY_CONTAINERS,
                 block + 0x100,
                 COUNTRY_COUNT + 1,
             );
             memory.u64(block + 0x100 + country * 8, container as u64);
             memory.array(
-                air_base + engine_native::cair_base::REGISTERED_CONTAINERS,
+                air_base + engine_native_air::cair_base::REGISTERED_CONTAINERS,
                 block + 0x300,
                 1,
             );
             memory.u64(block + 0x300, container as u64);
             memory.u64(
                 container,
-                (IMAGE + engine_native::ccountry_air_container::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_air::ccountry_air_container::VTABLE_RVA.0) as u64,
             );
             memory.u32(
-                container + engine_native::ccountry_air_container::COUNTRY,
+                container + engine_native_air::ccountry_air_container::COUNTRY,
                 country as u32,
             );
             memory.array(
-                container + engine_native::ccountry_air_container::POOLS,
+                container + engine_native_air::ccountry_air_container::POOLS,
                 block + 0x320,
                 1,
             );
@@ -833,13 +833,13 @@ pub fn live_shape() -> LiveShape {
                 1,
             );
             memory.u64(block + 0x480, wing as u64);
-            memory.u64(wing, (IMAGE + engine_native::cair_wing::VTABLE_RVA.0) as u64);
+            memory.u64(wing, (IMAGE + engine_native_air::cair_wing::VTABLE_RVA.0) as u64);
             memory.u64(
-                wing + engine_native::cair_wing::SECONDARY,
-                (IMAGE + engine_native::cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
+                wing + engine_native_air::cair_wing::SECONDARY,
+                (IMAGE + engine_native_air::cair_wing::SECONDARY_VTABLE_RVA.0) as u64,
             );
-            memory.u64(wing + engine_native::cair_wing::REFERENCE_TYPE, wing_handle);
-            memory.u64(wing + engine_native::cair_wing::POOL, pool as u64);
+            memory.u64(wing + engine_native_air::cair_wing::REFERENCE_TYPE, wing_handle);
+            memory.u64(wing + engine_native_air::cair_wing::POOL, pool as u64);
             memory.u64(
                 ship + engine_native::cship::CARRIER_AIR_BASE,
                 air_base as u64,
@@ -915,9 +915,9 @@ impl Memory for LiveShape {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if matches!(address,
                 x if x == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0
-                    + engine_native::cair_base::TYPE as usize * 8
+                    + engine_native_air::cair_base::TYPE as usize * 8
                     || x == IMAGE + engine_native::creference_registry::LOW_ROOTS_RVA.0
-                        + engine_native::cair_wing::TYPE as usize * 8)
+                        + engine_native_air::cair_wing::TYPE as usize * 8)
             && output.len() == 8
         {
             output.copy_from_slice(&(SHIP_TABLE as u64).to_le_bytes());

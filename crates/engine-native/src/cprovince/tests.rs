@@ -1775,7 +1775,7 @@ fn allocation_capacity_overflow_owned_capture_buffers() {
         oom
     );
     assert_eq!(
-        crate::ccountry_raid_status::TypeTokens::try_with_definitions(usize::MAX)
+        engine_native_air::ccountry_raid_status::TypeTokens::try_with_definitions(usize::MAX)
             .err()
             .unwrap()
             .kind(),

@@ -18,6 +18,7 @@ test = false
 alloc-fault-injection = []
 
 [dependencies]
+engine-native-air.workspace = true
 content-reader-key-names.workspace = true
 content-reader-layers.workspace = true
 content-reader-map.workspace = true

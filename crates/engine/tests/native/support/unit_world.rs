@@ -1,10 +1,25 @@
 use engine_deployment::carmy_upgrades_requests as upgrades;
+use engine_native_air::{
+    cair_base,
+    cair_wing,
+    cstrategic_air,
+    cstrategic_air_manager as air_manager,
+};
 use engine_native::{
-    cair_base, cair_wing, cair_wing_pool, carmy, ccountry, cequipment_variant as variant,
-    cequipment_variant_pool as equipment, cfleet, cgame_state, cprovince,
-    creferenced_division_template as template, cship, cstrategic_air,
-    cstrategic_air_manager as air_manager, csub_unit_definition as stats, ctask_force, cunit,
-    memory::CountedMemory, memory::LiveMemory,
+    cair_wing_pool,
+    carmy,
+    ccountry,
+    cequipment_variant as variant,
+    cequipment_variant_pool as equipment,
+    cfleet,
+    cgame_state,
+    cprovince,
+    creferenced_division_template as template,
+    cship,
+    csub_unit_definition as stats,
+    ctask_force,
+    cunit,
+    memory::{CountedMemory, LiveMemory},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -252,14 +267,14 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
             (slot as u64) << 32 | cship::HANDLE_TYPE as u64,
         );
         h.u32(base + cair_base::CAPACITY, wings.len() as u32 * 10);
-        let container = h.alloc(engine_native::ccountry_air_container::SIZE);
-        h.ptr(container, engine_native::ccountry_air_container::VTABLE_RVA.0);
+        let container = h.alloc(engine_native_air::ccountry_air_container::SIZE);
+        h.ptr(container, engine_native_air::ccountry_air_container::VTABLE_RVA.0);
         h.u32(
-            container + engine_native::ccountry_air_container::COUNTRY,
+            container + engine_native_air::ccountry_air_container::COUNTRY,
             slot as u32,
         );
         h.array(
-            container + engine_native::ccountry_air_container::POOLS,
+            container + engine_native_air::ccountry_air_container::POOLS,
             &[pool],
         );
         let mut containers = vec![0; shape.countries + 1];

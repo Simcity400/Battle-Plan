@@ -2117,7 +2117,7 @@ pub(crate) fn capture(
                 .map_err(|withheld| withheld.to_string())
                 .and_then(|()| {
                     engine_native::cgame_state::clock_sites(base)
-                        .and_then(|()| engine_native::command_inputs::idler_sites(base))
+                        .and_then(|()| engine_native_air::command_inputs::idler_sites(base))
                         .map_err(str::to_owned)
                 });
             if let Err(withheld) = readable {

@@ -145,7 +145,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
         };
     }
     let mut sites = match family {
-        Family::PlayerCommands => engine_native::command_inputs::SITES
+        Family::PlayerCommands => engine_native_air::command_inputs::SITES
             .iter()
             .map(|site| site.rva)
             .collect(),
@@ -396,7 +396,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
                     .map(|s| s.rva),
             );
             sites.extend(
-                engine_native::cair_wing::replacement::MUTATIONS
+                engine_native_air::cair_wing::replacement::MUTATIONS
                     .iter()
                     .map(|s| s.rva),
             );

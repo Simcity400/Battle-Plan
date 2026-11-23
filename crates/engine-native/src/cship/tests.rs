@@ -180,7 +180,7 @@ fn counter_flags_include_all_positive_variants_and_preserve_raw_maximum_and_airb
     word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
     word(&mut bytes, CARRIER_AIR_BASE, (BASE + 0x5800) as u64);
     word(&mut bytes, ANTI_AIR_BASE, i64::MIN as u64);
-    word(&mut bytes, 0x5800, crate::cair_base::VTABLE_RVA.0 as u64);
+    word(&mut bytes, 0x5800, engine_native_air::cair_base::VTABLE_RVA.0 as u64);
     word(&mut bytes, 0x5808, (7 << 32) | 65);
     word(&mut bytes, 0x5860, SHIP_ID);
     let row = model(&bytes).unwrap();
@@ -675,9 +675,9 @@ fn full_model_fixture() -> Vec<u8> {
     bytes[DEFINITION_VALID] = 255;
     word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
     word(&mut bytes, CARRIER_AIR_BASE, (BASE + AIR) as u64);
-    word(&mut bytes, AIR, crate::cair_base::VTABLE_RVA.0 as u64);
-    word(&mut bytes, AIR + crate::cair_base::HANDLE, (7 << 32) | 65);
-    word(&mut bytes, AIR + crate::cair_base::HOST_REFERENCE, SHIP_ID);
+    word(&mut bytes, AIR, engine_native_air::cair_base::VTABLE_RVA.0 as u64);
+    word(&mut bytes, AIR + engine_native_air::cair_base::HANDLE, (7 << 32) | 65);
+    word(&mut bytes, AIR + engine_native_air::cair_base::HOST_REFERENCE, SHIP_ID);
     bytes
 }
 
@@ -748,12 +748,12 @@ fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
         (ANTI_AIR_BASE, 8, "ship anti-air base unreadable"),
         (AIR, 8, "ship carrier air base identity invalid"),
         (
-            AIR + crate::cair_base::HANDLE,
+            AIR + engine_native_air::cair_base::HANDLE,
             8,
             "ship air base handle unreadable",
         ),
         (
-            AIR + crate::cair_base::HOST_REFERENCE,
+            AIR + engine_native_air::cair_base::HOST_REFERENCE,
             8,
             "ship carrier air base has null handle",
         ),

@@ -441,7 +441,8 @@ fn first_hour_naval_memberships_handoff_all_wings() {
 fn naval_decode_grows_shared_memberships_from_the_original_census() {
     use super::naval_test_kit as kit;
     use collector_air::extended::air;
-    use engine_native::{cair_wing, cair_wing_pool, cstrategic_air};
+    use engine_native_air::{cair_wing, cstrategic_air};
+    use engine_native::cair_wing_pool;
     let mut bytes = kit::fixture();
     let pointer = |bytes: &mut [u8], address: usize, value: usize| {
         bytes[address..address + 8].copy_from_slice(&(value as u64).to_le_bytes());
@@ -843,7 +844,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     put(&mut base, LTAB + 12, &1_u32.to_le_bytes());
     put(
         &mut base,
-        0x40000 + engine_native::cstrategic_air_manager::COUNTRY_AIR + 8,
+        0x40000 + engine_native_air::cstrategic_air_manager::COUNTRY_AIR + 8,
         &[4, 0, 0, 0, 4, 0, 0, 0],
     );
     let mut variants: Vec<(&str, Vec<u8>, Option<usize>)> = vec![("clean", base.clone(), None)];

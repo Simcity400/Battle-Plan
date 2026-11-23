@@ -5,7 +5,8 @@ use collector_primitives::{
 };
 use engine_allocation::{copy_vec, owned_vec, reserve, resize};
 use engine_map_air::radar_group;
-use engine_native::{Memory, cair_base, ccontroller_area, ccountry, ctheatre, walk::Outcome};
+use engine_native::{Memory, ccontroller_area, ccountry, ctheatre, walk::Outcome};
+use engine_native_air::cair_base;
 use engine_visibility::unit_viewer_entry;
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableInput;

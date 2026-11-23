@@ -14,12 +14,9 @@ use engine_native::{
     cgame_state,
     cpdx_array,
     cprovince,
-    craid_system,
-    craid_target,
     creference_registry,
     cstate,
     cstatic_modifier,
-    cstrategic_air,
     cstrategic_region,
     csupply_system,
     memory,
@@ -31,6 +28,7 @@ use engine_native::{
     supply_companion,
     walk,
 };
+use engine_native_air::{craid_system, craid_target, cstrategic_air};
 use engine_native_intelligence::{
     ccryptology,
     cintelligence_agency,
@@ -40,7 +38,8 @@ use engine_native_intelligence::{
 };
 use engine_native_land::supply_node;
 #[cfg(test)]
-use engine_native::{cstrategic_air_manager, raid_launch_inputs, reference_bucket};
+use engine_native_air::{cstrategic_air_manager, raid_launch_inputs};
+use engine_native::reference_bucket;
 use engine_projects::{nproject_cprogram, nproject_cprogram_status, nproject_cproject_pool};
 use engine_resources::{
     ccountry_resources, cresource_origin, cstrategic_resource, cstrategic_resource_database,

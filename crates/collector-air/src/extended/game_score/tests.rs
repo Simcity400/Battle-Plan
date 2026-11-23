@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{cair_wing, memory::SliceMemory};
+use engine_native_air::cair_wing;
+use engine_native::memory::SliceMemory;
 use replay_data::rows::TableRows;
 
 fn put64(bytes: &mut [u8], at: usize, value: u64) {
@@ -246,7 +247,7 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     );
     array(
         &mut bytes,
-        ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
+        ENTRY + engine_native_air::cstrategic_air::FIRST_AIR_SITES,
         0x3f000,
         1,
     );
@@ -254,12 +255,12 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     put64(
         &mut bytes,
         SITE,
-        engine_native::cair_base::VTABLE_RVA.0 as u64,
+        engine_native_air::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, SITE + 8, 65);
     put32(
         &mut bytes,
-        SITE + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
+        SITE + engine_native_air::cair_base::COUNTRY_CONTAINERS_COUNT,
         1,
     );
     for wing in [kit::WING, 0x34000] {
@@ -395,7 +396,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     const BASE: usize = 0x3a000;
     array(
         &mut bytes,
-        ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
+        ENTRY + engine_native_air::cstrategic_air::FIRST_AIR_SITES,
         0x3b000,
         2,
     );
@@ -404,17 +405,17 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     put64(
         &mut bytes,
         BASE,
-        engine_native::cair_base::VTABLE_RVA.0 as u64,
+        engine_native_air::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, BASE + 8, 65);
     put32(
         &mut bytes,
-        BASE + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
+        BASE + engine_native_air::cair_base::COUNTRY_CONTAINERS_COUNT,
         2,
     );
     put64(
         &mut bytes,
-        BASE + engine_native::cair_base::COUNTRY_CONTAINERS,
+        BASE + engine_native_air::cair_base::COUNTRY_CONTAINERS,
         0x3c000,
     );
     put64(&mut bytes, 0x3c008, 0x3d000);
@@ -461,7 +462,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     impl Memory for ScoreReads<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
             let watched = [
-                ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
+                ENTRY + engine_native_air::cstrategic_air::FIRST_AIR_SITES,
                 kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
                 0x34000 + cair_wing::DEFAULT_STATS + 0x33 * 8,
             ];
@@ -518,7 +519,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     let mut unrelated = bytes.clone();
     put64(
         &mut unrelated,
-        kit::WING + cair_wing::MISSION + engine_native::air_mission::REGION,
+        kit::WING + cair_wing::MISSION + engine_native_air::air_mission::REGION,
         0xdead0000,
     );
     assert!(air::copy_air_refresh(&kit::memory(&unrelated), context, &mut job).raw_ok);
@@ -585,7 +586,7 @@ fn game_score_fleet_header_grows_first_witness_and_the_air_sites_grow_with_it() 
     );
     array(
         &mut bytes,
-        ENTRY + engine_native::cstrategic_air::FIRST_AIR_SITES,
+        ENTRY + engine_native_air::cstrategic_air::FIRST_AIR_SITES,
         0x3f000,
         1,
     );
@@ -593,12 +594,12 @@ fn game_score_fleet_header_grows_first_witness_and_the_air_sites_grow_with_it() 
     put64(
         &mut bytes,
         0x3f100,
-        engine_native::cair_base::VTABLE_RVA.0 as u64,
+        engine_native_air::cair_base::VTABLE_RVA.0 as u64,
     );
     put64(&mut bytes, 0x3f108, 65);
     put32(
         &mut bytes,
-        0x3f100 + engine_native::cair_base::COUNTRY_CONTAINERS_COUNT,
+        0x3f100 + engine_native_air::cair_base::COUNTRY_CONTAINERS_COUNT,
         1,
     );
     struct Globals<'a>(&'a [u8]);
@@ -658,7 +659,7 @@ fn game_score_air_short_storage_grows_from_full_demand_and_absence_is_not_failur
     let mut bytes = vec![0; 0x500];
     array(
         &mut bytes,
-        0x100 + engine_native::cstrategic_air::FIRST_AIR_SITES,
+        0x100 + engine_native_air::cstrategic_air::FIRST_AIR_SITES,
         0x300,
         7,
     );
@@ -688,7 +689,7 @@ fn game_score_air_short_storage_grows_from_full_demand_and_absence_is_not_failur
     air.owner(&memory, 0, 3, None);
     array(
         &mut bytes,
-        0x100 + engine_native::cstrategic_air::FIRST_AIR_SITES,
+        0x100 + engine_native_air::cstrategic_air::FIRST_AIR_SITES,
         0,
         0,
     );

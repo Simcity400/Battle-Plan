@@ -9,12 +9,24 @@ use engine_air_history::cloop_history;
 use engine_allocation as allocation;
 use engine_map_air::map_air_base_reference;
 use engine_native::{
-    Memory, cace, cair_base,
-    cair_regional_mission::{self, WingIdentity},
-    cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,
+    Memory,
+    cair_wing_pool,
+    ccountry,
+    cgame_state,
     cpdx_array::Array,
-    cprovince, cstate, cstrategic_air_manager, equipment_entry, msvc_string,
+    cprovince,
+    cstate,
+    equipment_entry,
+    msvc_string,
     walk::{Buffer, Outcome},
+};
+use engine_native_air::{
+    cace,
+    cair_base,
+    cair_regional_mission::{self, WingIdentity},
+    cair_wing,
+    ccountry_air_container,
+    cstrategic_air_manager,
 };
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::{TableInput, TableView};
@@ -102,10 +114,10 @@ impl Capacities {
         self.scores.regions = self.scores.regions.max(regions.count as usize);
         let mut countries = 0usize;
         let mut missions = 0usize;
-        engine_native::cstrategic_air::visit(memory, base, state, |root| {
+        engine_native_air::cstrategic_air::visit(memory, base, state, |root| {
             let active = root
                 .address
-                .checked_add(engine_native::cstrategic_air::ALL_ACTIVE_MISSIONS)
+                .checked_add(engine_native_air::cstrategic_air::ALL_ACTIVE_MISSIONS)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("air mission sizing active vector unreadable")?;
             missions = missions
@@ -1578,7 +1590,7 @@ fn valid_names(outcome: Outcome, rows: &[cace::Row], bytes: &[u8], len: usize) -
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WingMembershipRead {
-    pub value: engine_native::ctheatre::WingMembership,
+    pub value: engine_native_air::cair_wing::WingMembership,
     pub error: Option<&'static str>,
 }
 

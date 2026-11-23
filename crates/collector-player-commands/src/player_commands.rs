@@ -6,9 +6,14 @@ use collector_primitives::first_reason::FirstReason;
 use collector_primitives::shared_lane::SharedLane;
 use engine_executable::executable_tables::commands::{self, Target, Token};
 use engine_native::{
-    Memory, cgame_state, chuman, command_inputs as native, cpdx_array::Array, memory::LiveMemory,
+    Memory,
+    cgame_state,
+    chuman,
+    cpdx_array::Array,
+    memory::LiveMemory,
     read,
 };
+use engine_native_air::command_inputs as native;
 use replay_recording::command_packet::{Actor, Batch, Category, Event, Kind, Origin, Span};
 use std::{
     borrow::Cow,

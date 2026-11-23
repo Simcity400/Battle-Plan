@@ -6,7 +6,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, ccountry, raid_launch_inputs as native, walk::Outcome};
+use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_air::raid_launch_inputs as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AceRangeInputRow,
     rows::CountryCommandPowerRow, rows::RaidAirSiteRow, rows::RaidCountryInputRow,

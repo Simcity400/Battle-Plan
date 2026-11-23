@@ -197,12 +197,12 @@ impl Changes for Observer {
 
 pub fn capacity_written(base: usize) -> Notification<'static> {
     WATCHES.capacities.fetch_add(1, Ordering::Relaxed);
-    WATCHES.notify(handle(engine_native::cair_base::HANDLE, base))
+    WATCHES.notify(handle(engine_native_air::cair_base::HANDLE, base))
 }
 
 pub fn base_destroyed(base: usize) -> (Notification<'static>, Notification<'static>) {
     (
-        WATCHES.notify(handle(engine_native::cair_base::HANDLE, base)),
+        WATCHES.notify(handle(engine_native_air::cair_base::HANDLE, base)),
         WATCHES.registry.notify(MEMBERSHIP as usize),
     )
 }

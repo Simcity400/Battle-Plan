@@ -589,7 +589,7 @@ unsafe extern "system-unwind" fn land_scale_and_ceiling(
 unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source: usize) {
     assert!(STORE.try_lock().is_ok());
     *FORWARDED.lock().unwrap() = [wing, request, source, 0, 0, 0, 0, 0];
-    let bank = wing + engine_native::cair_wing::EQUIPMENT_POOL;
+    let bank = wing + engine_native_air::cair_wing::EQUIPMENT_POOL;
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
     let amount = i64::from(request as u32 as i32) * equipment_entry::FIXED_POINT_SCALE;
@@ -721,7 +721,7 @@ fn negative_air_request_records_signed_gain_without_poison() {
     let mut world = World::new(1);
     world.amount(0, 1000000);
     let mut wing = vec![0u64; 0xa00 / 8];
-    let pool_offset = engine_native::cair_wing::EQUIPMENT_POOL;
+    let pool_offset = engine_native_air::cair_wing::EQUIPMENT_POOL;
     wing[pool_offset / 8] = pool::VTABLE_RVA.0 as u64;
     wing[(pool_offset + pool::ITEMS) / 8] = (world.army() + 0x600) as u64;
     wing[(pool_offset + pool::CAPACITY) / 8] = (1u64 << 32) | 1;

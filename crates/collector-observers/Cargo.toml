@@ -48,6 +48,7 @@ wing_changes = []
 world_input_changes = []
 
 [dependencies]
+engine-native-air.workspace = true
 engine-sites.workspace = true
 engine-air-history.workspace = true
 engine-allocation.workspace = true

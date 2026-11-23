@@ -164,7 +164,8 @@ fn assert_rows(air: &Captured, fog: &super::super::fog::Captured, expected: &kit
 
 #[test]
 fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
-    use engine_native::{cace, cpdx_array, msvc_string};
+    use engine_native_air::cace;
+    use engine_native::{cpdx_array, msvc_string};
     const GUI: usize = 0x74000;
     const DEFINITION: usize = 0x75000;
     const DEFINITION_BYTES: usize = 0x75100;

@@ -4,9 +4,17 @@ use collector_primitives::table_capture::CaptureRows;
 use collector_projection::projection::Projection;
 use collector_projection::projection::project_table;
 use collector_projection::projection::scalar_table;
+use engine_native_air::cair_wing;
 use engine_native::{
-    cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant, corder_instance,
-    cship, ctask_force, walk::Outcome,
+    cfleet,
+    chuman,
+    cland_combat,
+    cnaval_combat,
+    cnaval_combatant,
+    corder_instance,
+    cship,
+    ctask_force,
+    walk::Outcome,
 };
 use replay_data::{
     rows::AirWingRow, rows::ArmyOrderRow, rows::FleetRow, rows::HumanControllerRow,

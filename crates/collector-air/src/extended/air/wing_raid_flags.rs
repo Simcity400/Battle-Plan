@@ -1,6 +1,7 @@
 use engine_allocation as allocation;
 use engine_mutations::air_wing_equipment_mutations as sites;
-use engine_native::{Memory, cair_wing, craid_instance};
+use engine_native::Memory;
+use engine_native_air::{cair_wing, craid_instance};
 
 fn demanded(row: &cair_wing::Row) -> bool {
     row.air_base != 0

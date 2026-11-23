@@ -37,8 +37,8 @@ const S2: usize = 0x50200;
 const P2: usize = 0x51200;
 const CVEC2: usize = 0x66000;
 
-pub const WING_HANDLE_0: u64 = (0x77 << 32) | engine_native::cair_wing::TYPE as u64;
-pub const WING_HANDLE_1: u64 = (0x78 << 32) | engine_native::cair_wing::TYPE as u64;
+pub const WING_HANDLE_0: u64 = (0x77 << 32) | engine_native_air::cair_wing::TYPE as u64;
+pub const WING_HANDLE_1: u64 = (0x78 << 32) | engine_native_air::cair_wing::TYPE as u64;
 
 pub fn put32(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -59,7 +59,8 @@ pub fn fixture() -> Vec<u8> {
 }
 
 pub fn add_alias_and_rocket(bytes: &mut [u8]) {
-    use engine_native::{cair_base, cgame_state, cprovince, cstate, cstrategic_air_manager};
+    use engine_native_air::{cair_base, cstrategic_air_manager};
+    use engine_native::{cgame_state, cprovince, cstate};
     header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
     put64(bytes, CTAB + 24, C0 as u64);
     put32(bytes, LTAB + 12, 1);
@@ -101,9 +102,19 @@ pub fn add_reserved_alias(bytes: &mut [u8]) {
 }
 
 fn fixture_inner() -> Vec<u8> {
+    use engine_native_air::{
+        cair_base,
+        cair_wing,
+        ccountry_air_container,
+        cstrategic_air_manager,
+    };
     use engine_native::{
-        cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,
-        cprovince, cstate, cstrategic_air_manager, msvc_string,
+        cair_wing_pool,
+        ccountry,
+        cgame_state,
+        cprovince,
+        cstate,
+        msvc_string,
     };
     let mut bytes = vec![0; 0x80000];
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 3);
@@ -302,7 +313,8 @@ fn ace(
     names: [(&str, bool); 3],
 ) {
     #![allow(clippy::too_many_arguments)]
-    use engine_native::{cace, msvc_string};
+    use engine_native_air::cace;
+    use engine_native::msvc_string;
     put64(bytes, at, cace::VTABLE_RVA.0 as u64);
     put64(bytes, at + cace::REFERENCE, (id << 32) | 0xace);
     put32(bytes, at + cace::AIRCRAFT_TYPE_MASK, 0xF);
@@ -372,7 +384,7 @@ pub fn mod_fixture(count: usize) -> Vec<u8> {
     bytes.resize(aces + count * 8, 0);
     header(
         &mut bytes,
-        MANAGER + engine_native::cstrategic_air_manager::STATELESS_AIR_BASES,
+        MANAGER + engine_native_air::cstrategic_air_manager::STATELESS_AIR_BASES,
         bases,
         count as u32,
     );
@@ -395,9 +407,9 @@ pub fn memory(bytes: &[u8]) -> SyntheticMemory<'_> {
 
 pub struct Split {
     pub bases_outcome: Outcome,
-    pub bases: Vec<engine_native::cair_base::Row>,
+    pub bases: Vec<engine_native_air::cair_base::Row>,
     pub aces_outcome: Outcome,
-    pub aces: Vec<engine_native::cace::Row>,
+    pub aces: Vec<engine_native_air::cace::Row>,
     pub ace_names: Vec<u8>,
     pub ace_bytes_len: usize,
     pub ace_required: usize,
@@ -411,7 +423,7 @@ pub(super) fn collect_typed(
     fog_rows: usize,
     fog_wings: usize,
 ) -> Split {
-    use engine_native::{cace, cair_base};
+    use engine_native_air::{cace, cair_base};
     let capacities = Capacities {
         rows: air_rows,
         ace_names,

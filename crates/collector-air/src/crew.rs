@@ -1,4 +1,5 @@
-use engine_native::{Memory, cair_wing, cship, read};
+use engine_native::{Memory, cship, read};
+use engine_native_air::cair_wing;
 
 pub fn ship(
     memory: &impl Memory,

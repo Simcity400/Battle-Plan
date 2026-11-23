@@ -299,7 +299,7 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
         outcome: -1,
         show_for_start: 0,
         show_for_len: 1,
-        source: engine_native::craid_source::Row {
+        source: engine_native_air::craid_source::Row {
             kind: None,
             kind_present: 0,
             province: u32::MAX,

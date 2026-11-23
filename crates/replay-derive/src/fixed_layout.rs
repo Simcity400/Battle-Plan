@@ -441,8 +441,8 @@ pub const RAID_SUCCESS: Family = Family {
         keys::ACE_EFFECTIVENESS_FACTOR,
     ],
     tokens: &[
-        engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
-        engine_native::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+        engine_native_air::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+        engine_native_air::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
     ],
     tables: &[TableId::RaidTooltipOperands],
 };

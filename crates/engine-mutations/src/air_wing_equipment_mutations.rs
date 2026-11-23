@@ -7,7 +7,7 @@ pub const POOL: usize = 0x1d8;
 pub const TRAINING_STOP: usize = 0x10c;
 pub const ATTACHMENT_COVERAGE: usize = 0x9c0;
 pub const MISSION: usize = 0x90;
-pub const RAID_REFERENCE: usize = engine_native::cair_wing::transport_operands::RAID_REFERENCE;
+pub const RAID_REFERENCE: usize = engine_native_air::cair_wing::transport_operands::RAID_REFERENCE;
 pub const RAID_LIFETIME_KEY: usize = 1;
 
 pub const MAP_MUTATIONS: [MutationSite; 6] = [

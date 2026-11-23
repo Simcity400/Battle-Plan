@@ -91,7 +91,7 @@ fn registration_demand_growth_is_accounted_and_propagated_to_pooled_capacities()
 fn air_registration_projection_matches_complete_tables_across_membership_and_refusals() {
     use crate::extended::air::StateFuelPacket;
     use collector_projection::projection::{Projection, ProjectionScratch};
-    use engine_native::cair_base::{CarrierPool, CarrierRegistration, ContainerFuel};
+    use engine_native_air::cair_base::{CarrierPool, CarrierRegistration, ContainerFuel};
     use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
     let mut captured = captured();
     captured.registrations.rows[0] = cair_base::RegistrationRow {

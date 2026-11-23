@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-memory/test-support", "engine-native/test-support"]
 
 [dependencies]
+engine-native-air.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true

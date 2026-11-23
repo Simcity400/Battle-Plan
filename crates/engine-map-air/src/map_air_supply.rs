@@ -1,14 +1,18 @@
 
 use engine_native::allocation as engine_allocation;
 use engine_native::{
-    Memory, cair_base, ccountry, cdiplomacy_status,
+    Memory,
+    ccountry,
+    cdiplomacy_status,
     cpdx_array::Array,
     cprovince,
     creference_registry::{Header, ScopedResolver},
-    cstrategic_region, csupply_system,
+    cstrategic_region,
+    csupply_system,
     memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     read,
 };
+use engine_native_air::cair_base;
 use engine_sites::Rva;
 
 const CONSUMERS: usize = 0x1b8;

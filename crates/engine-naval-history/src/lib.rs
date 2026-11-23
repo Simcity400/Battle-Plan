@@ -3,12 +3,9 @@ use engine_executable::modifier_keys;
 use engine_native::{
     Memory,
     allocation,
-    cair_base,
-    cair_wing,
     cair_wing_pool,
     capture_text,
     ccountry,
-    ccountry_air_container,
     cdiplomacy_status,
     cequipment_variant,
     cfex_air,
@@ -38,6 +35,7 @@ use engine_native::{
     sweather_per_region,
     walk,
 };
+use engine_native_air::{cair_base, cair_wing, ccountry_air_container};
 use engine_native_naval::{
     cstrategic_navy,
     cstrategic_navy_manager,

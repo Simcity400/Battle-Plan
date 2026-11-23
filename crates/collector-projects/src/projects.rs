@@ -10,10 +10,21 @@ use crate::{
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec};
 use engine_characters::scientist_roster;
 use engine_events::cnuke;
-use engine_native::raid_tooltip_operands;
+use engine_native_air::raid_tooltip_operands;
 use engine_native::{
-    Memory, ccountry, ccountry_raid_status, cgame_state, cpdx_array::Array, craid_instance,
-    craid_system, msvc_string, raid_equipment, raid_speed_inputs, walk::Outcome,
+    Memory,
+    ccountry,
+    cgame_state,
+    cpdx_array::Array,
+    msvc_string,
+    walk::Outcome,
+};
+use engine_native_air::{
+    ccountry_raid_status,
+    craid_instance,
+    craid_system,
+    raid_equipment,
+    raid_speed_inputs,
 };
 use engine_peace::peace_conference;
 use engine_projects::{
@@ -206,7 +217,7 @@ pub struct Captured {
     facilities: CaptureRows<raid_facilities::Row>,
     raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
     agency_defense: Vec<Option<super::agency_defense::Tree>>,
-    tooltip_operands: CaptureRows<engine_native::raid_tooltip_operands::Row>,
+    tooltip_operands: CaptureRows<engine_native_air::raid_tooltip_operands::Row>,
     counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative>,
     projects: CaptureRows<nproject_cproject::Row>,
     history: CaptureRows<nproject_sproject_history::Row>,

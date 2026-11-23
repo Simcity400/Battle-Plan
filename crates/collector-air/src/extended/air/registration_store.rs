@@ -59,7 +59,10 @@ impl Fresh<'_> {
     }
 
     fn consumed(&self, span: &Span, output: &mut Vec<u8>) {
-        use engine_native::{cair_base::CONTAINER_SPAN, ccountry_air_container as container};
+        use engine_native_air::{
+            cair_base::CONTAINER_SPAN,
+            ccountry_air_container as container,
+        };
         let start = span.start as usize - self.start;
         let at = output.len();
         output.extend_from_slice(&self.bytes[start..start + span.len as usize]);
@@ -74,7 +77,7 @@ impl Fresh<'_> {
             kept[4..capacity].fill(0);
             kept[capacity + 8..].fill(0);
         } else if span.len == 32 && names(self.wings, 0) {
-            kept[8..engine_native::cair_wing::SECONDARY].fill(0);
+            kept[8..engine_native_air::cair_wing::SECONDARY].fill(0);
         }
     }
 }

@@ -239,9 +239,22 @@ impl AirMemory {
 #[test]
 fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     use engine_native::{
-        air_fuel_defines as defines, air_mission, cair_base, cair_wing, cair_wing_pool, ccountry,
-        ccountry_air_container as container, cgame_state, cprovince, cstrategic_air,
-        cstrategic_air_manager, cstrategic_region, cweather_manager, msvc_string,
+        air_fuel_defines as defines,
+        cair_wing_pool,
+        ccountry,
+        cgame_state,
+        cprovince,
+        cstrategic_region,
+        cweather_manager,
+        msvc_string,
+    };
+    use engine_native_air::{
+        air_mission,
+        cair_base,
+        cair_wing,
+        ccountry_air_container as container,
+        cstrategic_air,
+        cstrategic_air_manager,
     };
     const STATE: usize = 0x1000;
     const COUNTRIES: usize = 0x10000;

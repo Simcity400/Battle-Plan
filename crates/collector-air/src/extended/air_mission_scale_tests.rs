@@ -4,12 +4,12 @@ use engine_native::{
     cgame_state as gs,
     creference_registry as registry,
     cship,
-    cstrategic_air,
     ctask_force,
     cunit,
     memory::{RecordLayout, RecordSources},
     reference_bucket as bucket,
 };
+use engine_native_air::cstrategic_air;
 use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 use std::{
     cell::Cell,
