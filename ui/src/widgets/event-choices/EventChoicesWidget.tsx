@@ -1,5 +1,5 @@
 import { countryNameDetails } from '../../charts/tooltip.ts';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
 import ArtFallback from '../../components/ArtFallback';
@@ -20,6 +20,7 @@ import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 import { eventCountryName } from '../event-feed/eventFeedData';
 import { occurrenceCountryRequests } from '../event-feed/scriptOccurrences';
 import { useCards } from '../event-feed/useCards';
@@ -37,6 +38,8 @@ import { trackHourOf } from '../../dashboard/settledHour';
 import type { EventFeedKind } from '../../generated/dashboard';
 
 const NO_ROWS: readonly LogRow<ChoiceAt>[] = [];
+const sameKeys = (held: readonly LogRow<ChoiceAt>[], next: readonly LogRow<ChoiceAt>[]) => held.length === next.length
+  && held.every((row, index) => row.key === next[index].key);
 const CONTINUING: readonly EventFeedKind[] = ['eventOptionSelected'];
 const cardHeight = (row: LogRow<ChoiceAt>) => 78 + 18 * Math.max(1, row.item.card.item?.options?.length ?? 1);
 
@@ -61,7 +64,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     edges: card => card.occurrence.edges, days: () => true, at: (row, hour, breaks) => choiceAt(row, hour, breaks, awaiting, country) }),
   [kindsKey, awaiting, country, scope]);
   const cards = useCards(runtime, widget, track, active && match.ready, list);
-  const [visible, setVisible] = useState<readonly LogRow<ChoiceAt>[]>(NO_ROWS);
+  const [visible, setVisible] = useDistinctState<readonly LogRow<ChoiceAt>[]>(NO_ROWS, sameKeys);
   const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameHour = (row: LogRow<ChoiceAt>) => row.item.card.first.row.nameHour;

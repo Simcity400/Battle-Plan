@@ -1,5 +1,5 @@
 import { countryNameDetails } from '../../charts/tooltip.ts';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
@@ -18,6 +18,7 @@ import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 import { eventCountryName } from '../event-feed/eventFeedData';
 import { occurrenceCountryRequests } from '../event-feed/scriptOccurrences';
 import { useCards } from '../event-feed/useCards';
@@ -34,6 +35,8 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 
 const NO_ROWS: readonly LogRow<DecisionAt>[] = [];
+const sameKeys = (held: readonly LogRow<DecisionAt>[], next: readonly LogRow<DecisionAt>[]) => held.length === next.length
+  && held.every((row, index) => row.key === next[index].key);
 
 export default function DecisionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -57,7 +60,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     edges: card => card.occurrence.edges, days: card => card.occurrence.edges.some(edge => edge.days !== null),
     at: (row, hour, breaks) => decisionAt(row, hour, breaks, statuses, country) }), [statuses, country, scope]);
   const cards = useCards(runtime, widget, track, active && match.ready, list);
-  const [visible, setVisible] = useState<readonly LogRow<DecisionAt>[]>(NO_ROWS);
+  const [visible, setVisible] = useDistinctState<readonly LogRow<DecisionAt>[]>(NO_ROWS, sameKeys);
   const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameHour = (row: LogRow<DecisionAt>) => row.item.card.occurrence.edges[0].row.nameHour;

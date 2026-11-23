@@ -427,3 +427,105 @@ fn h3b_a_completed_read_before_a_marker_does_not_name_it() {
     let named: Vec<_> = facts.evidence.values().flat_map(|evidence| &evidence.entries).filter(|kept| kept.entry.completion()).map(|kept| (kept.entry.date, kept.definition)).collect();
     assert_eq!(named, [(20, Some(40)), (29, None)], "P-S9, R3-S4: a completed row read at 25 names no completion dated 29; the marker and its date stay");
 }
+
+#[test]
+fn counted_batches_one_scan_per_table_per_run_and_matches_per_country_follow() {
+    let actors: [(u32, u32, &[u8], i32, u32); 3] = [
+        (9001, 1, b"GER", 24, 40),
+        (9002, 2, b"FRA", 52, 41),
+        (9003, 3, b"ENG", 76, 42),
+    ];
+    let first = 20;
+    let last = 150;
+    let source = synthetic("counted-batched-multi", first, last, |at| {
+        let mut frame = source(1, at, None);
+        if let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] {
+            let template = countries[0].clone();
+            countries.clear();
+            for &(owner, slot, tag, ..) in &actors {
+                countries.push(CountryRow { id: owner, canonical_slot: slot, tag: tag.to_vec(), ..template.clone() });
+            }
+        }
+        if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+            links.clear();
+            for &(owner, slot, ..) in &actors {
+                links.push(CountryLinkRow { id: owner, canonical_slot: slot });
+            }
+        }
+        let mut projects = Vec::new();
+        let mut histories = Vec::new();
+        let mut stamps = Vec::new();
+        for &(owner, _, _, done, def) in &actors {
+            let mut row = ProjectRow { owner, local_id: 1, definition_id: def, started: 1, ..Default::default() };
+            let (offset, not_completed) = if at >= done { (0xe8, 0) } else { (0x18, 1) };
+            row.state.current_offset = offset;
+            row.state.not_completed = not_completed;
+            projects.push(row);
+            let mut unfinished = ProjectRow { owner, local_id: 2, definition_id: def + 10, started: 1, ..Default::default() };
+            unfinished.state.current_offset = 0x18;
+            unfinished.state.not_completed = 1;
+            projects.push(unfinished);
+            histories.push(ProjectHistoryRow {
+                owner,
+                project: 2,
+                ordinal: 0,
+                prototype_reward_handle: 3,
+                option_handle: 4,
+                date: first,
+                ..Default::default()
+            });
+            if at >= done + 2 {
+                histories.push(ProjectHistoryRow {
+                    owner,
+                    project: 1,
+                    ordinal: 0,
+                    prototype_reward_handle: M,
+                    option_handle: M,
+                    date: done,
+                    ..Default::default()
+                });
+            }
+            if owner == 9001 && at >= done + 60 {
+                histories.push(ProjectHistoryRow {
+                    owner,
+                    project: 1,
+                    ordinal: 1,
+                    prototype_reward_handle: M,
+                    option_handle: M,
+                    date: done + 58,
+                    ..Default::default()
+                });
+            }
+            let sample_hour = first + ((at - first) / STAGGER_PERIOD) * STAGGER_PERIOD;
+            stamps.push(SliceReadRow { table: TableId::Projects.index() as u32, owner, sample_hour });
+            stamps.push(SliceReadRow { table: TableId::ProjectHistory.index() as u32, owner, sample_hour });
+        }
+        stamps.sort_by_key(|row| (row.table, row.owner));
+        *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(projects));
+        *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(histories));
+        *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(stamps));
+        frame
+    });
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    COUNTED_SCANS.with(|scans| scans.borrow_mut().clear());
+    let (batched, unrecorded) = counted(&query, first, last, &cancelled).unwrap();
+    let scans = COUNTED_SCANS.with(|scans| std::mem::take(&mut *scans.borrow_mut()));
+    assert!(unrecorded.is_empty());
+    assert_eq!(scans, vec![TableId::ProjectHistory], "three countries in one run scan ProjectHistory once and resolve Projects and SliceReads by point lookup");
+
+    let mut expected: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
+    for &(_, _, tag, ..) in &actors {
+        let tag = std::str::from_utf8(tag).unwrap().to_owned();
+        let mut follow = Follow::new(query.timeline.first);
+        follow.to(&query, &Country::Tag(tag.clone()), last, &cancelled).unwrap();
+        for (&(slot, _, owner, local), evidence) in &follow.facts.evidence {
+            for kept in evidence.entries.iter().filter(|kept| kept.counted && (first..=last).contains(&kept.entry.date)) {
+                expected
+                    .entry((owner, local, kept.entry.ordinal, kept.entry.date))
+                    .or_insert_with(|| Counted { tag: tag.clone(), slot, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
+            }
+        }
+    }
+    assert_eq!(batched, expected.into_values().collect::<Vec<_>>());
+}

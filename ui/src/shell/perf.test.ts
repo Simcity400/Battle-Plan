@@ -235,3 +235,97 @@ test('renderer preload status reports incomplete before preload runs', async () 
   assert.equal(status.started, false);
   assert.equal(status.done, false);
 });
+
+test('PerfRecorder schedules no animation frames or flush timers while paused and idle, and wakes on playback or activity', async () => {
+  const saved = new Map(['requestAnimationFrame', 'cancelAnimationFrame', 'PerformanceObserver', 'devicePixelRatio', 'innerWidth', 'innerHeight', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'MessageChannel']
+    .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const rafs = new Map<number, FrameRequestCallback>();
+  let nextRaf = 0, rafCount = 0;
+  let intervalCalls = 0;
+  const timeouts = new Map<number, () => void>();
+  let nextTimeout = 0;
+  const ports: { onmessage: ((event: { data: number }) => void) | null }[] = [];
+  class FakeChannel {
+    port1 = { onmessage: null as ((event: { data: number }) => void) | null };
+    port2 = { postMessage: (data: number) => { queueMicrotask(() => this.port1.onmessage?.({ data })); } };
+    constructor() { ports.push(this.port1); }
+  }
+  class FakeObserver {
+    static supportedEntryTypes: string[] = [];
+    observe() {}
+    disconnect() {}
+  }
+  const runNextRaf = (now: number) => {
+    const first = rafs.entries().next().value as [number, FrameRequestCallback] | undefined;
+    if (!first) return false;
+    rafs.delete(first[0]);
+    first[1](now);
+    return true;
+  };
+  Object.assign(globalThis, {
+    requestAnimationFrame: (cb: FrameRequestCallback) => { rafCount++; const id = ++nextRaf; rafs.set(id, cb); return id; },
+    cancelAnimationFrame: (id: number) => { rafs.delete(id); },
+    PerformanceObserver: FakeObserver,
+    devicePixelRatio: 1,
+    innerWidth: 1280,
+    innerHeight: 720,
+    setInterval: () => { intervalCalls++; return 1 as unknown as ReturnType<typeof setInterval>; },
+    clearInterval: () => {},
+    setTimeout: (fn: () => void) => { const id = ++nextTimeout; timeouts.set(id, fn); return id as unknown as ReturnType<typeof setTimeout>; },
+    clearTimeout: (id: number) => { timeouts.delete(id); },
+    MessageChannel: FakeChannel,
+  });
+  let recorder: PerfRecorder | null = null;
+  try {
+    recorder = new PerfRecorder();
+    const lines = (recorder as unknown as { lines: string[] }).lines;
+    assert.equal(intervalCalls, 0, 'does not run a permanent polling interval while idle');
+    assert.equal(rafs.size, 0, 'starts idle with no animation frame scheduled while paused');
+    const initialCount = rafCount;
+
+    recorder.clock(100, false, 24, 1, 1);
+    assert.equal(rafs.size, 1, 'wakes on a paused clock update');
+    runNextRaf(10);
+    await Promise.resolve();
+    runNextRaf(26);
+    await Promise.resolve();
+    assert.equal(rafs.size, 0, 'returns to sleep after recording the paused update');
+    const afterPaused = rafCount;
+    assert.ok(afterPaused > initialCount);
+
+    recorder.count('w1', 'render');
+    assert.equal(rafs.size, 1, 'wakes on widget work while paused');
+    runNextRaf(100);
+    await Promise.resolve();
+    runNextRaf(116);
+    await Promise.resolve();
+    assert.equal(rafs.size, 0, 'sleeps again once the work frame is recorded');
+    const recorded = lines.map(line => JSON.parse(line) as { t: string; playing?: boolean; work?: Record<string, unknown> });
+    assert.ok(recorded.some(r => r.t === 'frame' && r.work?.w1), 'recorded the paused work frame');
+
+    recorder.clock(101, true, 24, 2, 1);
+    assert.equal(rafs.size, 1, 'starts continuous frames while playing');
+    runNextRaf(200);
+    await Promise.resolve();
+    assert.equal(rafs.size, 1, 'keeps scheduling frames while playing');
+    runNextRaf(216);
+    await Promise.resolve();
+    assert.equal(rafs.size, 1, 'still scheduling frames while playing');
+
+    recorder.clock(102, false, 24, 3, 1);
+    runNextRaf(232);
+    await Promise.resolve();
+    assert.equal(rafs.size, 0, 'stops scheduling frames once playback pauses and the final frame is recorded');
+  } finally {
+    if (recorder) {
+      const stop = recorder.finish();
+      for (let i = 0; i < 4 && runNextRaf(999); i++) {}
+      for (const fn of [...timeouts.values()]) fn();
+      await stop.catch(() => {});
+    }
+    for (const [key, desc] of saved) {
+      if (desc) Object.defineProperty(globalThis, key, desc);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});

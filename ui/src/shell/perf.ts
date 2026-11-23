@@ -273,8 +273,10 @@ export class PerfRecorder {
   private queued: Promise<void> | null = null;
   private observers: PerformanceObserver[] = [];
   private frameRequest = 0;
-  private timer: ReturnType<typeof setInterval>;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private lastFrame: number | null = null;
+  private dirty = false;
+  private readonly runFrame: (now: number) => void;
   private waiting: { record: PerfRecord; of: number }[] = [];
   private work = new Map<string, Partial<Record<WidgetWork, number>>>();
   private zones = new Map<string, number>();
@@ -288,6 +290,41 @@ export class PerfRecorder {
   constructor() {
     const types = PerformanceObserver.supportedEntryTypes;
     const longtask = types.includes('longtask'), loaf = types.includes('long-animation-frame');
+    const rendered = new MessageChannel();
+    const mains = new Map<number, number>();
+    rendered.port1.onmessage = ({ data }: MessageEvent<number>) => {
+      const main = round(performance.now() - data);
+      const at = this.waiting.findIndex(entry => entry.of === data);
+      if (at < 0) { mains.set(data, main); return; }
+      const [entry] = this.waiting.splice(at, 1);
+      this.push({ ...entry.record, main });
+    };
+    this.runFrame = (now: number) => {
+      this.frameRequest = 0;
+      if (this.stopped) return;
+      const active = this.playing || this.dirty;
+      this.dirty = false;
+      if (this.lastFrame !== null) {
+        const work = this.work.size ? Object.fromEntries(this.work) : undefined;
+        const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
+        const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
+        this.work.clear();
+        this.zones.clear();
+        this.causes.clear();
+        const painted = this.takePaints(this.lastFrame);
+        const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
+          late: round(performance.now() - now), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
+        const main = mains.get(this.lastFrame);
+        if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
+      }
+      if (active) {
+        this.lastFrame = now;
+        rendered.port2.postMessage(now);
+        this.frameRequest = requestAnimationFrame(this.runFrame);
+      } else {
+        this.lastFrame = null;
+      }
+    };
     this.push({ t: 'page', at: epoch(performance.now()), dpr: devicePixelRatio, width: innerWidth, height: innerHeight, longtask, loaf,
       hardwareConcurrency: navigator.hardwareConcurrency, ...(MEASURE_UNGATED && { ungated: true }) }, true);
     if (longtask) this.observe('longtask', list => {
@@ -302,36 +339,6 @@ export class PerfRecorder {
           top: top ? `${top.invoker ?? ''} ${top.sourceURL ?? ''}`.trim() : null });
       }
     });
-    const rendered = new MessageChannel();
-    const mains = new Map<number, number>();
-    rendered.port1.onmessage = ({ data }: MessageEvent<number>) => {
-      const main = round(performance.now() - data);
-      const at = this.waiting.findIndex(entry => entry.of === data);
-      if (at < 0) { mains.set(data, main); return; }
-      const [entry] = this.waiting.splice(at, 1);
-      this.push({ ...entry.record, main });
-    };
-    const frame = (now: number) => {
-      if (this.stopped) return;
-      if (this.lastFrame !== null) {
-        const work = this.work.size ? Object.fromEntries(this.work) : undefined;
-        const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
-        const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
-        this.work.clear();
-        this.zones.clear();
-        this.causes.clear();
-        const painted = this.takePaints(this.lastFrame);
-        const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
-          late: round(performance.now() - now), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
-        const main = mains.get(this.lastFrame);
-        if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
-      } else { takeCommits(); this.zones.clear(); this.causes.clear(); this.paints.clear(); }
-      this.lastFrame = now;
-      rendered.port2.postMessage(now);
-      this.frameRequest = requestAnimationFrame(frame);
-    };
-    this.frameRequest = requestAnimationFrame(frame);
-    this.timer = setInterval(() => { void this.flush(); }, FLUSH_MS);
     attributeCommits((rendered, causes) => {
       this.commitSequence++;
       if (this.commitAudit) {
@@ -343,7 +350,23 @@ export class PerfRecorder {
       }
       for (const zone of rendered) this.zones.set(zone, (this.zones.get(zone) ?? 0) + 1);
       this.addCauses(causes);
+      this.noteActivity();
     });
+  }
+
+  private scheduleFrame(): void {
+    if (this.stopped || this.frameRequest) return;
+    this.frameRequest = requestAnimationFrame(this.runFrame);
+  }
+
+  private noteActivity(): void {
+    this.dirty = true;
+    this.scheduleFrame();
+  }
+
+  private scheduleFlush(): void {
+    if (this.stopped || this.timer !== null) return;
+    this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, FLUSH_MS);
   }
 
   private addCauses(causes: CommitCauses): void {
@@ -380,11 +403,13 @@ export class PerfRecorder {
     const line = JSON.stringify(record);
     if (!kept && this.buffered.bytes + this.sending + line.length + 1 > PENDING_BYTES) {
       tally(this.lost, 1, encoder.encode(line).length + 1, record.at, record.at);
+      this.scheduleFlush();
       return;
     }
     this.lines.push(line);
     tally(this.buffered, 1, line.length + 1, record.at, record.at);
     if (!kept && this.buffered.bytes >= FLUSH_BYTES && !this.queued) void this.flush();
+    else this.scheduleFlush();
   }
 
   get hour(): number | null { return this.position === null ? null : Math.floor(this.position); }
@@ -392,9 +417,11 @@ export class PerfRecorder {
   lanes(count: number): void { this.laneCountValue = count; }
 
   clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number, composedAt?: number): void {
+    const wasPlaying = this.playing;
     this.playing = playing;
     this.position = position;
     this.push({ t: 'tick', at: epoch(performance.now()), hour: round(position), composedAt: composedAt === undefined ? undefined : epoch(composedAt), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
+    if (playing || !wasPlaying) this.noteActivity();
   }
 
   widget(id: string, kind: string, title: string): void {
@@ -409,12 +436,14 @@ export class PerfRecorder {
     let counts = this.work.get(widget);
     if (!counts) this.work.set(widget, counts = {});
     counts[work] = (counts[work] ?? 0) + 1;
+    this.noteActivity();
   }
 
   paint(widget: string, ms: number, frame: number): void {
     let widgets = this.paints.get(frame);
     if (!widgets) this.paints.set(frame, widgets = new Map());
     widgets.set(widget, (widgets.get(widget) ?? 0) + ms);
+    this.noteActivity();
   }
 
   shown(widget: string, hour: number | null): void {
@@ -487,6 +516,7 @@ export class PerfRecorder {
   }
 
   private async send(): Promise<void> {
+    if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
     const carried = this.lost.count ? this.lost : null;
     if (carried) this.lost = empty();
     if (!this.lines.length && !carried) return;
@@ -500,6 +530,7 @@ export class PerfRecorder {
       console.error('Measurement write failed:', error);
       if (batch.count) tally(this.lost, batch.count, encoder.encode(records).length + 1, batch.from, batch.to);
       if (carried) tally(this.lost, carried.count, carried.bytes, carried.from, carried.to);
+      if (this.lost.count) this.scheduleFlush();
     } finally { this.sending = 0; }
   }
 
@@ -509,6 +540,7 @@ export class PerfRecorder {
   }
 
   private async settleFrames(): Promise<void> {
+    if (!this.frameRequest && !this.waiting.length && this.lastFrame === null) return;
     await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
     for (const { record } of this.waiting.splice(0)) this.push({ ...record, main: null });
   }
@@ -523,9 +555,9 @@ export class PerfRecorder {
   async finish(): Promise<boolean> {
     await this.settleFrames();
     this.stopped = true;
-    clearInterval(this.timer);
+    if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
     attributeCommits(null);
-    cancelAnimationFrame(this.frameRequest);
+    if (this.frameRequest) { cancelAnimationFrame(this.frameRequest); this.frameRequest = 0; }
     for (const observer of this.observers) observer.disconnect();
     await this.flush();
     return !this.lost.count && !this.lines.length;
