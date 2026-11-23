@@ -429,6 +429,73 @@ fn h3b_a_completed_read_before_a_marker_does_not_name_it() {
     assert_eq!(named, [(20, Some(40)), (29, None)], "P-S9, R3-S4: a completed row read at 25 names no completion dated 29; the marker and its date stay");
 }
 
+fn reference_last_read(reads: &[(i32, i32)], hour: i32) -> Option<i32> {
+    let at = reads.partition_point(|read| read.0 <= hour);
+    at.checked_sub(1).map(|at| reads[at].1.min(hour)).filter(|&read| current(read, hour))
+}
+
+fn reference_see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut projects: Vec<(u32, u32, Cursor<'_>)> = Vec::new();
+    for (history, &raw) in read.projects.iter().zip(&read.owners) {
+        projects.extend(history.keys.iter().map(|(key, steps)| (raw, *key as u32, Cursor::new(steps))));
+    }
+    let mut entries: Vec<(u32, u32, u32, Cursor<'_>)> = Vec::new();
+    for history in &read.histories {
+        for (key, steps) in &history.keys {
+            entries.push(((key >> 64) as u32, (key >> 32) as u32, *key as u32, Cursor::new(steps)));
+        }
+    }
+    let mut programs: HashMap<u32, Cursor<'_>> = read.programs.keys.iter().map(|(key, steps)| (*key as u32, Cursor::new(steps))).collect();
+    let mut stamps: HashMap<u128, Cursor<'_>> = read.reads.keys.iter().map(|(key, steps)| (*key, Cursor::new(steps))).collect();
+    let custody = &read.custody;
+    for hour in piece.first..=piece.last {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let linked: Vec<u32> = custody.linked(hour).collect();
+        let mut usable = |table: TableId, complete: &[(i32, i32)], raw: u32| custody.usable(raw, sample(stamps.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(hour))), complete, hour);
+        let projects_read: BTreeMap<u32, i32> = linked.iter().filter_map(|&raw| Some((raw, usable(TableId::Projects, &read.projects_complete, raw)?))).collect();
+        let histories_read: BTreeMap<u32, i32> = linked.iter().filter_map(|&raw| Some((raw, usable(TableId::ProjectHistory, &read.history_complete, raw)?))).collect();
+        let mut listed: BTreeMap<(u32, u32), Vec<Entry>> = BTreeMap::new();
+        for (owner, project, ordinal, cursor) in &mut entries {
+            if let Some(&stamp) = histories_read.get(owner)
+                && let Some(entry) = cursor.at(stamp).and_then(|cells| history_entry(*ordinal, cells))
+            {
+                listed.entry((*owner, *project)).or_default().push(entry);
+            }
+        }
+        let program_read = reference_last_read(&read.program_reads, hour);
+        let mut rows: Vec<(Row, Program, i32)> = Vec::new();
+        for (raw, local, cursor) in &mut projects {
+            let (raw, local) = (*raw, *local);
+            if let Some(&stamp) = projects_read.get(&raw)
+                && let Some(row) = cursor.at(stamp).and_then(|cells| project_row(raw, local, cells))
+            {
+                let cells = program_read.filter(|&at| custody.held(raw, at, hour)).map(|at| (at, programs.get_mut(&((row.program >> 32) as u32)).and_then(|cursor| cursor.at(at)).map(program_cells)));
+                let program = assignment(raw, local, row.program, cells);
+                rows.push((row, program, stamp));
+            }
+        }
+        let shown: Vec<facts::Read<'_>> = rows.iter().map(|(row, program, stamp)| facts::Read { row, read: *stamp, program: program.clone() }).collect();
+        let published = within(&read.roster, hour) && projects_read.len() == linked.len();
+        if !published && within(&read.projects_partial, hour) {
+            facts::extend(&mut facts.partial, hour, hour);
+        }
+        facts.hour_span(
+            &facts::Hour {
+                country: (piece.slot, piece.id),
+                at: hour,
+                held: &|raw, from, through| custody.held(raw, from, through),
+                projects: &projects_read,
+                histories: &histories_read,
+                listed: &listed,
+                reads: &shown,
+                published,
+            },
+            hour,
+        );
+    }
+    Ok(())
+}
+
 fn reference_counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
@@ -460,7 +527,7 @@ fn reference_counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBo
         let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), query.timeline.first, to);
         for piece in pieces {
             let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
-            see_piece(&mut facts, &piece, &read, cancelled)?;
+            reference_see_piece(&mut facts, &piece, &read, cancelled)?;
         }
         for (&(slot, _, owner, local), evidence) in &facts.evidence {
             for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
@@ -609,6 +676,30 @@ fn f4_damaged_lexical_block_keeps_dated_completions_and_other_runs() {
     assert_eq!(actual.get(&(34, 41)).map(String::as_str), Some("sp_run_one"));
 }
 
+#[test]
+fn g1_decreasing_history_stamp_preserves_main_cursor_and_completion_name() {
+    let source = synthetic("g1-decreasing-history-stamp", 20, 32, |at| {
+        let history = match at {
+            24..=26 | 29..=32 => vec![(0, M, 24)],
+            _ => Vec::new(),
+        };
+        let history_read = match at {
+            27 => Some(27),
+            28 => Some(26),
+            29..=32 => Some(29),
+            _ => None,
+        };
+        frame(at, &Hour { history, projects_read: Some(at), history_read, ..hour(at, if at >= 24 { COMPLETED } else { RUNNING }) })
+    });
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let actual = counted(&query, 20, 32, &cancelled).unwrap();
+    let expected = reference_counted(&query, 20, 32, &cancelled).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.0.len(), 1);
+    assert_eq!((actual.0[0].entry.date, actual.0[0].read, actual.0[0].definition), (24, 29, Some(40)));
+}
+
 fn multi_actor_source(id: &str, actors: &[(u32, u32, &[u8], i32, u32)], first: i32, last: i32, overlap_owner: Option<(u32, u32)>) -> Source {
     synthetic(id, first, last, |at| {
         let mut frame = source(1, at, None);
@@ -745,6 +836,18 @@ fn f10_reader_boundary_counts_stay_bounded_across_countries_mid_run_and_overlaps
     assert_eq!(full6_reads[&TableId::ProjectHistory].stretches, full3_reads[&TableId::ProjectHistory].stretches);
     assert_eq!(full6_reads[&TableId::SliceReads].stretches, full3_reads[&TableId::SliceReads].stretches);
     assert!(ref_full6_reads[&TableId::SliceReads].stretches > ref_full3_reads[&TableId::SliceReads].stretches);
+
+    let gap_actors: [(u32, u32, &[u8], i32, u32); 2] = [(9001, 1, b"GER", 24, 40), (9002, 2, b"FRA", 450, 41)];
+    let gap_src = multi_actor_source("f10-long-gap", &gap_actors, 20, 500, None);
+    let q_gap = dashboard_base::queries::query(&gap_src, 1).unwrap();
+    let ((gap_found, _), gap_reads) = count_reads(|| counted(&q_gap, 20, 500, &cancelled).unwrap());
+    let (ref_gap_found, _) = reference_counted(&q_gap, 20, 500, &cancelled).unwrap();
+    assert_eq!(gap_found, ref_gap_found);
+    assert_eq!(gap_found.len(), 3);
+    assert_eq!(gap_reads[&TableId::SliceReads].opened, 1);
+    assert_eq!(gap_reads[&TableId::SliceReads].stretches, 0);
+    assert_eq!(gap_reads[&TableId::SliceReads].backward_seeks, 0);
+    assert_eq!(gap_reads[&TableId::SliceReads].visited_ordinals, 29);
 }
 
 #[test]

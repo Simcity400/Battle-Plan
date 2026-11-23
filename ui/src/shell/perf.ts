@@ -277,7 +277,6 @@ export class PerfRecorder {
   private lastFrame: number | null = null;
   private dirty = false;
   private readonly runFrame: (now: number) => void;
-  private readonly emitFrame: (now: number, drainAllPaints?: boolean) => void;
   private readonly postMain: (at: number) => void;
   private waiting: { record: PerfRecord; of: number }[] = [];
   private work = new Map<string, Partial<Record<WidgetWork, number>>>();
@@ -302,27 +301,24 @@ export class PerfRecorder {
       this.push({ ...entry.record, main });
     };
     this.postMain = (at: number) => rendered.port2.postMessage(at);
-    this.emitFrame = (now: number, drainAllPaints = false) => {
-      if (this.lastFrame === null) return;
-      const work = this.work.size ? Object.fromEntries(this.work) : undefined;
-      const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
-      const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
-      this.work.clear();
-      this.zones.clear();
-      this.causes.clear();
-      const painted = this.takePaints(drainAllPaints ? Infinity : this.lastFrame);
-      const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(Math.max(0, now - this.lastFrame)), playing: this.playing,
-        late: round(Math.max(0, performance.now() - now)), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
-      const main = mains.get(this.lastFrame);
-      if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
-    };
     this.runFrame = (now: number) => {
       this.frameRequest = 0;
       if (this.stopped) return;
-      const wasDirty = this.dirty;
       this.dirty = false;
-      this.emitFrame(now);
-      if (this.playing || wasDirty || this.hasPendingActivity()) {
+      if (this.lastFrame !== null) {
+        const work = this.work.size ? Object.fromEntries(this.work) : undefined;
+        const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
+        const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
+        this.work.clear();
+        this.zones.clear();
+        this.causes.clear();
+        const painted = this.takePaints(this.lastFrame);
+        const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(Math.max(0, now - this.lastFrame)), playing: this.playing,
+          late: round(Math.max(0, performance.now() - now)), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
+        const main = mains.get(this.lastFrame);
+        if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
+      }
+      if (this.playing || this.hasPendingActivity()) {
         this.lastFrame = now;
         this.postMain(now);
         this.frameRequest = requestAnimationFrame(this.runFrame);
@@ -557,17 +553,7 @@ export class PerfRecorder {
   }
 
   private async settleFrames(): Promise<void> {
-    if (!this.frameRequest && !this.waiting.length && this.lastFrame === null && !this.hasPendingActivity()) return;
-    if (this.hasPendingActivity() && !this.frameRequest) this.armFrame();
-    const waitTurn = () => new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-    if (this.frameRequest) await waitTurn();
-    if (!this.playing && this.hasPendingActivity() && this.frameRequest) await waitTurn();
-    if (this.hasPendingActivity()) {
-      const now = performance.now();
-      if (this.lastFrame === null) this.lastFrame = now;
-      this.dirty = false;
-      this.emitFrame(now, true);
-    }
+    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
     for (const { record } of this.waiting.splice(0)) this.push({ ...record, main: null });
   }
 

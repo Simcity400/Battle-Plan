@@ -246,17 +246,46 @@ function installPerfEnv() {
   const timeouts = new Map<number, () => void>();
   let nextTimeout = 0;
   const pendingMessages: (() => void)[] = [];
+  const observers = new Map<string, Set<{ cb: PerformanceObserverCallback; disconnected: boolean }>>();
   class FakeChannel {
     port1 = { onmessage: null as ((event: { data: number }) => void) | null };
     port2 = { postMessage: (data: number) => { pendingMessages.push(() => this.port1.onmessage?.({ data })); } };
   }
   class FakeObserver {
-    static supportedEntryTypes: string[] = [];
-    observe() {}
-    disconnect() {}
+    static supportedEntryTypes: string[] = ['longtask', 'long-animation-frame'];
+    private readonly entry: { cb: PerformanceObserverCallback; disconnected: boolean };
+    private types: string[] = [];
+    constructor(cb: PerformanceObserverCallback) {
+      this.entry = { cb, disconnected: false };
+    }
+    observe(options: { type: string }) {
+      this.types.push(options.type);
+      let set = observers.get(options.type);
+      if (!set) observers.set(options.type, set = new Set());
+      set.add(this.entry);
+    }
+    disconnect() {
+      this.entry.disconnected = true;
+      for (const type of this.types) observers.get(type)?.delete(this.entry);
+    }
   }
+  const emitObserver = (type: string, entries: unknown[]) => {
+    const list = { getEntries: () => entries } as unknown as PerformanceObserverEntryList;
+    for (const obs of [...(observers.get(type) ?? [])]) {
+      if (!obs.disconnected) obs.cb(list, {} as PerformanceObserver);
+    }
+  };
   const flushMessages = () => {
     while (pendingMessages.length) pendingMessages.shift()!();
+  };
+  const runFrame = (at: number) => {
+    const batch = [...rafs.entries()];
+    if (!batch.length) return false;
+    for (const [id] of batch) rafs.delete(id);
+    now = at;
+    for (const [, cb] of batch) cb(at);
+    flushMessages();
+    return true;
   };
   const runNextRaf = (at: number) => {
     const first = rafs.entries().next().value as [number, FrameRequestCallback] | undefined;
@@ -294,9 +323,11 @@ function installPerfEnv() {
     get rafCount() { return rafCount; },
     get intervalCalls() { return intervalCalls; },
     setNow,
+    runFrame,
     runNextRaf,
     flushMessages,
     runAllTimeouts,
+    emitObserver,
     restore() {
       for (const [key, desc] of saved) {
         if (desc) Object.defineProperty(globalThis, key, desc);
@@ -322,29 +353,27 @@ test('PerfRecorder schedules no animation frames or flush timers while paused an
     env.setNow(100);
     recorder.count('w1', 'render');
     assert.equal(env.rafs.size, 1, 'wakes on widget work while paused');
-    env.runNextRaf(116);
-    assert.equal(env.rafs.size, 1, 'runs one trailing frame after dirty wake');
-    env.runNextRaf(132);
-    assert.equal(env.rafs.size, 0, 'sleeps again once the work frame is recorded');
+    env.runFrame(116);
+    assert.equal(env.rafs.size, 0, 'sleeps immediately once the work frame is recorded');
     const recorded = lines.map(line => JSON.parse(line) as { t: string; playing?: boolean; work?: Record<string, unknown> });
     assert.ok(recorded.some(r => r.t === 'frame' && r.work?.w1), 'recorded the paused work frame');
 
     env.setNow(200);
     recorder.clock(101, true, 24, 2, 1);
     assert.equal(env.rafs.size, 1, 'starts continuous frames while playing');
-    env.runNextRaf(216);
+    env.runFrame(216);
     assert.equal(env.rafs.size, 1, 'keeps scheduling frames while playing');
-    env.runNextRaf(232);
+    env.runFrame(232);
     assert.equal(env.rafs.size, 1, 'still scheduling frames while playing');
 
     env.setNow(240);
     recorder.clock(102, false, 24, 3, 1);
-    env.runNextRaf(248);
+    env.runFrame(248);
     assert.equal(env.rafs.size, 0, 'stops scheduling frames once playback pauses and the final frame is recorded');
   } finally {
     if (recorder) {
       const stop = recorder.finish();
-      for (let i = 0; i < 4 && env.runNextRaf(999); i++) {}
+      env.runFrame(999);
       env.runAllTimeouts();
       await stop.catch(() => {});
     }
@@ -364,7 +393,7 @@ test('F6: Play after idle records the stall interval before the first animation 
     env.setNow(30_100);
     recorder.clock(100, true, 24, 1, 1);
     assert.equal(env.rafs.size, 1);
-    env.runNextRaf(30_185);
+    env.runFrame(30_185);
     const frames = lines.map(line => JSON.parse(line) as { t: string; dt?: number; playing?: boolean }).filter(r => r.t === 'frame');
     assert.equal(frames.length, 1);
     assert.equal(frames[0]!.playing, true);
@@ -372,7 +401,7 @@ test('F6: Play after idle records the stall interval before the first animation 
   } finally {
     if (recorder) {
       const stop = recorder.finish();
-      for (let i = 0; i < 4 && env.runNextRaf(31_000); i++) {}
+      env.runFrame(31_000);
       env.runAllTimeouts();
       await stop.catch(() => {});
     }
@@ -380,8 +409,10 @@ test('F6: Play after idle records the stall interval before the first animation 
   }
 });
 
-test('F7: paused paint or commit just before stop() or finish() is emitted before the boundary', async () => {
+test('F7: finish() waits through one frame so a microtask commit and a pending observer entry are captured before detaching', async () => {
   const env = installPerfEnv();
+  const hook = (globalThis as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: { onCommitFiberRoot: (r: number, root: { current: unknown }) => void } }).__REACT_DEVTOOLS_GLOBAL_HOOK__!;
+  const root = { current: { child: null, sibling: null, return: null, alternate: null, flags: 0, subtreeFlags: 0, type: null, elementType: null, memoizedProps: null, memoizedState: null, dependencies: null } };
   let recorder: PerfRecorder | null = null;
   try {
     env.setNow(100);
@@ -392,38 +423,73 @@ test('F7: paused paint or commit just before stop() or finish() is emitted befor
       flushed.push(...lines.splice(0));
     };
 
+    assert.equal(env.rafs.size, 0, 'idle before finish()');
     env.setNow(500);
-    recorder.paint('w-paint', 4.5, 500);
-    recorder.count('w-work', 'render');
-    const stopping = recorder.stop().catch(() => {});
-    for (let i = 0; i < 6; i++) {
-      env.runNextRaf(516 + i * 16);
-      env.runAllTimeouts();
-      await Promise.resolve();
-    }
-    await stopping;
-    const stopRecords = flushed.map(line => JSON.parse(line) as { t: string; work?: Record<string, unknown>; paint?: Record<string, number> });
-    const frameIdx = stopRecords.findIndex(r => r.t === 'frame' && r.work?.['w-work'] && r.paint?.['w-paint'] === 4.5);
-    const stopIdx = stopRecords.findIndex(r => r.t === 'stop');
-    assert.ok(frameIdx >= 0 && stopIdx > frameIdx, 'paused work and paint emit before the stop record');
-
-    flushed.length = 0;
-    env.setNow(700);
-    recorder.paint('w-late', 3.25, 700);
+    queueMicrotask(() => {
+      hook.onCommitFiberRoot(1, root);
+      env.emitObserver('long-animation-frame', [{ startTime: 490, duration: 60, blockingDuration: 10, renderStart: 540, scripts: [{ duration: 40, invoker: 'fn', sourceURL: 'app.js' }] }]);
+    });
     const finishing = recorder.finish();
-    for (let i = 0; i < 6; i++) {
-      env.runNextRaf(716 + i * 16);
-      env.runAllTimeouts();
-      await Promise.resolve();
-    }
+    await Promise.resolve();
+    env.runFrame(516);
+    env.runAllTimeouts();
     await finishing;
-    const finishRecords = flushed.map(line => JSON.parse(line) as { t: string; paint?: Record<string, number> });
-    assert.ok(finishRecords.some(r => r.t === 'frame' && r.paint?.['w-late'] === 3.25), 'paused paint just before finish() is emitted instead of cancelled');
     recorder = null;
+
+    const records = flushed.map(line => JSON.parse(line) as { t: string; commits?: number; commitSequence?: number; dur?: number });
+    assert.ok(records.some(r => r.t === 'frame' && r.commits === 1 && r.commitSequence === 1), 'microtask commit queued when finish() starts is captured before detach');
+    assert.ok(records.some(r => r.t === 'loaf' && r.dur === 60), 'observer entry awaiting delivery is captured before disconnect');
   } finally {
     if (recorder) {
       const stop = recorder.finish();
-      for (let i = 0; i < 4 && env.runNextRaf(999); i++) {}
+      env.runFrame(999);
+      env.runAllTimeouts();
+      await stop.catch(() => {});
+    }
+    env.restore();
+  }
+});
+
+test('G2: stop() during playback attaches a pending paint to the next real animation frame without inventing an extra interval', async () => {
+  const env = installPerfEnv();
+  let recorder: PerfRecorder | null = null;
+  try {
+    env.setNow(100);
+    recorder = new PerfRecorder();
+    const flushed: string[] = [];
+    (recorder as unknown as { flush: () => Promise<void> }).flush = async () => {
+      const lines = (recorder as unknown as { lines: string[] }).lines;
+      flushed.push(...lines.splice(0));
+    };
+    await recorder.start();
+
+    env.setNow(100);
+    recorder.clock(10, true, 24, 1, 1);
+    env.runFrame(116);
+    recorder.paint('w-play', 3.5, 116);
+
+    env.setNow(120);
+    const stopping = recorder.stop().catch(() => {});
+    env.runFrame(132);
+    env.runAllTimeouts();
+    await stopping;
+
+    const records = flushed.map(line => JSON.parse(line) as { t: string; at?: number; dt?: number; playing?: boolean; paint?: Record<string, number>; paint_ms?: number });
+    const startIdx = records.findIndex(r => r.t === 'start');
+    const stopIdx = records.findIndex(r => r.t === 'stop');
+    const frames = records.slice(startIdx + 1, stopIdx).filter(r => r.t === 'frame');
+    assert.deepEqual(
+      frames.map(f => ({ at: f.at, dt: f.dt, playing: f.playing, paint: f.paint, paint_ms: f.paint_ms })),
+      [
+        { at: 116, dt: 16, playing: true, paint: undefined, paint_ms: undefined },
+        { at: 132, dt: 16, playing: true, paint: { 'w-play': 3.5 }, paint_ms: 3.5 },
+      ],
+      'emits exactly one 16ms interval per real animation frame and attaches the 116ms paint to the 132ms frame',
+    );
+  } finally {
+    if (recorder) {
+      const stop = recorder.finish();
+      env.runFrame(999);
       env.runAllTimeouts();
       await stop.catch(() => {});
     }
@@ -446,7 +512,7 @@ test('F8: commits before PerfRecorder attaches are not counted in the first emit
     const lines = (recorder as unknown as { lines: string[] }).lines;
     env.setNow(120);
     hook.onCommitFiberRoot(1, root);
-    env.runNextRaf(136);
+    env.runFrame(136);
     const frames = lines.map(line => JSON.parse(line) as { t: string; commits?: number; commitSequence?: number }).filter(r => r.t === 'frame');
     assert.equal(frames.length, 1);
     assert.equal(frames[0]!.commits, 1);
@@ -454,7 +520,7 @@ test('F8: commits before PerfRecorder attaches are not counted in the first emit
   } finally {
     if (recorder) {
       const stop = recorder.finish();
-      for (let i = 0; i < 4 && env.runNextRaf(999); i++) {}
+      env.runFrame(999);
       env.runAllTimeouts();
       await stop.catch(() => {});
     }
@@ -462,8 +528,8 @@ test('F8: commits before PerfRecorder attaches are not counted in the first emit
   }
 });
 
-test('playing window records the same frames, commits, paints and pictures as a continuous reference loop', async () => {
-  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+test('G4: playing window matches main frame-by-frame in timestamps, durations, attribution, long frames and audited pictures', async () => {
+  const { capturePictures, recordPicture } = await import('../dashboard/pulled.ts');
   const env = installPerfEnv();
   const hook = (globalThis as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: { onCommitFiberRoot: (r: number, root: { current: unknown }) => void } }).__REACT_DEVTOOLS_GLOBAL_HOOK__!;
   const root = { current: { child: null, sibling: null, return: null, alternate: null, flags: 0, subtreeFlags: 0, type: null, elementType: null, memoizedProps: null, memoizedState: null, dependencies: null } };
@@ -476,76 +542,127 @@ test('playing window records the same frames, commits, paints and pictures as a 
       const lines = (recorder as unknown as { lines: string[] }).lines;
       flushed.push(...lines.splice(0));
     };
+    recorder.reader(1, 0, async () => ({ values: new Map([['A:v', '1']]) }), 0);
     await recorder.beginAudit();
     await recorder.start();
 
-    const refFrames: { playing: boolean; commits: number; paintMs: number; renders: number }[] = [];
+    type FrameShape = { at: number; dt: number; playing: boolean; commits: number; commitSequence: number; work?: Record<string, Record<string, number>>; paint?: Record<string, number>; paint_ms?: number };
+    const refFrames: FrameShape[] = [];
     let refLast: number | null = 1000;
     let refPlaying = false;
     let refCommits = 0;
-    let refRenders = 0;
-    const refPaints = new Map<number, number>();
+    let refCommitSeq = 0;
+    let refWork: Record<string, Record<string, number>> = {};
+    const refPaints = new Map<number, Map<string, number>>();
     const refTick = (at: number) => {
       if (refLast !== null) {
-        let paintMs = 0;
-        for (const [pAt, ms] of refPaints) if (pAt <= refLast) { paintMs += ms; refPaints.delete(pAt); }
-        refFrames.push({ playing: refPlaying, commits: refCommits, paintMs, renders: refRenders });
+        const by = new Map<string, number>();
+        for (const [pAt, widgets] of refPaints) {
+          if (pAt > refLast) continue;
+          refPaints.delete(pAt);
+          for (const [w, ms] of widgets) by.set(w, (by.get(w) ?? 0) + ms);
+        }
+        let paint: Record<string, number> | undefined;
+        let paint_ms: number | undefined;
+        if (by.size) {
+          let total = 0;
+          paint = {};
+          for (const [w, ms] of by) { total += ms; paint[w] = Math.round(ms * 100) / 100; }
+          paint_ms = Math.round(total * 100) / 100;
+        }
+        refFrames.push({
+          at,
+          dt: at - refLast,
+          playing: refPlaying,
+          commits: refCommits,
+          commitSequence: refCommitSeq,
+          ...(Object.keys(refWork).length ? { work: refWork } : {}),
+          ...(paint ? { paint, paint_ms } : {}),
+        });
         refCommits = 0;
-        refRenders = 0;
+        refWork = {};
       }
       refLast = at;
     };
 
-    const sample = (at: number) => ({ t: 'picture', at, widget: 'w1', surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false }) as never;
+    const sample = (at: number) => ({ t: 'picture', at, widget: 'w1', surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: '1' }] }) as never;
+    const steps: { t: number; commits: number; widget?: string; paintMs?: number; loafDur?: number; pictureAt?: number }[] = [
+      { t: 1016, commits: 1, widget: 'w1', paintMs: 2.5, pictureAt: 1016 },
+      { t: 1038, commits: 0, widget: 'w2', paintMs: 4.0, loafDur: 55, pictureAt: 1038 },
+      { t: 1052, commits: 2, widget: 'w1', pictureAt: 1052 },
+      { t: 1087, commits: 0, paintMs: 1.25, loafDur: 72, pictureAt: 1087 },
+      { t: 1103, commits: 1, widget: 'w2', paintMs: 3.0, pictureAt: 1103 },
+    ];
 
     env.setNow(1000);
     recorder.clock(10, true, 24, 1, 1);
     refPlaying = true;
-    for (let i = 1; i <= 5; i++) {
-      const t = 1000 + i * 16;
-      env.setNow(t - 4);
-      if (i % 2 === 1) {
+    for (const step of steps) {
+      env.setNow(step.t - 2);
+      for (let c = 0; c < step.commits; c++) {
         hook.onCommitFiberRoot(1, root);
         refCommits++;
+        refCommitSeq++;
       }
-      recorder.count('w1', 'render');
-      refRenders++;
-      recorder.paint('w1', 2, t);
-      refPaints.set(t, (refPaints.get(t) ?? 0) + 2);
-      recordPicture(sample(i));
-      env.runNextRaf(t);
-      refTick(t);
+      if (step.widget) {
+        recorder.count(step.widget, 'render');
+        refWork[step.widget] = { ...(refWork[step.widget] ?? {}), render: (refWork[step.widget]?.render ?? 0) + 1 };
+      }
+      if (step.loafDur) {
+        env.emitObserver('long-animation-frame', [{ startTime: step.t - step.loafDur, duration: step.loafDur, blockingDuration: step.loafDur - 50, renderStart: step.t - 5, scripts: [{ duration: 30, invoker: 'tick', sourceURL: 'clock.ts' }] }]);
+      }
+      if (step.pictureAt) recordPicture(sample(step.pictureAt));
+      env.runFrame(step.t);
+      refTick(step.t);
+      if (step.paintMs) {
+        recorder.paint('w1', step.paintMs, step.t);
+        let atMap = refPaints.get(step.t);
+        if (!atMap) refPaints.set(step.t, atMap = new Map());
+        atMap.set('w1', (atMap.get('w1') ?? 0) + step.paintMs);
+      }
     }
-    env.setNow(1090);
+    env.setNow(1110);
     recorder.clock(15, false, 24, 2, 1);
     refPlaying = false;
-    env.runNextRaf(1096);
-    refTick(1096);
-
     const stopping = recorder.stop().catch(() => {});
-    for (let i = 0; i < 6; i++) {
-      env.runNextRaf(1112 + i * 16);
-      env.runAllTimeouts();
-      await Promise.resolve();
-    }
+    env.runFrame(1119);
+    refTick(1119);
+    env.runAllTimeouts();
     await stopping;
 
-    const batch = await capturePicturesBatch(100);
+    const audit = await recorder.auditPicturesBatch(100);
+    assert.equal(audit.done, true);
+    assert.equal(audit.results.length, 5);
+    assert.ok(audit.results.every(r => r.error === null));
+    await recorder.flush();
     await capturePictures(false);
-    const records = flushed.map(line => JSON.parse(line) as { t: string; playing?: boolean; commits?: number; paint_ms?: number; work?: { w1?: { render?: number } } });
+
+    const records = flushed.map(line => JSON.parse(line) as Record<string, unknown>);
     const startIdx = records.findIndex(r => r.t === 'start');
     const stopIdx = records.findIndex(r => r.t === 'stop');
-    const windowFrames = records.slice(startIdx + 1, stopIdx).filter(r => r.t === 'frame');
+    const windowRecords = records.slice(startIdx + 1, stopIdx);
+    const actualFrames: FrameShape[] = windowRecords
+      .filter(r => r.t === 'frame')
+      .map(f => ({
+        at: f.at as number,
+        dt: f.dt as number,
+        playing: f.playing as boolean,
+        commits: f.commits as number,
+        commitSequence: f.commitSequence as number,
+        ...(f.work ? { work: f.work as Record<string, Record<string, number>> } : {}),
+        ...(f.paint ? { paint: f.paint as Record<string, number>, paint_ms: f.paint_ms as number } : {}),
+      }));
+    assert.deepEqual(actualFrames, refFrames, 'every frame matches main in timestamp, dt, playing, commits, commitSequence, work, and per-frame paint attribution');
 
-    assert.equal(windowFrames.filter(f => f.playing).length, refFrames.filter(f => f.playing).length);
-    assert.equal(windowFrames.reduce((s, f) => s + (f.commits ?? 0), 0), refFrames.reduce((s, f) => s + f.commits, 0));
-    assert.equal(windowFrames.reduce((s, f) => s + (f.paint_ms ?? 0), 0), refFrames.reduce((s, f) => s + f.paintMs, 0));
-    assert.equal(windowFrames.reduce((s, f) => s + (f.work?.w1?.render ?? 0), 0), refFrames.reduce((s, f) => s + f.renders, 0));
-    assert.equal(batch.records.filter(r => r.t === 'picture').length, 5);
+    const actualLoafs = windowRecords.filter(r => r.t === 'loaf').map(r => ({ at: r.at, dur: r.dur }));
+    assert.deepEqual(actualLoafs, [{ at: 1038 - 55, dur: 55 }, { at: 1087 - 72, dur: 72 }], 'long animation frames are emitted in recorder output');
+
+    const emittedPictures = records.filter(r => r.t === 'picture').map(r => r.at);
+    assert.deepEqual(emittedPictures, [1016, 1038, 1052, 1087, 1103], 'audited pictures are emitted through recorder output');
   } finally {
     if (recorder) {
       const stop = recorder.finish();
-      for (let i = 0; i < 4 && env.runNextRaf(2000); i++) {}
+      env.runFrame(2000);
       env.runAllTimeouts();
       await stop.catch(() => {});
     }

@@ -1250,11 +1250,6 @@ struct Counted {
     definition: Option<u32>,
 }
 
-fn step_cells(steps: &[Step], hour: i32) -> Option<&[Cell]> {
-    let at = steps.partition_point(|step| step.hour <= hour);
-    at.checked_sub(1).and_then(|index| steps[index].cells.as_deref())
-}
-
 fn slice_read_value(reader: &TableReader, col: usize, table: TableId, owner: u32) -> Option<i32> {
     if !reader.available() {
         return None;
@@ -1347,6 +1342,7 @@ fn see_run_evidence(
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut project_asks: Vec<(i32, u32, u32)> = Vec::new();
     let mut last_h_stamp: HashMap<(usize, u32), i32> = HashMap::new();
+    let mut history_cursors: HashMap<(usize, u32), Vec<(u32, u32, Cursor<'_>)>> = HashMap::new();
     let mut active: Vec<usize> = Vec::new();
     let mut active_pairs: Vec<(usize, u32)> = Vec::new();
     let mut next_watch = 0usize;
@@ -1405,9 +1401,12 @@ fn see_run_evidence(
                 let p_raw = slice_read_value(&slice_reader, sample_col, TableId::Projects, raw);
                 let ps = custody.usable(raw, p_raw, projects_complete, hour);
                 let Some(held) = history_by_owner.get(&raw) else { continue };
+                let cursors = history_cursors
+                    .entry((piece_idx, raw))
+                    .or_insert_with(|| held.iter().map(|(project, ordinal, steps)| (*project, *ordinal, Cursor::new(steps))).collect());
                 let mut listed: BTreeMap<(u32, u32), Vec<Entry>> = BTreeMap::new();
-                for (project, ordinal, steps) in held {
-                    if let Some(cells) = step_cells(steps, hs)
+                for (project, ordinal, cursor) in cursors.iter_mut() {
+                    if let Some(cells) = cursor.at(hs)
                         && let Some(entry) = history_entry(*ordinal, cells)
                     {
                         listed.entry((raw, *project)).or_default().push(entry);
