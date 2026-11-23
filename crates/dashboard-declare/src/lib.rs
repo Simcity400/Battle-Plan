@@ -1,5 +1,5 @@
 
-use replay_columnar::summary::{self, Cells, Facet, Shape, Source, aggregate};
+use replay_columnar::summary::{self, Cells, Computed, Facet, Shape, Source, aggregate};
 use replay_data::rows::{FuelDayRow, NukeRow, TableId, column};
 use replay_derive::factories;
 use std::io;
@@ -91,7 +91,7 @@ pub enum Column {
     Computed {
         id: u32,
         inputs: &'static [&'static str],
-        value: fn(&dyn Cells, u32) -> Option<i64>,
+        value: fn(&dyn Cells, u32) -> Computed,
     },
 }
 
@@ -870,27 +870,27 @@ pub fn faction_measure(kind: &str, measure: &str) -> Option<&'static str> {
 pub fn measure_value(series: &Series, measure: &Measure, cells: &dyn Cells, slot: u32) -> io::Result<Option<i64>> {
     Ok(match measure.column {
         Column::Cell(name) => cells.number(field(series.table, name)?, slot),
-        Column::Computed { value, .. } => value(cells, slot),
+        Column::Computed { value, .. } => value(cells, slot).value(),
     })
 }
 
 const OWNED_STATES: usize = 0;
 const CONTROLLED_STATES: usize = 1;
 
-fn territory_holding(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    match (cells.number(OWNED_STATES, slot), cells.number(CONTROLLED_STATES, slot)) {
+fn territory_holding(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(match (cells.number(OWNED_STATES, slot), cells.number(CONTROLLED_STATES, slot)) {
         (Some(owned), _) if owned > 0 => Some(1),
         (_, Some(controlled)) if controlled > 0 => Some(1),
         (Some(_), Some(_)) => Some(0),
         _ => None,
-    }
+    })
 }
 
 const DEALT: usize = 0;
 const TAKEN: usize = 1;
 
-fn casualties_ranked(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    cells.number(DEALT, slot)?.checked_add(cells.number(TAKEN, slot)?)
+fn casualties_ranked(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(cells.number(DEALT, slot).zip(cells.number(TAKEN, slot)).and_then(|(dealt, taken)| dealt.checked_add(taken)))
 }
 
 const RESISTANCE_SUM: usize = 0;
@@ -905,12 +905,12 @@ fn occupation_mean(sum: i64, count: i64) -> Option<i64> {
     sum.wrapping_mul(100_000).checked_div(count.checked_mul(100_000)?)
 }
 
-fn occupation_resistance(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    occupation_mean(cells.number(RESISTANCE_SUM, slot)?, cells.number(OCCUPIED_STATES, slot)?)
+fn occupation_resistance(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(cells.number(RESISTANCE_SUM, slot).zip(cells.number(OCCUPIED_STATES, slot)).and_then(|(sum, count)| occupation_mean(sum, count)))
 }
 
-fn occupation_compliance(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    occupation_mean(cells.number(COMPLIANCE_SUM, slot)?, cells.number(OCCUPIED_STATES, slot)?)
+fn occupation_compliance(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(cells.number(COMPLIANCE_SUM, slot).zip(cells.number(OCCUPIED_STATES, slot)).and_then(|(sum, count)| occupation_mean(sum, count)))
 }
 
 pub const FACTORY_MODES: [&str; 4] = factories::MODES;
@@ -959,8 +959,8 @@ pub fn factory_count(cells: &dyn Cells, slot: u32, group: usize, mode: usize) ->
     factories::count(&|column| cells.number(column, slot), group, mode)
 }
 
-fn factory_channel<const C: usize>(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    factories::channel(&|column| cells.number(column, slot), C / 7, C % 7 + 1)
+fn factory_channel<const C: usize>(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(factories::channel(&|column| cells.number(column, slot), C / 7, C % 7 + 1))
 }
 
 pub fn factory_measure(mode: &str, mask: usize) -> Option<&'static str> {
@@ -968,32 +968,37 @@ pub fn factory_measure(mode: &str, mask: usize) -> Option<&'static str> {
     (1..=7).contains(&mask).then(|| FACTORY_CHANNELS[mode * 7 + mask - 1].name)
 }
 
-fn nuke_amount(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    Some(i64::from(NukeRow::shown(cells.number(0, slot)?)))
+fn nuke_amount(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(cells.number(0, slot).map(|amount| i64::from(NukeRow::shown(amount))))
 }
 
 const AUTONOMY_SCORE: usize = 0;
 const AUTONOMY_LOWER: usize = 1;
 const AUTONOMY_UPPER: usize = 2;
 
-fn autonomy_progress(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    let (score, lower, upper) = (cells.number(AUTONOMY_SCORE, slot)?, cells.number(AUTONOMY_LOWER, slot)?, cells.number(AUTONOMY_UPPER, slot)?);
+fn autonomy_progress(cells: &dyn Cells, slot: u32) -> Computed {
+    let (Some(score), Some(lower), Some(upper)) = (cells.number(AUTONOMY_SCORE, slot), cells.number(AUTONOMY_LOWER, slot), cells.number(AUTONOMY_UPPER, slot)) else {
+        return Computed::Unrecorded;
+    };
     let room = i128::from(upper) - i128::from(lower);
     if room <= 0 {
-        return None;
+        return Computed::NotApplicable("No autonomy range");
     }
-    i64::try_from((i128::from(score) - i128::from(lower)) * 100_000 / room).ok()
+    Computed::of(i64::try_from((i128::from(score) - i128::from(lower)) * 100_000 / room).ok())
 }
 
 const FUEL_REQUESTED: usize = 1;
 const FUEL_RECEIVED: usize = 2;
 
-fn fuel_received_share(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    let requested = i128::from(cells.number(FUEL_REQUESTED, slot)?);
+fn fuel_received_share(cells: &dyn Cells, slot: u32) -> Computed {
+    let (Some(requested), Some(received)) = (cells.number(FUEL_REQUESTED, slot), cells.number(FUEL_RECEIVED, slot)) else {
+        return Computed::Unrecorded;
+    };
+    let requested = i128::from(requested);
     if requested <= 0 {
-        return None;
+        return Computed::NotApplicable("No fuel requested");
     }
-    i64::try_from(i128::from(cells.number(FUEL_RECEIVED, slot)?) * 1_000_000 / requested).ok()
+    Computed::of(i64::try_from(i128::from(received) * 1_000_000 / requested).ok())
 }
 
 const SPECIAL_TOTAL: usize = 4;
@@ -1004,7 +1009,7 @@ const SUPPLY_COUNT_NAMES: &[&str] = &["no_supply", "strained", "in_supply"];
 const SHARE_DECIMALS: u8 = 12;
 const SHARE_SCALE: i128 = 1_000_000_000_000;
 
-const fn share(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Option<i64>) -> Measure {
+const fn share(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Computed) -> Measure {
     Measure {
         name,
         column: Column::Computed { id, inputs: SUPPLY_COUNT_NAMES, value },
@@ -1015,36 +1020,42 @@ const fn share(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Option
     }
 }
 
-fn supply_share(cells: &dyn Cells, slot: u32, at: usize) -> Option<i64> {
+fn supply_share(cells: &dyn Cells, slot: u32, at: usize) -> Computed {
     let mut counts = [0; 3];
     for (count, column) in counts.iter_mut().zip(SUPPLY_COUNTS) {
-        *count = cells.number(column, slot)?;
+        let Some(value) = cells.number(column, slot) else {
+            return Computed::Unrecorded;
+        };
+        *count = value;
     }
     let total: i128 = counts.iter().map(|&count| i128::from(count)).sum();
     if total <= 0 {
-        return None;
+        return Computed::NotApplicable("No divisions");
     }
-    i64::try_from(i128::from(counts[at]) * SHARE_SCALE / total).ok()
+    Computed::of(i64::try_from(i128::from(counts[at]) * SHARE_SCALE / total).ok())
 }
 
-fn no_supply_share(cells: &dyn Cells, slot: u32) -> Option<i64> {
+fn no_supply_share(cells: &dyn Cells, slot: u32) -> Computed {
     supply_share(cells, slot, 0)
 }
 
-fn strained_share(cells: &dyn Cells, slot: u32) -> Option<i64> {
+fn strained_share(cells: &dyn Cells, slot: u32) -> Computed {
     supply_share(cells, slot, 1)
 }
 
-fn in_supply_share(cells: &dyn Cells, slot: u32) -> Option<i64> {
+fn in_supply_share(cells: &dyn Cells, slot: u32) -> Computed {
     supply_share(cells, slot, 2)
 }
 
-fn supply_divisions(cells: &dyn Cells, slot: u32) -> Option<i64> {
+fn supply_divisions(cells: &dyn Cells, slot: u32) -> Computed {
     let mut total: i128 = 0;
     for column in SUPPLY_COUNTS {
-        total += i128::from(cells.number(column, slot)?);
+        let Some(value) = cells.number(column, slot) else {
+            return Computed::Unrecorded;
+        };
+        total += i128::from(value);
     }
-    i64::try_from(total).ok()
+    Computed::of(i64::try_from(total).ok())
 }
 
 const FUEL_DAY: [usize; 14] = {
@@ -1057,11 +1068,11 @@ const FUEL_DAY: [usize; 14] = {
     out
 };
 
-fn fuel_measure<const AT: usize>(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    FuelDayRow::measures(FUEL_DAY.map(|at| cells.number(at, slot)))[AT]
+fn fuel_measure<const AT: usize>(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(FuelDayRow::measures(FUEL_DAY.map(|at| cells.number(at, slot)))[AT])
 }
 
-const fn fuel_day(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Option<i64>) -> Measure {
+const fn fuel_day(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Computed) -> Measure {
     Measure {
         name,
         column: Column::Computed { id, inputs: &FuelDayRow::RAW, value },
@@ -1080,7 +1091,7 @@ const TO_EXPORT: usize = 6;
 
 const RESOURCE_POOLS: &[&str] = &["produced", "adjustment", "imported", "used", "special_total", "production_demand", "to_export"];
 
-const fn resource_value(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Option<i64>) -> Measure {
+const fn resource_value(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Computed) -> Measure {
     Measure {
         name,
         column: Column::Computed { id, inputs: RESOURCE_POOLS, value },
@@ -1132,44 +1143,44 @@ fn narrow(value: i128) -> Option<i64> {
     i64::try_from(value).ok()
 }
 
-fn resource_supply(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(balance(cells, slot)?.supply)
+fn resource_supply(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(held.supply)))
 }
 
-fn resource_demand(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(balance(cells, slot)?.demand)
+fn resource_demand(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(held.demand)))
 }
 
-fn resource_from_subjects(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(balance(cells, slot)?.from_subjects)
+fn resource_from_subjects(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(held.from_subjects)))
 }
 
-fn resource_projects(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(-balance(cells, slot)?.projects)
+fn resource_projects(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(-held.projects)))
 }
 
-fn resource_production(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(-balance(cells, slot)?.production)
+fn resource_production(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(-held.production)))
 }
 
-fn resource_to_overlord(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(-balance(cells, slot)?.to_overlord)
+fn resource_to_overlord(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(-held.to_overlord)))
 }
 
-fn resource_export_reserve(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    narrow(-balance(cells, slot)?.reserve)
+fn resource_export_reserve(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(-held.reserve)))
 }
 
-fn resource_other(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    let held = balance(cells, slot)?;
-    narrow(held.net - (held.supply - held.demand))
+fn resource_other(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(held.net - (held.supply - held.demand))))
 }
 
-fn resource_bar_length(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    let held = balance(cells, slot)?;
-    let supply = held.produced.abs() + held.from_subjects.abs() + held.imported.abs();
-    let demand = (held.projects + held.production).abs() + held.to_overlord.abs() + held.reserve.abs();
-    narrow(supply.max(demand))
+fn resource_bar_length(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| {
+        let supply = held.produced.abs() + held.from_subjects.abs() + held.imported.abs();
+        let demand = (held.projects + held.production).abs() + held.to_overlord.abs() + held.reserve.abs();
+        narrow(supply.max(demand))
+    }))
 }
 
 pub static LOGS: &[Log] = &[
@@ -1487,7 +1498,7 @@ mod tests {
 
     fn balance_value(row: &Pools, measure: &str) -> Option<i64> {
         match series("resource-balance").unwrap().measure(measure).unwrap().column {
-            Column::Computed { value, .. } => value(row, 0),
+            Column::Computed { value, .. } => value(row, 0).value(),
             Column::Cell(name) => row.number(field(TableId::CountryResources, name).unwrap(), 0),
         }
     }
@@ -1513,6 +1524,10 @@ mod tests {
     fn a_fuel_share_reads_its_columns_by_their_schema_numbers() {
         assert_eq!(field(TableId::CountryFuelConsumers, "requested_raw").unwrap(), FUEL_REQUESTED);
         assert_eq!(field(TableId::CountryFuelConsumers, "received_raw").unwrap(), FUEL_RECEIVED);
+        assert_eq!(fuel_received_share(&Row([None, Some(100), Some(50)]), 0), Computed::Value(500_000));
+        assert_eq!(fuel_received_share(&Row([None, Some(0), Some(0)]), 0), Computed::NotApplicable("No fuel requested"));
+        assert_eq!(fuel_received_share(&Row([None, None, Some(50)]), 0), Computed::Unrecorded);
+        assert_eq!(fuel_received_share(&Row([None, Some(100), None]), 0), Computed::Unrecorded);
     }
 
     #[test]
@@ -1533,25 +1548,11 @@ mod tests {
         assert_eq!(field(TableId::Autonomy, "score").unwrap(), AUTONOMY_SCORE);
         assert_eq!(field(TableId::Autonomy, "lower_score").unwrap(), AUTONOMY_LOWER);
         assert_eq!(field(TableId::Autonomy, "upper_score").unwrap(), AUTONOMY_UPPER);
-        struct Row([i64; 3]);
-        impl Cells for Row {
-            fn number(&self, column: usize, _: u32) -> Option<i64> {
-                self.0.get(column).copied()
-            }
-            fn key(&self, _: u32) -> Option<u128> {
-                Some(0)
-            }
-            fn slot(&self, _: u128) -> Option<u32> {
-                Some(0)
-            }
-            fn each_row(&self, each: &mut dyn FnMut(u32)) {
-                each(0);
-            }
-        }
-        assert_eq!(autonomy_progress(&Row([334_950_000, 300_000_000, 400_000_000]), 0), Some(34_950));
-        assert_eq!(autonomy_progress(&Row([197_799_982, 100_000_000, 200_000_000]), 0), Some(97_799));
-        assert_eq!(autonomy_progress(&Row([450_000_000, 300_000_000, 400_000_000]), 0), Some(150_000));
-        assert_eq!(autonomy_progress(&Row([300_000_000, 400_000_000, 400_000_000]), 0), None);
+        assert_eq!(autonomy_progress(&Row([Some(334_950_000), Some(300_000_000), Some(400_000_000)]), 0), Computed::Value(34_950));
+        assert_eq!(autonomy_progress(&Row([Some(197_799_982), Some(100_000_000), Some(200_000_000)]), 0), Computed::Value(97_799));
+        assert_eq!(autonomy_progress(&Row([Some(450_000_000), Some(300_000_000), Some(400_000_000)]), 0), Computed::Value(150_000));
+        assert_eq!(autonomy_progress(&Row([Some(300_000_000), Some(400_000_000), Some(400_000_000)]), 0), Computed::NotApplicable("No autonomy range"));
+        assert_eq!(autonomy_progress(&Row([None, Some(300_000_000), Some(400_000_000)]), 0), Computed::Unrecorded);
         assert!(series("autonomy").unwrap().measure("progress").is_some());
     }
 
@@ -1588,14 +1589,14 @@ mod tests {
             assert_eq!(field(TableId::SupplyHealth, name).unwrap(), SUPPLY_COUNTS[at]);
         }
         let row = Row([Some(1), Some(1), Some(1)]);
-        assert_eq!([no_supply_share(&row, 0), strained_share(&row, 0), in_supply_share(&row, 0)], [Some(333_333_333_333); 3]);
-        assert_eq!(strained_share(&Row([Some(0), Some(3), Some(1)]), 0), Some(750_000_000_000));
-        assert_eq!(no_supply_share(&Row([Some(i64::MAX), Some(i64::MAX), Some(0)]), 0), Some(500_000_000_000), "no count is too large");
-        assert_eq!(in_supply_share(&Row([Some(0); 3]), 0), None, "no divisions");
-        assert_eq!(in_supply_share(&Row([Some(2), None, Some(2)]), 0), None, "a count not recorded");
-        assert_eq!(supply_divisions(&Row([Some(2), Some(0), Some(5)]), 0), Some(7));
-        assert_eq!(supply_divisions(&Row([Some(0); 3]), 0), Some(0), "no divisions is a known zero");
-        assert_eq!(supply_divisions(&Row([Some(2), None, Some(2)]), 0), None, "a count not recorded");
+        assert_eq!([no_supply_share(&row, 0), strained_share(&row, 0), in_supply_share(&row, 0)], [Computed::Value(333_333_333_333); 3]);
+        assert_eq!(strained_share(&Row([Some(0), Some(3), Some(1)]), 0), Computed::Value(750_000_000_000));
+        assert_eq!(no_supply_share(&Row([Some(i64::MAX), Some(i64::MAX), Some(0)]), 0), Computed::Value(500_000_000_000), "no count is too large");
+        assert_eq!(in_supply_share(&Row([Some(0); 3]), 0), Computed::NotApplicable("No divisions"), "no divisions");
+        assert_eq!(in_supply_share(&Row([Some(2), None, Some(2)]), 0), Computed::Unrecorded, "a count not recorded");
+        assert_eq!(supply_divisions(&Row([Some(2), Some(0), Some(5)]), 0), Computed::Value(7));
+        assert_eq!(supply_divisions(&Row([Some(0); 3]), 0), Computed::Value(0), "no divisions is a known zero");
+        assert_eq!(supply_divisions(&Row([Some(2), None, Some(2)]), 0), Computed::Unrecorded, "a count not recorded");
     }
 
     #[test]
@@ -1607,7 +1608,7 @@ mod tests {
         assert_eq!(field(TableId::TerritoryTotals, "controlled_states").unwrap(), CONTROLLED_STATES);
         let holding = |owned: Option<i64>, controlled: Option<i64>| {
             let row = Named([(OWNED_STATES, owned), (CONTROLLED_STATES, controlled)].into_iter().filter_map(|(at, value)| Some((at, value?))).collect());
-            territory_holding(&row, 0)
+            territory_holding(&row, 0).value()
         };
         assert_eq!((holding(Some(0), Some(2)), holding(Some(0), Some(0)), holding(None, Some(1)), holding(None, Some(0))), (Some(1), Some(0), Some(1), None));
         assert!(!LIFETIMES.contains(&TableId::TerritoryTotals), "a series table's pieces hold its lifetimes already");
@@ -1674,7 +1675,7 @@ mod tests {
         assert_eq!((factory_count(&full, 0, 0, 1), factory_count(&full, 0, 0, 2), factory_count(&full, 0, 0, 0)), (Some(12), Some(8), Some(8)));
         assert_eq!((factory_count(&full, 0, 2, 1), factory_count(&full, 0, 2, 2), factory_count(&full, 0, 2, 0)), (Some(30), Some(28), Some(16)));
         let value = |name: &str| match FACTORY_CHANNELS.iter().find(|measure| measure.name == name).unwrap().column {
-            Column::Computed { value, .. } => value(&full, 0),
+            Column::Computed { value, .. } => value(&full, 0).value(),
             Column::Cell(_) => unreachable!(),
         };
         assert_eq!((value("free7"), value("built5"), value("topBar2")), (Some(8 + 5 + 16), Some(12 + 30), Some(5)));
@@ -1704,5 +1705,18 @@ mod tests {
         }
         assert_eq!(faction_measure("country-factories", "free7"), Some("free7"));
         assert_eq!(faction_measure("country-factories", "damaged7"), None, "damaged factories are no faction total");
+    }
+
+    #[test]
+    fn computed_ratios_read_every_operand_before_declaring_not_applicable() {
+        let map = |pairs: &[(usize, i64)]| Named(pairs.iter().copied().collect());
+        assert_eq!(fuel_received_share(&map(&[(FUEL_REQUESTED, 0)]), 0), Computed::Unrecorded);
+        assert_eq!(fuel_received_share(&map(&[(FUEL_RECEIVED, 0)]), 0), Computed::Unrecorded);
+        assert_eq!(fuel_received_share(&map(&[(FUEL_REQUESTED, 0), (FUEL_RECEIVED, 0)]), 0), Computed::NotApplicable("No fuel requested"));
+        assert_eq!(fuel_received_share(&map(&[(FUEL_REQUESTED, 100), (FUEL_RECEIVED, 25)]), 0), Computed::Value(250_000));
+        assert_eq!(autonomy_progress(&map(&[(AUTONOMY_LOWER, 100), (AUTONOMY_UPPER, 100)]), 0), Computed::Unrecorded);
+        assert_eq!(autonomy_progress(&map(&[(AUTONOMY_SCORE, 100), (AUTONOMY_LOWER, 100), (AUTONOMY_UPPER, 100)]), 0), Computed::NotApplicable("No autonomy range"));
+        assert_eq!(no_supply_share(&map(&[(0, 0), (2, 0)]), 0), Computed::Unrecorded);
+        assert_eq!(no_supply_share(&map(&[(0, 0), (1, 0), (2, 0)]), 0), Computed::NotApplicable("No divisions"));
     }
 }

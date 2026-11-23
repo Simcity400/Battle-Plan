@@ -181,7 +181,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const hover = useHoverLabels(runtime.client, track, active, country);
   const progressAt = (tag: string, hour: number) => {
     const line = series.lines.find(item => item.tag === tag);
-    return line?.runs.find(run => run.firstHour <= hour && hour <= run.lastHour)?.valueRaw ?? null;
+    return { value: line?.runs.find(run => run.firstHour <= hour && hour <= run.lastHour)?.valueRaw ?? null, missing: line?.missing.get(hour) ?? null };
   };
   const lineOf = series.lineOf;
   const unobserved = data?.unobserved ?? NO_SPANS;
@@ -239,10 +239,11 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
           const level = levelAt(about, hour) ?? null;
           const place = level == null ? undefined : order.get(level);
           const overlord = named(run.overlord);
+          const progress = progressAt(about.tag, Math.floor(hour));
           const rows: TooltipRow[] = [
             { label: 'Subject level', value: levelName(data.levels, level), swatch: colour(level) },
             { label: 'Overlord', value: overlord.name, countryFlag: overlord },
-            { label: place?.highest ? 'Progress within the level' : 'Progress to the next level', value: formatProgress(progressAt(about.tag, Math.floor(hour))) },
+            { label: place?.highest ? 'Progress within the level' : 'Progress to the next level', value: formatProgress(progress.value, progress.missing) },
             { label: 'Autonomy score', value: scoreAt(scores.data, about.tag, Math.floor(hour)), divider: true },
             { label: 'Moves down below', value: `${scoreAt(lowers.data, about.tag, Math.floor(hour))}${place?.lowest ? ' · no lower level' : ''}` },
             { label: 'Moves up at', value: `${scoreAt(uppers.data, about.tag, Math.floor(hour))}${place?.highest ? ' · no higher level' : ''}` },

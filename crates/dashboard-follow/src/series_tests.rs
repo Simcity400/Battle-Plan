@@ -119,9 +119,39 @@ fn query() -> dashboard_query::Query<'static> {
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 
-fn negated(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    Some(cells.number(COMMAND, slot)? - cells.number(POWER, slot)?)
+fn negated(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of(cells.number(COMMAND, slot).zip(cells.number(POWER, slot)).map(|(command, power)| command - power))
 }
+
+fn ratio_of_power(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    let Some(power) = cells.number(POWER, slot) else {
+        return replay_columnar::summary::Computed::Unrecorded;
+    };
+    let Some(command) = cells.number(COMMAND, slot) else {
+        return replay_columnar::summary::Computed::Unrecorded;
+    };
+    if command <= 0 {
+        return replay_columnar::summary::Computed::NotApplicable("No command power");
+    }
+    replay_columnar::summary::Computed::Value(power / command)
+}
+
+static RATIO_OF_POWER: Series = Series {
+    kind: "test-ratio",
+    table: TableId::Countries,
+    key: Key::Country,
+    parts: None,
+    measures: &[Measure {
+        name: "ratio",
+        column: Column::Computed { id: 902, inputs: &["political_power_raw", "command_power_raw"], value: ratio_of_power },
+        decimals: 0,
+        aggregates: 0,
+        carry: Carry::None,
+        rank: 0,
+    }],
+    drops: false,
+    absent_none: false,
+};
 
 static NEGATED: Series = Series {
     kind: "test-negated",
@@ -143,8 +173,8 @@ static NEGATED: Series = Series {
 const SPECIAL_TOTAL: usize = 4;
 const PRODUCTION_DEMAND: usize = 5;
 
-fn surplus(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    cells.number(SPECIAL_TOTAL, slot)?.checked_add(cells.number(PRODUCTION_DEMAND, slot)?)
+fn surplus(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of(cells.number(SPECIAL_TOTAL, slot).zip(cells.number(PRODUCTION_DEMAND, slot)).and_then(|(a, b)| a.checked_add(b)))
 }
 
 static RESOURCE_SURPLUS: Series = Series {
@@ -177,6 +207,24 @@ fn rows(answer: &Answer) -> Vec<(u128, Option<i64>, String)> {
 
 fn value(state: &SeriesState) -> Option<i64> {
     state.run.as_ref().map(|run| run.value_raw.parse().unwrap())
+}
+
+#[test]
+fn a_followed_computed_column_distinguishes_not_applicable_from_unrecorded() {
+    let state = query();
+    let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
+    let followed = Query::Series { series: &RATIO_OF_POWER, measure: &RATIO_OF_POWER.measures[0], countries: vec!["GER".into()], top: None, least: false, parts: false, identity };
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let recorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_some()).unwrap();
+    let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
+    let lane_recorded = lane(&pages, &followed, vec![POWER, COMMAND], recorded);
+    let answer_recorded = Answer::parse(&answer_at(&followed, &lane_recorded).unwrap()).unwrap();
+    assert_eq!(answer_recorded.states, [State::Missing]);
+    assert_eq!(answer_recorded.reason(0), Some("No command power"));
+    let lane_unrecorded = lane(&pages, &followed, vec![POWER, COMMAND], unrecorded);
+    let answer_unrecorded = Answer::parse(&answer_at(&followed, &lane_unrecorded).unwrap()).unwrap();
+    assert_eq!(answer_unrecorded.states, [State::Unrecorded]);
+    assert_eq!(answer_unrecorded.reason(0), Some("GER's ratio was not recorded at this hour"));
 }
 
 #[test]

@@ -9,7 +9,7 @@ export interface SeriesKey { tag: string; part: string }
 
 export const keyId = (key: SeriesKey) => `${key.tag}\u0000${key.part}`;
 
-export interface KeyedState { tag: string; part: string; hour: number; run: SeriesRun | null; drop: SeriesDrop | null; missing: string | null }
+export interface KeyedState { tag: string; part: string; hour: number; run: SeriesRun | null; drop: SeriesDrop | null; missing: string | null; notApplicable?: boolean }
 export interface KeyedStates { branchId: string; decimals: number; states: readonly KeyedState[] }
 
 export interface SeriesPart { part: string; id: string | null; firstHour: number; lastHour: number }
@@ -43,7 +43,8 @@ export function validateKeyedStates(value: unknown): KeyedStates {
   if (!object(value) || typeof value.branchId !== 'string' || !Number.isInteger(value.decimals) || (value.decimals as number) < 0
     || (value.decimals as number) > 12 || !Array.isArray(value.states) || !value.states.every(state => object(state)
       && (typeof state.country === 'string' || typeof state.country === 'number') && typeof state.part === 'string' && hour(state.hour) && (state.run === null || run(state.run))
-      && (state.drop === null || drop(state.drop)) && (state.missing === null || typeof state.missing === 'string')))
+      && (state.drop === null || drop(state.drop)) && (state.missing === null || typeof state.missing === 'string')
+      && (state.notApplicable === undefined || typeof state.notApplicable === 'boolean')))
     throw new Error('The keyed series state reply is malformed.');
   const states = (value.states as (Omit<KeyedState, 'tag'> & { country: CountryRef })[]).map(({ country, ...state }) => ({ ...state, tag: countryKey(country) }));
   return { ...(value as unknown as KeyedStates), states };
@@ -107,7 +108,7 @@ export function keyedTileReply(reply: TileReply & { lines: readonly { country: C
   return { ...reply, lines: reply.lines.map((line, at) => ({ ...line, country: keyId(keys[at]) })) } as TileReply;
 }
 
-export interface ReachedKeyLine { key: SeriesKey; runs: SeriesRun[]; drops: SeriesDrop[]; missing: Map<number, string> }
+export interface ReachedKeyLine { key: SeriesKey; runs: SeriesRun[]; drops: SeriesDrop[]; missing: Map<number, string>; notApplicable: Set<number>; unrecorded: Set<number> }
 
 export function reachedKeyLines(keys: readonly SeriesKey[], states: KeyedStates | undefined): ReachedKeyLine[] {
   const byKey = new Map<string, KeyedState[]>();
@@ -122,6 +123,8 @@ export function reachedKeyLines(keys: readonly SeriesKey[], states: KeyedStates 
     for (const state of reached) if (state.run) unique.set(`${state.run.firstHour}|${state.run.lastHour}|${state.run.valueRaw}`, state.run);
     return { key, runs: [...unique.values()].sort((a, b) => a.firstHour - b.firstHour),
       drops: reached.flatMap(state => state.drop ? [state.drop] : []),
-      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])) };
+      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])),
+      notApplicable: new Set(reached.flatMap(state => state.notApplicable === true ? [state.hour] : [])),
+      unrecorded: new Set(reached.flatMap(state => state.notApplicable === false ? [state.hour] : [])) };
   });
 }

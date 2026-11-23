@@ -48,6 +48,7 @@ test('an unrecorded level, an unobserved hour and a released subject are said, n
   assert.deepEqual(order.get('autonomy_mod_unordered'), { index: 2, lowest: false, highest: false });
   assert.equal(formatProgress('34960'), '35.0%');
   assert.equal(formatProgress(null), 'Not recorded');
+  assert.equal(formatProgress(null, 'No autonomy range'), 'No autonomy range');
 });
 
 test('a score is the game’s one decimal, and a missing one says why', () => {

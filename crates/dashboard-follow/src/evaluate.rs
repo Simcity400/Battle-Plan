@@ -10,7 +10,7 @@ use replay_columnar::{
     manifest::Status,
     state::Kind,
     store::{TableState, Value},
-    summary::{Cells, Source},
+    summary::{Cells, Computed, Source},
 };
 use replay_data::Hour;
 use std::{cmp::Ordering, collections::{HashMap, HashSet}, io};
@@ -43,7 +43,7 @@ impl Find for Scan {
     }
 }
 
-pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+pub fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
     let name = table_words(table);
     match status {
         Status::Complete => None,
@@ -133,10 +133,17 @@ impl Cells for Row<'_> {
 }
 
 #[inline]
-pub(crate) fn series_value(source: &Source, cells: &TableState, slot: u32) -> (i64, State) {
+pub(crate) fn series_value(source: &Source, cells: &TableState, slot: u32) -> (i64, State, Option<&'static str>) {
     match source {
-        Source::Cell(column) => number(cells.value(*column, slot)),
-        Source::Computed { value, .. } => value(&Row(cells), slot).map_or((0, State::Unrecorded), |value| (value, State::Value)),
+        Source::Cell(column) => {
+            let (value, state) = number(cells.value(*column, slot));
+            (value, state, None)
+        }
+        Source::Computed { value, .. } => match value(&Row(cells), slot) {
+            Computed::Value(value) => (value, State::Value, None),
+            Computed::NotApplicable(reason) => (0, State::Missing, Some(reason)),
+            Computed::Unrecorded => (0, State::Unrecorded, None),
+        },
     }
 }
 
@@ -192,7 +199,7 @@ impl Ranking {
             let Some(key) = cells.key(slot) else { continue };
             let Some(&at) = tags.by_key.get(&key) else { continue };
             read += 1;
-            let (value, State::Value) = series_value(&source, cells, slot) else { continue };
+            let (value, State::Value, _) = series_value(&source, cells, slot) else { continue };
             let ranked = (if *least { value } else { !value }, self.order[at as usize], key);
             self.sorted.insert(ranked);
             self.slots.insert(slot, ranked);
@@ -304,16 +311,19 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 match top {
                     None => {
                         for &(key, slot) in rows {
-                            let (value, state) = series_value(&source, cells, slot);
+                            let (value, state, reason) = series_value(&source, cells, slot);
                             table.row(key);
                             table.cell(value, state);
                             table.name(&names[at].key());
+                            if let Some(reason) = reason {
+                                table.explain(reason);
+                            }
                         }
                     }
                     Some(n) => {
                         ranked.clear();
                         ranked.extend(rows.filter_map(|&(key, slot)| match series_value(&source, cells, slot) {
-                            (value, State::Value) => Some((value, key, slot)),
+                            (value, State::Value, _) => Some((value, key, slot)),
                             _ => None,
                         }));
                         if ranked.len() > *n {
@@ -340,7 +350,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             table.clear(1, false);
             ranked.clear();
             ranked.extend(cells.rows().filter_map(|slot| match series_value(&source, cells, slot) {
-                (value, State::Value) => {
+                (value, State::Value, _) => {
                     let key = cells.key(slot)?;
                     Some((value, key, *tags.by_key.get(&key)?))
                 }
@@ -385,10 +395,13 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                     None if series.absent_none => table.cell(0, State::Value),
                     None => table.absent(&unread(at)),
                     Some(slot) => {
-                        let (value, state) = series_value(&source, cells, slot);
+                        let (value, state, reason) = series_value(&source, cells, slot);
                         table.cell(value, state);
                         if state != State::Value {
-                            table.explain(&unread(at));
+                            match reason {
+                                Some(reason) => table.explain(reason),
+                                None => table.explain(&unread(at)),
+                            }
                         }
                     }
                 }

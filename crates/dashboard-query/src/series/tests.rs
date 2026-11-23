@@ -320,8 +320,8 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
 const SPECIAL_TOTAL: usize = 4;
 const PRODUCTION_DEMAND: usize = 5;
 
-fn surplus(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    cells.number(SPECIAL_TOTAL, slot)?.checked_add(cells.number(PRODUCTION_DEMAND, slot)?)
+fn surplus(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of(cells.number(SPECIAL_TOTAL, slot).zip(cells.number(PRODUCTION_DEMAND, slot)).and_then(|(a, b)| a.checked_add(b)))
 }
 
 static SURPLUS: Series = Series {
@@ -359,8 +359,133 @@ fn a_computed_part_state_is_its_formula_over_the_row() {
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 
-fn negated(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    Some(cells.number(COMMAND, slot)? - cells.number(POWER, slot)?)
+fn negated(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    replay_columnar::summary::Computed::of(cells.number(COMMAND, slot).zip(cells.number(POWER, slot)).map(|(command, power)| command - power))
+}
+
+fn ratio_of_power(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    let Some(power) = cells.number(POWER, slot) else {
+        return replay_columnar::summary::Computed::Unrecorded;
+    };
+    let Some(command) = cells.number(COMMAND, slot) else {
+        return replay_columnar::summary::Computed::Unrecorded;
+    };
+    if command <= 0 {
+        return replay_columnar::summary::Computed::NotApplicable("No command power");
+    }
+    replay_columnar::summary::Computed::Value(power / command)
+}
+
+static RATIO_OF_POWER: Series = Series {
+    kind: "test-ratio",
+    table: TableId::Countries,
+    key: Key::Country,
+    parts: None,
+    measures: &[Measure {
+        name: "ratio",
+        column: Column::Computed { id: 901, inputs: &["political_power_raw", "command_power_raw"], value: ratio_of_power },
+        decimals: 0,
+        aggregates: 0,
+        carry: Carry::None,
+        rank: 0,
+    }],
+    drops: false,
+    absent_none: false,
+};
+
+#[test]
+fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
+    let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
+    let recorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_some()).unwrap();
+    let from = unrecorded.min(recorded);
+    let to = (from + 30).max(unrecorded.max(recorded));
+    let fixture = Fixture::new(Data::Power, from..=to);
+    let query = fixture.query();
+    let line = Line::new(&query, &RATIO_OF_POWER, &RATIO_OF_POWER.measures[0]).unwrap();
+    let states = line.states(&[read("GER", recorded, None), read("GER", unrecorded, None)], None).unwrap();
+    assert_eq!(states[0].run, None);
+    assert_eq!(states[0].not_applicable, Some(true), "command_power_raw is 0 on recorded rows, so the ratio is not applicable");
+    assert_eq!(states[0].missing.as_deref(), Some("No command power"));
+    assert_eq!(states[1].run, None);
+    assert_eq!(states[1].not_applicable, Some(false), "an unrecorded input on a complete hour stays unrecorded, never not applicable");
+    assert_eq!(states[1].missing.as_deref(), Some("GER's ratio was not recorded at this hour"));
+
+    fn reason_at(spans: &[MissingSpan], hour: i32) -> Option<&str> {
+        spans.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.as_str())
+    }
+    let (hourly_summary, hourly_missing) = line.summary("GER", from, to, (to - from + 1) as u32).unwrap();
+    assert!(hourly_summary.buckets.iter().all(Option::is_none));
+    assert_eq!(reason_at(&hourly_missing, recorded), Some("No command power"));
+    assert_eq!(reason_at(&hourly_missing, unrecorded), Some("GER's ratio was not recorded here"));
+
+    let (coarse_summary, coarse_missing) = line.summary("GER", from, to, 2).unwrap();
+    assert!(coarse_summary.buckets.iter().all(Option::is_none));
+    assert_eq!(reason_at(&coarse_missing, recorded), Some("No command power"));
+    assert_eq!(reason_at(&coarse_missing, unrecorded), Some("GER's ratio was not recorded here"));
+
+    let hourly_index = i64::from(recorded).div_euclid(crate::tile::BINS as i64);
+    let hourly_tile = crate::tile::tile(&line, "1", &[Ask::whole("GER")], None, 1, hourly_index, false).unwrap();
+    assert_eq!(reason_at(&hourly_tile.lines[0].missing, recorded), Some("No command power"));
+    if i64::from(unrecorded).div_euclid(crate::tile::BINS as i64) == hourly_index {
+        assert_eq!(reason_at(&hourly_tile.lines[0].missing, unrecorded), Some("GER's ratio was not recorded here"));
+    }
+
+    let coarse_bin = replay_columnar::summary::bucket_hours(0);
+    let coarse_index = i64::from(recorded).div_euclid(crate::tile::BINS as i64 * coarse_bin);
+    let coarse_tile = crate::tile::tile(&line, "1", &[Ask::whole("GER")], None, coarse_bin, coarse_index, false).unwrap();
+    assert_eq!(reason_at(&coarse_tile.lines[0].missing, recorded), Some("No command power"));
+    assert_eq!(reason_at(&coarse_tile.lines[0].missing, unrecorded), Some("GER's ratio was not recorded here"));
+
+    let base = 10_008;
+    let fuel_fixture = Fixture::new(Data::Fuel, base..=base + 35);
+    let fuel_query = fuel_fixture.query();
+    let fuel_series = dashboard_declare::series("fuel-consumers").unwrap();
+    let fuel_line = Line::new(&fuel_query, fuel_series, fuel_series.measure("receivedShare").unwrap()).unwrap();
+    assert!(fuel_line.summarised().unwrap(), "fuel-consumers receivedShare is summarised on disk");
+    let fuel_ask = Ask { country: "GER".into(), part: 0 };
+    let fuel_summaries = fuel_line.summaries_within(&[(fuel_ask.clone(), vec![(base, base + 35)])], base, base + 35, 6).unwrap();
+    let (fuel_summary, fuel_missing) = &fuel_summaries[0];
+    assert!(fuel_summary.buckets[0].is_some() && fuel_summary.buckets[1].is_some(), "valued hours come from on-disk summaries");
+    assert!(fuel_summary.buckets[2..].iter().all(Option::is_none));
+    assert_eq!(reason_at(fuel_missing, base), None, "fully covered summary bin has no missing span");
+    assert_eq!(reason_at(fuel_missing, base + 6), None, "present hours inside a split bin stay covered");
+    assert_eq!(reason_at(fuel_missing, base + 8), Some("GER's receivedShare was not recorded here"), "mid-bin absent hours are never hidden by coarse summary bin");
+    assert_eq!(reason_at(fuel_missing, base + 9), Some("GER's receivedShare was not recorded here"));
+    assert_eq!(reason_at(fuel_missing, base + 10), None);
+    assert_eq!(reason_at(fuel_missing, base + 12), Some("No fuel requested"));
+    assert_eq!(reason_at(fuel_missing, base + 24), Some("GER's receivedShare was not recorded here"));
+
+    let fuel_hourly_index = i64::from(base).div_euclid(crate::tile::BINS as i64);
+    let fuel_hourly_tile = crate::tile::tile(&fuel_line, "1", &[fuel_ask.clone()], None, 1, fuel_hourly_index, false).unwrap();
+    assert_eq!(reason_at(&fuel_hourly_tile.lines[0].missing, base + 8), Some("GER's receivedShare was not recorded here"));
+    assert_eq!(reason_at(&fuel_hourly_tile.lines[0].missing, base + 9), Some("GER's receivedShare was not recorded here"));
+
+    let fuel_tile_index = i64::from(base).div_euclid(crate::tile::BINS as i64 * coarse_bin);
+    let fuel_tile = crate::tile::tile(&fuel_line, "1", &[fuel_ask.clone()], None, coarse_bin, fuel_tile_index, false).unwrap();
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base), None);
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 6), None);
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 8), Some("GER's receivedShare was not recorded here"));
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 9), Some("GER's receivedShare was not recorded here"));
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 10), None);
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 12), Some("No fuel requested"));
+    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 24), Some("GER's receivedShare was not recorded here"));
+
+    let (clipped_from, clipped_to) = (base + 1, base + 34);
+    let (clipped_level, clipped_bin) = grid(i64::from(clipped_to - clipped_from + 1), 5);
+    assert_eq!((clipped_level, clipped_bin), (0, coarse_bin), "clipped range selects the summary level, not walked");
+    let clipped_binned = fuel_line.binned(&[(fuel_ask.clone(), vec![(clipped_from, clipped_to)])], clipped_from, clipped_to, clipped_level, clipped_bin).unwrap();
+    assert_eq!(clipped_binned[0].2, vec![(base + 1, base + 5)], "clipped fully-valued coarse edge bin is marked covered at the summary level");
+    assert_eq!(
+        subtract_spans(&[(clipped_from, clipped_to)], &clipped_binned[0].2),
+        vec![(base + 6, base + 34)],
+        "raw missing-reason resolution skips the covered edge bin"
+    );
+    let clipped = fuel_line.summaries_within(&[(fuel_ask, vec![(clipped_from, clipped_to)])], clipped_from, clipped_to, 5).unwrap();
+    assert_eq!(reason_at(&clipped[0].1, base + 1), None);
+    assert_eq!(reason_at(&clipped[0].1, base + 5), None);
+    assert_eq!(reason_at(&clipped[0].1, base + 8), Some("GER's receivedShare was not recorded here"));
+    assert_eq!(reason_at(&clipped[0].1, base + 12), Some("No fuel requested"));
+    assert_eq!(reason_at(&clipped[0].1, base + 34), Some("GER's receivedShare was not recorded here"));
 }
 
 static NEGATED: Series = Series {

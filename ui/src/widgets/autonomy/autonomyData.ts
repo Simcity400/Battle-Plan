@@ -51,8 +51,8 @@ export function levelOrder(levels: readonly SubjectLevel[]): Map<string, { index
 export const levelName = (levels: readonly SubjectLevel[], token: string | null | undefined) =>
   token == null ? 'Level not recorded' : contentTitle(levels.find(level => level.token === token)?.name, token, 'Autonomy level name unavailable');
 
-export function formatProgress(raw: string | null | undefined): string {
-  if (raw == null) return 'Not recorded';
+export function formatProgress(raw: string | null | undefined, missing?: string | null): string {
+  if (raw == null) return missing ?? 'Not recorded';
   return `${(Number(raw) / 1000).toFixed(1)}%`;
 }
 

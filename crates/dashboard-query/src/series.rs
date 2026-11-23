@@ -8,7 +8,7 @@ use crate::{
 };
 use dashboard_declare::{Measure, Series};
 use replay_recording::columnar_frames::Recording;
-use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::Source};
+use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::{Computed, Source}};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -114,6 +114,10 @@ pub struct SeriesState {
     pub drop: Option<SeriesDrop>,
     #[doc = " Why there is no value: never zero, never a guess."]
     pub missing: Option<String>,
+    #[doc = " True when the inputs were recorded and the measure is not applicable (e.g. a share with a zero denominator)."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_applicable: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -688,7 +692,8 @@ impl<'q, 'a> Line<'q, 'a> {
         let six = replay_columnar::summary::bucket_hours(0);
         if hours < six {
             let tags = self.rank_at(to, n)?;
-            let charts = self.summaries(&tags, from, to, width)?;
+            let drawn: Vec<(Ask, Vec<(i32, i32)>)> = tags.iter().map(|tag| (Ask::whole(tag.clone()), vec![(from, to)])).collect();
+            let charts = self.summaries_within_with(&drawn, from, to, width, false)?;
             return Ok(tags
                 .into_iter()
                 .zip(charts)
@@ -802,7 +807,7 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         if hours <= i64::from(asked) {
             let drawn: Vec<(Ask, Vec<(i32, i32)>)> = lines.iter().map(|(tag, (_, spans))| (Ask::whole(tag), spans.clone())).collect();
-            let charts = self.summaries_within(&drawn, from, to, asked)?;
+            let charts = self.summaries_within_with(&drawn, from, to, asked, false)?;
             return Ok(drawn
                 .into_iter()
                 .zip(charts)
@@ -907,7 +912,7 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         let mut asks: Vec<(Ask, i32)> = Vec::new();
         let mut planned: Vec<Result<usize, SeriesState>> = Vec::new();
-        let unread = |read: &SeriesRead, missing: String| SeriesState { country: read.country.clone(), part: None, hour: read.hour, run: None, drop: None, missing: Some(missing) };
+        let unread = |read: &SeriesRead, missing: String| SeriesState { country: read.country.clone(), part: None, hour: read.hour, run: None, drop: None, missing: Some(missing), not_applicable: None };
         for read in reads {
             if self.series.parts.is_none() || read.part.is_some() {
                 asks.push((Ask { country: read.country.clone(), part: self.part_of(read.part.as_deref())? }, read.hour));
@@ -949,8 +954,9 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut blocks: HashMap<(u32, u32), Vec<(usize, Part, (i32, i32))>> = HashMap::new();
         let mut out: Vec<SeriesState> = reads
             .iter()
-            .map(|(ask, hour)| SeriesState { country: ask.country.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None })
+            .map(|(ask, hour)| SeriesState { country: ask.country.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None, not_applicable: None })
             .collect();
+        let mut unresolved: HashMap<u32, Vec<(usize, i32, u128)>> = HashMap::new();
         for (at, (ask, hour)) in reads.iter().enumerate() {
             let hour = *hour;
             if let Some(reason) = self.missing_at(&ask.country, hour) {
@@ -1000,7 +1006,11 @@ impl<'q, 'a> Line<'q, 'a> {
                 let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else { continue };
                 let (first, last, value) = runs[found];
                 let Some(value) = value else {
-                    out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                    if matches!(self.source, Source::Computed { .. }) {
+                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                    } else {
+                        out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                    }
                     continue;
                 };
                 let (read_first, read_last) = (first, last);
@@ -1026,6 +1036,59 @@ impl<'q, 'a> Line<'q, 'a> {
                 }
             }
         }
+        if !unresolved.is_empty() {
+            enum Resolved {
+                NotApplicable(&'static str),
+                CompleteUnrecorded,
+            }
+            let columns = read::columns_of(&self.source);
+            for (run, items) in unresolved {
+                let mut asks: Vec<(i32, u128)> = items.iter().map(|&(_, hour, key)| (hour, key)).collect();
+                asks.sort_unstable();
+                asks.dedup();
+                let mut resolved: HashMap<(i32, u128), Resolved> = HashMap::new();
+                let mut absent: Vec<(i32, u128)> = Vec::new();
+                crate::cost::storage(|| {
+                    replay_lanes::lanes::at_each(recording, run, self.series.table, Some(&columns), &asks, &mut |hour, key, row| {
+                        match row {
+                            Some((view, slot)) if matches!(view.status(), Status::Complete) => {
+                                let state = match self.source.read(&view, slot) {
+                                    Computed::NotApplicable(reason) => Resolved::NotApplicable(reason),
+                                    Computed::Unrecorded | Computed::Value(_) => Resolved::CompleteUnrecorded,
+                                };
+                                resolved.insert((hour, key), state);
+                            }
+                            None => absent.push((hour, key)),
+                            _ => {}
+                        }
+                        Ok(())
+                    })
+                })?;
+                for group in absent.chunk_by(|a, b| a.0 == b.0) {
+                    let hour = group[0].0;
+                    if self.statuses(run, hour, hour)?.iter().any(|held| held.first <= hour && hour <= held.last && matches!(held.status, Status::Complete)) {
+                        for &(_, key) in group {
+                            resolved.insert((hour, key), Resolved::CompleteUnrecorded);
+                        }
+                    }
+                }
+                for (at, hour, key) in items {
+                    match resolved.get(&(hour, key)) {
+                        Some(Resolved::NotApplicable(reason)) => {
+                            out[at].missing = Some((*reason).to_owned());
+                            out[at].not_applicable = Some(true);
+                        }
+                        Some(Resolved::CompleteUnrecorded) => {
+                            out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                            out[at].not_applicable = Some(false);
+                        }
+                        None => {
+                            out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        }
+                    }
+                }
+            }
+        }
         Ok(out)
     }
 
@@ -1039,24 +1102,56 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn summaries_within(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, width: u32) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
+        self.summaries_within_with(drawn, from, to, width, true)
+    }
+
+    fn summaries_within_with(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, width: u32, resolve_computed: bool) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
         let tags: Vec<&Country> = drawn.iter().map(|(ask, _)| &ask.country).collect();
         let hours = i64::from(to) - i64::from(from) + 1;
-        let mut out = Vec::with_capacity(tags.len());
         match hours > i64::from(width) {
             true => {
                 let (level, bin_hours) = grid(hours, width);
-                for (tag, (buckets, held)) in tags.iter().zip(self.binned(drawn, from, to, level, bin_hours)?) {
-                    let summary = ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None };
-                    out.push((summary, self.missing(*tag, from, to, &held)?));
-                }
+                let binned = self.binned(drawn, from, to, level, bin_hours)?;
+                let missing = if resolve_computed {
+                    let asks: Vec<(&Country, &[Part], &[(i32, i32)])> = tags
+                        .iter()
+                        .zip(&binned)
+                        .map(|(tag, (_, held, covered))| (*tag, held.as_slice(), covered.as_slice()))
+                        .collect();
+                    self.missing_batch(&asks, from, to)?
+                } else {
+                    tags.iter().zip(&binned).map(|(tag, (_, held, _))| self.missing((*tag).clone(), from, to, held)).collect::<io::Result<Vec<_>>>()?
+                };
+                Ok(binned
+                    .into_iter()
+                    .zip(missing)
+                    .map(|((buckets, _, _), missing)| (ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None }, missing))
+                    .collect())
             }
             false => {
-                for (tag, (runs, held)) in tags.iter().zip(self.hourly_runs(drawn, from, to)?) {
-                    out.push((self.hourly(runs, from, to, width), self.missing(*tag, from, to, &held)?));
-                }
+                let hourly = self.hourly_runs(drawn, from, to)?;
+                let missing = if resolve_computed {
+                    let covered: Vec<Vec<(i32, i32)>> = hourly
+                        .iter()
+                        .map(|(runs, _)| runs.iter().map(|run| (run.first_hour, run.last_hour)).collect())
+                        .collect();
+                    let asks: Vec<(&Country, &[Part], &[(i32, i32)])> = tags
+                        .iter()
+                        .zip(&hourly)
+                        .zip(&covered)
+                        .map(|((tag, (_, held)), covered)| (*tag, held.as_slice(), covered.as_slice()))
+                        .collect();
+                    self.missing_batch(&asks, from, to)?
+                } else {
+                    tags.iter().zip(&hourly).map(|(tag, (_, held))| self.missing((*tag).clone(), from, to, held)).collect::<io::Result<Vec<_>>>()?
+                };
+                Ok(hourly
+                    .into_iter()
+                    .zip(missing)
+                    .map(|((runs, _), missing)| (self.hourly(runs, from, to, width), missing))
+                    .collect())
             }
         }
-        Ok(out)
     }
 
     fn key_runs(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::Runs>> {
@@ -1176,14 +1271,22 @@ impl<'q, 'a> Line<'q, 'a> {
         (held, cut)
     }
 
-    pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+    fn summarised(&self) -> io::Result<bool> {
+        let registry = replay_recording::summaries::registry()?;
+        Ok(registry.iter().any(|(table, shape)| {
+            *table == self.series.table.index()
+                && matches!(shape, replay_columnar::summary::Shape::Values(columns) if columns.iter().any(|column| column.source.id() == self.column))
+        }))
+    }
+
+    pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>, Vec<(i32, i32)>)>> {
         if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
             let (held, _) = self.drawn_parts(drawn, from, to);
             let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
             let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
-            return Ok(held.into_iter().map(|parts| (vec![None; bins], parts)).collect());
+            return Ok(held.into_iter().map(|parts| (vec![None; bins], parts, Vec::new())).collect());
         }
-        if dashboard_declare::read_by_key(self.series.table) {
+        if dashboard_declare::read_by_key(self.series.table) || !self.summarised()? {
             return self.binned_from_runs(drawn, from, to, bin_hours);
         }
         let (held, raw_parts) = self.drawn_parts(drawn, from, to);
@@ -1221,20 +1324,29 @@ impl<'q, 'a> Line<'q, 'a> {
             keys.sort_unstable();
             keys.dedup();
             let (run, first, last) = extent;
-            read.insert(extent, self.charts_within(run, &keys, (first, last), level, bin_hours)?);
+            match self.charts_within(run, &keys, (first, last), level, bin_hours) {
+                Ok(reads) => {
+                    read.insert(extent, reads);
+                }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData && error.to_string() == "The summary holds no such column" => {
+                    return self.binned_from_runs(drawn, from, to, bin_hours);
+                }
+                Err(error) => return Err(error),
+            }
         }
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
         let mut out = Vec::with_capacity(drawn.len());
         for (parts, held) in parts.iter().zip(held) {
             let mut buckets: Vec<Option<ChartBucket>> = vec![None; bins];
+            let mut valued_hours: Vec<u64> = vec![0; bins];
             for part in parts {
                 let own = read.get(&(part.run, part.first, part.last)).filter(|reads| reads.iter().any(|read| read.index.contains_key(&part.key)));
                 let span = span_of(part);
                 let Some(reads) = own.or_else(|| read.get(&(part.run, span.0, span.1))) else { continue };
                 let mut previous = false;
-                for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), level, first_bin, bin_hours, bins).into_iter().enumerate() {
-                    let Some(bucket) = bucket else {
+                for (slot, folded) in self.fold_reads(reads, part.key, (part.first, part.last), level, first_bin, bin_hours, bins).into_iter().enumerate() {
+                    let Some((bucket, hours)) = folded else {
                         previous = false;
                         continue;
                     };
@@ -1244,20 +1356,37 @@ impl<'q, 'a> Line<'q, 'a> {
                         None => Some(now),
                         Some(held) => crate::chart::merge(Some(held), Some(now)),
                     };
+                    valued_hours[slot] += hours;
                     previous = true;
                 }
             }
+            let mut full: Vec<(i32, i32)> = Vec::new();
             for (slot, bucket) in buckets.iter_mut().enumerate() {
                 if bucket.is_none() {
                     continue;
                 }
-                let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
-                let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
+                let start = first_bin + slot as i64 * bin_hours;
+                let lo = start.max(i64::from(from)) as i32;
+                let hi = (start + bin_hours - 1).min(i64::from(to)) as i32;
                 if self.overlaps_withheld(&held, lo, hi) {
                     *bucket = None;
+                    continue;
+                }
+                let expected: u64 = parts
+                    .iter()
+                    .filter_map(|part| {
+                        let (a, b) = (part.first.max(lo), part.last.min(hi));
+                        (a <= b).then_some((i64::from(b) - i64::from(a) + 1) as u64)
+                    })
+                    .sum();
+                if lo <= hi && expected > 0 && valued_hours[slot] >= expected {
+                    match full.last_mut() {
+                        Some(last) if i64::from(last.1) + 1 >= i64::from(lo) => last.1 = last.1.max(hi),
+                        _ => full.push((lo, hi)),
+                    }
                 }
             }
-            out.push((buckets, held));
+            out.push((buckets, held, full));
         }
         Ok(out)
     }
@@ -1277,7 +1406,7 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     #[allow(clippy::too_many_arguments, reason = "a part's hours, the view's level and its grid")]
-    fn fold_reads(&self, reads: &[ExtentRead], key: u128, (first, last): (i32, i32), level: u8, first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<ChartBucket>> {
+    fn fold_reads(&self, reads: &[ExtentRead], key: u128, (first, last): (i32, i32), level: u8, first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<(ChartBucket, u64)>> {
         use replay_columnar::summary::bucket_hours;
         let scale = self.scale();
         let six = bucket_hours(0);
@@ -1328,20 +1457,23 @@ impl<'q, 'a> Line<'q, 'a> {
                 let (lo, hi) = (start.max(i64::from(first)), (start + bin_hours - 1).min(i64::from(last)));
                 let at_hour = |bucket: i32| (coarse(bucket) * six).clamp(lo, hi) as i32;
                 let last_six = (coarse(value.last_bucket) + ratio - 1) * six;
-                Some(ChartBucket {
-                    absolute_total: abs,
-                    first_hour: at_hour(value.first_bucket),
-                    last_hour: (last_six + six - 1).clamp(lo, hi) as i32,
-                    first_value: value.first as f64 / scale,
-                    last_value: value.last as f64 / scale,
-                    last_value_hour: last_six.clamp(lo, hi) as i32,
-                    min_hour: at_hour(value.min_bucket),
-                    min_value: value.min as f64 / scale,
-                    max_hour: at_hour(value.max_bucket),
-                    max_value: value.max as f64 / scale,
-                    first_break: false,
-                    has_break: value.hours < lived,
-                })
+                Some((
+                    ChartBucket {
+                        absolute_total: abs,
+                        first_hour: at_hour(value.first_bucket),
+                        last_hour: (last_six + six - 1).clamp(lo, hi) as i32,
+                        first_value: value.first as f64 / scale,
+                        last_value: value.last as f64 / scale,
+                        last_value_hour: last_six.clamp(lo, hi) as i32,
+                        min_hour: at_hour(value.min_bucket),
+                        min_value: value.min as f64 / scale,
+                        max_hour: at_hour(value.max_bucket),
+                        max_value: value.max as f64 / scale,
+                        first_break: false,
+                        has_break: value.hours < lived,
+                    },
+                    u64::from(value.hours),
+                ))
             })
             .collect()
     }
@@ -1401,7 +1533,7 @@ impl<'q, 'a> Line<'q, 'a> {
             for (at, &span) in held.iter().enumerate() {
                 let reads = self.charts_within(run, &keys, span, level, bin_hours)?;
                 for (bucket, &key) in buckets.iter_mut().zip(&keys) {
-                    let part = self.fold_reads(&reads, key, span, level, first_bin, bin_hours, 1).pop().flatten();
+                    let part = self.fold_reads(&reads, key, span, level, first_bin, bin_hours, 1).pop().flatten().map(|(bucket, _)| bucket);
                     *bucket = if at == 0 { part } else { crate::chart::merge(*bucket, part) };
                 }
             }
@@ -1450,20 +1582,22 @@ impl<'q, 'a> Line<'q, 'a> {
         meets(before) || meets(after)
     }
 
-    fn binned_from_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+    fn binned_from_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>, Vec<(i32, i32)>)>> {
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
         let scale = self.scale();
         let mut out = Vec::with_capacity(drawn.len());
         for (runs, held) in self.hourly_runs(drawn, from, to)? {
             let mut buckets: Vec<Option<ChartBucket>> = vec![None; bins];
+            let mut valued_hours: Vec<u64> = vec![0; bins];
             for run in runs {
                 let raw = (run.value * scale).round().abs() as u128;
                 let mut at = i64::from(run.first_hour);
                 while at <= i64::from(run.last_hour) {
                     let slot = (at - first_bin).div_euclid(bin_hours);
                     let end = (first_bin + (slot + 1) * bin_hours - 1).min(i64::from(run.last_hour));
-                    let Some(bucket) = usize::try_from(slot).ok().and_then(|slot| buckets.get_mut(slot)) else { break };
+                    let Some(slot_idx) = usize::try_from(slot).ok().filter(|&slot| slot < bins) else { break };
+                    let bucket = &mut buckets[slot_idx];
                     let (first, last) = (at as i32, end as i32);
                     let now = ChartBucket {
                         absolute_total: raw * (end - at + 1) as u128,
@@ -1483,9 +1617,11 @@ impl<'q, 'a> Line<'q, 'a> {
                         None => Some(now),
                         Some(held) => crate::chart::merge(Some(held), Some(now)),
                     };
+                    valued_hours[slot_idx] += (end - at + 1) as u64;
                     at = end + 1;
                 }
             }
+            let mut full: Vec<(i32, i32)> = Vec::new();
             for (slot, bucket) in buckets.iter_mut().enumerate() {
                 if bucket.is_none() {
                     continue;
@@ -1494,9 +1630,23 @@ impl<'q, 'a> Line<'q, 'a> {
                 let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
                 if self.overlaps_withheld(&held, lo, hi) {
                     *bucket = None;
+                    continue;
+                }
+                let expected: u64 = held
+                    .iter()
+                    .filter_map(|part| {
+                        let (a, b) = (part.first.max(lo), part.last.min(hi));
+                        (a <= b).then_some((i64::from(b) - i64::from(a) + 1) as u64)
+                    })
+                    .sum();
+                if lo <= hi && expected > 0 && valued_hours[slot] >= expected {
+                    match full.last_mut() {
+                        Some(last) if i64::from(last.1) + 1 >= i64::from(lo) => last.1 = last.1.max(hi),
+                        _ => full.push((lo, hi)),
+                    }
                 }
             }
-            out.push((buckets, held));
+            out.push((buckets, held, full));
         }
         Ok(out)
     }
@@ -1523,6 +1673,111 @@ impl<'q, 'a> Line<'q, 'a> {
             }
         }
         Ok(joined(out))
+    }
+
+    pub(crate) fn missing_batch(&self, items: &[(&Country, &[Part], &[(i32, i32)])], from: i32, to: i32) -> io::Result<Vec<Vec<MissingSpan>>> {
+        let mut results: Vec<Vec<MissingSpan>> = Vec::with_capacity(items.len());
+        let mut rowless_names: Vec<String> = Vec::with_capacity(items.len());
+        let mut by_run: HashMap<u32, Vec<(usize, u128, Vec<(i32, i32)>)>> = HashMap::new();
+        let computed = matches!(self.source, Source::Computed { .. });
+        for (item_idx, &(country, parts, covered)) in items.iter().enumerate() {
+            let mut out = self.unheld(country, from, to, parts);
+            let rowless = format!("{}'s {} was not recorded here", self.query.holders.name(country, to), self.measure.name);
+            for part in parts {
+                let complete = self.incomplete(part, from, to, &mut out)?;
+                if complete.is_empty() {
+                    continue;
+                }
+                let mut inside: Vec<(i32, i32)> = Vec::new();
+                if let Some(lives) = self.lives(part.run)? {
+                    let life = lives.binary_search_by_key(&part.key, |&(key, ..)| key).ok().map(|at| (lives[at].1, lives[at].2));
+                    for (a, b) in complete {
+                        let outside = match life {
+                            None => [(a, b), (1, 0)],
+                            Some((born, ended)) => {
+                                let (lo, hi) = (a.max(born), b.min(ended));
+                                if lo <= hi {
+                                    inside.push((lo as i32, hi as i32));
+                                }
+                                [(a, b.min(born - 1)), (a.max(ended + 1), b)]
+                            }
+                        };
+                        for (x, y) in outside.into_iter().filter(|(x, y)| x <= y) {
+                            out.push(MissingSpan { first_hour: x as i32, last_hour: y as i32, reason: rowless.clone() });
+                        }
+                    }
+                } else {
+                    inside.extend(complete.into_iter().map(|(a, b)| (a as i32, b as i32)));
+                }
+                if computed && !inside.is_empty() {
+                    let needed = subtract_spans(&inside, covered);
+                    if !needed.is_empty() {
+                        by_run.entry(part.run).or_default().push((item_idx, part.key, needed));
+                    }
+                }
+            }
+            results.push(out);
+            rowless_names.push(rowless);
+        }
+        if computed && !by_run.is_empty() {
+            let columns = read::columns_of(&self.source);
+            let recording = self.query.replay.recording();
+            for (run, group) in by_run {
+                let mut spans: Vec<(i32, i32)> = group.iter().flat_map(|(_, _, needed)| needed.iter().copied()).collect();
+                spans.sort_unstable();
+                spans.dedup_by(|next, kept| {
+                    let joins = i64::from(next.0) <= i64::from(kept.1) + 1;
+                    if joins {
+                        kept.1 = kept.1.max(next.1);
+                    }
+                    joins
+                });
+                let first_hour = recording.run(run)?.first_hour;
+                let mut cursors = vec![0usize; group.len()];
+                crate::cost::storage(|| -> io::Result<()> {
+                    let mut reader = replay_recording::cells::TableReader::new(recording, run, self.series.table, Some(&columns))?;
+                    reader.index_keys();
+                    for (lo, hi) in spans {
+                        reader.go_to(recording, (lo - first_hour) as u32)?;
+                        for hour in lo..=hi {
+                            if hour > lo {
+                                reader.step(recording)?;
+                            }
+                            let view = reader.view();
+                            for (at, (item_idx, key, needed)) in group.iter().enumerate() {
+                                while needed.get(cursors[at]).is_some_and(|&(_, b)| b < hour) {
+                                    cursors[at] += 1;
+                                }
+                                if !needed.get(cursors[at]).is_some_and(|&(a, b)| a <= hour && hour <= b) {
+                                    continue;
+                                }
+                                let state = view.slot(*key).map_or(Computed::Unrecorded, |slot| self.source.read(&view, slot));
+                                match state {
+                                    Computed::Value(_) => {}
+                                    Computed::NotApplicable(reason) => {
+                                        let out = &mut results[*item_idx];
+                                        match out.last_mut() {
+                                            Some(last) if last.last_hour + 1 == hour && last.reason == reason => last.last_hour = hour,
+                                            _ => out.push(MissingSpan { first_hour: hour, last_hour: hour, reason: reason.to_owned() }),
+                                        }
+                                    }
+                                    Computed::Unrecorded => {
+                                        let reason = &rowless_names[*item_idx];
+                                        let out = &mut results[*item_idx];
+                                        match out.last_mut() {
+                                            Some(last) if last.last_hour + 1 == hour && last.reason == *reason => last.last_hour = hour,
+                                            _ => out.push(MissingSpan { first_hour: hour, last_hour: hour, reason: reason.clone() }),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+        Ok(results.into_iter().map(joined).collect())
     }
 
     fn incomplete(&self, part: &Part, from: i32, to: i32, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
@@ -1870,6 +2125,37 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         Ok(out)
     }
+}
+
+fn subtract_spans(inside: &[(i32, i32)], covered: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    if covered.is_empty() {
+        return inside.to_vec();
+    }
+    let mut out = Vec::new();
+    let mut j = 0;
+    for &(a, b) in inside {
+        let mut at = i64::from(a);
+        let end = i64::from(b);
+        while j < covered.len() && i64::from(covered[j].1) < at {
+            j += 1;
+        }
+        let mut k = j;
+        while k < covered.len() && i64::from(covered[k].0) <= end {
+            let (lo, hi) = (i64::from(covered[k].0), i64::from(covered[k].1));
+            if lo > at {
+                out.push((at as i32, (lo - 1).min(end) as i32));
+            }
+            at = at.max(hi + 1);
+            if at > end {
+                break;
+            }
+            k += 1;
+        }
+        if at <= end {
+            out.push((at as i32, end as i32));
+        }
+    }
+    out
 }
 
 fn joined(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {

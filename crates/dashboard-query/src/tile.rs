@@ -188,13 +188,58 @@ pub fn tile(
         }
         false => vec![None; asks.len()],
     };
+    let (immutable, filled) = closure(first, last, query.timeline.last);
+    let (bins, raw_values, hour_bytes, covered): (Vec<u8>, bool, u8, Vec<Vec<(i32, i32)>>) = match bin_hours {
+        1 => {
+            let runs: Vec<Vec<ChartRun>> = line.hourly_runs(&drawn, read_from, last)?.into_iter().map(|(runs, _)| runs).collect();
+            let covered = runs
+                .iter()
+                .map(|runs| {
+                    runs.iter()
+                        .filter_map(|run| {
+                            let (lo, hi) = (run.first_hour.max(first), run.last_hour.min(last));
+                            (lo <= hi).then_some((lo, hi))
+                        })
+                        .collect()
+                })
+                .collect();
+            let (bytes, raw_values) = encode_runs(&runs, first, scale);
+            (bytes, raw_values, 0, covered)
+        }
+        _ => {
+            let mut buckets: Vec<Option<ChartBucket>> = Vec::with_capacity(asks.len() * BINS);
+            let mut covered = Vec::with_capacity(asks.len());
+            for (bins, _, spans) in line.binned(&drawn, read_from, last, level, bin_hours)? {
+                debug_assert_eq!(bins.len(), BINS + 1);
+                let visible = &bins[1..];
+                let clipped: Vec<(i32, i32)> = spans
+                    .into_iter()
+                    .filter_map(|(a, b)| {
+                        let (lo, hi) = (a.max(first), b.min(last));
+                        (lo <= hi).then_some((lo, hi))
+                    })
+                    .collect();
+                covered.push(clipped);
+                buckets.extend_from_slice(visible);
+            }
+            let (bytes, raw_values, hour_bytes) = encode(&buckets, first, bin_hours, scale);
+            (bytes, raw_values, hour_bytes, covered)
+        }
+    };
+    let all_parts: Vec<Vec<crate::series::Part>> = asks.iter().map(|ask| line.held(ask, first, last)).collect();
+    let batch_asks: Vec<(&Country, &[crate::series::Part], &[(i32, i32)])> = asks
+        .iter()
+        .zip(&all_parts)
+        .zip(&covered)
+        .map(|((ask, parts), covered)| (&ask.country, parts.as_slice(), covered.as_slice()))
+        .collect();
+    let all_missing = line.missing_batch(&batch_asks, first, last)?;
     let mut lines = Vec::with_capacity(asks.len());
-    for (at, ask) in asks.iter().enumerate() {
-        let parts = line.held(ask, first, last);
+    for ((at, ask), (parts, missing)) in asks.iter().enumerate().zip(all_parts.into_iter().zip(all_missing)) {
         lines.push(TileLine {
             country: ask.country.clone(),
             part: line.part_text(ask),
-            missing: line.missing(&ask.country, first, last, &parts)?,
+            missing,
             parts: parts
                 .iter()
                 .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })
@@ -202,22 +247,6 @@ pub fn tile(
             marks: marks[at].take(),
         });
     }
-    let (immutable, filled) = closure(first, last, query.timeline.last);
-    let (bins, raw_values, hour_bytes) = match bin_hours {
-        1 => {
-            let runs: Vec<Vec<ChartRun>> = line.hourly_runs(&drawn, read_from, last)?.into_iter().map(|(runs, _)| runs).collect();
-            let (bytes, raw_values) = encode_runs(&runs, first, scale);
-            (bytes, raw_values, 0)
-        }
-        _ => {
-            let mut buckets: Vec<Option<ChartBucket>> = Vec::with_capacity(asks.len() * BINS);
-            for (bins, _) in line.binned(&drawn, read_from, last, level, bin_hours)? {
-                debug_assert_eq!(bins.len(), BINS + 1);
-                buckets.extend(bins.into_iter().skip(1));
-            }
-            encode(&buckets, first, bin_hours, scale)
-        }
-    };
     Ok(SeriesTileReply {
         branch_id: branch_id.to_owned(),
         measure: line.measure_name().to_owned(),

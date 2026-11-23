@@ -5,7 +5,7 @@ use crate::{
     read,
 };
 use replay_lanes::lanes::Keys;
-use replay_columnar::manifest::Status;
+use replay_columnar::{manifest::Status, summary::Computed};
 use std::{collections::HashMap, io};
 
 pub struct Column<'q, 'a> {
@@ -126,7 +126,11 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
                             return if lines[line].series().absent_none { Ok(0) } else { Err(format!("{tag} holds no row of {kind} at this hour")) };
                         };
                         let view = view.as_ref().expect("a complete read");
-                        lines[line].source().value(view, *slot).ok_or_else(|| format!("{tag}'s {measure} was not recorded at this hour"))
+                        match lines[line].source().read(view, *slot) {
+                            Computed::Value(value) => Ok(value),
+                            Computed::NotApplicable(reason) => Err(reason.to_owned()),
+                            Computed::Unrecorded => Err(format!("{tag}'s {measure} was not recorded at this hour")),
+                        }
                     })
                     .collect(),
             );

@@ -11,7 +11,7 @@ use replay_columnar::envelope::{SPAN_BLOCKS, UNIT_ORDINALS};
 use replay_data::{
     identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
+        CampaignRow, ClockRow, CountryFuelConsumerRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
         ProvinceRow, RowCodec, StateRow, TableId, TableRows, WorldTensionRow,
     },
 };
@@ -126,6 +126,7 @@ pub enum Data {
     Market,
     Tension,
     Faction,
+    Fuel,
 }
 
 fn sample<R: RowCodec>(frame: &mut Synthetic, table: TableId, rows: &[R]) -> io::Result<()> {
@@ -160,6 +161,19 @@ fn market_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
         .map(|(id, kind, country)| MarketEventRow { id, occurrence: id, hour, country, receiver: receiver(country, kind, hour), kind, amount_raw: i64::from(hour), ..MarketEventRow::default() })
         .collect();
     sample(frame, TableId::MarketEvents, &events)
+}
+
+fn fuel_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
+    let base = 10_008;
+    if hour < base + 6 || (hour >= base + 6 && hour < base + 8) || (hour >= base + 10 && hour < base + 12) {
+        sample(frame, TableId::CountryFuelConsumers, &[CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 200, received_raw: 100 }])
+    } else if hour < base + 12 {
+        sample::<CountryFuelConsumerRow>(frame, TableId::CountryFuelConsumers, &[])
+    } else if hour < base + 24 {
+        sample(frame, TableId::CountryFuelConsumers, &[CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 0, received_raw: 0 }])
+    } else {
+        sample::<CountryFuelConsumerRow>(frame, TableId::CountryFuelConsumers, &[])
+    }
 }
 
 fn faction_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
@@ -265,6 +279,7 @@ impl Fixture {
                 Data::Market => market_rows(frame, hour),
                 Data::Tension => sample(frame, TableId::WorldTension, &[WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }]),
                 Data::Faction => faction_rows(frame, hour),
+                Data::Fuel => fuel_rows(frame, hour),
             }
         }).unwrap();
         assert_eq!(replay.recording().run_count(), 1);
