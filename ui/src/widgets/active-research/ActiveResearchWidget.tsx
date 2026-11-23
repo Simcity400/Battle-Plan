@@ -93,7 +93,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const shown = opened?.on === openedOn(track, tag) ? opened : null;
   const popup = shown && <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={reply}
     opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
-    shown={describe(shown.research)} feed={now.feed} active={active} anchor={shown} onClose={() => setOpened(null)} />;
+    shown={describe(shown.research)} feed={now.feed} installed={now.inspected} subscribe={now.live.subscribe} active={active} anchor={shown} onClose={() => setOpened(null)} />;
   const idle = rows.filter(item => item.kind === 'idle').length;
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}

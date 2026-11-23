@@ -1,5 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { CountryGroupReply, CountryIdentityRun, HourSpan, MembershipRun, ProjectPresentation, ProjectRecord, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails,
+import type { CountryGroupReply, CountryIdentityRun, HourSpan, MembershipRun, ProjectEntry, ProjectPresentation, ProjectRecord, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails,
   SpecialProjectsReply } from '../../generated/dashboard';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout.ts';
 import { withoutHours } from '../../charts/timeline/runState.ts';
@@ -220,6 +220,9 @@ export function historyCard(data: SpecialProjectsReply, id: string, hour: number
 const shownCompletions = (project: ProjectRecord, hour: number, membership?: readonly HourSpan[]) =>
   completions(project, hour).filter(entry => !membership || runAt(membership, entry.date) !== null);
 
+const completionSpan = (project: ProjectRecord, entry: ProjectEntry): TimelineSpan =>
+  ({ id: JSON.stringify([project.id, 'completed', entry.ordinal, entry.date]), firstHour: entry.date, lastHour: entry.date, label: 'Completed', positive: true });
+
 const completionInfo = (data: SpecialProjectsReply, dated: readonly { presentation: number | null }[]) => {
   const named = dated.map(entry => entry.presentation).find(at => at !== null);
   return named === undefined || named === null ? null : data.presentations[named];
@@ -292,7 +295,7 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
       const info = completionInfo(data, dated);
       order.push({ start: project.firstRead, name: info?.name ?? '', id: project.id, lane: { id: project.id, label: 'Status not recorded',
         identity: { label: info?.name ?? 'Project name not recorded', icon: info?.icon ?? undefined, tile: 'blueprint' }, muted: true, names: true, icons: false,
-        spans: dated.map(entry => ({ id: JSON.stringify([project.id, 'completed', entry.ordinal, entry.date]), firstHour: entry.date, lastHour: entry.date, label: 'Completed', positive: true })) } });
+        spans: dated.map(entry => completionSpan(project, entry)) } });
       continue;
     }
     const latest = shown.at(-1)!;
@@ -312,6 +315,11 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
       history.by = Math.max(history.by ?? -Infinity, ended);
       continue;
     }
+    const marked = shownCompletions(project, hour, membership).filter(entry => !shown.some(run => run.firstHour <= entry.date && entry.date <= run.lastHour));
+    if (marked.length) {
+      spans.push(...marked.map(entry => completionSpan(project, entry)));
+      spans.sort((a, b) => a.firstHour - b.firstHour);
+    }
     order.push({ start: project.firstRead, name: info.name, id: project.id, lane: { id: project.id, label: scientistName(data, info),
       identity: { label: info.name, icon: info.icon ?? undefined, tile: 'blueprint' }, muted: latest.state === 'cancelled', names: true, icons: false, spans } });
   }
@@ -320,14 +328,12 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
   return history;
 }
 
-export function historyKey(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[], from = -Infinity): string {
-  const parts: string[] = [];
-  for (const project of data.projects) {
-    const latest = shownRuns(project, hour, membership).at(-1);
-    if (latest) parts.push(`${project.id}\u0001${latest.firstHour}\u0001${latest.presentation}\u0001${latest.state}\u0001${completions(project, hour).length}`);
-  }
-  const coverage = runAt(data.available, hour)?.firstHour ?? null;
-  return parts.length ? `${coverage}\u0002${parts.join('\u0002')}` : `\u0003${historyUnrecorded([data], from, hour, () => membership) ?? ''}`;
+export function historyPicture(data: readonly SpecialProjectsReply[], hour: number, membership: (reply: SpecialProjectsReply) => readonly HourSpan[] | undefined,
+  from = -Infinity, openTo?: number): string {
+  return JSON.stringify(data.map(reply => {
+    const held = membership(reply);
+    return [reply.unavailable, projectCountryHour(reply, hour, held) !== null, historyUnrecorded([reply], from, hour, () => held), projectHistory(reply, hour, held, from, openTo)];
+  }));
 }
 
 export function closedLane(id: string, history: ProjectHistory): TimelineLane | null {

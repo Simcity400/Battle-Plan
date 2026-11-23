@@ -47,6 +47,14 @@ export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (
   return values;
 }
 
+export function estimateHour(shown: { hour: number; data: ResearchSlotsReply | undefined } | undefined, asked: ResearchSlotsReply & { hour: number },
+  slot: number, token: string): number {
+  const at = shown?.data ? shown.hour : asked.hour;
+  const read = (shown?.data ?? asked).slots.find(held => held.index === slot);
+  if (!read || read.state.token !== token || read.state.details?.remainingDays == null || at < read.state.firstHour) return at;
+  return read.state.firstHour + Math.floor((at - read.state.firstHour) / 24) * 24;
+}
+
 export interface SlotInspection { fraction: number | null; left: number | null; hour: number; token?: string | null }
 
 export function inspectedSlot(shown: { texts: ReadonlyMap<string, string>; hour: number; data: { slots: readonly { index: number; state: { token: string | null } }[] } | undefined } | undefined,

@@ -28,14 +28,13 @@ import { resolveOptions } from '../../dashboard/options';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
-import { useProducts } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useRecordedRows, useShownHour } from '../../dashboard/widgetPerf';
 import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
-import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyProject, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
+import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyPicture, historyProject, historyUnrecorded, historyTooltip, iterationMark, iterationTooltip,
   observedAt, completions, progressStyle, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
@@ -43,6 +42,7 @@ import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import type { PlaybackController } from '../../dashboard/playback';
 import ProjectDetails from './ProjectDetails';
 import ProjectWindow from './ProjectWindow';
+import { useProjectHistory } from './useProjectHistory';
 import { Scientist } from './projectParts';
 import './specialProjects.css';
 import type { ProjectRecord, SpecialProjectsReply } from '../../generated/dashboard';
@@ -138,31 +138,36 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const resolved = useMemo(() => projectCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0),
     [widget.countries, track, fallback, groups.data]);
   const tags = resolved.tags;
-  const requests = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
-    params: { branchId: track.branch.id, country: countryFromKey(tag) } })) : [], [track, resolved.ready, tags, view]);
-  const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
+  const historyParams = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => ({ branchId: track.branch.id, country: countryFromKey(tag) })) : [],
+    [track, resolved.ready, tags, view]);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
   const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateSpecialProjectsReply, structure: projectStructure });
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
-  const data = view === 'history' ? history.data : currentData;
-  const { error, retry } = view === 'history' ? history : live;
   const membershipAt = useCallback((hour: number) => resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour), [resolved.unobserved]);
   const structure = useCallback((clockHour: number) => {
     const hour = Math.floor(clockHour) + axisOffset;
     if (view === 'live') return JSON.stringify([membershipAt(hour), tags.find(tag => resolved.match.matches(tag, hour)), resolved.match.known(hour)]);
-    if (!data) return '';
-    return `${membershipAt(hour)}\u0004${data.map(reply => historyKey(reply, hour, resolved.memberships.get(reply.tag), track?.branch.firstHour)).join('\u0004')}`;
-  }, [data, view, axisOffset, resolved, membershipAt, tags, track?.branch.firstHour]);
-  const playbackHour = useHeadHour(runtime.clock, active && following && (view === 'live' || !!data), structure);
+    return String(membershipAt(hour));
+  }, [view, axisOffset, resolved, membershipAt, tags]);
+  const playbackHour = useHeadHour(runtime.clock, active && following, structure);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const pinned = widget.time.mode === 'pin';
   const playhead = (following || pinned) && window ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const extent = projectHistoryExtent(first, last, playhead, options.grow === true);
-  const at = view === 'live' ? live.at ?? target ?? last : Math.floor(playhead ?? last);
+  const from = extent[0];
+  const openTo = following && track ? track.branch.lastHour : undefined;
+  const picture = useCallback((replies: readonly SpecialProjectsReply[], hour: number) =>
+    historyPicture(replies, hour, reply => resolved.memberships.get(reply.tag) ?? [], from, openTo), [resolved.memberships, from, openTo]);
+  const historyRoot = useRef<HTMLDivElement>(null);
+  const asked = Math.floor(playhead ?? last);
+  const history = useProjectHistory(runtime, track, historyParams, following, active && view === 'history', asked, picture, historyRoot);
+  const data = view === 'history' ? history.replies : currentData;
+  const { error, retry } = view === 'history' ? history : live;
+  const at = view === 'live' ? live.at ?? target ?? last : following ? history.hour ?? asked : asked;
   const now = useCallback<HourNow>(() => following ? Math.floor(runtime.clock.getSnapshot().position) + axisOffset : at, [following, runtime.clock, axisOffset, at]);
   const subscribe = useCallback((changed: () => void) => {
     if (!following) return () => {};
@@ -184,8 +189,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
   const [opened, setOpened] = useState<{ on: string; id: string; x: number; y: number } | null>(null);
-  const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
-  const notes = view === 'history' ? bounded.data : currentData;
+  const notes = data;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
   const detailWarnings = useRef<readonly string[]>([]);
   const reportWarnings = useCallback((warnings: readonly string[]) => {
@@ -195,24 +199,23 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   useEffect(() => { reportWarnings(detailWarnings.current); }, [reportWarnings]);
   useEffect(() => () => onDiagnostics([]), [onDiagnostics]);
   useEffect(() => () => hideTooltip(owner), [owner, view, at]);
-  const from = extent[0];
   const lanes = useMemo(() => view !== 'history' ? [] : notes?.flatMap((reply, country) => {
     const membership = resolved.memberships.get(reply.tag) ?? [];
-    const history = projectHistory(reply, at, membership, from, following && track ? track.branch.lastHour : undefined);
-    const closing = closedLane(JSON.stringify([country, null, 'closed']), history);
-    const projects = [...history.lanes.map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) })), ...(closing ? [closing] : [])];
+    const drawn = projectHistory(reply, at, membership, from, openTo);
+    const closing = closedLane(JSON.stringify([country, null, 'closed']), drawn);
+    const projects = [...drawn.lanes.map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) })), ...(closing ? [closing] : [])];
     const hour = projectCountryHour(reply, labelHour, membership);
     if (projectCountryHour(reply, at, membership) === null || hour === null) return [];
     if (notes.length === 1) return projects;
     const empty = () => historyUnrecorded([reply], from, at, () => membership) ?? 'No special projects yet.';
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : empty())), ...projects];
-  }) ?? [], [notes, at, from, labelAt, labelHour, resolved.memberships, view, following, track]);
+  }) ?? [], [notes, at, from, openTo, labelAt, labelHour, resolved.memberships, view]);
   useLayoutEffect(() => {
     if (view !== 'history' || !data) return;
-    const report = () => shown(now());
+    const report = () => shown(history.latest().hour);
     report();
-    return subscribe(report);
-  }, [view, data, now, subscribe, shown]);
+    return history.subscribe(report);
+  }, [view, data, history.latest, history.subscribe, shown]);
   const openMenu = (shown: ProjectRecord, x: number, y: number, hour: number) => {
     if (!track) return;
     const project = (view === 'live' ? live.current()?.projects.find(project => project.id === shown.id) : undefined) ?? shown;
@@ -255,12 +258,10 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (noneAt?.reason) body = <NoMembersState reason={noneAt.reason} />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
-  else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
-  else if (view === 'history' && bounded.error) body = <WidgetState kind="error" failure={bounded.error} onRetry={bounded.retry} />;
   else if (!notes) body = <WidgetState kind="loading" label="Loading special projects…" />;
   else if (notes.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={notes.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
-    const reply = data.find(reply => resolved.match.matches(reply.tag, at));
+    const reply = notes.find(reply => resolved.match.matches(reply.tag, at));
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     else {
       const feed = panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime);
@@ -285,17 +286,17 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     barHeight={18} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} labelMenu
     tooltip={(lane, span, hour) => {
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = notes[country];
-      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, at, resolved.memberships.get(reply.tag));
+      const shown = history.latest(), reply = shown.replies[country], head = shown.hour ?? at;
+      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, head, resolved.memberships.get(reply.tag));
     }}
     onContextMenu={(_hour, x, y, lane) => {
       if (!lane) return;
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = notes[country];
-      const project = id === null || !reply ? null : historyProject(reply, id, at, resolved.memberships.get(reply.tag));
-      if (project) openMenu(project, x, y, at);
+      const shown = history.latest(), reply = shown.replies[country], head = shown.hour ?? at;
+      const project = id === null || !reply ? null : historyProject(reply, id, head, resolved.memberships.get(reply.tag));
+      if (project) openMenu(project, x, y, head);
     }} />;
-  return <div className="special-projects" ref={view === 'live' ? live.root : undefined}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
+  return <div className="special-projects" ref={view === 'live' ? live.root : historyRoot}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
 }
 
 export default function SpecialProjectsWidget(props: WidgetProps) {

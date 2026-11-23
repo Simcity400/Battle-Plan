@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { inspectedSlot, slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
+import { estimateHour, inspectedSlot, slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots, isOpenedResearch, openedResearch, researchAfter } from './activeResearchData.ts';
 import { completedBy, researchAt } from '../research/researchData.ts';
 import { panelStructure, panelViews } from '../../draw/panels/views.ts';
@@ -139,6 +139,17 @@ test('a research without a joined assignment keeps the definition it was read wi
   assert.deepEqual([opened.databaseIndex, opened.firstObservedHour, opened.readHour], [6, null, day(96)], 'the definition the slot read is kept');
   assert.ok(isOpenedResearch(researching(day(96)), opened));
   assert.ok(!isOpenedResearch(researching(day(97)), opened), 'a later read of the token in the slot is not this research');
+});
+
+test('U-S7: an open breakdown reads at the installed estimate, and moves only when the shown days left or its read change', () => {
+  const read: ResearchSlotNow = { index: 0, definition: null, state: state('radar', null, { firstHour: day(96), lastHour: day(99), details: { remainingDays: 9, estimateRaw: '900000', bonuses: null, modifiers: null } }),
+    progress: null };
+  const asked = reply(day(96), [read]);
+  const installed = (hour: number) => ({ hour, data: asked });
+  assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'radar'), day(97), 'the installed hour, not the asked reply, sets the day the breakdown reads');
+  assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'radar'), estimateHour(installed(day(97) + 20), asked, 0, 'radar'), 'within one shown days left the breakdown stays put');
+  assert.equal(estimateHour(undefined, asked, 0, 'radar'), day(96), 'with nothing installed it reads at the asked hour');
+  assert.equal(estimateHour(installed(day(97) + 5), asked, 0, 'sonar'), day(97) + 5, 'another research in the slot is not this estimate');
 });
 
 test('review 10: an open tooltip reads its technology and its values from the same installation, and a vanished slot has no subject', () => {
