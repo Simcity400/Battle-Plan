@@ -24,7 +24,7 @@ as the workspace version, over SSH with the release deploy key the checkout carr
 commit on main after the nightly feed's whose CI is green, and is due when there is one, unless
 PAUSE_NIGHTLY is true, another nightly release run is going or main's last whole-workspace CI run
 failed or is going; a scheduled one is also due at most once a UTC day, by the date its feed was
-published. A stable
+published, and not for a stable release's version bump alone. A stable
 takes the commit the nightly feed offers unless `--sha` names one. A preview, a draft with no feed,
 takes main's head or `--sha`. `resolve --prepare` builds a stable candidate ahead, so its release
 only promotes. `publish --draft` is the dry run: everything goes to a new draft
@@ -79,6 +79,7 @@ NIGHTLY_RUN = "Release nightly"
 PUSH_ATTEMPTS = 5
 BUMP_AUTHOR = "github-actions[bot]"
 BUMP_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
+BUMP = re.compile(r"Release: v\S+ is the workspace version")
 SIGNED = re.compile(r"Signed installer SHA-256: ([0-9a-f]{64})\.")
 SETTLED = ("success", "skipped", "neutral")
 RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?")
@@ -638,6 +639,14 @@ def newest_green(repo, since):
     return next((commit for commit in line if own[commit] == main and ci_state(repo, commit) is None), None)
 
 
+def only_bumps(since, commit):
+    """Whether every commit on main's first-parent line in since..commit is the version bump finalize
+    pushes after a stable release, which changes nothing a nightly would ship."""
+    made = [line.split("\x00", 1) for line in
+            git("log", "--first-parent", "--format=%an%x00%s", f"{since}..{commit}").splitlines()]
+    return bool(made) and all(len(entry) == 2 and entry[0] == BUMP_AUTHOR and BUMP.fullmatch(entry[1]) for entry in made)
+
+
 def whole_run_state(repo):
     """Why main's last whole-workspace CI run, the scheduled one, bars a nightly, or None when it
     passed or none has run. A push's run tests only what changed since the last green commit, so a
@@ -719,6 +728,9 @@ def resolve(args):
                 return not_yet("no commit on main" + (f" since the nightly of {since[:12]}" if since else "")
                                + " has green CI and main's workflows")
             commit = on_main(green, "nightly")
+            if args.scheduled and since and only_bumps(since, commit):
+                say(f"No release yet: only a stable release's version bump landed on main since the nightly of {since[:12]}.")
+                return outputs(found, args.github_output) or 0
         name = artifact_name("nightly", commit)
         built, _ = find_candidate(repo, name)
         found.update(due="true", commit=commit, artifact=name, candidate_run=str(built or ""),
