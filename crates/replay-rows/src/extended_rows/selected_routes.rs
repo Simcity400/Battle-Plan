@@ -8,7 +8,7 @@ pub struct OrderedEnemyInputs {
 }
 
 value_struct!(OrderedEnemyInputs { sample_hour: PacketHour, entries: Vec<u32> });
-opaque_value!(Option<OrderedEnemyInputs>);
+impl OpaqueValue for OrderedEnemyInputs {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -18,4 +18,4 @@ pub struct ControllerAreaNode {
 }
 
 value_struct!(ControllerAreaNode { first_land: Option<u32>, neighbours: Option<Vec<u32>> });
-opaque_value!(Option<ControllerAreaNode>);
+impl OpaqueValue for ControllerAreaNode {}

@@ -27,7 +27,7 @@ pub struct DirectedWars {
 }
 
 value_struct!(DirectedWars { sample_hour: PacketHour, receiver_raw_id: i32, receiver_slot: u32, matrix_count: u32, complete_active_domain: bool, cells: Vec<WarCell>, refused_slots: Vec<u32> });
-opaque_value!(Option<DirectedWars>);
+impl OpaqueValue for DirectedWars {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct DirectedWarContext<'a> {

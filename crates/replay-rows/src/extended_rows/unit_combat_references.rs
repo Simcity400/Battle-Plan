@@ -57,7 +57,7 @@ value_struct!(UnitCombatReferences {
     sample_hour: PacketHour,
     entries: Vec<UnitCombatReference>
 });
-opaque_value!(Option<UnitCombatReferences>);
+impl OpaqueValue for UnitCombatReferences {}
 
 pub fn check_unit_combat_references(
     field: &Recorded<Option<UnitCombatReferences>>,

@@ -11,7 +11,7 @@ pub struct TransportSubjectAccess {
 value_struct!(TransportSubjectAccess {
     sample_hour: PacketHour, complete_owner: bool, target_raw: Option<u32>, subject: Option<ZeroSubjectInputs>,
 });
-opaque_value!(Option<TransportSubjectAccess>);
+impl OpaqueValue for TransportSubjectAccess {}
 opaque_value!(Vec<[i32; 2]>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub struct OccupationGroupLaw {
     pub law: Option<Vec<u8>>,
 }
 value_struct!(OccupationGroupLaw { occupied: u32, scope_country: Option<u32>, law: Option<Vec<u8>> });
-opaque_value!(Option<Vec<OccupationGroupLaw>>);
+impl OpaqueValue for OccupationGroupLaw {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -123,4 +123,4 @@ value_struct!(OccupationMap { stored_target: Option<i64>, core_country: Option<u
 opaque_value!(Recorded<Option<OccupationMap>>);
 
 
-opaque_value!(Vec<ScriptVariableEntry>);
+impl OpaqueValue for ScriptVariableEntry {}

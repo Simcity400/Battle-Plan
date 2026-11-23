@@ -1,7 +1,7 @@
 use super::*;
 
-opaque_value!([MapEventFamilyHealth; MapEventFamily::COUNT]);
-opaque_value!(Vec<MapEvent>);
+impl OpaqueValue for MapEventFamilyHealth {}
+impl OpaqueValue for MapEvent {}
 
 typed_codec!(MapEventsRow, 0, |_row| 0, |_key| Self::default(), {
     0 => (epoch): U64,

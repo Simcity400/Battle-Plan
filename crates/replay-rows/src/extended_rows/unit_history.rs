@@ -32,7 +32,6 @@ impl DivisionHistoryRow {
     pub const CAREER: u8 = 1;
     pub const AWARDS: u8 = 2;
 }
-opaque_value!(Option<SunkShipEntry>);
 typed_codec!(DivisionHistoryRow, 98, |row| ((row.division as u128) << 34) | ((row.list as u128) << 32) | row.ordinal as u128,
     |key| Self { division: (key >> 34) as u64, list: ((key >> 32) & 3) as u8, ordinal: key as u32, ..Default::default() }, {
         0 => (available): U8, 1 => (reason): Bytes, 2 => (amount): I32, 3 => (name): Bytes,

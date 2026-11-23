@@ -865,7 +865,7 @@ value_struct!(LandCombatMemberValues {
     initiative: i64,
     base_speed: i64
 });
-opaque_value!(Option<LandCombatMemberValues>);
+impl OpaqueValue for LandCombatMemberValues {}
 
 impl LandCombatMemberValues {
     pub const STATS: [usize; 5] = [11, 12, 20, 9, 10];
@@ -1156,21 +1156,21 @@ typed_codec!(NavalCombatResultDetailsRow, 64, |row| row.result as u128,
  { 0 => (sides): Opaque }, |row| { let _ = row; Ok(()) });
 
 opaque_value!(LandCombatTacticInputs);
-opaque_value!(Option<LandBorderWarInputs>);
+impl OpaqueValue for LandBorderWarInputs {}
 opaque_value!(LandDivisionContext);
 opaque_value!(NavalCombatLastTarget);
 opaque_value!(NavalShipWeaponContext);
 opaque_value!(Option<[i64; 3]>);
-opaque_value!(Option<LandCombatExileInputs>);
-opaque_value!(Vec<CombatModifierValue>);
-opaque_value!(Vec<LandDivisionWidthTerm>);
-opaque_value!(Vec<NavalCombatDamage>);
-opaque_value!(Vec<NavalCombatHit>);
-opaque_value!([LandCombatSideDetails; 2]);
-opaque_value!([LandCombatSideInputs; 2]);
-opaque_value!([NavalCombatSideDetails; 2]);
-opaque_value!([NavalResultSideDetails; 2]);
-opaque_value!([Vec<NavalCombatAirHit>; 2]);
+impl OpaqueValue for LandCombatExileInputs {}
+impl OpaqueValue for CombatModifierValue {}
+impl OpaqueValue for LandDivisionWidthTerm {}
+impl OpaqueValue for NavalCombatDamage {}
+impl OpaqueValue for NavalCombatHit {}
+impl OpaqueValue for LandCombatSideDetails {}
+impl OpaqueValue for LandCombatSideInputs {}
+impl OpaqueValue for NavalCombatSideDetails {}
+impl OpaqueValue for NavalResultSideDetails {}
+impl OpaqueValue for NavalCombatAirHit {}
 opaque_value!([i64; 2]);
 opaque_value!([i64; 3]);
 opaque_value!([i64; 4]);

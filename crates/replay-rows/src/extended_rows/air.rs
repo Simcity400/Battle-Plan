@@ -39,7 +39,7 @@ value_struct!(AirSupplySummary {
     supplied: i64,
     deficit: i64
 });
-opaque_value!(Option<AirSupplySummary>);
+impl OpaqueValue for AirSupplySummary {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -126,7 +126,7 @@ pub struct AirMissionNormalization {
     pub modifiers: [Option<AirNormalizationEntry>; 2],
 }
 value_struct!(AirMissionNormalization { night_stat: Option<i64>, modifiers: [Option<AirNormalizationEntry>; 2] });
-opaque_value!(Option<AirMissionNormalization>);
+impl OpaqueValue for AirMissionNormalization {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -393,7 +393,7 @@ value_struct!(AirHistoryWindow {
     current: u32,
     wrapped: bool
 });
-opaque_value!(Option<AirHistoryWindow>);
+impl OpaqueValue for AirHistoryWindow {}
 
 impl AirHistoryWindow {
     pub fn validate(self) -> io::Result<()> {
@@ -614,7 +614,7 @@ value_struct!(AirAcePresentation {
     definition: Option<Vec<u8>>,
     portrait: Option<AirAcePortraitInputs>,
 });
-opaque_value!(Option<AirAcePresentation>);
+impl OpaqueValue for AirAcePresentation {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -695,12 +695,12 @@ pub struct AirBaseRegistrationRow {
 typed_codec!(AirBaseRegistrationRow, 96, |row| (row.base as u128) << 32 | row.slot as u128, |key| Self { base: (key >> 32) as u64, slot: key as u32, ..Default::default() },
  { 0 => (capacity_raw): I64, 1 => (wings): U64List, 2 => (carrier): Opaque, 3 => (transport_planes): Opaque, 4 => (fuel_demand_raw): OptionalI64, 5 => (fuel_allocated_raw): OptionalI64 }, |_row| Ok(()));
 opaque_value!(Option<Vec<Option<i32>>>);
-opaque_value!(Vec<AirHistoryEntry>);
-opaque_value!(Vec<AirDamageEntry>);
-opaque_value!(std::sync::Arc<Vec<AirCombatRecord>>);
-opaque_value!(Option<AceDeath>);
+impl OpaqueValue for AirHistoryEntry {}
+impl OpaqueValue for AirDamageEntry {}
+impl OpaqueValue for AirCombatRecord {}
+impl OpaqueValue for AceDeath {}
 value_struct!(AirWingRaidReference {
     raw: u64,
     resolves: bool
 });
-opaque_value!(Option<AirWingRaidReference>);
+impl OpaqueValue for AirWingRaidReference {}

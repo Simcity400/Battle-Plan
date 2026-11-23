@@ -124,7 +124,7 @@ value_struct!(ConstructionCompletion {
     hour: i32,
     cancelled: bool
 });
-opaque_value!(Option<ConstructionCompletion>);
+impl OpaqueValue for ConstructionCompletion {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -315,8 +315,8 @@ pub struct CountryFuelRow {
 typed_codec!(CountryFuelRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
  { 0 => (current_raw): I64, 1 => (maximum_raw): I64, 2 => (gain_raw): I64, 3 => (cost_raw): I64, 4 => (gain_from_states_raw): I64, 5 => (lend_lease_gain_raw): I64, 6 => (lend_lease_consumption_raw): I64, 7 => (gain_per_oil_raw): I64, 8 => (history_index): I32, 9 => (remaining_hours): I32, 10 => (ring_gain_raw): I64, 11 => (ring_consumed_raw): I64, 12 => (ring_other_raw): I64, 13 => (ring_requested_0_raw): I64, 14 => (ring_requested_1_raw): I64, 15 => (ring_requested_2_raw): I64, 16 => (ring_received_0_raw): I64, 17 => (ring_received_1_raw): I64, 18 => (ring_received_2_raw): I64, 19 => (country_instance): OptionalU32, 20 => (awards): Opaque, 21 => (demand): Opaque, 22 => (award_day): Opaque }, |_row| Ok(()));
 
-opaque_value!(Vec<LocalSubunitRequirement>);
-opaque_value!(Vec<UnitBonusTarget>);
+impl OpaqueValue for LocalSubunitRequirement {}
+impl OpaqueValue for UnitBonusTarget {}
 
 pub use game_model::equipment::{
     VariantBonusSource, VariantMissionStats, VariantModuleMissionExclusion, VariantNamedBonus,
@@ -589,7 +589,7 @@ pub struct VariantSnapshot {
     pub upgrades: Vec<VariantSnapshotUpgrade>,
 }
 value_struct!(VariantSnapshot { definition: VariantSnapshotDefinition, modules: Vec<VariantSnapshotModule>, stats: Vec<Option<i64>>, upgrades: Vec<VariantSnapshotUpgrade> });
-opaque_value!(Option<VariantSnapshot>);
+impl OpaqueValue for VariantSnapshot {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -598,7 +598,7 @@ pub struct VariantSourceReferences {
     pub named: Vec<u64>,
 }
 value_struct!(VariantSourceReferences { direct: Vec<u64>, named: Vec<u64> });
-opaque_value!(Option<VariantSourceReferences>);
+impl OpaqueValue for VariantSourceReferences {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -618,7 +618,7 @@ value_struct!(VariantOrganisationChange {
     organisation: u64,
     live: bool
 });
-opaque_value!(Option<VariantOrganisationChange>);
+impl OpaqueValue for VariantOrganisationChange {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -648,7 +648,7 @@ value_struct!(VariantScalarChange {
     model: Option<Vec<u8>>, icon: Option<VariantIconChange>,
     names_group: Option<Option<Vec<u8>>>, niches: Option<Vec<u32>>
 });
-opaque_value!(Option<VariantScalarChange>);
+impl OpaqueValue for VariantScalarChange {}
 impl VariantScalarChange {
     pub fn changes_design(&self) -> bool {
         self.auto_upgraded.is_some()

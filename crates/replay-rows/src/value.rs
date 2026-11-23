@@ -569,7 +569,7 @@ macro_rules! display_step {
     };
 }
 
-pub(crate) use display_step;
+pub use crate::display_step;
 
 pub const fn any(flags: &[bool]) -> bool {
     let mut index = 0;
@@ -608,6 +608,8 @@ pub fn from_stored<T: Value>(value: T, step: Option<Step>, format: u16) -> io::R
     }
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! value_struct {
     ($ty:ty { $($field:ident $(@ $step:path)? : $field_ty:ty),* $(,)? } $(appended $record:ident { $($appended:ident $(@ $appended_step:path)? : $appended_ty:ty),* $(,)? })?) => {
         $crate::checkpoint::values::structure!($ty { $($field: $field_ty,)* $($($appended: $appended_ty,)*)? });
@@ -634,14 +636,14 @@ macro_rules! value_struct {
             }
             fn recorded_bytes(&self) -> std::io::Result<usize> {
                 let size = 0;
-                $(let size = engine_allocation::add(size, <$field_ty as $crate::value::Value>::recorded_bytes(&self.$field)?)?;)*
-                $($(let size = engine_allocation::add(size, <$appended_ty as $crate::value::Value>::recorded_bytes(&self.$appended)?)?;)*)?
+                $(let size = $crate::__allocation::add(size, <$field_ty as $crate::value::Value>::recorded_bytes(&self.$field)?)?;)*
+                $($(let size = $crate::__allocation::add(size, <$appended_ty as $crate::value::Value>::recorded_bytes(&self.$appended)?)?;)*)?
                 Ok(size)
             }
             fn encoded_bytes(&self) -> std::io::Result<usize> {
                 let size = 0;
-                $(let size = engine_allocation::add(size, <$field_ty as $crate::value::Value>::encoded_bytes(&self.$field)?)?;)*
-                $($(let size = engine_allocation::add(size, <$appended_ty as $crate::value::Value>::encoded_bytes(&self.$appended)?)?;)*)?
+                $(let size = $crate::__allocation::add(size, <$field_ty as $crate::value::Value>::encoded_bytes(&self.$field)?)?;)*
+                $($(let size = $crate::__allocation::add(size, <$appended_ty as $crate::value::Value>::encoded_bytes(&self.$appended)?)?;)*)?
                 Ok(size)
             }
             fn try_clone(&self) -> std::io::Result<Self> {
@@ -681,7 +683,7 @@ macro_rules! value_struct {
     };
 }
 
-pub(crate) use value_struct;
+pub use crate::value_struct;
 
 #[cfg(test)]
 mod tests {

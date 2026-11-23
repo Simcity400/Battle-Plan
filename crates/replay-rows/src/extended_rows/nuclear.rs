@@ -1,12 +1,12 @@
 use super::*;
 use crate::event_feed_rows::EventFeedCountry;
 
-opaque_value!(Vec<NuclearWarSupport>);
-opaque_value!(Vec<NuclearBuildingDamage>);
-opaque_value!(Vec<NuclearUnitDamage>);
-opaque_value!(Vec<NuclearEquipmentLoss>);
-opaque_value!(Vec<NuclearStrikeRefusal>);
-opaque_value!(Vec<NuclearWingLoss>);
+impl OpaqueValue for NuclearWarSupport {}
+impl OpaqueValue for NuclearBuildingDamage {}
+impl OpaqueValue for NuclearUnitDamage {}
+impl OpaqueValue for NuclearEquipmentLoss {}
+impl OpaqueValue for NuclearStrikeRefusal {}
+impl OpaqueValue for NuclearWingLoss {}
 opaque_value!(EventFeedCountry);
 
 typed_codec!(NuclearStrikeRow, 64, |r| r.id as u128,

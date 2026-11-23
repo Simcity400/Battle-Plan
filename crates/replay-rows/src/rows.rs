@@ -2408,50 +2408,56 @@ impl<'a> Field<'a> {
         Ok(())
     }
 }
+pub trait OpaqueValue: Value + crate::checkpoint::values::CheckpointValue {
+    const RESTORED: bool = false;
+}
+
+#[macro_export]
+#[doc(hidden)]
 macro_rules! opaque_value {
     ($ty:ty, restored) => {
-        opaque_value!($ty, true);
+        $crate::opaque_value!(@impl [] $ty, true);
     };
     ($ty:ty) => {
-        opaque_value!($ty, false);
+        $crate::opaque_value!(@impl [] $ty, false);
     };
-    ($ty:ty, $restored:literal) => {
-        $crate::rows::checkpoint::opaque!($ty);
-        impl NativeValue for $ty {
-            const HAS_STEPS: bool = <$ty as Value>::HAS_STEPS;
+    (@impl [$($generic:tt)*] $ty:ty, $restored:expr) => {
+        $crate::rows::checkpoint::opaque!(@impl [$($generic)*] $ty);
+        impl $($generic)* $crate::rows::NativeValue for $ty {
+            const HAS_STEPS: bool = <$ty as $crate::value::Value>::HAS_STEPS;
             const RESTORED: bool = $restored;
             fn heap_bytes(&self) -> usize {
-                <$ty as Value>::heap_bytes(self)
+                <$ty as $crate::value::Value>::heap_bytes(self)
             }
             fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
-                Value::visit_field_gaps(self, visit);
+                $crate::value::Value::visit_field_gaps(self, visit);
             }
             fn round_display(&mut self) {
-                Value::round_display(self);
+                $crate::value::Value::round_display(self);
             }
             fn round_to(&mut self, step: $crate::display::Step) {
-                Value::round_to(self, step);
+                $crate::value::Value::round_to(self, step);
             }
-            fn to_units(&self, step: $crate::display::Step) -> io::Result<Self> {
-                Value::to_units(self, step)
+            fn to_units(&self, step: $crate::display::Step) -> std::io::Result<Self> {
+                $crate::value::Value::to_units(self, step)
             }
-            fn from_units(self, step: $crate::display::Step) -> io::Result<Self> {
-                Value::from_units(self, step)
+            fn from_units(self, step: $crate::display::Step) -> std::io::Result<Self> {
+                $crate::value::Value::from_units(self, step)
             }
-            fn try_clone(&self) -> io::Result<Self> {
-                Value::try_clone(self)
+            fn try_clone(&self) -> std::io::Result<Self> {
+                $crate::value::Value::try_clone(self)
             }
-            fn field(&self) -> Field<'_> {
-                Field::Opaque(Opaque::Native(self))
+            fn field(&self) -> $crate::rows::Field<'_> {
+                $crate::rows::Field::Opaque($crate::rows::Opaque::Native(self))
             }
-            fn from_field(field: Field<'_>) -> io::Result<Self> {
-                let Field::Opaque(Opaque::Encoded(bytes, format)) = field else {
-                    return Err(invalid("structured field requires encoded native bytes"));
+            fn from_field(field: $crate::rows::Field<'_>) -> std::io::Result<Self> {
+                let $crate::rows::Field::Opaque($crate::rows::Opaque::Encoded(bytes, format)) = field else {
+                    return Err($crate::codec::invalid_static("structured field requires encoded native bytes"));
                 };
-                measurement::count(Counter::NativeOpaqueBytes, bytes.len());
-                let mut input = Decoder::new(bytes);
+                $crate::measurement::count($crate::measurement::Counter::NativeOpaqueBytes, bytes.len());
+                let mut input = $crate::codec::Decoder::new(bytes);
                 input.format = format;
-                let value = <$ty as Value>::decode(&mut input)?;
+                let value = <$ty as $crate::value::Value>::decode(&mut input)?;
                 input.finish()?;
                 Ok(value)
             }
@@ -2459,13 +2465,28 @@ macro_rules! opaque_value {
     };
 }
 
+macro_rules! opaque_wrapper {
+    ($element:ident [$($generic:tt)+] $wrapper:ty) => {
+        impl <$($generic)+> OpaqueValue for $wrapper {
+            const RESTORED: bool = $element::RESTORED;
+        }
+        opaque_value!(@impl [<$($generic)+>] $wrapper, <Self as OpaqueValue>::RESTORED);
+    };
+}
+
+opaque_wrapper!(T [T: OpaqueValue] Option<T>);
+opaque_wrapper!(T [T: OpaqueValue] Vec<T>);
+opaque_wrapper!(T [T: OpaqueValue, const N: usize] [T; N]);
+opaque_wrapper!(T [T: OpaqueValue] Witnessed<T>);
+opaque_wrapper!(T [T: OpaqueValue] std::sync::Arc<T>);
+
 opaque_value!(crate::event_feed_rows::EventFeedCoverage);
-opaque_value!(Option<crate::event_feed_rows::EventFeedCounts>);
-opaque_value!(Option<ShipNamingOperands>);
-opaque_value!(Option<StateInfrastructure>);
-opaque_value!(Vec<ConstructionRise>);
-opaque_value!(Vec<crate::event_feed_rows::EventFeedEvent>);
-opaque_value!(Vec<crate::event_feed_rows::EventFeedScope>);
+impl OpaqueValue for crate::event_feed_rows::EventFeedCounts {}
+impl OpaqueValue for ShipNamingOperands {}
+impl OpaqueValue for StateInfrastructure {}
+impl OpaqueValue for ConstructionRise {}
+impl OpaqueValue for crate::event_feed_rows::EventFeedEvent {}
+impl OpaqueValue for crate::event_feed_rows::EventFeedScope {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum List<'a, T> {

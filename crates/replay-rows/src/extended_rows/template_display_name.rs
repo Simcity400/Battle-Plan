@@ -105,7 +105,7 @@ value_struct!(TemplateDisplayName {
     sample_hour: PacketHour,
     value: TemplateNameValue
 });
-opaque_value!(Option<TemplateDisplayName>);
+impl OpaqueValue for TemplateDisplayName {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TemplateDisplayNameParts<'a> {

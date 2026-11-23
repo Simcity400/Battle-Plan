@@ -32,7 +32,7 @@ value_struct!(FreshTaskForceCounterEta {
     terrain_class: Option<i32>, modified_range: Option<i64>, exiled: Option<u8>,
     strategic_redeployment: Option<u8>,
 });
-opaque_value!(Option<FreshTaskForceCounterEta>);
+impl OpaqueValue for FreshTaskForceCounterEta {}
 typed_codec!(TaskForceMapMotionRow, 64, |r| r.task_force as u128, |k| Self { task_force: k as u64, ..Default::default() },
  { 0 => (target): U32, 1 => (combat_role): U8, 2 => (path): U32List, 3 => (alternate_path): U32List, 4 => (movement_numerator): OptionalI64, 5 => (retreat): Opaque, 6 => (withdrawal): Opaque, 7 => (naval_transfer): Opaque, 8 => (combat_links): Opaque, 9 => (fresh): Opaque }, |_r| Ok(()));
 
@@ -265,7 +265,7 @@ pub struct WeatherDisplay {
 }
 value_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
     refresh_identity: u64, edges: Vec<u8> });
-opaque_value!(Option<WeatherDisplay>);
+impl OpaqueValue for WeatherDisplay {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -275,7 +275,7 @@ pub struct WeatherDaylight {
     pub held_feather: Option<[i64; 2]>,
 }
 value_struct!(WeatherDaylight { updated: bool, held: Option<[i64; 3]>, held_feather: Option<[i64; 2]> });
-opaque_value!(Option<WeatherDaylight>);
+impl OpaqueValue for WeatherDaylight {}
 
 impl WeatherDaylight {
     pub fn direction(self, hour: i32) -> Result<[i64; 3], &'static str> {
@@ -363,7 +363,7 @@ impl ProvinceWeatherModifiers {
             .map(|at| self.entries[at].value)
     }
 }
-opaque_value!(Option<ProvinceWeatherModifiers>);
+impl OpaqueValue for ProvinceWeatherModifiers {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -382,7 +382,7 @@ pub struct ProvinceStaticModifiers {
     pub entries: Vec<ProvinceStaticModifier>,
 }
 value_struct!(ProvinceStaticModifiers { entries: Vec<ProvinceStaticModifier> });
-opaque_value!(Option<ProvinceStaticModifiers>);
+impl OpaqueValue for ProvinceStaticModifiers {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -459,7 +459,7 @@ pub struct TemperaturePass {
 }
 value_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u32>,
     hours: Vec<Option<u32>>, witness: TemperatureWitness });
-opaque_value!(Option<TemperaturePass>);
+impl OpaqueValue for TemperaturePass {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -606,4 +606,4 @@ pub struct NavalSupremacyRow {
 typed_codec!(NavalSupremacyRow, 64, |row| (row.region as u128) << 32 | row.country as u128, |key| Self { region: (key >> 32) as u32, country: key as u32, region_slot: Default::default(), current: Default::default(), base_target: Default::default(), target: Default::default(), individual_ratio: Default::default(), previous: Default::default(), decline_from: Default::default() },
  { 0 => (region_slot): U32, 1 => (current): I64, 2 => (base_target): I64, 3 => (target): I64, 4 => (individual_ratio): I64, 5 => (previous): I64, 6 => (decline_from): I64 }, |_row| Ok(()));
 
-opaque_value!(Vec<SunkShipEntry>);
+impl OpaqueValue for SunkShipEntry {}

@@ -135,7 +135,7 @@ value_struct!(ProjectFacilityOperand {
     assignment: u32,
     raw: i64
 });
-opaque_value!(Option<Vec<ProjectFacilityOperand>>);
+impl OpaqueValue for ProjectFacilityOperand {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -151,7 +151,7 @@ value_struct!(ProjectScientistAssignment {
     current: i32,
     timed: u8
 });
-opaque_value!(Option<Vec<ProjectScientistAssignment>>);
+impl OpaqueValue for ProjectScientistAssignment {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -208,7 +208,7 @@ value_struct!(RaidCounterOperative {
     defense: i64,
     context: i64
 });
-opaque_value!(Vec<RaidCounterOperative>);
+impl OpaqueValue for RaidCounterOperative {}
 
 opaque_value!(Option<[Option<i64>; 2]>);
 opaque_value!(Option<[Option<i64>; 1]>);

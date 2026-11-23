@@ -195,12 +195,12 @@ typed_codec!(TransportRiskShipsRow, 64, |row| row.receiver.task_force as u128, |
  { 0 => (receiver.count): OptionalI32, 1 => (receiver.ships): Opaque }, |_row| Ok(()));
 
 opaque_value!(Option<[i64; 2]>);
-opaque_value!(Option<TransportReceiverRisk>);
-opaque_value!(Option<TransportNavalRegion>);
-opaque_value!(Option<TransportRadarCounts>);
-opaque_value!(Option<SpottingNavyIntel>);
+impl OpaqueValue for TransportReceiverRisk {}
+impl OpaqueValue for TransportNavalRegion {}
+impl OpaqueValue for TransportRadarCounts {}
+impl OpaqueValue for SpottingNavyIntel {}
 opaque_value!(Option<Option<i64>>);
-opaque_value!(Option<TransportAirEnvironment>);
+impl OpaqueValue for TransportAirEnvironment {}
 opaque_value!(Option<Vec<Option<i64>>>);
-opaque_value!(Option<Vec<Option<TransportAirMission>>>);
-opaque_value!(Option<Vec<TransportRiskShip>>);
+impl OpaqueValue for TransportAirMission {}
+impl OpaqueValue for TransportRiskShip {}

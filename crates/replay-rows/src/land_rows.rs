@@ -11,7 +11,7 @@ value_struct!(LandEquipmentLoss {
     variant: u64,
     amount_raw: i64
 });
-opaque_value!(Vec<LandEquipmentLoss>);
+impl OpaqueValue for LandEquipmentLoss {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -20,7 +20,7 @@ pub struct LandSideLosses {
     pub equipment: Vec<LandEquipmentLoss>,
 }
 value_struct!(LandSideLosses { manpower: i32, equipment: Vec<LandEquipmentLoss> });
-opaque_value!([LandSideLosses; 2]);
+impl OpaqueValue for LandSideLosses {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -36,7 +36,7 @@ value_struct!(LandTerminalObserver {
     item: u64,
     values: [u64; 5]
 });
-opaque_value!(Vec<LandTerminalObserver>);
+impl OpaqueValue for LandTerminalObserver {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -48,7 +48,7 @@ value_struct!(DivisionManpowerContributor {
     country: u32,
     amount: i32
 });
-opaque_value!(Vec<DivisionManpowerContributor>);
+impl OpaqueValue for DivisionManpowerContributor {}
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionLandInputsRow {
@@ -84,7 +84,7 @@ pub struct LandResultSide {
     pub progress: i64,
 }
 value_struct!(LandResultSide {countries:Vec<u32>,secondary_countries:Vec<u32>,commander:u64,outcome_flags:u8,progress:i64});
-opaque_value!([LandResultSide; 2]);
+impl OpaqueValue for LandResultSide {}
 opaque_value!([u8; 3]);
 opaque_value!([u8; 2]);
 opaque_value!([Vec<u8>; 2]);

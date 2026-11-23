@@ -94,7 +94,7 @@ value_struct!(MarketPriceLevel {
     variant: u64,
     level: i32
 });
-opaque_value!(Vec<MarketPriceLevel>);
+impl OpaqueValue for MarketPriceLevel {}
 shared_market_value!(SharedMarketPriceLevels, Vec<MarketPriceLevel>);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -106,7 +106,7 @@ pub struct MarketSubsidy {
     pub trigger: Vec<u8>,
 }
 value_struct!(MarketSubsidy { cic_raw: i64, archetype: u32, kind: u8, targets: Vec<u32>, trigger: Vec<u8> });
-opaque_value!(Vec<MarketSubsidy>);
+impl OpaqueValue for MarketSubsidy {}
 shared_market_value!(SharedMarketSubsidies, Vec<MarketSubsidy>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -116,7 +116,7 @@ pub struct MarketVariable {
     pub amount_raw: i64,
 }
 value_struct!(MarketVariable {name:Vec<u8>,amount_raw:i64});
-opaque_value!(Vec<MarketVariable>);
+impl OpaqueValue for MarketVariable {}
 shared_market_value!(SharedMarketVariables, Vec<MarketVariable>);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]

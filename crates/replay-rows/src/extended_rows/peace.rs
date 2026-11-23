@@ -1,8 +1,8 @@
 use super::*;
 
-opaque_value!(Vec<SettledPeaceAction>);
-opaque_value!(Vec<SettledPeaceTransfer>);
-opaque_value!(Vec<SettledPeaceSubject>);
+impl OpaqueValue for SettledPeaceAction {}
+impl OpaqueValue for SettledPeaceTransfer {}
+impl OpaqueValue for SettledPeaceSubject {}
 
 typed_codec!(PeaceSettlementRow, 64, |r| r.sequence as u128,
 |k| Self { sequence: k as u64, ..Default::default() },

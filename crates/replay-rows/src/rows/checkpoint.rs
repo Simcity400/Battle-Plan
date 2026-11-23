@@ -5,20 +5,23 @@ pub trait Native: Sized {
     fn decode(kind: Kind, input: &mut Decoder<'_>) -> io::Result<Self>;
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! native {
     ($($ty:ty),+ $(,)?) => {
-        $(impl Native for $ty {
-            fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
-                let field = NativeValue::field(self);
-                allocation::reserve(output, field.encoded_bytes()?)?;
+        $(impl $crate::rows::checkpoint::Native for $ty {
+            fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
+                let field = $crate::rows::NativeValue::field(self);
+                $crate::__allocation::reserve(output, field.encoded_bytes()?)?;
                 field.encode(output)
             }
-            fn decode(kind: Kind, input: &mut Decoder<'_>) -> io::Result<Self> {
-                NativeValue::from_field(kind.decode(input)?)
+            fn decode(kind: $crate::rows::Kind, input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
+                $crate::rows::NativeValue::from_field(kind.decode(input)?)
             }
         })+
     };
 }
+pub use crate::native;
 
 native!(
     u8,
@@ -79,9 +82,14 @@ impl<T: Native> Native for Recorded<T> {
     }
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! opaque {
     ($ty:ty) => {
-        impl $crate::rows::checkpoint::Native for $ty {
+        $crate::opaque!(@impl [] $ty);
+    };
+    (@impl [$($generic:tt)*] $ty:ty) => {
+        impl $($generic)* $crate::rows::checkpoint::Native for $ty {
             fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
                 $crate::checkpoint::values::CheckpointValue::encode(self, output)
             }
@@ -94,4 +102,4 @@ macro_rules! opaque {
         }
     };
 }
-pub(crate) use opaque;
+pub use crate::opaque;

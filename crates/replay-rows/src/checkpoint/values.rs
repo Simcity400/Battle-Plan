@@ -22,6 +22,8 @@ impl<T: CheckpointValue> CheckpointValue for std::sync::Arc<T> {
     }
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! wire_value {
     ($($ty:ty),+ $(,)?) => {
         $(impl $crate::checkpoint::values::CheckpointValue for $ty {
@@ -35,7 +37,7 @@ macro_rules! wire_value {
         })+
     };
 }
-pub(crate) use wire_value;
+pub use crate::wire_value;
 
 wire_value!(
     u8,
@@ -214,6 +216,8 @@ impl CheckpointValue for SpottingSample {
     }
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! structure {
     ($ty:ty { $($field:ident: $field_ty:ty),* $(,)? }) => {
         impl $crate::checkpoint::values::CheckpointValue for $ty {
@@ -229,7 +233,7 @@ macro_rules! structure {
         }
     };
 }
-pub(crate) use structure;
+pub use crate::structure;
 
 structure!(DivisionSupplyFooter {
     asked: i64, received: i64, from_state: i64, air_drops: i64, disruption: i64,

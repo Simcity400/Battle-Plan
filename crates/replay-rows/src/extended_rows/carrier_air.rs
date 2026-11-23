@@ -21,7 +21,7 @@ value_struct!(AirBaseCarrierInputs {
     registered_countries: Option<Vec<AirBaseCountryOccurrence>>,
     host_name: Option<Vec<u8>>
 });
-opaque_value!(Option<AirBaseCarrierInputs>);
+impl OpaqueValue for AirBaseCarrierInputs {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -56,7 +56,7 @@ value_struct!(AirBaseRegistrationCarrierInputs {
     fuel_allocated_raw: Option<i64>,
     pools: Option<Vec<CarrierAirPool>>
 });
-opaque_value!(Option<AirBaseRegistrationCarrierInputs>);
+impl OpaqueValue for AirBaseRegistrationCarrierInputs {}
 
 #[cfg(test)]
 #[path = "carrier_air/tests.rs"]

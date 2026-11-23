@@ -37,7 +37,7 @@ value_struct!(StateMovementTerms {
     relation_speed: Option<i64>,
     branch: u8,
 });
-opaque_value!(Option<StateMovementTerms>);
+impl OpaqueValue for StateMovementTerms {}
 impl StateMovementTerms {
     pub const NEITHER: u8 = 0;
     pub const FRIENDLY: u8 = 1;
@@ -115,6 +115,6 @@ value_struct!(RailwaySelectionInputs {
     building_level: Option<Option<i16>>,
 });
 
-opaque_value!(Option<RailwayBuildingState>);
-opaque_value!(Option<RailwaySelectionInputs>);
+impl OpaqueValue for RailwayBuildingState {}
+impl OpaqueValue for RailwaySelectionInputs {}
 

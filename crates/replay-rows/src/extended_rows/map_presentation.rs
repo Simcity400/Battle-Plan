@@ -81,7 +81,7 @@ value_struct!(HullVariantInputs {
     definition_index: Option<i32>, module_count: Option<i32>, upgrade_level_sum: Option<i32>,
     module_priority_sum: Option<i32>, version: Option<u8>, organisation_marker: Option<i32>
 });
-opaque_value!(Option<HullVariantInputs>);
+impl OpaqueValue for HullVariantInputs {}
 
 opaque_value!(Option<[i64; 5]>);
 
@@ -208,7 +208,7 @@ value_struct!(NavalPortMissionInputs {
     sample_hour: PacketHour, searching: Option<Vec<NavalSearcher>>,
     engagement_target: Option<NavalEngagementTarget>, avoided_ship_types: Option<Vec<Option<Vec<u8>>>>
 });
-opaque_value!(Option<NavalPortMissionInputs>);
+impl OpaqueValue for NavalPortMissionInputs {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -279,7 +279,7 @@ value_struct!(RailwayGunEtaOperands {
     numerator: i64,
     current_speed: i64
 });
-opaque_value!(Option<RailwayGunEtaOperands>);
+impl OpaqueValue for RailwayGunEtaOperands {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -295,7 +295,7 @@ value_struct!(FreshRailwayCounterEta {
     land_supply_factor: Option<i64>,
     orders_group: Option<u64>,
 });
-opaque_value!(Option<FreshRailwayCounterEta>);
+impl OpaqueValue for FreshRailwayCounterEta {}
 typed_codec!(RailwayGunCounterInputRow, 64, |r| r.gun as u128, |k| Self { gun: k as u64, ..Default::default() },
  { 0 => (roster_owner): U32, 1 => (expeditionary_owner): U32, 2 => (logical_owner): U32, 3 => (province): U32, 4 => (naval_transfer): U8, 5 => (transfer_action_status): U8, 6 => (exiled): U8, 7 => (retreat): U8, 8 => (strategic_redeployment): U8, 9 => (reference_entry_count): I32, 10 => (assignee_group): U64, 11 => (subunit_token): U32, 12 => (current_strength): I64, 13 => (maximum_strength): I64, 14 => (received_supply_ratio): I64, 15 => (railway_building_level): Opaque, 16 => (target): U32, 17 => (combat_role): U8, 18 => (combat_province): U32, 19 => (combat_count): U32, 20 => (attacking): U8, 21 => (ordinary_path): U32List, 22 => (alternate_path): U32List, 23 => (name): Opaque, 24 => (eta): Opaque, 25 => (supply): Opaque, 26 => (withdrawal): Opaque, 27 => (fresh): Opaque, 28 => (combat_references): Opaque, 29 => (transport): Opaque, 30 => (theatre): OptionalU64, 31 => (queued_actions): OptionalI32 }, |row| check_unit_combat_references(&row.combat_references, row.combat_count));
 
@@ -322,7 +322,7 @@ pub struct ZeroSubjectInputs {
     pub parties: Option<[Option<u32>; 2]>,
 }
 value_struct!(ZeroSubjectInputs { relation_type: Option<u32>, parties: Option<[Option<u32>; 2]> });
-opaque_value!(Option<ZeroSubjectInputs>);
+impl OpaqueValue for ZeroSubjectInputs {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -380,7 +380,7 @@ impl Value for ManpowerReferences {
     }
 }
 crate::checkpoint::values::wire_value!(ManpowerReferences);
-opaque_value!(Option<ManpowerReferences>);
+impl OpaqueValue for ManpowerReferences {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -539,7 +539,7 @@ value_struct!(ReservedLaunchSources {
     naval_bases: LaunchNavalBases,
     owned_states: Option<Vec<u32>>,
 });
-opaque_value!(Option<ReservedLaunchSources>);
+impl OpaqueValue for ReservedLaunchSources {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -555,7 +555,7 @@ value_struct!(ReverseZeroVisibilityInputs {
     subject: Option<ZeroSubjectInputs>,
     military_access: Option<u8>,
 });
-opaque_value!(Option<ReverseZeroVisibilityInputs>);
+impl OpaqueValue for ReverseZeroVisibilityInputs {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -567,7 +567,7 @@ value_struct!(ReservedReverseVisibilityInputs {
     sample_hour: PacketHour,
     cells: Vec<Option<ReverseZeroVisibilityInputs>>,
 });
-opaque_value!(Option<ReservedReverseVisibilityInputs>);
+impl OpaqueValue for ReservedReverseVisibilityInputs {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -616,7 +616,7 @@ impl crate::value::Value for ReservedCountryIntelSample {
         Ok(sample)
     }
 }
-opaque_value!(Option<ReservedCountryIntelSample>);
+impl OpaqueValue for ReservedCountryIntelSample {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -877,7 +877,7 @@ pub struct RadarCoverageRow {
 typed_codec!(RadarCoverageRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (state): OptionalU32, 1 => (provinces): U32List, 2 => (radius): OptionalI64 }, |_row| Ok(()));
 
-opaque_value!(Option<ShipCounterInputs>);
-opaque_value!(Vec<CharacterPortrait>);
+impl OpaqueValue for ShipCounterInputs {}
+impl OpaqueValue for CharacterPortrait {}
 
 opaque_value!(Option<[Option<i64>; 4]>);

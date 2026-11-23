@@ -9,5 +9,5 @@ pub struct ProductionModifierTree {
     pub failure: Vec<u8>,
 }
 value_struct!(ProductionModifierTree { key: u32, nodes: Vec<ModifierBreakdownNode>, failure: Vec<u8> });
-opaque_value!(Vec<ProductionModifierTree>);
+impl OpaqueValue for ProductionModifierTree {}
 opaque_value!([i64; 7]);

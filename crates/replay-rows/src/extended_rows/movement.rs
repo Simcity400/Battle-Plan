@@ -276,7 +276,7 @@ pub struct OrderExecutionInputs {
     pub paradrop: Option<ParadropPreparationInputs>,
 }
 value_struct!(OrderExecutionInputs { route_is_ok: Option<u8>, paradrop: Option<ParadropPreparationInputs> });
-opaque_value!(Option<OrderExecutionInputs>);
+impl OpaqueValue for OrderExecutionInputs {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -306,7 +306,7 @@ pub struct OrderChildFrontInputs {
     pub sections: Option<Vec<OrderChildFront>>,
 }
 value_struct!(OrderChildFrontInputs { area_province_count: i32, count: Option<u32>, group_child_count: Option<i32>, sections: Option<Vec<OrderChildFront>> });
-opaque_value!(Option<OrderChildFrontInputs>);
+impl OpaqueValue for OrderChildFrontInputs {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -561,7 +561,7 @@ pub struct DivisionOrderTransportInputs {
     pub paradrop_modifiers: Option<ParadropTransportModifiers>,
 }
 value_struct!(DivisionOrderTransportInputs { naval_weight: Option<i64>, paradrop_eligible: Option<u8>, paradrop_modifiers: Option<ParadropTransportModifiers> });
-opaque_value!(Option<DivisionOrderTransportInputs>);
+impl OpaqueValue for DivisionOrderTransportInputs {}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -624,7 +624,7 @@ value_struct!(UnitSupplyInputs {
     ship_demand: UnitSupplyDemand,
     origins: Option<Vec<UnitSupplyOrigin>>
 });
-opaque_value!(Option<UnitSupplyInputs>);
+impl OpaqueValue for UnitSupplyInputs {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -904,7 +904,9 @@ impl Value for DivisionSupplyFooter {
         }
     }
 }
-opaque_value!(Option<DivisionSupplyFooter>, restored);
+impl OpaqueValue for DivisionSupplyFooter {
+    const RESTORED: bool = true;
+}
 
 impl From<UnitSupplyInputs> for DivisionSupplyFooter {
     fn from(inputs: UnitSupplyInputs) -> Self {
@@ -1287,7 +1289,7 @@ pub struct DivisionCamouflage {
 value_struct!(DivisionCamouflage {
     category: Option<u32>
 });
-opaque_value!(Option<DivisionCamouflage>);
+impl OpaqueValue for DivisionCamouflage {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -1324,7 +1326,7 @@ pub struct GarrisonTemplateSelection {
     pub template: Option<u64>,
 }
 value_struct!(GarrisonTemplateSelection { occupied: Option<u32>, state: Option<u32>, template: Option<u64> });
-opaque_value!(Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>);
+impl OpaqueValue for GarrisonTemplateSelection {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -1377,7 +1379,7 @@ value_struct!(HqRequirement {
     token: u32,
     amount: i64
 });
-opaque_value!(Option<std::sync::Arc<TemplateHqContext>>);
+impl OpaqueValue for TemplateHqContext {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -1796,11 +1798,11 @@ pub struct ArmyGroupMemberRow {
 typed_codec!(ArmyGroupMemberRow, 96, |row| (row.group as u128) << 32 | row.ordinal as u128, |key| Self { group: (key >> 32) as u64, ordinal: key as u32, child: Default::default() },
  { 0 => (child): U64 }, |_row| Ok(()));
 
-opaque_value!(Vec<TerrainSpeed>);
-opaque_value!(Vec<TrainAllocation>);
+impl OpaqueValue for TerrainSpeed {}
+impl OpaqueValue for TrainAllocation {}
 opaque_value!(SparseBytes);
-opaque_value!(Vec<DivisionAcclimatization>);
-opaque_value!(Vec<TemplateSubunit>);
+impl OpaqueValue for DivisionAcclimatization {}
+impl OpaqueValue for TemplateSubunit {}
 opaque_value!(TemplateGrids);
 
 #[cfg(test)]
@@ -1827,8 +1829,7 @@ mod experience_tests {
     }
 }
 opaque_value!(TemplateLayout);
-opaque_value!(Option<TemplateLayout>);
+impl OpaqueValue for TemplateLayout {}
 opaque_value!(TemplateSettings);
 
-opaque_value!(Option<std::sync::Arc<TemplateLayout>>);
-opaque_value!(Option<std::sync::Arc<TemplateSettings>>);
+impl OpaqueValue for TemplateSettings {}

@@ -59,7 +59,7 @@ pub struct DivisionAttackStats {
     pub night: i64,
 }
 value_struct!(DivisionAttackStats { terrain: Vec<i64>, river: [i64; 2], fort: [i64; 2], snow: i64, night: i64 });
-opaque_value!(Option<DivisionAttackStats>);
+impl OpaqueValue for DivisionAttackStats {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -70,7 +70,7 @@ pub struct DivisionMovementStats {
     pub air_defense: i64,
 }
 value_struct!(DivisionMovementStats { terrain: Vec<i64>, scalars: Option<[i64; 3]>, fuel_rate: i64, air_defense: i64 });
-opaque_value!(Option<DivisionMovementStats>);
+impl OpaqueValue for DivisionMovementStats {}
 
 impl DivisionMovementStats {
     pub fn fort(&self) -> Option<i64> {
@@ -90,7 +90,7 @@ pub struct CommanderMovementStats {
     pub terrain: Vec<i64>,
 }
 value_struct!(CommanderMovementStats { terrain: Vec<i64> });
-opaque_value!(Option<Option<CommanderMovementStats>>);
+impl OpaqueValue for CommanderMovementStats {}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -103,7 +103,7 @@ pub struct CommanderAttackStats {
     pub night: i64,
 }
 value_struct!(CommanderAttackStats { leader: u64, terrain: Vec<i64>, fort: i64, river: i64, snow: i64, night: i64 });
-opaque_value!(Option<Option<CommanderAttackStats>>);
+impl OpaqueValue for CommanderAttackStats {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -112,7 +112,7 @@ pub struct CountryAttackModifiers {
     pub land_bunker_effectiveness_factor: Option<i64>,
 }
 value_struct!(CountryAttackModifiers { land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
-opaque_value!(Option<CountryAttackModifiers>);
+impl OpaqueValue for CountryAttackModifiers {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -132,7 +132,7 @@ value_struct!(CountryMovementModifiers { army_speed_factor: Option<i64>,
     winter_attrition_factor: Option<i64>, heat_attrition_factor: Option<i64>,
     out_of_supply_factor: Option<i64>, special_forces_out_of_supply_factor: Option<i64>,
     army_attack_speed_factor: Option<i64>, army_retreat_speed_factor: Option<i64> });
-opaque_value!(Option<CountryMovementModifiers>);
+impl OpaqueValue for CountryMovementModifiers {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -144,7 +144,7 @@ pub struct RegionCombatWeather {
 }
 value_struct!(RegionCombatWeather { army_attack_factor: Option<i64>, breakthrough_factor: Option<i64>,
     army_speed_factor: Option<i64>, army_attack_speed_factor: Option<i64> });
-opaque_value!(Option<RegionCombatWeather>);
+impl OpaqueValue for RegionCombatWeather {}
 
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -223,12 +223,11 @@ value_struct!(CommanderAttackInputs { leader: u64, fort: Option<i64>, river: Opt
 value_struct!(WeatherRegionAttackInputs { sample_hour: PacketHour, attack: Option<i64>, breakthrough: Option<i64> });
 value_struct!(CountryAttackInputs { sample_hour: PacketHour, land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
 value_struct!(ProvinceAttackInputs { sample_hour: PacketHour, fort_sum: Option<i32>, land_bunker_effectiveness_factor: Option<i64> });
-opaque_value!(Witnessed<DivisionAttackInputs>);
-opaque_value!(Witnessed<OrdersGroupAttackInputs>);
-opaque_value!(Witnessed<WeatherRegionAttackInputs>);
-opaque_value!(Witnessed<CountryAttackInputs>);
-opaque_value!(Witnessed<ProvinceAttackInputs>);
-opaque_value!(Witnessed<Option<CountryAttackInputs>>);
+impl OpaqueValue for DivisionAttackInputs {}
+impl OpaqueValue for OrdersGroupAttackInputs {}
+impl OpaqueValue for WeatherRegionAttackInputs {}
+impl OpaqueValue for CountryAttackInputs {}
+impl OpaqueValue for ProvinceAttackInputs {}
 opaque_value!(Witnessed<u64>);
 
 pub fn attack_terrain(domain: &[AttackTerrain], terrain: i32) -> Result<Option<i64>, String> {

@@ -18,7 +18,7 @@ pub struct AdvisorModifierCache {
     pub entries: Vec<CachedModifier>,
 }
 value_struct!(AdvisorModifierCache { entries: Vec<CachedModifier> });
-opaque_value!(Option<AdvisorModifierCache>);
+impl OpaqueValue for AdvisorModifierCache {}
 opaque_value!(Option<Vec<Vec<u8>>>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub struct OperativeEffect {
     pub modifiers: Vec<OperativeEffectModifier>,
 }
 value_struct!(OperativeEffect { owned_states: i32, network_gain_scale: i32, trade_opinion: Option<i64>, modifiers: Vec<OperativeEffectModifier> });
-opaque_value!(Option<std::sync::Arc<OperativeEffect>>);
+impl OpaqueValue for OperativeEffect {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -52,7 +52,7 @@ value_struct!(TradeInfluence {
     owner: u32,
     value: i64
 });
-opaque_value!(Vec<TradeInfluence>);
+impl OpaqueValue for TradeInfluence {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -66,7 +66,7 @@ value_struct!(DiplomaticPressure {
     acceptance: i64,
     tension: i64
 });
-opaque_value!(Vec<DiplomaticPressure>);
+impl OpaqueValue for DiplomaticPressure {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -84,7 +84,7 @@ value_struct!(OperationRequirement {
     equipment: u8,
     uses_time: u8
 });
-opaque_value!(Vec<OperationRequirement>);
+impl OpaqueValue for OperationRequirement {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -98,7 +98,7 @@ value_struct!(OperationEquipment {
     archetype: u32,
     amount: i64
 });
-opaque_value!(Vec<OperationEquipment>);
+impl OpaqueValue for OperationEquipment {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -110,7 +110,7 @@ value_struct!(OperationEquipmentTotal {
     archetype: u32,
     amount: i64
 });
-opaque_value!(Vec<OperationEquipmentTotal>);
+impl OpaqueValue for OperationEquipmentTotal {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -119,7 +119,7 @@ pub struct ScientistTemplateOrigin {
     pub line: u32,
 }
 value_struct!(ScientistTemplateOrigin { file: Vec<u8>, line: u32 });
-opaque_value!(Option<ScientistTemplateOrigin>);
+impl OpaqueValue for ScientistTemplateOrigin {}
 opaque_value!(Option<u8>);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub struct AgencyBufferedOffer {
     pub duration: Option<i32>,
 }
 value_struct!(AgencyBufferedOffer { definition: u32, country: u32, state: Option<u32>, duration: Option<i32> });
-opaque_value!(Vec<AgencyBufferedOffer>);
+impl OpaqueValue for AgencyBufferedOffer {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -140,4 +140,4 @@ pub struct AgencyBufferedOperation {
     pub state: Option<u32>,
 }
 value_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
-opaque_value!(Vec<AgencyBufferedOperation>);
+impl OpaqueValue for AgencyBufferedOperation {}

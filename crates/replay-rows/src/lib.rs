@@ -27,3 +27,6 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 pub const FORMAT_VERSION: u16 = rows::compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT;
+
+#[doc(hidden)]
+pub use engine_allocation as __allocation;

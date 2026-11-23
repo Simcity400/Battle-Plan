@@ -13,7 +13,7 @@ impl GameScoreAirSite {
     pub const ACCESS_TRUE: u8 = 2;
 }
 value_struct!(GameScoreAirSite { base: u64, access: u8, error: Vec<u8> });
-opaque_value!(Vec<GameScoreAirSite>);
+impl OpaqueValue for GameScoreAirSite {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -23,7 +23,7 @@ pub struct GameScoreFleetCount {
     pub error: Vec<u8>,
 }
 value_struct!(GameScoreFleetCount { fleet: u64, task_forces: Option<i32>, error: Vec<u8> });
-opaque_value!(Vec<GameScoreFleetCount>);
+impl OpaqueValue for GameScoreFleetCount {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
