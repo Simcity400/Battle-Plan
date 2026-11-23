@@ -54,7 +54,7 @@ pub(super) fn read(
         let reader = format!("viewer.world_assets.quality{quality}");
         let mut loaded = None;
         log.read(&reader, || {
-            crate::map_assets::load_with_products(
+            viewer_world::map_assets::load_with_products(
                 None,
                 layers,
                 defines,

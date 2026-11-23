@@ -1,4 +1,3 @@
-use crate::playback::Current;
 use replay::campaign::Replay;
 use replay_recording::{columnar_frames::Pool, columnar_natives::{Cursor, Natives}};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
@@ -71,7 +70,7 @@ impl MapSource {
             .segment_at(branch, hour)
             .filter(|segment| self.cursor.natives().find(*segment, hour).is_some())
         else {
-            return Ok(gap(crate::playback::gap_reason(&self.replay, branch, hour)));
+            return Ok(gap(gap_reason(&self.replay, branch, hour)));
         };
         let read = (|| -> io::Result<Option<DecodedFrame>> {
             self.cursor.move_to(segment, branch, hour, cancelled)?;
@@ -105,5 +104,35 @@ fn campaign_holds(frame: &DecodedFrame, campaign: &[u8]) -> bool {
             .rows::<tables::Campaign>()
             .is_some_and(|rows| rows.len() == 1 && rows[0].id == campaign),
         _ => true,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Current {
+    Frame(Arc<DecodedFrame>),
+    Gap {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+    Refused {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+}
+
+pub fn gap_reason(replay: &Replay, branch: BranchId, hour: Hour) -> String {
+    let reason = replay
+        .gaps
+        .iter()
+        .filter(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
+        .map(|gap| gap.reason.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if reason.is_empty() {
+        "hour was not recorded".into()
+    } else {
+        reason
     }
 }

@@ -32,7 +32,7 @@ fn an_hour_a_run_holds_is_the_reader_s_frame_and_never_a_gap() {
         if hours.contains(&hour) {
             continue;
         }
-        let reason = crate::playback::gap_reason(&replay, 1, hour);
+        let reason = crate::map_source::gap_reason(&replay, 1, hour);
         assert_eq!(read(&mut source, hour), Current::Gap { branch: 1, hour, reason });
     }
 }

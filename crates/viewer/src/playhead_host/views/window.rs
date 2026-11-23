@@ -1,9 +1,7 @@
 
 use super::super::views::{Need, Pace, Reader as ViewReader, Views};
-use crate::{
-    document::{Document, Hour, OverlayLayers, OverlayRows, same_quads},
-    map_views::CounterView,
-};
+use crate::{document::{Document, Hour, OverlayRows, same_quads}, map_views::CounterView};
+use viewer_layer_core::scene_content::OverlayLayers;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, discovering};
 use std::{

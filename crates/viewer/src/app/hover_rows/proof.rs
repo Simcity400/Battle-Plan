@@ -1,6 +1,6 @@
 
 use super::{Caches, Family, HoverRows, Inputs, Job, Key, Posted, Retry, What, id, make};
-use crate::lane_rows::rosters::Lanes;
+use viewer_layer_core::lane_rows::rosters::Lanes;
 use viewer_counter_products::map::province_tooltips::air_region::{RosterHistory, SampleSource, Sampler, Span};
 use crate::{
     app::picker,

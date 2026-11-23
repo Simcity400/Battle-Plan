@@ -9,3 +9,5 @@ pub mod scene;
 pub mod scene_content;
 #[cfg(any(test, feature = "test-support"))]
 pub mod scene_faults;
+
+pub mod map_assets;
