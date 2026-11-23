@@ -8,4 +8,4 @@ The mesh worker reads decoded views for the step, declaring equipment by keys of
 
 A separate worker builds the remaining models from the newest decoded frame and finishes each started build. It reuses held output if the input tables and presentation request are unchanged, and learns further table reads without replacing the held models prematurely. On reset the old field can remain painted until the new generation is ready. A result for a different canonical perspective is withheld. The ships and convoys layers supply their own products when appropriate. Worker lag contributes to the model publication hour, while frame placement work is carried separately. A saved frame requires both workers and every outstanding model choice to be whole at its applied hour.
 
-[Land figures](../../crates/viewer-playback/src/layers/units.rs) · [Meshes](../../crates/viewer-playback/src/layers/units/meshes.rs) · [Other models](../../crates/viewer-playback/src/layers/units/models.rs)
+[Land figures](../../crates/viewer-layers-forces/src/units.rs) · [Meshes](../../crates/viewer-layers-forces/src/units/meshes.rs) · [Other models](../../crates/viewer-layers-forces/src/units/models.rs)

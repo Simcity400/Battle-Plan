@@ -7,7 +7,8 @@ use collector_observers::combat_engagement_refreshes::{self as producer, Entry};
 use engine_allocation as allocation;
 use engine_native::{Memory, walk::Outcome};
 use replay_data::rows::{CombatEngagementRefreshRow, RowCodec, TableId, TableRows};
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CombatEngagementRefreshes];
@@ -15,6 +16,7 @@ pub type Capacities = usize;
 
 pub struct Captured {
     rows: CaptureRows<Entry>,
+    loss_recorded: AtomicBool,
 }
 
 impl Captured {
@@ -25,11 +27,13 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
+            loss_recorded: AtomicBool::new(false),
         }
     }
 
     pub fn reset(&mut self) {
         self.rows.reset();
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -41,15 +45,29 @@ impl Captured {
         grow_vec(&mut self.rows.rows, *c);
     }
 
-    pub fn fail(&mut self, reason: &'static str) {
-        producer::lost_drain();
+    /// # Safety
+    /// Caller must own the active session's recovery or capture-failure path when invalidating
+    /// combat-engagement-refresh drains.
+    pub unsafe fn fail(&mut self, reason: &'static str) {
+        // SAFETY: Caller owns the combat-engagement-refresh recovery or failure path.
+        unsafe { producer::lost_drain() };
         self.rows.fail(Outcome::Unavailable { reason });
+        self.loss_recorded.store(false, Ordering::Relaxed);
     }
 
-    pub fn capture(&mut self, _memory: &impl Memory, _base: usize, _state: usize) -> [u64; N] {
+    /// # Safety
+    /// Caller must hold hourly capture admission as the sole consumer of combat-engagement-refresh
+    /// events while observer storage stays live and teardown is excluded.
+    pub unsafe fn capture(
+        &mut self,
+        _memory: &impl Memory,
+        _base: usize,
+        _state: usize,
+    ) -> [u64; N] {
         self.reset();
         let started = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        // SAFETY: Caller holds hourly capture admission as the sole combat-engagement-refresh consumer.
+        self.rows.outcome = match unsafe { producer::drain(&mut self.rows.rows) } {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };
@@ -60,7 +78,7 @@ impl Captured {
         [self.rows.outcome]
     }
 
-    pub fn tables(&self) -> [TableView; N] {
+    fn project_tables(&self, record_loss: bool) -> [TableView; N] {
         let Outcome::Rows { len } = self.rows.outcome else {
             return [unavailable(match self.rows.outcome {
                 Outcome::Unavailable { reason } => reason,
@@ -72,10 +90,24 @@ impl Captured {
                 rows,
             ))],
             Err(reason) => {
-                producer::lost_output(len);
+                if record_loss && !self.loss_recorded.swap(true, Ordering::AcqRel) {
+                    // SAFETY: Caller is the owning publication path recording loss once.
+                    unsafe { producer::lost_output(len) };
+                }
                 [unavailable(reason)]
             }
         }
+    }
+
+    pub fn tables(&self) -> [TableView; N] {
+        self.project_tables(false)
+    }
+
+    /// # Safety
+    /// Caller must be the owning spool publication path converting this frame while observer
+    /// storage stays live; conversion failure records `lost_output` at most once per frame.
+    pub unsafe fn table_inputs(&self) -> [TableInput; N] {
+        self.project_tables(true).map(TableInput::Sampled)
     }
 }
 
@@ -344,11 +376,15 @@ mod tests {
         };
         let memory = SliceMemory { base: 0, bytes: &[] };
         producer::test_reset(true);
-        producer::presize(16);
+        // SAFETY: Isolated unit test owns combat-engagement-refresh observer state.
+        unsafe { producer::presize(16) };
         let mut captured = Captured::with_capacities(&16);
 
-        producer::boundary(Some(clock(100)));
-        captured.capture(&memory, 0, 0);
+        // SAFETY: Isolated unit test owns combat-engagement-refresh observer state.
+        unsafe {
+            producer::boundary(Some(clock(100)));
+            captured.capture(&memory, 0, 0);
+        }
         assert!(matches!(captured.outcomes()[0], Outcome::Unavailable { .. }));
 
         producer::test_record_entry(Entry {
@@ -358,16 +394,25 @@ mod tests {
             viewer: 1,
             triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
         });
-        producer::boundary(Some(clock(101)));
-        captured.fail("rejected");
+        // SAFETY: Isolated unit test owns combat-engagement-refresh observer state.
+        unsafe {
+            producer::boundary(Some(clock(101)));
+            captured.fail("rejected");
+        }
         assert!(matches!(captured.outcomes()[0], Outcome::Unavailable { .. }));
 
-        producer::boundary(Some(clock(102)));
-        captured.capture(&memory, 0, 0);
+        // SAFETY: Isolated unit test owns combat-engagement-refresh observer state.
+        unsafe {
+            producer::boundary(Some(clock(102)));
+            captured.capture(&memory, 0, 0);
+        }
         assert!(matches!(captured.outcomes()[0], Outcome::Unavailable { .. }));
 
-        producer::boundary(Some(clock(103)));
-        captured.capture(&memory, 0, 0);
+        // SAFETY: Isolated unit test owns combat-engagement-refresh observer state.
+        unsafe {
+            producer::boundary(Some(clock(103)));
+            captured.capture(&memory, 0, 0);
+        }
         assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 0 });
         producer::test_reset(false);
     }

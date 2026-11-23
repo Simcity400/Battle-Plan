@@ -119,7 +119,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let decode = content_reader_image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
-    let assets = crate::map_assets::load_with_products(
+    let assets = viewer_world::map_assets::load_with_products(
         None,
         layers,
         &defines,

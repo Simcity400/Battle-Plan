@@ -86,8 +86,12 @@ pub fn boundary(invalidate: bool) {
     collector_observers::fleet_region_changes::boundary(invalidate);
 }
 
-pub fn presize() {
-    collector_observers::fleet_region_changes::presize();
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// mission and fleet-region watches remain live and teardown is excluded.
+pub unsafe fn presize() {
+    // SAFETY: Caller guarantees attach or serial sizing pass with live fleet-region watches.
+    unsafe { collector_observers::fleet_region_changes::presize() };
     let countries = COUNTRIES.load(Ordering::Relaxed);
     if countries != 0 {
         WATCHES.registry.offer(countries);
@@ -111,7 +115,10 @@ pub struct Counts {
     pub quiet: bool,
 }
 
-pub fn record(counts: &Counts, countries: Option<usize>) {
+/// # Safety
+/// Run only during admitted air-mission capture (or an isolated test) with measured country demand
+/// for the active session.
+pub unsafe fn record(counts: &Counts, countries: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,

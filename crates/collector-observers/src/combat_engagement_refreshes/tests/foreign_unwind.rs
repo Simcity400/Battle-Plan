@@ -103,10 +103,14 @@ fn combat_engagement_foreign_unwind_retains_flight_and_refuses_interval() {
         FLIGHTS.store(0, Ordering::SeqCst);
         LEDGER.reset();
         ENABLED.store(true, Ordering::SeqCst);
-        presize(16);
-        boundary(Some(clock(100)));
+        // SAFETY: Isolated foreign-unwind test owns observation via TestScope and probe::SERIAL.
+        unsafe {
+            presize(16);
+            boundary(Some(clock(100)));
+        }
         let mut out = Vec::new();
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated foreign-unwind test owns observation via TestScope and probe::SERIAL.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
         let mut call = Box::new(NativeCall {
             arguments: [command_ptr, 11, 22, 33],
@@ -130,8 +134,10 @@ fn combat_engagement_foreign_unwind_retains_flight_and_refuses_interval() {
         assert_eq!(call.observed, call.arguments);
         assert_eq!((call.entered, call.returned, call.continued, call.result), (1, 1, 1, 0x77));
         assert_eq!(active(), 0);
-        boundary(Some(clock(101)));
-        assert_eq!(drain(&mut out).unwrap(), 1);
+        // SAFETY: Isolated foreign-unwind test owns observation via TestScope and probe::SERIAL.
+        unsafe { boundary(Some(clock(101))) };
+        // SAFETY: Isolated foreign-unwind test owns observation via TestScope and probe::SERIAL.
+        assert_eq!(unsafe { drain(&mut out) }.unwrap(), 1);
         assert_eq!(out[0].kind, CombatEngagementRefreshRow::CONTROLLER_TARGET);
         assert_eq!(out[0].target, 42);
 
@@ -143,8 +149,10 @@ fn combat_engagement_foreign_unwind_retains_flight_and_refuses_interval() {
         let retained_active = active();
         assert_eq!(retained_flights, 1);
         assert!(retained_active >= 1);
-        boundary(Some(clock(102)));
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated foreign-unwind test owns observation via TestScope and probe::SERIAL.
+        unsafe { boundary(Some(clock(102))) };
+        // SAFETY: Isolated foreign-unwind test owns observation via TestScope and probe::SERIAL.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
         call.raise = None;
         // SAFETY: verifying subsequent ordinary native calls still return while the unwound flight stays retained.

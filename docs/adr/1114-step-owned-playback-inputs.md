@@ -6,4 +6,4 @@ The playback fixtures write actual recording tables into in-memory pages. A reco
 
 Viewport and perception tests treat a requested perspective as the authoritative view. The window may hand over that view with data withheld while its layers compose, with named refusals where the recording is incomplete. It never combines layers from different countries. A valid request with a tag absent from the hour falls back to the recorded player. When the speed invalidates ahead steps, replay-based vision, names and snow restart from the applied mirrors. Layers that use vision receive each changed province in the frame that applies the corresponding prepared step.
 
-[Worker-owned inputs](../../crates/viewer-playback/src/layers/owned.rs) · [Playback fixtures](../../crates/viewer-playback/src/layers/recorded.rs) · [Perspective and pace tests](../../crates/viewer-playback/src/layers/p6_tests.rs)
+[Worker-owned inputs](../../crates/viewer-layer-core/src/owned.rs) · [Playback fixtures](../../crates/viewer-layer-core/src/test_support/recorded.rs) · [Perspective and pace tests](../../crates/viewer-playback/src/p6_tests.rs)

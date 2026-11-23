@@ -132,6 +132,22 @@ macro_rules! spool_inputs {
     (air_records, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
+    (air_losses, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's air-loss events once.
+        unsafe { $captured.table_inputs() }
+    };
+    (building_bombing, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's building-bombing events once.
+        unsafe { $captured.table_inputs() }
+    };
+    (combat_engagement_refreshes, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's combat-engagement-refresh events once.
+        unsafe { $captured.table_inputs() }
+    };
+    (nuclear_strikes, $captured:expr, $conversion:expr) => {
+        // SAFETY: Owning spool publication path converts this frame's nuclear-strike events once.
+        unsafe { $captured.table_inputs() }
+    };
     (naval_bases, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
@@ -260,8 +276,49 @@ macro_rules! pack_frame {
     (naval_combat_sources, $capacity:expr) => {
         naval_combat_sources::Captured::without_home($capacity)
     };
+    (naval_counters, $capacity:expr) => {
+        // SAFETY: Allocates frame storage while fleet-region watches remain live and teardown is
+        // excluded; `WatchRegistry::offer` atomically swaps offered tables.
+        unsafe { naval_counters::Captured::with_capacities($capacity) }
+    };
     ($pack:ident, $capacity:expr) => {
         $pack::Captured::with_capacities($capacity)
+    };
+}
+
+macro_rules! grow_pack {
+    (operation_outcomes, $pack:expr, $capacity:expr) => {
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while operation-log storage
+        // stays live and teardown is excluded; shared log growth is synchronized by `LOGS` and
+        // per-lane `byte_rings` locks across concurrent spool/sizing growth.
+        unsafe { $pack.grow($capacity) }
+    };
+    (politics, $pack:expr, $capacity:expr) => {
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while politics staging stays
+        // live and teardown is excluded; shared log growth is serialized by `LOGS` across
+        // concurrent spool/sizing growth.
+        unsafe { $pack.grow($capacity) }
+    };
+    (air_losses, $pack:expr, $capacity:expr) => {
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while air-loss observer
+        // storage stays live and teardown is excluded; `EventLedger::prepare` synchronizes spare
+        // and retired buffers across concurrent spool/sizing growth.
+        unsafe { $pack.grow($capacity) }
+    };
+    (building_bombing, $pack:expr, $capacity:expr) => {
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while building-bombing
+        // observer storage stays live and teardown is excluded; `EventLedger::prepare` synchronizes
+        // spare and retired buffers across concurrent spool/sizing growth.
+        unsafe { $pack.grow($capacity) }
+    };
+    (land_events, $pack:expr, $capacity:expr) => {
+        // SAFETY: Caller holds exclusive `&mut` access to this frame while land-event storage stays
+        // live and teardown is excluded; `land_events::prepare` serializes spare allocation under
+        // `LOG_SWAP` across concurrent spool/sizing growth.
+        unsafe { $pack.grow($capacity) }
+    };
+    ($name:ident, $pack:expr, $capacity:expr) => {
+        $pack.grow($capacity)
     };
 }
 
@@ -483,18 +540,16 @@ impl Captured {
                 ])
             }
             /// # Safety
-            /// Only the session's attach, frame-building, sizing or admitted capture sequence may
-            /// prepare this frame. Keep observer storage live and exclude conflicting observer
-            /// preparation and teardown.
+            /// Caller holds exclusive `&mut` access to this frame while observer storage stays
+            /// live for the active session (or an isolated test) and teardown/`release` is
+            /// excluded. Concurrent frame growth across spool and sizing threads relies on each
+            /// observer's internal synchronization.
             pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
                 engine_allocation::advisory(|| self.grow_hints(capacity));
             }
             fn grow_hints(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
-                // SAFETY: The frame's sizing owner excludes observer teardown and concurrent sizing.
-                unsafe {
-                    $(self.$pack.grow(&mut capacity.$pack);)+
-                }
+                $(grow_pack!($pack, self.$pack, &mut capacity.$pack);)+
                 self.fuel_awards.grow(&mut capacity.fuel_awards);
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
@@ -842,8 +897,9 @@ impl Capacities {
         for result in [
             capacity_census.then(|| {
                 crate::country_scale::observe_advisor_modifiers(memory, base).map(|demand| {
+                    // SAFETY: Runs during attach or the session's serial sizing pass.
                     if let Some(demand) = demand
-                        && characters::advisors::note_modifier_demand(demand)
+                        && unsafe { characters::advisors::note_modifier_demand(demand) }
                     {
                         crate::decode::presize_advisor_pools();
                     }
@@ -859,7 +915,8 @@ impl Capacities {
             Some(
                 crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
                     if let Some(words) = demand {
-                        collector_land_events::land_events::presize(words);
+                        // SAFETY: Runs during attach or the session's serial sizing pass with live storage.
+                        unsafe { collector_land_events::land_events::presize(words) };
                         self.land_events.words = self
                             .land_events
                             .words
@@ -960,7 +1017,8 @@ impl Capacities {
     /// isolation.
     pub unsafe fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
         self.war_overview.raise_for_demand(demand.war_overview);
-        characters::advisors::note_modifier_demand(demand.advisor_modifiers);
+        // SAFETY: Runs during attach or the session's serial sizing pass with measured demand.
+        unsafe { characters::advisors::note_modifier_demand(demand.advisor_modifiers) };
         collector_primitives::country_slots::raise(
             &mut self.intel.agency_names,
             demand.agency_name_bytes,
@@ -1147,7 +1205,8 @@ impl Captured {
         progress: combat_progress::Captured,
         ticks: u64,
     ) {
-        self.land_events.lost_casualty_reads(progress.lost_reads());
+        // SAFETY: Admitted hourly capture owns attributing lost casualty reads to land events.
+        unsafe { self.land_events.lost_casualty_reads(progress.lost_reads()) };
         self.combat_progress = progress;
         self.overhead[TableId::LandCombatProgress.index()] += ticks;
     }
@@ -1177,7 +1236,8 @@ impl Captured {
     /// Only the originating spool may discard this frame's event-feed handoff after conversion and
     /// writer preparation, before returning the slot.
     pub unsafe fn discard_event_feed(&mut self) {
-        self.event_feed.discard();
+        // SAFETY: Caller is the originating spool discarding this uncommitted event-feed handoff.
+        unsafe { self.event_feed.discard() };
     }
     pub(crate) fn take_event_feed_seal(&mut self) -> event_feed::Captured {
         std::mem::replace(&mut self.event_feed, event_feed::Captured::vacant())
@@ -1188,7 +1248,8 @@ impl Captured {
         failure: Option<&'static str>,
     ) {
         if let Some(reason) = failure {
-            feed.fail_prepared(reason);
+            // SAFETY: Capture owns the failed event-feed seal recovery path for this hour.
+            unsafe { feed.fail_prepared(reason) };
         }
         self.event_feed = feed;
     }
@@ -1266,7 +1327,8 @@ impl Captured {
         self.resource_map.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
         self.combat_log.prepare_hour(hour, force_full);
-        self.combat_progress.prepare_hour(hour, force_full);
+        // SAFETY: Runs during admitted hour preparation before combat capture starts.
+        unsafe { self.combat_progress.prepare_hour(hour, force_full) };
         self.characters.prepare_hour(hour, force_full);
         self.naval_mission_inputs.reset_selection(hour, force_full);
         self.supply_trains.reset_selection(hour, force_full);
@@ -2901,13 +2963,23 @@ impl Captured {
                     faction_theatres,
                     model_inputs,
                     modifier_definitions,
-                    hired_advisors,
                     country_tactic_unlocks,
                     logistics,
-                    combat_log,
                     country_factories,
                     state_building_inputs
                 );
+                // SAFETY: Test/fixture fallback runs inside admitted `capture_tables`.
+                let cost = unsafe {
+                    self.hired_advisors
+                        .capture(memory, base, game_state, current_hour, force_full)
+                };
+                scatter(&hired_advisors::TABLES, cost, &mut ticks);
+                // SAFETY: Test/fixture fallback runs inside admitted `capture_tables`.
+                let cost = unsafe {
+                    self.combat_log
+                        .capture(memory, base, game_state, current_hour, force_full)
+                };
+                scatter(&combat_log::TABLES, cost, &mut ticks);
                 scatter(
                     &visibility::TABLES,
                     self.visibility
@@ -2982,7 +3054,12 @@ impl Captured {
         } else {
             #[cfg(any(test, feature = "test-support"))]
             {
-                staggered!(division_templates);
+                // SAFETY: Test/fixture fallback runs inside admitted `capture_tables`.
+                let cost = unsafe {
+                    self.division_templates
+                        .capture(memory, base, game_state, current_hour, force_full)
+                };
+                scatter(&division_templates::TABLES, cost, &mut ticks);
             }
             #[cfg(not(any(test, feature = "test-support")))]
             {
@@ -3292,7 +3369,8 @@ impl<M: Memory> Sources<'_, M> {
 impl<M: Memory> MapSources for Sources<'_, M> {
     fn begin_land(&mut self) -> u64 {
         let begin = qpc();
-        self.captured.combat_progress.begin();
+        // SAFETY: Runs in the admitted hour's sole land-combat walk; `finish_land` settles it.
+        unsafe { self.captured.combat_progress.begin() };
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
     fn land(&mut self, source: engine_native::cland_combat::Source) -> u64 {
@@ -3304,10 +3382,13 @@ impl<M: Memory> MapSources for Sources<'_, M> {
     }
     fn finish_land(&mut self, outcome: Outcome) -> u64 {
         let begin = qpc();
-        self.captured.combat_progress.finish(outcome);
-        self.captured
-            .land_events
-            .lost_casualty_reads(self.captured.combat_progress.lost_reads());
+        // SAFETY: Settles the admitted hour's land-combat baseline and reports observer demand.
+        unsafe {
+            self.captured.combat_progress.finish(outcome);
+            self.captured
+                .land_events
+                .lost_casualty_reads(self.captured.combat_progress.lost_reads());
+        }
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
 }

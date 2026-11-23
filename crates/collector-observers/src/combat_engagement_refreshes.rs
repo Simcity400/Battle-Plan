@@ -65,35 +65,54 @@ pub fn capacity() -> usize {
     LEDGER.demand()
 }
 
-pub fn presize(demand: usize) {
+/// # Safety
+/// Run only while combat-engagement-refresh observer storage remains live for the active session
+/// (or an isolated test owning combat-engagement-refresh observation) and teardown is excluded.
+pub unsafe fn presize(demand: usize) {
     if !foreign_test() {
         LEDGER.prepare(demand);
     }
 }
 
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// owning combat-engagement-refresh observation) when invalidating refresh drains.
+pub unsafe fn lost_drain() {
     if !foreign_test() {
-        LEDGER.lost_drain();
+        // SAFETY: Caller owns the combat-engagement-refresh recovery or publication failure path.
+        unsafe { LEDGER.lost_drain() };
     }
 }
 
-pub fn lost_output(entries: usize) {
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test owning combat-engagement-refresh observation) when recording lost refresh output.
+pub unsafe fn lost_output(entries: usize) {
     if !foreign_test() {
-        LEDGER.lost_output(entries);
+        // SAFETY: Caller owns the combat-engagement-refresh projection or publication failure path.
+        unsafe { LEDGER.lost_output(entries) };
     }
 }
 
-pub fn boundary(clock: Option<Clock>) {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer advancing
+/// combat-engagement-refresh observation (or an isolated test owning observation).
+pub unsafe fn boundary(clock: Option<Clock>) {
     if !foreign_test() {
-        LEDGER.boundary(clock);
+        // SAFETY: Caller runs on the admitted hourly capture boundary for combat-engagement-refresh observation.
+        unsafe { LEDGER.boundary(clock) };
     }
 }
 
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining combat-engagement-refresh events
+/// while observer storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     if foreign_test() || UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("combat engagement refresh hooks unavailable (see status unhooked)");
     }
-    LEDGER.drain(output)
+    // SAFETY: Caller holds hourly capture admission as the sole combat-engagement-refresh consumer.
+    unsafe { LEDGER.drain(output) }
 }
 
 fn read_side_index(
@@ -627,7 +646,8 @@ fn begin_enable_transition(enabled: bool) -> bool {
     if !enabled {
         ENABLED.store(false, Ordering::SeqCst);
         if was_enabled {
-            LEDGER.lost_drain();
+            // SAFETY: Hook disable transition owns invalidating in-flight refresh observation.
+            unsafe { LEDGER.lost_drain() };
         }
     }
     was_enabled
@@ -636,7 +656,8 @@ fn begin_enable_transition(enabled: bool) -> bool {
 fn finish_enable_transition(was_enabled: bool, enabled: bool, has_hooks: bool) {
     let now_enabled = enabled && has_hooks;
     if now_enabled && !was_enabled {
-        LEDGER.lost_drain();
+        // SAFETY: Hook enable transition owns invalidating any pre-enable partial interval.
+        unsafe { LEDGER.lost_drain() };
     }
     ENABLED.store(now_enabled, Ordering::SeqCst);
 }
@@ -1079,10 +1100,13 @@ mod tests {
     #[test]
     fn first_interval_is_partial_and_subsequent_complete_interval_drains_cleanly() {
         let _scope = TestScope::enter();
-        presize(16);
-        boundary(Some(clock(100)));
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { presize(16) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(100))) };
         let mut out = Vec::new();
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
         let mut committed_during_original = true;
         execute_observed(
@@ -1106,29 +1130,40 @@ mod tests {
         );
         assert!(!committed_during_original);
         assert_eq!(active(), 0);
-        boundary(Some(clock(101)));
-        let count = drain(&mut out).unwrap();
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(101))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        let count = unsafe { drain(&mut out) }.unwrap();
         assert_eq!(count, 1);
         assert_eq!(out[0].target, 62);
 
         execute_observed(1, 2, || Err::<Option<Entry>, _>("synthetic unreadable"), || 0, Ok);
-        boundary(Some(clock(102)));
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(102))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
-        boundary(Some(clock(103)));
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(103))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
-        boundary(Some(clock(104)));
-        assert_eq!(drain(&mut out).unwrap(), 0);
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(104))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert_eq!(unsafe { drain(&mut out) }.unwrap(), 0);
     }
 
     #[test]
     fn unwinding_native_call_retains_flight_and_refuses_interval() {
         let _scope = TestScope::enter();
-        presize(16);
-        boundary(Some(clock(100)));
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { presize(16) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(100))) };
         let mut out = Vec::new();
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
         let unwound = std::panic::catch_unwind(|| {
             execute_observed(
@@ -1153,8 +1188,10 @@ mod tests {
         assert_eq!(active(), 1);
         assert_eq!(LEDGER.events.load(Ordering::SeqCst), 0);
 
-        boundary(Some(clock(101)));
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(101))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
         execute_observed(0, 2, || Ok(None), || 0, Ok);
         assert_eq!(active(), 1);
@@ -1163,10 +1200,13 @@ mod tests {
     #[test]
     fn nested_same_thread_calls_commit_without_overlap_poisoning() {
         let _scope = TestScope::enter();
-        presize(16);
-        boundary(Some(clock(100)));
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { presize(16) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(100))) };
         let mut out = Vec::new();
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
         execute_observed(
             5,
@@ -1192,8 +1232,10 @@ mod tests {
             |before| Ok(identify_hourly_viewer_change(before, 12)),
         );
         assert_eq!(active(), 0);
-        boundary(Some(clock(101)));
-        let count = drain(&mut out).unwrap();
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(101))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        let count = unsafe { drain(&mut out) }.unwrap();
         assert_eq!(count, 2);
         assert_eq!(out[0].kind, CombatEngagementRefreshRow::LAND_SIDE);
         assert_eq!(out[1].kind, CombatEngagementRefreshRow::LOCAL_ALL_SIDES);
@@ -1202,27 +1244,38 @@ mod tests {
     #[test]
     fn disable_then_reenable_poisons_quiet_next_interval() {
         let _scope = TestScope::enter();
-        presize(16);
-        boundary(Some(clock(100)));
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { presize(16) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(100))) };
         let mut out = Vec::new();
-        assert!(drain(&mut out).is_err());
-        boundary(Some(clock(101)));
-        assert_eq!(drain(&mut out).unwrap(), 0);
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(101))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert_eq!(unsafe { drain(&mut out) }.unwrap(), 0);
 
         let was = begin_enable_transition(true);
         finish_enable_transition(was, true, true);
-        boundary(Some(clock(102)));
-        assert_eq!(drain(&mut out).unwrap(), 0);
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(102))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert_eq!(unsafe { drain(&mut out) }.unwrap(), 0);
 
         let was = begin_enable_transition(false);
         finish_enable_transition(was, false, true);
         let was = begin_enable_transition(true);
         finish_enable_transition(was, true, true);
 
-        boundary(Some(clock(103)));
-        assert!(drain(&mut out).is_err());
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(103))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert!(unsafe { drain(&mut out) }.is_err());
 
-        boundary(Some(clock(104)));
-        assert_eq!(drain(&mut out).unwrap(), 0);
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        unsafe { boundary(Some(clock(104))) };
+        // SAFETY: Isolated test owns combat-engagement-refresh observation via TestScope.
+        assert_eq!(unsafe { drain(&mut out) }.unwrap(), 0);
     }
 }

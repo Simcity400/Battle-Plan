@@ -1,6 +1,6 @@
 
 use super::Pass;
-use crate::lane_rows::{Kept, Table};
+use viewer_layer_core::lane_rows::{Kept, Table};
 use playhead::{Piece, Timeline, pages::Pages};
 use replay_columnar::manifest::Status;
 use replay_data::{
@@ -202,7 +202,7 @@ type FoldKey = (String, Vec<Piece>, BranchId, Country);
 
 static FOLDS: std::sync::Mutex<Vec<(FoldKey, std::sync::Weak<History>)>> = std::sync::Mutex::new(Vec::new());
 
-pub fn shared(replay: &replay::campaign::Replay, units: &crate::playhead_host::units::Units, branch: BranchId, country: &Country) -> io::Result<Arc<History>> {
+pub fn shared(replay: &replay::campaign::Replay, units: &viewer_layer_core::playhead_host::units::Units, branch: BranchId, country: &Country) -> io::Result<Arc<History>> {
     let key: FoldKey = (units.name.clone(), units.timeline.pieces().to_vec(), branch, country.clone());
     let mut folds = FOLDS.lock().unwrap_or_else(|p| p.into_inner());
     folds.retain(|(_, history)| history.strong_count() > 0);

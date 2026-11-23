@@ -1,8 +1,6 @@
 use super::{PieceStart, fold};
-use crate::{
-    engaged_index::Pass,
-    layers::sounds::tests::{record_runs, units},
-};
+use crate::engaged_index::Pass;
+use viewer_layer_core::test_support::sound_recording::{record_runs, units};
 use replay_columnar::{
     manifest::Status,
     state::Cell,
@@ -216,10 +214,7 @@ fn a_perspective_change_folds_again_for_the_new_viewer_as_today() {
 
 #[test]
 fn each_timeline_of_a_recording_loaded_back_in_time_folds_only_its_own_pieces() {
-    use crate::playhead_host::units::{
-        of,
-        tests::{reloaded, segment_of, tag},
-    };
+    use viewer_layer_core::{playhead_host::units::of, test_support::reloaded_playback::{reloaded, segment_of, tag}};
     let base = 4_000;
     let replay = reloaded(base);
     for (branch, last) in [(2, base + 8), (1, base + 5)] {
@@ -242,8 +237,8 @@ fn each_timeline_of_a_recording_loaded_back_in_time_folds_only_its_own_pieces() 
 
 #[test]
 fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
-    use crate::lane_rows::{Kept, Table};
-    use crate::layers::sounds::tests::record_runs_at;
+    use viewer_layer_core::lane_rows::{Kept, Table};
+    use viewer_layer_core::test_support::sound_recording::record_runs_at;
     use playhead::pages::Pages;
     use replay_data::{
         rows::{NavalCombatDetailsRow, NavalCombatSideDetails, NavalCommanderInputs, Recorded},
@@ -413,7 +408,7 @@ fn lane_fold_invalidates_cached_inputs_when_refresh_witness_changes() {
 
 #[test]
 fn lanes_fold_reads_format_145_recording_without_refresh_witness_table() {
-    use crate::layers::sounds::tests::record_runs_at;
+    use viewer_layer_core::test_support::sound_recording::record_runs_at;
     use playhead::pages::{Pages, Run};
     use replay_columnar::{state::Kind, unit::reader::Extents};
     use viewer_engagements::engaged::Ambiguity;

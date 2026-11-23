@@ -57,10 +57,17 @@ pub struct Session<'a, M: Memory> {
     store: MutexGuard<'static, Store>,
 }
 impl<'a, M: Memory> Session<'a, M> {
-    pub fn begin(memory: &'a M, base: usize) -> Self {
+    /// # Safety
+    /// Only the admitted naval-base capture (or an isolated fixture owning the global naval-base
+    /// store) may open a session against the authenticated image.
+    pub unsafe fn begin(memory: &'a M, base: usize) -> Self {
         Self::begin_inner(memory, base, None)
     }
-    pub fn begin_owned(memory: &'a M, base: usize, stopped: fn() -> bool) -> Self {
+    /// # Safety
+    /// Only the admitted naval-base capture (or an isolated fixture owning the global naval-base
+    /// store) may open a session against the authenticated image, and must settle or drop any
+    /// returned `Owned` loan before reusing its frame or detaching.
+    pub unsafe fn begin_owned(memory: &'a M, base: usize, stopped: fn() -> bool) -> Self {
         Self::begin_inner(memory, base, Some(stopped))
     }
     fn begin_inner(memory: &'a M, base: usize, stopped: Option<fn() -> bool>) -> Self {

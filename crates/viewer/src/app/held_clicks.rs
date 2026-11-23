@@ -68,7 +68,7 @@ impl Viewer {
     pub(super) fn clickable(&self, document: &Document) -> super::head_rows::Clickable {
         use viewer_counters::map::counters::Shown;
         let defines = &document.content.counters.defines;
-        let on_screen = self.overlay_placed.as_ref().zip(self.overlay_view.as_ref()).map(|(camera, view)| crate::playhead_host::overlay::shown(camera, None, view, defines));
+        let on_screen = self.overlay_placed.as_ref().zip(self.overlay_view.as_ref()).map(|(camera, view)| viewer_playback::overlay::shown(camera, None, view, defines));
         let shown = [self.overlay_asked, on_screen].into_iter().flatten().fold(super::head_rows::Clickable::GROUND.shown, |held, more| Shown {
             units: held.units || more.units,
             bases: held.bases || more.bases,

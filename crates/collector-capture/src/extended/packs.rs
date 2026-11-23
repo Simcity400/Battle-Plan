@@ -1539,12 +1539,16 @@ impl OrdinaryPart {
             Self::Map(packs) => {
                 scatter(
                     &naval_bases::TABLES,
-                    packs.naval_bases.acquire(
-                        memory,
-                        base,
-                        game_state,
-                        collector_workers::panic_failure::owned_failed,
-                    ),
+                    // SAFETY: Admitted naval-base capture reads the live image and settles or
+                    // discards its owned management loan before frame reuse or detach.
+                    unsafe {
+                        packs.naval_bases.acquire(
+                            memory,
+                            base,
+                            game_state,
+                            collector_workers::panic_failure::owned_failed,
+                        )
+                    },
                     &mut ticks,
                 );
                 pack!(packs: map_facilities);
@@ -1558,7 +1562,8 @@ impl OrdinaryPart {
                 pack!(packs: active_abilities, game_score);
                 scatter(
                     &group_counters::TABLES,
-                    packs.group_counters.acquire(memory, base, game_state),
+                    // SAFETY: Admitted hourly capture records HQ-group demand for the active session.
+                    unsafe { packs.group_counters.acquire(memory, base, game_state) },
                     &mut ticks,
                 );
                 pack!(packs: saved_event_targets, battle_sounds);
@@ -1566,22 +1571,26 @@ impl OrdinaryPart {
             Self::TaskForces(packs) => {
                 scatter(
                     &naval_counters::TABLES,
-                    packs.naval_counters.acquire_with_hour(
-                        memory,
-                        base,
-                        game_state,
-                        hour,
-                        fresh_modifier_guard,
-                        naval_counters::Holds {
-                            world: collector_lifetime::world_lifetime::token().filter(|_| {
-                                collector_observers::world_input_changes::map_content_stable()
-                            }),
-                            fleets: |fleet| {
-                                use collector_ship_models::ship_model_changes::Changes;
-                                collector_ship_models::ship_model_changes::Observer.sequence(fleet)
+                    // SAFETY: Admitted naval capture runs under the active session with live watches.
+                    unsafe {
+                        packs.naval_counters.acquire_with_hour(
+                            memory,
+                            base,
+                            game_state,
+                            hour,
+                            fresh_modifier_guard,
+                            naval_counters::Holds {
+                                world: collector_lifetime::world_lifetime::token().filter(|_| {
+                                    collector_observers::world_input_changes::map_content_stable()
+                                }),
+                                fleets: |fleet| {
+                                    use collector_ship_models::ship_model_changes::Changes;
+                                    collector_ship_models::ship_model_changes::Observer
+                                        .sequence(fleet)
+                                },
                             },
-                        },
-                    ),
+                        )
+                    },
                     &mut ticks,
                 );
                 packs.naval_counters.clear_fresh_owner_demands();
@@ -2099,8 +2108,11 @@ impl SlowPacks {
         );
         scatter(
             &combat_log::TABLES,
-            self.combat_log
-                .capture(memory, base, game_state, hour, force_full),
+            // SAFETY: Admitted hourly capture owns this hour's combat-log lane while attached.
+            unsafe {
+                self.combat_log
+                    .capture(memory, base, game_state, hour, force_full)
+            },
             &mut ticks,
         );
         staggered!(country_factories, state_building_inputs);
@@ -2138,15 +2150,18 @@ impl SlowPacks {
         if recorded(&hired_advisors::TABLES) {
             scatter(
                 &hired_advisors::TABLES,
-                self.hired_advisors.capture_carried(
-                    memory,
-                    base,
-                    game_state,
-                    hour,
-                    force_full,
-                    stores.advisors.as_deref_mut(),
-                    stores.available.as_deref_mut(),
-                ),
+                // SAFETY: Admitted hourly capture updates advisor-pool demand for the active session.
+                unsafe {
+                    self.hired_advisors.capture_carried(
+                        memory,
+                        base,
+                        game_state,
+                        hour,
+                        force_full,
+                        stores.advisors.as_deref_mut(),
+                        stores.available.as_deref_mut(),
+                    )
+                },
                 &mut ticks,
             );
         } else {
@@ -2269,17 +2284,20 @@ impl LatePacks {
         let parent = MISSING;
         self.air.finish_wings(parent);
         if !self.air.missions_captured() {
-            self.air.capture_missions(
-                memory,
-                base,
-                game_state,
-                air::MissionSources {
-                    parent,
-                    histories: &mut [],
-                    changes: &collector_air_histories::history_changes::Unobserved,
-                    carry: None,
-                },
-            );
+            // SAFETY: Admitted hourly capture runs without carried mission watches here.
+            unsafe {
+                self.air.capture_missions(
+                    memory,
+                    base,
+                    game_state,
+                    air::MissionSources {
+                        parent,
+                        histories: &mut [],
+                        changes: &collector_air_histories::history_changes::Unobserved,
+                        carry: None,
+                    },
+                );
+            }
         }
         let cost = self
             .air
@@ -2513,9 +2531,11 @@ impl FinalInputsRequest {
         self.finished[6] = true;
         let naval_sources = self.naval_sources.capture(memory, self.base, self.state);
         self.finished[7] = true;
-        let air_losses = self.air_losses.capture(memory, self.base, self.state);
+        // SAFETY: Admitted hour's sole capture pass drains air-loss and building-bombing ledgers.
+        let air_losses = unsafe { self.air_losses.capture(memory, self.base, self.state) };
         self.finished[8] = true;
-        let bombing = self.bombing.capture(memory, self.base, self.state);
+        // SAFETY: Admitted hour's sole capture pass drains air-loss and building-bombing ledgers.
+        let bombing = unsafe { self.bombing.capture(memory, self.base, self.state) };
         self.finished[9] = true;
         let intel_delegated = self
             .intel
@@ -2534,15 +2554,20 @@ impl FinalInputsRequest {
             self.air_records
                 .capture(memory, self.base, self.state, self.hour, self.force_full);
         self.finished[11] = true;
-        let nuclear = self.nuclear.capture(memory, self.base, self.state);
+        // SAFETY: Admitted hour's sole capture pass drains nuclear-strike and market ledgers.
+        let nuclear = unsafe { self.nuclear.capture(memory, self.base, self.state) };
         self.finished[12] = true;
-        let market = self
-            .market
-            .capture(memory, self.base, self.state, self.hour, self.force_full);
+        // SAFETY: Admitted hour's sole capture pass drains nuclear-strike and market ledgers.
+        let market = unsafe {
+            self.market
+                .capture(memory, self.base, self.state, self.hour, self.force_full)
+        };
         self.finished[13] = true;
-        let engagement_refreshes =
+        // SAFETY: Admitted hour's sole capture pass drains combat-engagement-refresh ledger.
+        let engagement_refreshes = unsafe {
             self.engagement_refreshes
-                .capture(memory, self.base, self.state);
+                .capture(memory, self.base, self.state)
+        };
         self.finished[14] = true;
         FinalInputsReport {
             snapshots: [new_divisions, experience],
@@ -2700,7 +2725,8 @@ impl Captured {
                 request.nuclear.fail(reason);
             }
             if !request.finished[14] {
-                request.engagement_refreshes.fail(reason);
+                // SAFETY: Final-inputs failure recovery owns invalidating the uncaptured refresh drain.
+                unsafe { request.engagement_refreshes.fail(reason) };
             }
         }
         self.divisions = request.divisions;

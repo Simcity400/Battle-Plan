@@ -120,7 +120,10 @@ fn held() -> std::sync::MutexGuard<'static, Vec<Spilled>> {
     held
 }
 static ENABLED: AtomicBool = AtomicBool::new(false);
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -268,7 +271,7 @@ fn spill_rows(
     COUNTERS[2].fetch_add(kept, Ordering::Relaxed);
 }
 
-pub fn prepare(demand: usize) {
+pub(crate) fn prepare(demand: usize) {
     let required = REQUIRED.fetch_max(demand, Ordering::SeqCst).max(demand);
     let mut swap = SWAP.lock().unwrap_or_else(PoisonError::into_inner);
     let retired = swap.retired.take();
@@ -320,7 +323,10 @@ fn install() {
     HANDOFF.store(false, Ordering::SeqCst);
 }
 
-pub fn release_storage() -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session detach/teardown after prune hooks are disabled and quiesced (or hold
+/// `test_lock()` in an isolated test with no live hooks or concurrent consumers).
+pub unsafe fn release_storage() -> Result<(), &'static str> {
     let mut swap = SWAP.lock().unwrap_or_else(PoisonError::into_inner);
     HANDOFF.store(true, Ordering::SeqCst);
     if ACTIVE.load(Ordering::SeqCst) != 0 {
@@ -338,7 +344,10 @@ pub fn release_storage() -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer of prune rows
+/// while prune storage stays live and teardown is excluded.
+pub(crate) unsafe fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
     COUNTERS[5].fetch_add(1, Ordering::Relaxed);
     if ACTIVE.load(Ordering::SeqCst) != 0 {
         COUNTERS[7].fetch_add(1, Ordering::Relaxed);
@@ -536,11 +545,11 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub const TEST_ROWS: usize = 1 << 12;
+#[cfg(test)]
+const TEST_ROWS: usize = 1 << 12;
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn observe_for_test(enabled: bool) {
+#[cfg(test)]
+pub(crate) fn observe_for_test(enabled: bool) {
     ENABLED.store(enabled, Ordering::SeqCst);
     CHANGED.store(false, Ordering::SeqCst);
     LOST.store(false, Ordering::SeqCst);
@@ -549,7 +558,7 @@ pub fn observe_for_test(enabled: bool) {
     install_for_test(TEST_ROWS);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn install_for_test(rows: usize) {
     assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
     let log = Log::new(rows).unwrap();
@@ -565,8 +574,8 @@ fn install_for_test(rows: usize) {
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn append_for_test(signal: i64, rows: &[Row]) {
+#[cfg(test)]
+pub(crate) fn append_for_test(signal: i64, rows: &[Row]) {
     record(signal, rows.len(), |out| {
         out.copy_from_slice(&rows[..out.len()]);
         Ok(if out.len() == rows.len() {
@@ -605,10 +614,10 @@ mod tests {
         append_for_test(SIGNAL, &[row(1, 1), row(1, 2)]);
         append_for_test(SIGNAL, &[row(2, 1)]);
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output, [row(1, 1), row(1, 2), row(2, 1)]);
         output.clear();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert!(output.is_empty());
     }
 
@@ -733,7 +742,7 @@ mod tests {
         append_for_test(SIGNAL, &[row(2, 1), row(2, 2), row(2, 3), row(2, 4)]);
         append_for_test(SIGNAL, &[row(3, 1)]);
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output.len(), 11);
         assert_eq!(
             output[6..],
@@ -744,10 +753,10 @@ mod tests {
         output.clear();
         append_for_test(SIGNAL, &[row(1, 1); 6]);
         append_for_test(SIGNAL, &[row(2, 1), row(2, 2), row(2, 3), row(2, 4)]);
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output.len(), 10);
         observe_for_test(false);
-        assert!(drain(SIGNAL, &mut output).is_err());
+        assert!(unsafe { drain(SIGNAL, &mut output) }.is_err());
     }
 
     #[test]
@@ -756,7 +765,7 @@ mod tests {
         observe_for_test(true);
         prepare(40_000);
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert!(CAPACITY.load(Ordering::SeqCst) >= 40_000);
         let mut expected = 0;
         for group in 0..20 {
@@ -764,7 +773,7 @@ mod tests {
             append_for_test(SIGNAL, &rows);
             expected += rows.len();
         }
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output.len(), expected);
         assert!(
             output
@@ -778,11 +787,11 @@ mod tests {
     fn unread_reservations_are_never_handed_over() {
         let _lock = test_lock();
         observe_for_test(true);
-        release_storage().unwrap();
+        unsafe { release_storage() }.unwrap();
         append_for_test(SIGNAL, &[row(1, 1); 8]);
         assert!(REQUIRED.load(Ordering::SeqCst) >= 8);
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output, [row(1, 1); 8]);
         assert!(CAPACITY.load(Ordering::SeqCst) >= 8);
         output.clear();
@@ -795,14 +804,14 @@ mod tests {
             Err("combat log pool variant unreadable")
         });
         append_for_test(SIGNAL, &[row(4, 1)]);
-        assert!(drain(SIGNAL, &mut output).is_err());
+        assert!(unsafe { drain(SIGNAL, &mut output) }.is_err());
         assert_eq!(output, [row(2, 1), row(4, 1)]);
         output.clear();
         record(SIGNAL, 3, |out| {
             out[0] = row(5, 1);
             Ok(Outcome::Rows { len: 1 })
         });
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output, [row(5, 1)]);
     }
 
@@ -826,7 +835,7 @@ mod tests {
         });
         append_for_test(SIGNAL, &[row(2, 1)]);
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output, [row(1, 1), row(1, 2), row(1, 3), row(2, 1)]);
         output.clear();
         install_for_test(1);
@@ -834,7 +843,7 @@ mod tests {
             append_for_test(SIGNAL, &[row(3, 1), row(3, 2)]);
         });
         append_for_test(SIGNAL, &[row(4, 1)]);
-        assert_eq!(drain(SIGNAL, &mut output), Err(STORAGE_FAILED));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Err(STORAGE_FAILED));
         assert_eq!(output, [row(4, 1)]);
     }
 
@@ -860,7 +869,7 @@ mod tests {
             drop(consumer);
         });
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output, (0..200).flat_map(burst).collect::<Vec<_>>());
         assert!(held().is_empty());
     }
@@ -872,7 +881,7 @@ mod tests {
         append_for_test(SIGNAL - 1, &[row(1, 1), row(1, 2)]);
         append_for_test(SIGNAL, &[row(2, 1)]);
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output, [row(2, 1)]);
     }
 
@@ -908,7 +917,7 @@ mod tests {
             }
         });
         let mut output = Vec::new();
-        assert_eq!(drain(SIGNAL, &mut output), Ok(()));
+        assert_eq!(unsafe { drain(SIGNAL, &mut output) }, Ok(()));
         assert_eq!(output.len(), expected as usize);
         let mut at = 0;
         let mut calls = Vec::new();

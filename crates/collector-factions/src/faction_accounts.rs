@@ -73,8 +73,11 @@ fn copy<T: Copy>(target: &mut Vec<T>, source: &[T]) -> Result<(), &'static str> 
     Ok(())
 }
 impl Store {
+    /// # Safety
+    /// Caller holds hourly capture admission (or isolated fixture control) so global
+    /// `faction_companion_changes` account demand updates belong to this pass.
     #[cfg(test)]
-    pub fn acquire(
+    pub unsafe fn acquire(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -82,9 +85,13 @@ impl Store {
         force: bool,
         changes: &impl Changes,
     ) {
-        self.acquire_members(memory, base, state, force, changes, &[]);
+        // SAFETY: Caller upholds the hourly capture admission contract.
+        unsafe { self.acquire_members(memory, base, state, force, changes, &[]) };
     }
-    pub fn acquire_members(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `faction_companion_changes` account demand updates belong to this pass.
+    pub(crate) unsafe fn acquire_members(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -157,9 +164,12 @@ impl Store {
                     .ok_or("faction member array address overflow")?;
                 self.array = Array::read(memory, self.header, native::STRIDE)
                     .ok_or("faction member array invalid")?;
-                crate::faction_companion_changes::demand_accounts(
-                    self.array.count as usize * 2 + 1,
-                );
+                // SAFETY: Admitted faction-accounts capture records measured account demand.
+                unsafe {
+                    crate::faction_companion_changes::demand_accounts(
+                        self.array.count as usize * 2 + 1,
+                    );
+                }
                 changes
                     .sequence(FAMILY, self.header)
                     .ok_or("faction member array registration unavailable")?;
@@ -679,7 +689,8 @@ mod tests {
         };
         let changes = observed(1500);
         let mut store = Store::default();
-        store.acquire(&memory, 0, STATE, false, &changes);
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe { store.acquire(&memory, 0, STATE, false, &changes) };
         let reads = memory.reads.get();
         for hour in 0..3 {
             collector_test_support::with_allocations_denied(|| {
@@ -695,7 +706,8 @@ mod tests {
                     0
                 });
             });
-            store.acquire(&memory, 0, STATE, false, &changes);
+            // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe { store.acquire(&memory, 0, STATE, false, &changes) };
             let (rows, failure) = store.output();
             assert_eq!(failure, None);
             let rows = rows.unwrap();
@@ -723,13 +735,16 @@ mod tests {
                 let changes = observed(2);
                 let mut store = Store::default();
                 let acquire = |store: &mut Store, bytes: &[u8]| {
-                    store.acquire(
-                        &engine_native::memory::SliceMemory { base: 0, bytes },
-                        0,
-                        STATE,
-                        false,
-                        &changes,
-                    )
+                    // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+                    unsafe {
+                        store.acquire(
+                            &engine_native::memory::SliceMemory { base: 0, bytes },
+                            0,
+                            STATE,
+                            false,
+                            &changes,
+                        )
+                    }
                 };
                 acquire(&mut store, &bytes);
                 let address = ACCOUNTS + native::STRIDE;
@@ -797,7 +812,8 @@ mod tests {
                     reads: Cell::new(0),
                 };
                 let held = Arc::clone(store.rows.as_ref().unwrap());
-                store.acquire(&memory, 0, STATE, false, &changes);
+                // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe { store.acquire(&memory, 0, STATE, false, &changes) };
                 assert_eq!(store.output().1, None);
                 assert_eq!(memory.reads.get(), 0);
                 assert!(Arc::ptr_eq(&held, store.rows.as_ref().unwrap()));
@@ -817,22 +833,26 @@ mod tests {
         };
         let changes = observed(40);
         let mut store = Store::default();
-        store.acquire(&memory, 0, STATE, false, &changes);
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe { store.acquire(&memory, 0, STATE, false, &changes) };
         assert_eq!(store.failure, None);
         let first = memory.reads.get();
         let held = Arc::clone(store.rows.as_ref().unwrap());
         collector_test_support::with_allocations_denied(|| {
-            store.acquire(&memory, 0, STATE, false, &changes)
+            // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+            unsafe { store.acquire(&memory, 0, STATE, false, &changes) }
         });
         assert_eq!(memory.reads.get(), first);
         assert!(Arc::ptr_eq(&held, store.rows.as_ref().unwrap()));
         drop(changes.0.notify(ACCOUNTS + 39 * native::STRIDE));
-        store.acquire(&memory, 0, STATE, false, &changes);
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe { store.acquire(&memory, 0, STATE, false, &changes) };
         assert_eq!(store.failure, None);
         assert!(memory.reads.get() > first && memory.reads.get() - first < 15);
         let next = memory.reads.get();
         drop(changes.0.notify(0x100));
-        store.acquire(&memory, 0, STATE, false, &changes);
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe { store.acquire(&memory, 0, STATE, false, &changes) };
         assert_eq!(store.failure, None);
         assert_eq!(memory.reads.get(), next);
         assert_eq!(store.values[39].initiative_raw, 49);
@@ -851,13 +871,16 @@ mod tests {
             let changes = observed(2);
             let mut store = Store::default();
             let acquire = |store: &mut Store, bytes: &[u8]| {
-                store.acquire(
-                    &engine_native::memory::SliceMemory { base: 0, bytes },
-                    0,
-                    STATE,
-                    false,
-                    &changes,
-                )
+                // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+                unsafe {
+                    store.acquire(
+                        &engine_native::memory::SliceMemory { base: 0, bytes },
+                        0,
+                        STATE,
+                        false,
+                        &changes,
+                    )
+                }
             };
             acquire(&mut store, &bytes);
             let flight = mirror::Flight::new();
@@ -904,41 +927,50 @@ mod tests {
         let mut bytes = fixture(2);
         let changes = observed(2);
         let mut store = Store::default();
-        store.acquire(
-            &engine_native::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            STATE,
-            false,
-            &changes,
-        );
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe {
+            store.acquire(
+                &engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                STATE,
+                false,
+                &changes,
+            );
+        }
         put(&mut bytes, ACCOUNTS + native::CONTRIBUTION, 777);
         drop(changes.0.notify(SYSTEM + native::ACCOUNTS));
-        store.acquire(
-            &engine_native::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            STATE,
-            false,
-            &changes,
-        );
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe {
+            store.acquire(
+                &engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                STATE,
+                false,
+                &changes,
+            );
+        }
         assert_eq!(store.values[0].contribution_raw, 777);
         changes.0.boundary(true);
         bytes[SYSTEM] ^= 1;
-        store.acquire(
-            &engine_native::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            STATE,
-            false,
-            &changes,
-        );
+        // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
+        unsafe {
+            store.acquire(
+                &engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                STATE,
+                false,
+                &changes,
+            );
+        }
         assert_eq!(
             store.failure,
             Some("faction member accounting system vtable mismatch")
