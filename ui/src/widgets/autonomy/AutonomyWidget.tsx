@@ -40,7 +40,7 @@ import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { mix } from '../../shell/appearance/color';
 import { useMeasureSeries } from '../country-measure/measureSeries';
 import { validateSubjectReply } from '../subjects/subjectsData';
-import { autonomyLanes, formatProgress, formatScore, headKey, holderSince, laneIdentity, laneLabel, levelAt, levelName, levelOrder, runAt } from './autonomyData';
+import { autonomyLanes, formatScore, headKey, holderSince, laneIdentity, laneLabel, levelAt, levelName, levelOrder, progressText, runAt } from './autonomyData';
 import type { AutonomyLane } from './autonomyData';
 import { OPTIONS } from './definition';
 import './autonomy.css';
@@ -179,10 +179,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const laneName = (tag: string) => laneIdentity(tag, holderSince(holders, tag, head), country(tag));
   const identityKey = useIdentityKey(runtime.client, track, active && followsClock);
   const hover = useHoverLabels(runtime.client, track, active, country);
-  const progressAt = (tag: string, hour: number) => {
-    const line = series.lines.find(item => item.tag === tag);
-    return { value: line?.runs.find(run => run.firstHour <= hour && hour <= run.lastHour)?.valueRaw ?? null, missing: line?.missing.get(hour) ?? null };
-  };
+  const progressAt = (tag: string, hour: number) => progressText(series.lines.find(item => item.tag === tag), hour);
   const lineOf = series.lineOf;
   const unobserved = data?.unobserved ?? NO_SPANS;
   structure.current = hour => data ? `${headKey(lanesData, data.levels, Math.floor(hour), unobserved)}|${identityKey(Math.floor(hour), tags) ?? ''}` : '';
@@ -239,11 +236,10 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
           const level = levelAt(about, hour) ?? null;
           const place = level == null ? undefined : order.get(level);
           const overlord = named(run.overlord);
-          const progress = progressAt(about.tag, Math.floor(hour));
           const rows: TooltipRow[] = [
             { label: 'Subject level', value: levelName(data.levels, level), swatch: colour(level) },
             { label: 'Overlord', value: overlord.name, countryFlag: overlord },
-            { label: place?.highest ? 'Progress within the level' : 'Progress to the next level', value: formatProgress(progress.value, progress.missing) },
+            { label: place?.highest ? 'Progress within the level' : 'Progress to the next level', value: progressAt(about.tag, Math.floor(hour)) },
             { label: 'Autonomy score', value: scoreAt(scores.data, about.tag, Math.floor(hour)), divider: true },
             { label: 'Moves down below', value: `${scoreAt(lowers.data, about.tag, Math.floor(hour))}${place?.lowest ? ' · no lower level' : ''}` },
             { label: 'Moves up at', value: `${scoreAt(uppers.data, about.tag, Math.floor(hour))}${place?.highest ? ' · no higher level' : ''}` },

@@ -195,6 +195,12 @@ export class Pipeline {
       if (!owners.length && answers.length) continue;
       for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
       const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
+      const auditMissing = audit !== undefined && view.mode === 'picture' && rows === undefined;
+      const rawAudit = view.mode === 'picture' && view.fields ? view.fields.audit : undefined;
+      const auditId = rawAudit && typeof rawAudit === 'object' && typeof (rawAudit as { id?: unknown }).id === 'number' && (rawAudit as { id: number }).id > 0
+        ? (rawAudit as { id: number }).id
+        : undefined;
+      if (auditId !== undefined) perfLog?.pinPicture(this.generation, held.id, owner, auditId);
       recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name,
         surface, placement: held.id, owner, generation: this.generation, renderer: 'page',
         head: clock(view.target), hour, offset, ...shown.pin !== null ? { fixedHour: clock(shown.pin) } : {},
@@ -202,7 +208,7 @@ export class Pipeline {
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
         ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
           face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
-        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {},
+        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {}, ...auditMissing ? { auditMissing: true } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
       }
@@ -323,6 +329,18 @@ export class Pipeline {
     return undefined;
   }
 
+  binding(id: number): number { return this.page.widgets.get(id)?.binding ?? 0; }
+
+  retryWidget(id: number) {
+    if (this.closed) return;
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    this.page.retryLocal(id);
+    widget.binding = this.timed(widget, widget.binding);
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...widget.model !== undefined ? { model: widget.model } : {} });
+    this.flush();
+  }
+
   view(id: number): WidgetView | null { return this.widgets.has(id) ? this.page.view(id) : null; }
 
   onInstall(id: number, listener: () => void) {
@@ -401,7 +419,7 @@ export class Pipeline {
     const refused = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'refused');
     const failed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'failed');
     if (refused) this.page.name(widget.id, 'refused', refused.reason);
-    else if (failed) this.page.name(widget.id, 'failed', failed.reason);
+    else if (failed) this.page.name(widget.id, 'failed', failed.reason, 'stream');
     this.flush();
   }
 
@@ -513,7 +531,7 @@ export class Pipeline {
   private fail(sub: SubState, failure: Failure) {
     if (this.closed) return;
     sub.status = 'failed'; sub.reason = failure.message; sub.error = failure;
-    for (const widget of sub.widgets) this.page.name(widget, 'failed', failure.message);
+    for (const widget of sub.widgets) this.page.name(widget, 'failed', failure.message, 'stream');
     this.flush();
   }
 

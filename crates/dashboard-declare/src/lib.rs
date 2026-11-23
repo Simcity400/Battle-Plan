@@ -1544,7 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn autonomy_progress_reads_its_columns_by_their_schema_numbers_and_leaves_no_room_unrecorded() {
+    fn autonomy_progress_reads_its_columns_by_their_schema_numbers_and_marks_zero_range_not_applicable() {
         assert_eq!(field(TableId::Autonomy, "score").unwrap(), AUTONOMY_SCORE);
         assert_eq!(field(TableId::Autonomy, "lower_score").unwrap(), AUTONOMY_LOWER);
         assert_eq!(field(TableId::Autonomy, "upper_score").unwrap(), AUTONOMY_UPPER);

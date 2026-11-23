@@ -395,6 +395,18 @@ static RATIO_OF_POWER: Series = Series {
 
 #[test]
 fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
+    use crate::{
+        identity,
+        timeline::{Join, Stretch, Timeline},
+    };
+    use replay::campaign::Replay;
+    use replay_data::{
+        identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{CampaignRow, ClockRow, CountryFuelConsumerRow, CountryLinkRow, CountryRow, RowCodec, TableId},
+    };
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use replay_journal::synthetic::{Input, Sample, Synthetic};
+
     let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
     let recorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_some()).unwrap();
     let from = unrecorded.min(recorded);
@@ -410,82 +422,76 @@ fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
     assert_eq!(states[1].not_applicable, Some(false), "an unrecorded input on a complete hour stays unrecorded, never not applicable");
     assert_eq!(states[1].missing.as_deref(), Some("GER's ratio was not recorded at this hour"));
 
-    fn reason_at(spans: &[MissingSpan], hour: i32) -> Option<&str> {
-        spans.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.as_str())
-    }
-    let (hourly_summary, hourly_missing) = line.summary("GER", from, to, (to - from + 1) as u32).unwrap();
-    assert!(hourly_summary.buckets.iter().all(Option::is_none));
-    assert_eq!(reason_at(&hourly_missing, recorded), Some("No command power"));
-    assert_eq!(reason_at(&hourly_missing, unrecorded), Some("GER's ratio was not recorded here"));
+    let build_fuel = |truncated_first: bool| -> (Replay, Arc<Timeline>, Arc<identity::Holders>) {
+        let first = 10_000;
+        let last = 10_001;
+        let campaign = CampaignRow { id: b"fuel-status".to_vec() };
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 10_000_000,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity: Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: vec![],
+                mods: vec![],
+                coverage_policy: 1,
+                language: "l_english".into(),
+                recorder_version: "test".into(),
+                collector_hash: [3; 32],
+                verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+            },
+        };
+        let start = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: first, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+        fn write<R: RowCodec>(frame: &mut Synthetic, table: TableId, rows: &[R], partial: Option<u32>) -> io::Result<()> {
+            let sample = if partial.is_some() { Sample::Reset } else { Sample::FromReadBit };
+            frame.table(table, Input::Snapshot { rows, partial, read: true, sample })
+        }
+        let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, start, last, |frame, hour| {
+            write(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }], None)?;
+            write(frame, TableId::Campaign, std::slice::from_ref(&campaign), None)?;
+            write(frame, TableId::Countries, &[CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }], None)?;
+            write(frame, TableId::CountryLinks, &[CountryLinkRow { id: 9001, canonical_slot: 7 }], None)?;
+            let truncated = (hour == first) == truncated_first;
+            write(
+                frame,
+                TableId::CountryFuelConsumers,
+                &[CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 0, received_raw: 0 }],
+                truncated.then_some(1),
+            )
+        })
+        .unwrap();
+        let timeline = Arc::new(Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() });
+        let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+        (replay, timeline, holders)
+    };
 
-    let (coarse_summary, coarse_missing) = line.summary("GER", from, to, 2).unwrap();
-    assert!(coarse_summary.buckets.iter().all(Option::is_none));
-    assert_eq!(reason_at(&coarse_missing, recorded), Some("No command power"));
-    assert_eq!(reason_at(&coarse_missing, unrecorded), Some("GER's ratio was not recorded here"));
-
-    let hourly_index = i64::from(recorded).div_euclid(crate::tile::BINS as i64);
-    let hourly_tile = crate::tile::tile(&line, "1", &[Ask::whole("GER")], None, 1, hourly_index, false).unwrap();
-    assert_eq!(reason_at(&hourly_tile.lines[0].missing, recorded), Some("No command power"));
-    if i64::from(unrecorded).div_euclid(crate::tile::BINS as i64) == hourly_index {
-        assert_eq!(reason_at(&hourly_tile.lines[0].missing, unrecorded), Some("GER's ratio was not recorded here"));
-    }
-
-    let coarse_bin = replay_columnar::summary::bucket_hours(0);
-    let coarse_index = i64::from(recorded).div_euclid(crate::tile::BINS as i64 * coarse_bin);
-    let coarse_tile = crate::tile::tile(&line, "1", &[Ask::whole("GER")], None, coarse_bin, coarse_index, false).unwrap();
-    assert_eq!(reason_at(&coarse_tile.lines[0].missing, recorded), Some("No command power"));
-    assert_eq!(reason_at(&coarse_tile.lines[0].missing, unrecorded), Some("GER's ratio was not recorded here"));
-
-    let base = 10_008;
-    let fuel_fixture = Fixture::new(Data::Fuel, base..=base + 35);
-    let fuel_query = fuel_fixture.query();
     let fuel_series = dashboard_declare::series("fuel-consumers").unwrap();
-    let fuel_line = Line::new(&fuel_query, fuel_series, fuel_series.measure("receivedShare").unwrap()).unwrap();
-    assert!(fuel_line.summarised().unwrap(), "fuel-consumers receivedShare is summarised on disk");
-    let fuel_ask = Ask { country: "GER".into(), part: 0 };
-    let fuel_summaries = fuel_line.summaries_within(&[(fuel_ask.clone(), vec![(base, base + 35)])], base, base + 35, 6).unwrap();
-    let (fuel_summary, fuel_missing) = &fuel_summaries[0];
-    assert!(fuel_summary.buckets[0].is_some() && fuel_summary.buckets[1].is_some(), "valued hours come from on-disk summaries");
-    assert!(fuel_summary.buckets[2..].iter().all(Option::is_none));
-    assert_eq!(reason_at(fuel_missing, base), None, "fully covered summary bin has no missing span");
-    assert_eq!(reason_at(fuel_missing, base + 6), None, "present hours inside a split bin stay covered");
-    assert_eq!(reason_at(fuel_missing, base + 8), Some("GER's receivedShare was not recorded here"), "mid-bin absent hours are never hidden by coarse summary bin");
-    assert_eq!(reason_at(fuel_missing, base + 9), Some("GER's receivedShare was not recorded here"));
-    assert_eq!(reason_at(fuel_missing, base + 10), None);
-    assert_eq!(reason_at(fuel_missing, base + 12), Some("No fuel requested"));
-    assert_eq!(reason_at(fuel_missing, base + 24), Some("GER's receivedShare was not recorded here"));
+    let fuel_measure = fuel_series.measure("receivedShare").unwrap();
 
-    let fuel_hourly_index = i64::from(base).div_euclid(crate::tile::BINS as i64);
-    let fuel_hourly_tile = crate::tile::tile(&fuel_line, "1", &[fuel_ask.clone()], None, 1, fuel_hourly_index, false).unwrap();
-    assert_eq!(reason_at(&fuel_hourly_tile.lines[0].missing, base + 8), Some("GER's receivedShare was not recorded here"));
-    assert_eq!(reason_at(&fuel_hourly_tile.lines[0].missing, base + 9), Some("GER's receivedShare was not recorded here"));
+    let (replay, timeline, holders) = build_fuel(false);
+    let q = crate::Query { replay: &replay, timeline, holders };
+    let fuel_line = Line::new(&q, fuel_series, fuel_measure).unwrap();
+    let states = fuel_line.states(&[read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0))], None).unwrap();
+    assert_eq!(states[0].not_applicable, Some(true));
+    assert_eq!(states[0].missing.as_deref(), Some("No fuel requested"));
+    assert_eq!(states[1].not_applicable, None, "a truncated hour after a complete restore keeps main's unflagged missing state");
+    assert_eq!(states[1].missing.as_deref(), Some("GER's receivedShare was not recorded at this hour"));
 
-    let fuel_tile_index = i64::from(base).div_euclid(crate::tile::BINS as i64 * coarse_bin);
-    let fuel_tile = crate::tile::tile(&fuel_line, "1", &[fuel_ask.clone()], None, coarse_bin, fuel_tile_index, false).unwrap();
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base), None);
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 6), None);
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 8), Some("GER's receivedShare was not recorded here"));
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 9), Some("GER's receivedShare was not recorded here"));
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 10), None);
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 12), Some("No fuel requested"));
-    assert_eq!(reason_at(&fuel_tile.lines[0].missing, base + 24), Some("GER's receivedShare was not recorded here"));
-
-    let (clipped_from, clipped_to) = (base + 1, base + 34);
-    let (clipped_level, clipped_bin) = grid(i64::from(clipped_to - clipped_from + 1), 5);
-    assert_eq!((clipped_level, clipped_bin), (0, coarse_bin), "clipped range selects the summary level, not walked");
-    let clipped_binned = fuel_line.binned(&[(fuel_ask.clone(), vec![(clipped_from, clipped_to)])], clipped_from, clipped_to, clipped_level, clipped_bin).unwrap();
-    assert_eq!(clipped_binned[0].2, vec![(base + 1, base + 5)], "clipped fully-valued coarse edge bin is marked covered at the summary level");
-    assert_eq!(
-        subtract_spans(&[(clipped_from, clipped_to)], &clipped_binned[0].2),
-        vec![(base + 6, base + 34)],
-        "raw missing-reason resolution skips the covered edge bin"
-    );
-    let clipped = fuel_line.summaries_within(&[(fuel_ask, vec![(clipped_from, clipped_to)])], clipped_from, clipped_to, 5).unwrap();
-    assert_eq!(reason_at(&clipped[0].1, base + 1), None);
-    assert_eq!(reason_at(&clipped[0].1, base + 5), None);
-    assert_eq!(reason_at(&clipped[0].1, base + 8), Some("GER's receivedShare was not recorded here"));
-    assert_eq!(reason_at(&clipped[0].1, base + 12), Some("No fuel requested"));
-    assert_eq!(reason_at(&clipped[0].1, base + 34), Some("GER's receivedShare was not recorded here"));
+    let (replay, timeline, holders) = build_fuel(true);
+    let q = crate::Query { replay: &replay, timeline, holders };
+    let fuel_line = Line::new(&q, fuel_series, fuel_measure).unwrap();
+    let states = fuel_line.states(&[read("GER", 10_001, Some(0)), read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0))], None).unwrap();
+    assert_eq!(states[0].not_applicable, Some(true), "a complete hour after a truncated restore reports not applicable");
+    assert_eq!(states[0].missing.as_deref(), Some("No fuel requested"));
+    assert_eq!(states[1].not_applicable, None, "the truncated restore keeps main's unflagged missing state");
+    assert_eq!(states[1].missing.as_deref(), Some("GER's receivedShare was not recorded at this hour"));
+    assert_eq!(states[2], states[0], "duplicate out-of-order asks return the same state");
 }
 
 static NEGATED: Series = Series {

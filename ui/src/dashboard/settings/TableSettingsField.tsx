@@ -1,8 +1,14 @@
 import { Segmented } from '../../components/Segmented';
 import { SettingLabel } from './SettingLabel';
 import type { OptionValue } from '../options';
-import type { TableSettings } from '../../draw/tables/logic.ts';
-import { encodeTableSettings, updateTableSettings, tableSettingsOf, type TableBase, type TableColumnDefaults } from '../../draw/tables/settings.ts';
+import {
+  encodeTableSettings,
+  tableSettingsOf,
+  updateTableSettings,
+  type TableBase,
+  type TableColumnDefaults,
+  type TableSettings,
+} from '../../families/table/settings.ts';
 
 export function TableSettingsField({ field, value, onChange }: {
   field: { key: string; label: string; hint?: string; columns: readonly TableColumnDefaults[]; base: TableBase };

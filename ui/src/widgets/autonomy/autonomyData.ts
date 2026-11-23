@@ -56,6 +56,14 @@ export function formatProgress(raw: string | null | undefined, missing?: string 
   return `${(Number(raw) / 1000).toFixed(1)}%`;
 }
 
+export function progressText(
+  line: { runs: readonly { firstHour: number; lastHour: number; valueRaw: string }[]; missing: ReadonlyMap<number, string>; notApplicable: ReadonlySet<number> } | undefined,
+  hour: number,
+): string {
+  const value = line?.runs.find(run => run.firstHour <= hour && hour <= run.lastHour)?.valueRaw ?? null;
+  return formatProgress(value, line?.notApplicable.has(hour) ? line.missing.get(hour) ?? null : null);
+}
+
 export function formatScore(raw: string | null | undefined, decimals: number | undefined, missing: string | null | undefined): string {
   if (raw == null || decimals === undefined) return missing ?? 'Not recorded';
   return formatFixed(raw, decimals, 1);

@@ -5,6 +5,7 @@ use crate::{
     query::{Query, Rows, TagRow, Tags, tags_at},
     table_name, table_words,
 };
+use dashboard_query::series::board::{measure_unrecorded, table_unrecorded};
 use playhead::lane::Lane;
 use replay_columnar::{
     manifest::Status,
@@ -12,7 +13,7 @@ use replay_columnar::{
     store::{TableState, Value},
     summary::{Cells, Computed, Source},
 };
-use replay_data::Hour;
+use replay_data::{Hour, rows::TableId};
 use std::{cmp::Ordering, collections::{HashMap, HashSet}, io};
 
 pub(crate) trait Find {
@@ -43,7 +44,10 @@ impl Find for Scan {
     }
 }
 
-pub fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+    if let Some(&id) = TableId::ALL.get(table) {
+        return table_unrecorded(id, status, reason);
+    }
     let name = table_words(table);
     match status {
         Status::Complete => None,
@@ -375,10 +379,11 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 table.name(&names[at as usize].key());
             }
         }
-        Query::Series { series, measure, countries: names, top: None, .. } => {
+        Query::Series { series, measure, countries: names, top: None, identity, .. } => {
             let source = query.source().expect("a checked series");
+            let hour = head(lane);
             table.clear(1, false);
-            let unread = |at: usize| format!("{}'s {} was not recorded at this hour", names[at], measure.name);
+            let unread = |at: usize| measure_unrecorded(&identity.holders.name(&names[at], hour), measure.name);
             for (at, tag) in tags.rows.iter().enumerate() {
                 let key = match tag {
                     TagRow::Absent(reason) => {

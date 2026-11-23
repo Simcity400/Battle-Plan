@@ -11,7 +11,6 @@ import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewards
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
 import { HISTORY_PANEL, historyStructure, projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
-import { occupiedStructure, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
 
 function detailValues(reply: SpecialProjectDetails) {
@@ -49,7 +48,6 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
 }
 
 const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
-  'occupied-states': raw => occupiedStructure(validateOccupiedStates(raw)),
   'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),

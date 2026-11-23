@@ -12,6 +12,9 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
+pub const OVERLAP_REASON: &str = "Overlapping recordings prevent a unique campaign clock total.";
+pub const OVERLAP_WARNING: &str = "Recording intervals overlap; a unique campaign duration cannot be established.";
+
 pub struct CampaignClock;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -100,9 +103,7 @@ pub fn query(
     }
     reply.available = true;
     let unknown = |mut reply: CampaignClockReply| {
-        reply.warnings.push(
-            "Recording intervals overlap; a unique campaign duration cannot be established.".into(),
-        );
+        reply.warnings.push(OVERLAP_WARNING.into());
         reply
     };
     regions.sort_unstable_by_key(|&(session, clock)| (session, clock.from_qpc));
