@@ -26,11 +26,14 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 - **Open.** Completely free and Open Source. Always 
 
 ## Important to Know
+- **You Must Own the Game** You must have an official copy of Hearts of Iron IV otherwise this app will not work. BattlePlan contains no game assets and you must use your owned version of the game. It will check for the assets on your computer and that you have a supported HOI4 EXE.
 - **Performance** When the recorder is running, your game will be slowed down by around 20% when on 5 speed - almost none at all when playing on lower speeds. Weaker PC may not be able to handle this.
 - **Storage Space** Typical 1936 - 1948 campaigns are around 1.2GB.
 - **Your Content** The replayer relies on content being on your computer. That includes mods, if the content changes ie an update to the game or a mod, you may not be able to playback your recording. Downgrade to a previous version to fix this.
-- **This is an Alpha** I am solo developing this so be nice and expect lots of bugs. Pleas also note that **I cannot guarentee your old replay files will always be playable in the future**. At least until I get things into a more stable state.
+- **This is an Alpha** I am solo developing this so be nice and expect lots of bugs. Please also note that **I cannot guarentee your old replay files will always be playable in the future**. At least until I get things into a more stable state.
 - **Multiplayer Compatibility** The recorder does work in multiplayer games. Please note that it cannot be played back while recording.
+- **Windows Only**  
+
 
 ## Install
 
@@ -38,11 +41,6 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 
 - **BattlePlan**: the replay app, with the campaign map and the dashboard.
 - **BattlePlan Recorder**: a small tray app that records while you play.
-
-You need:
-
-- Windows, with Microsoft Edge WebView2.
-- A real Hearts of Iron IV game install. BattlePlan contains no game assets and you must use your owned version of the game. An unrecognised game version shows a warning, and any part that can't verify itself on that version is left out by name.
 
 Updates arrive in the app. Choose the **stable** or **nightly** channel in **Settings**, and a badge shows when a new version is ready to download.
 
