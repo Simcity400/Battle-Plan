@@ -23,6 +23,7 @@ dashboard-declare = { workspace = true }
 dashboard-follow = { path = "../dashboard-follow" }
 dashboard-intelligence = { workspace = true }
 dashboard-query = { workspace = true }
+dashboard-effects.workspace = true
 dashboard-text = { workspace = true }
 dashboard-world = { workspace = true }
 engine-executable = { workspace = true }
@@ -70,9 +71,7 @@ shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
-unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
-unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }

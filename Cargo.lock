@@ -128,16 +128,12 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 1.3.2",
  "hashbrown 0.17.1",
- "lock_api",
  "log",
  "minisign-verify",
- "parking_lot",
  "reqwest",
- "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
- "smallvec",
  "tauri",
  "test-unify",
  "uuid",
@@ -2284,7 +2280,6 @@ dependencies = [
 name = "collector-player-commands"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "collector-hooks",
  "collector-lifetime",
  "collector-memory",
@@ -2299,7 +2294,6 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-sites",
- "num-traits",
  "recorder-derive-framework",
  "replay",
  "replay-data",
@@ -2308,7 +2302,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "windows-sys 0.52.0",
 ]
@@ -2564,7 +2557,6 @@ dependencies = [
 name = "collector-runtime"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "collector-advisors",
  "collector-air",
  "collector-air-histories",
@@ -2669,7 +2661,6 @@ dependencies = [
  "engine-sites",
  "engine-stability",
  "engine-visibility",
- "num-traits",
  "proc-macro2",
  "recorder-derive",
  "recorder-replay",
@@ -2680,7 +2671,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "syn 2.0.119",
  "synthetic-game",
  "test-unify",
@@ -2792,7 +2782,6 @@ dependencies = [
 name = "collector-spool"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "collector-advisors",
  "collector-air",
  "collector-air-histories",
@@ -2852,7 +2841,6 @@ dependencies = [
  "engine-native",
  "engine-sites",
  "engine-stability",
- "num-traits",
  "recorder-derive",
  "recorder-replay",
  "replay",
@@ -2863,7 +2851,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "synthetic-game",
  "test-unify",
  "windows-sys 0.52.0",
@@ -3138,7 +3125,6 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "content-reader"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-abilities",
  "content-reader-core",
  "content-reader-country-names",
@@ -3161,10 +3147,8 @@ dependencies = [
  "content-reader-wargoals",
  "content-reader-weather",
  "engine-allocation",
- "num-traits",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3172,13 +3156,10 @@ dependencies = [
 name = "content-reader-abilities"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-abilities",
  "content-reader-core",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3186,7 +3167,6 @@ dependencies = [
 name = "content-reader-core"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "engine-allocation",
@@ -3195,13 +3175,11 @@ dependencies = [
  "job-priority",
  "miniz_oxide 0.8.9",
  "mlua",
- "num-traits",
  "replay-identity",
  "replay-spool",
  "serde",
  "serde_json",
  "sha2",
- "smallvec",
  "synthetic-game",
  "test-unify",
  "windows-sys 0.61.2",
@@ -3212,18 +3190,15 @@ dependencies = [
 name = "content-reader-country-names"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-spool",
- "smallvec",
  "test-unify",
 ]
 
@@ -3231,13 +3206,10 @@ dependencies = [
 name = "content-reader-division-names"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-division-names",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3245,18 +3217,15 @@ dependencies = [
 name = "content-reader-equipment-graphics"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-equipment-graphics",
  "content-reader-states",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-spool",
- "smallvec",
  "test-unify",
 ]
 
@@ -3264,13 +3233,10 @@ dependencies = [
 name = "content-reader-events"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-events",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3278,14 +3244,11 @@ dependencies = [
 name = "content-reader-focus"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-focus",
  "engine-allocation",
  "job-priority",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3293,13 +3256,10 @@ dependencies = [
 name = "content-reader-gfx"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-gfx",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3307,10 +3267,8 @@ dependencies = [
 name = "content-reader-image"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-image",
  "image",
- "num-traits",
  "png 0.18.1",
  "sha2",
  "test-unify",
@@ -3321,14 +3279,11 @@ name = "content-reader-localisation"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "bytemuck",
  "content-reader-core",
  "content-reader-localisation",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3336,14 +3291,11 @@ dependencies = [
 name = "content-reader-naval-combat-defines"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-naval-combat-defines",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3351,14 +3303,11 @@ dependencies = [
 name = "content-reader-naval-path"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-naval-path",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3366,14 +3315,11 @@ dependencies = [
 name = "content-reader-province-area"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3381,18 +3327,15 @@ dependencies = [
 name = "content-reader-raids"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-division-names",
  "content-reader-localisation",
  "content-reader-raids",
  "engine-allocation",
- "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3400,14 +3343,11 @@ dependencies = [
 name = "content-reader-regions"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
  "weather-period",
 ]
@@ -3416,14 +3356,11 @@ dependencies = [
 name = "content-reader-save"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-states",
  "engine-allocation",
- "num-traits",
  "replay-data",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3431,13 +3368,10 @@ dependencies = [
 name = "content-reader-scripted-localisation"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-scripted-localisation",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3445,16 +3379,13 @@ dependencies = [
 name = "content-reader-settings"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-settings",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -3463,13 +3394,10 @@ dependencies = [
 name = "content-reader-sound"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "engine-allocation",
  "log",
- "num-traits",
  "replay-identity",
- "smallvec",
  "symphonia",
  "test-unify",
 ]
@@ -3478,13 +3406,10 @@ dependencies = [
 name = "content-reader-state-categories"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-state-categories",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3492,13 +3417,10 @@ dependencies = [
 name = "content-reader-states"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-states",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3506,14 +3428,11 @@ dependencies = [
 name = "content-reader-unit-path"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-unit-path",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3521,13 +3440,10 @@ dependencies = [
 name = "content-reader-wargoals"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-wargoals",
  "engine-allocation",
- "num-traits",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3535,15 +3451,12 @@ dependencies = [
 name = "content-reader-weather"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-regions",
  "content-reader-weather",
  "engine-allocation",
- "num-traits",
  "replay-data",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3551,16 +3464,13 @@ dependencies = [
 name = "content-witness"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "product-codec",
  "replay-data",
  "replay-identity",
  "sha2",
- "smallvec",
  "test-unify",
 ]
 
@@ -3926,6 +3836,7 @@ dependencies = [
  "dashboard-core",
  "dashboard-declare",
  "dashboard-economy",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-intelligence",
  "dashboard-land",
@@ -3945,7 +3856,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -3960,7 +3870,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -3995,7 +3904,6 @@ dependencies = [
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4011,7 +3919,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4041,6 +3948,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-query",
  "dashboard-text",
@@ -4056,7 +3964,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "png 0.18.1",
@@ -4075,7 +3982,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "syn 2.0.119",
  "test-unify",
  "ts-rs",
@@ -4092,7 +3998,6 @@ dependencies = [
 name = "dashboard-core"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -4105,7 +4010,6 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "job-priority",
- "num-traits",
  "recorder-derive",
  "replay",
  "replay-data",
@@ -4115,7 +4019,6 @@ dependencies = [
  "replay-spool",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4154,7 +4057,6 @@ dependencies = [
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4167,9 +4069,49 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
+ "uuid",
+ "wgpu",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-effects"
+version = "0.1.0"
+dependencies = [
+ "content-reader-abilities",
+ "content-reader-core",
+ "content-reader-country-names",
+ "content-reader-division-names",
+ "content-reader-equipment-graphics",
+ "content-reader-events",
+ "content-reader-focus",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-raids",
+ "content-reader-save",
+ "content-reader-state-categories",
+ "content-reader-wargoals",
+ "dashboard-effects",
+ "dashboard-text",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "game-model",
+ "indexmap 2.14.2",
+ "log",
+ "once_cell",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "shader-pipeline",
+ "test-unify",
  "uuid",
  "wgpu",
  "winapi-util",
@@ -4181,7 +4123,6 @@ dependencies = [
 name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -4190,7 +4131,6 @@ dependencies = [
  "dashboard-query",
  "engine-executable",
  "engine-native",
- "num-traits",
  "playhead",
  "recorder-derive",
  "recorder-derive-framework",
@@ -4202,7 +4142,6 @@ dependencies = [
  "replay-identity",
  "rmp-serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "winapi-util",
 ]
@@ -4228,7 +4167,6 @@ dependencies = [
  "game-model",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4241,7 +4179,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4261,6 +4198,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-intelligence",
  "dashboard-land",
@@ -4273,7 +4211,6 @@ dependencies = [
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4289,7 +4226,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4321,7 +4257,6 @@ dependencies = [
  "game-model",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4334,7 +4269,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4359,7 +4293,6 @@ dependencies = [
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4370,7 +4303,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4393,6 +4325,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-politics",
  "dashboard-query",
@@ -4406,7 +4339,6 @@ dependencies = [
  "game-model",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4420,7 +4352,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4453,7 +4384,6 @@ dependencies = [
  "game-model",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "rayon",
@@ -4467,7 +4397,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4481,7 +4410,6 @@ dependencies = [
 name = "dashboard-query"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -4489,7 +4417,6 @@ dependencies = [
  "dashboard-declare",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-derive-framework",
  "replay",
@@ -4500,7 +4427,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "ts-rs",
  "winapi-util",
@@ -4515,6 +4441,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-query",
  "dashboard-research",
@@ -4526,7 +4453,6 @@ dependencies = [
  "engine-projects",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4539,7 +4465,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4587,7 +4512,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "num-traits",
  "once_cell",
  "png 0.18.1",
  "recorder-derive",
@@ -4600,7 +4524,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4621,6 +4544,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-intelligence",
  "dashboard-query",
@@ -4633,7 +4557,6 @@ dependencies = [
  "engine-projects",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "recorder-derive",
@@ -4648,7 +4571,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4684,7 +4606,6 @@ dependencies = [
  "engine-stability",
  "indexmap 2.14.2",
  "log",
- "num-traits",
  "once_cell",
  "playhead",
  "png 0.18.1",
@@ -4700,7 +4621,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -7182,6 +7102,7 @@ dependencies = [
  "content-reader-states",
  "content-reader-weather",
  "content-witness",
+ "dashboard-effects",
  "dashboard-text",
  "dpi",
  "engine-executable",
@@ -7225,19 +7146,16 @@ dependencies = [
 name = "map-snow"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
  "map-display-data",
- "num-traits",
  "product-codec",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8274,14 +8192,12 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "playhead"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "playhead",
  "recorder-derive",
  "replay",
@@ -8291,7 +8207,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -8600,7 +8515,6 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-division-names",
@@ -8619,7 +8533,6 @@ dependencies = [
  "engine-native",
  "engine-sites",
  "job-priority",
- "num-traits",
  "recorder-derive",
  "recorder-derived",
  "recorder-metrics",
@@ -8637,7 +8550,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "synthetic-game",
  "test-unify",
  "uuid",
@@ -8652,7 +8564,6 @@ version = "0.1.0"
 dependencies = [
  "app-update",
  "bitflags 1.3.2",
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-division-names",
@@ -8670,7 +8581,6 @@ dependencies = [
  "engine-native",
  "hashbrown 0.17.1",
  "log",
- "num-traits",
  "recorder",
  "recorder-derive",
  "recorder-oracle-support",
@@ -8681,7 +8591,6 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
- "smallvec",
  "tauri",
  "tauri-build",
  "test-unify",
@@ -8693,7 +8602,6 @@ dependencies = [
 name = "recorder-derive"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -8701,7 +8609,6 @@ dependencies = [
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-derive-air",
  "recorder-derive-economy",
@@ -8716,7 +8623,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8724,14 +8630,12 @@ dependencies = [
 name = "recorder-derive-air"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-derive-world",
  "replay-columnar",
@@ -8739,7 +8643,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8747,7 +8650,6 @@ dependencies = [
 name = "recorder-derive-economy"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -8755,14 +8657,12 @@ dependencies = [
  "engine-executable",
  "engine-fuel",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-derive-world",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8770,7 +8670,6 @@ dependencies = [
 name = "recorder-derive-equipment"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -8779,13 +8678,11 @@ dependencies = [
  "engine-executable",
  "engine-land-inputs",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8793,19 +8690,16 @@ dependencies = [
 name = "recorder-derive-framework"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8813,18 +8707,15 @@ dependencies = [
 name = "recorder-derive-land"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8832,20 +8723,17 @@ dependencies = [
 name = "recorder-derive-naval"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
  "engine-native",
  "game-model",
- "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8853,20 +8741,17 @@ dependencies = [
 name = "recorder-derive-politics"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8874,7 +8759,6 @@ dependencies = [
 name = "recorder-derive-world"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -8882,14 +8766,12 @@ dependencies = [
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
  "replay-looks",
- "smallvec",
  "test-unify",
 ]
 
@@ -8897,14 +8779,12 @@ dependencies = [
 name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-weather",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-platform",
  "replay",
@@ -8912,7 +8792,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8920,7 +8799,6 @@ dependencies = [
 name = "recorder-metrics"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -8928,7 +8806,6 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-test-support",
  "replay",
@@ -8937,7 +8814,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -8945,7 +8821,6 @@ dependencies = [
 name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -8953,14 +8828,12 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-sites",
- "num-traits",
  "recorder-derive-framework",
  "recorder-platform",
  "replay",
  "replay-derive",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -8968,7 +8841,6 @@ dependencies = [
 name = "recorder-oracle"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-division-names",
@@ -8981,7 +8853,6 @@ dependencies = [
  "content-reader-weather",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-air",
  "recorder-oracle-air-ledger",
@@ -9035,7 +8906,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9043,7 +8913,6 @@ dependencies = [
 name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9052,7 +8921,6 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -9061,7 +8929,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9069,7 +8936,6 @@ dependencies = [
 name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9079,7 +8945,6 @@ dependencies = [
  "content-reader-states",
  "engine-air-history",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -9088,7 +8953,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9096,13 +8960,11 @@ dependencies = [
 name = "recorder-oracle-air-missions"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-relations",
  "recorder-oracle-support",
@@ -9111,7 +8973,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9119,14 +8980,12 @@ dependencies = [
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-intel",
  "recorder-oracle-support",
@@ -9135,7 +8994,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9143,14 +9001,12 @@ dependencies = [
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9158,7 +9014,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9166,7 +9021,6 @@ dependencies = [
 name = "recorder-oracle-combat-log"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9174,7 +9028,6 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-resources",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-naval-history",
  "recorder-oracle-support",
@@ -9183,7 +9036,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9191,7 +9043,6 @@ dependencies = [
 name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9202,7 +9053,6 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-resources",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9210,7 +9060,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9218,14 +9067,12 @@ dependencies = [
 name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9233,7 +9080,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9241,14 +9087,12 @@ dependencies = [
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9256,7 +9100,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9264,14 +9107,12 @@ dependencies = [
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-characters",
  "recorder-oracle-support",
@@ -9279,7 +9120,6 @@ dependencies = [
  "replay-data",
  "replay-derive",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9287,7 +9127,6 @@ dependencies = [
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9296,7 +9135,6 @@ dependencies = [
  "engine-air-history",
  "engine-native",
  "engine-production",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-fuel-demand",
  "recorder-oracle-support",
@@ -9305,7 +9143,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9313,7 +9150,6 @@ dependencies = [
 name = "recorder-oracle-equipment-destruction"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -9321,7 +9157,6 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9329,7 +9164,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9337,13 +9171,11 @@ dependencies = [
 name = "recorder-oracle-event-feed"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9351,7 +9183,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9359,13 +9190,11 @@ dependencies = [
 name = "recorder-oracle-faction-theatres"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9373,7 +9202,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9381,7 +9209,6 @@ dependencies = [
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9389,7 +9216,6 @@ dependencies = [
  "content-reader-states",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9397,7 +9223,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9405,7 +9230,6 @@ dependencies = [
 name = "recorder-oracle-fog"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -9413,7 +9237,6 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -9422,7 +9245,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9430,14 +9252,12 @@ dependencies = [
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9445,7 +9265,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9453,13 +9272,11 @@ dependencies = [
 name = "recorder-oracle-game-score"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9467,7 +9284,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9475,7 +9291,6 @@ dependencies = [
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9485,7 +9300,6 @@ dependencies = [
  "engine-land-inputs",
  "engine-native",
  "engine-research",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9493,7 +9307,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9501,7 +9314,6 @@ dependencies = [
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9509,7 +9321,6 @@ dependencies = [
  "content-reader-states",
  "engine-intelligence",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9517,7 +9328,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9525,7 +9335,6 @@ dependencies = [
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9533,7 +9342,6 @@ dependencies = [
  "content-reader-states",
  "engine-land-inputs",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9542,7 +9350,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -9550,14 +9357,12 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9565,7 +9370,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9573,7 +9377,6 @@ dependencies = [
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9582,7 +9385,6 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "game-model",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-combat-details",
  "recorder-oracle-naval-history",
@@ -9592,7 +9394,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9600,14 +9401,12 @@ dependencies = [
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9615,7 +9414,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9623,14 +9421,12 @@ dependencies = [
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9638,7 +9434,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9646,14 +9441,12 @@ dependencies = [
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9661,7 +9454,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9669,14 +9461,12 @@ dependencies = [
 name = "recorder-oracle-naval-missions"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9684,7 +9474,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9692,14 +9481,12 @@ dependencies = [
 name = "recorder-oracle-naval-result-sources"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9707,7 +9494,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9715,14 +9501,12 @@ dependencies = [
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-counters",
  "recorder-oracle-country-rosters",
@@ -9734,7 +9518,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9742,7 +9525,6 @@ dependencies = [
 name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9751,7 +9533,6 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9759,7 +9540,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9767,14 +9547,12 @@ dependencies = [
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9782,7 +9560,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9790,7 +9567,6 @@ dependencies = [
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9798,7 +9574,6 @@ dependencies = [
  "content-reader-states",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-characters",
  "recorder-oracle-support",
@@ -9807,7 +9582,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9815,7 +9589,6 @@ dependencies = [
 name = "recorder-oracle-power-ledger"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -9823,7 +9596,6 @@ dependencies = [
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9831,7 +9603,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9839,7 +9610,6 @@ dependencies = [
 name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9851,7 +9621,6 @@ dependencies = [
  "engine-native",
  "engine-scripts",
  "game-model",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "replay",
@@ -9859,7 +9628,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9867,7 +9635,6 @@ dependencies = [
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9875,7 +9642,6 @@ dependencies = [
  "content-reader-states",
  "engine-native",
  "engine-projects",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9883,7 +9649,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9891,14 +9656,12 @@ dependencies = [
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9906,7 +9669,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9914,14 +9676,12 @@ dependencies = [
 name = "recorder-oracle-relations"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9929,7 +9689,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9937,14 +9696,12 @@ dependencies = [
 name = "recorder-oracle-rocket-output"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "recorder-oracle-support",
  "recorder-test-support",
@@ -9953,7 +9710,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9961,13 +9717,11 @@ dependencies = [
 name = "recorder-oracle-saved-event-targets"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-counters",
  "recorder-oracle-support",
@@ -9976,7 +9730,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9984,14 +9737,12 @@ dependencies = [
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -9999,7 +9750,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10007,13 +9757,11 @@ dependencies = [
 name = "recorder-oracle-session"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10021,7 +9769,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10029,13 +9776,11 @@ dependencies = [
 name = "recorder-oracle-stability"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10043,7 +9788,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10051,14 +9795,12 @@ dependencies = [
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10066,7 +9808,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10074,7 +9815,6 @@ dependencies = [
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10082,7 +9822,6 @@ dependencies = [
  "content-reader-states",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10090,7 +9829,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10098,12 +9836,10 @@ dependencies = [
 name = "recorder-oracle-unit-combat-references"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10111,7 +9847,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10119,13 +9854,11 @@ dependencies = [
 name = "recorder-oracle-visibility"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10133,7 +9866,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10141,13 +9873,11 @@ dependencies = [
 name = "recorder-oracle-wars"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
  "content-reader-states",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10155,7 +9885,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10163,7 +9892,6 @@ dependencies = [
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10171,7 +9899,6 @@ dependencies = [
  "content-reader-states",
  "content-reader-weather",
  "engine-native",
- "num-traits",
  "recorder-derive-framework",
  "recorder-oracle-support",
  "replay",
@@ -10179,7 +9906,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10204,7 +9930,6 @@ name = "recorder-replay"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -10212,7 +9937,6 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
- "num-traits",
  "rayon",
  "recorder-derive",
  "recorder-metrics",
@@ -10225,7 +9949,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
  "weather-period",
  "windows-sys 0.61.2",
@@ -10253,21 +9976,18 @@ dependencies = [
 name = "recorder-test-support"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10275,7 +9995,6 @@ dependencies = [
 name = "recording-upgrade"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -10283,14 +10002,12 @@ dependencies = [
  "content-reader-regions",
  "engine-executable",
  "engine-native",
- "num-traits",
  "recorder-derive",
  "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
  "zstd",
 ]
@@ -10410,7 +10127,6 @@ name = "replay"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -10423,7 +10139,6 @@ dependencies = [
  "engine-occupation",
  "foldhash 0.2.0",
  "job-priority",
- "num-traits",
  "rayon",
  "recorder-derive",
  "recorder-derive-framework",
@@ -10437,7 +10152,6 @@ dependencies = [
  "self_cell",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
@@ -10589,16 +10303,13 @@ dependencies = [
 name = "replay-looks"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
  "engine-allocation",
  "engine-executable",
- "num-traits",
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -11246,7 +10957,6 @@ dependencies = [
  "job-priority",
  "log",
  "naga",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "replay-identity",
@@ -11254,7 +10964,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "thiserror 2.0.20",
  "uuid",
@@ -12052,13 +11761,14 @@ dependencies = [
  "jsonptr",
  "libc",
  "litemap",
+ "lock_api",
  "memchr",
  "miniz_oxide 0.8.9",
  "miniz_oxide 0.9.1",
  "num-conv",
  "num-traits",
  "option-ext",
- "parking_lot_core",
+ "parking_lot",
  "percent-encoding",
  "phf",
  "plist",
@@ -12072,7 +11782,6 @@ dependencies = [
  "regex-syntax",
  "rustc-hash 2.1.3",
  "same-file",
- "scopeguard",
  "serde",
  "serde-untagged",
  "serde_core",
@@ -12788,7 +12497,6 @@ dependencies = [
  "engine-air-history",
  "engine-heap",
  "indexmap 2.14.2",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -12820,7 +12528,6 @@ dependencies = [
 name = "viewer-audio"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "content-reader-core",
  "content-reader-sound",
  "cpal",
@@ -12830,10 +12537,8 @@ dependencies = [
  "job-priority",
  "log",
  "map-display-data",
- "num-traits",
  "replay-data",
  "replay-identity",
- "smallvec",
  "test-unify",
  "windows 0.62.2",
 ]
@@ -12853,7 +12558,6 @@ dependencies = [
  "engine-heap",
  "indexmap 2.14.2",
  "map-display-data",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -12891,7 +12595,6 @@ dependencies = [
  "engine-heap",
  "indexmap 2.14.2",
  "map-display-data",
- "num-traits",
  "once_cell",
  "product-codec",
  "recorder-derive",
@@ -12930,6 +12633,7 @@ dependencies = [
  "content-reader-regions",
  "content-reader-weather",
  "dashboard-base",
+ "dashboard-effects",
  "dashboard-text",
  "dpi",
  "engine-characters",
@@ -12980,6 +12684,7 @@ dependencies = [
  "content-reader-unit-path",
  "content-reader-weather",
  "dashboard-core",
+ "dashboard-effects",
  "dashboard-text",
  "dpi",
  "engine-allocation",
@@ -12992,7 +12697,6 @@ dependencies = [
  "game-model",
  "indexmap 2.14.2",
  "job-priority",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13078,7 +12782,6 @@ dependencies = [
  "dpi",
  "engine-heap",
  "indexmap 2.14.2",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13119,7 +12822,6 @@ dependencies = [
  "engine-executable",
  "engine-heap",
  "indexmap 2.14.2",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13160,7 +12862,6 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-snow",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -13194,7 +12895,6 @@ dependencies = [
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13236,7 +12936,6 @@ dependencies = [
  "engine-heap",
  "indexmap 2.14.2",
  "map-display-data",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "product-codec",
@@ -13281,7 +12980,6 @@ dependencies = [
  "engine-heap",
  "indexmap 2.14.2",
  "map-display-data",
- "num-traits",
  "once_cell",
  "product-codec",
  "recorder-derive",
@@ -13325,7 +13023,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "product-codec",
@@ -13366,7 +13063,6 @@ dependencies = [
  "engine-heap",
  "indexmap 2.14.2",
  "job-priority",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -13488,6 +13184,7 @@ dependencies = [
  "content-reader-states",
  "content-reader-unit-path",
  "dashboard-core",
+ "dashboard-effects",
  "dashboard-text",
  "dpi",
  "eframe",
@@ -13538,7 +13235,6 @@ dependencies = [
  "engine-heap",
  "indexmap 2.14.2",
  "map-display-data",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13580,7 +13276,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
- "num-traits",
  "once_cell",
  "rayon",
  "recorder-derive",
@@ -13619,7 +13314,6 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-snow",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -13659,7 +13353,6 @@ dependencies = [
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13689,7 +13382,6 @@ dependencies = [
  "dpi",
  "engine-heap",
  "indexmap 2.14.2",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13729,7 +13421,6 @@ dependencies = [
  "engine-heap",
  "game-model",
  "indexmap 2.14.2",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13771,7 +13462,6 @@ dependencies = [
  "engine-heap",
  "engine-native",
  "indexmap 2.14.2",
- "num-traits",
  "once_cell",
  "recorder-derive",
  "replay",
@@ -13809,7 +13499,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",
@@ -13853,7 +13542,6 @@ dependencies = [
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
- "num-traits",
  "once_cell",
  "pollster 1.0.1",
  "recorder-derive",

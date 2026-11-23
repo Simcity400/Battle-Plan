@@ -55,7 +55,6 @@ replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
-unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-tracing = { workspace = true }
 unify-uuid = { workspace = true }

@@ -39,6 +39,3 @@ recorder-derive-framework = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bytemuck = { workspace = true }
-unify-num-traits = { workspace = true }
-unify-smallvec = { workspace = true }
