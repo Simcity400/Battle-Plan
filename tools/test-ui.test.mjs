@@ -26,6 +26,7 @@ test('test:ui runs every file once, with normal pure concurrency and serial brow
   const groups = testGroups(files);
   assert.equal(groups[0].concurrency, true, 'pure tests use ordinary Node file concurrency');
   assert.equal(groups[1].concurrency, 1, 'browser fixtures have exclusive process ownership');
+  assert.deepEqual(groups.map(group => group.deadlineMinutes), [20, undefined], 'a pure test file is stopped at a deadline; a browser fixture is never killed with Edge open');
   assert.deepEqual(groups[1].files.slice().sort(), browserTests.slice().sort());
   const scheduled = groups.flatMap(group => group.files);
   assert.equal(new Set(scheduled).size, files.length, 'no test is scheduled twice');
@@ -121,12 +122,18 @@ test('both groups complete sequentially and failure of either group fails test:u
   }
 });
 
-test('the production group runner reports actual Node test failures', async () => {
+test('the production group runner reports actual Node test failures, and a group stopped at its deadline names its unfinished files', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'hoi4-test-ui-results-'));
   try {
     await writeFile(resolve(root, 'pass.test.mjs'), `import assert from 'node:assert/strict'; import test from 'node:test';
 test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
+    await writeFile(resolve(root, 'leak.test.mjs'), `import test from 'node:test';
+test('synthetic leak', () => {
+  const { port1 } = new MessageChannel();
+  port1.on('message', () => {});
+  process.stdin.on('end', () => port1.close()).resume();
+});`);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
@@ -140,7 +147,12 @@ process.chdir(caller);
 const passReport = reported;
 reported = '';
 const failed = await executeGroup({ files: ['fail.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output);
-console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported, cwd: process.cwd(), relativePassed }));
+const failureReport = reported;
+reported = '';
+const controller = new AbortController();
+const stopping = { write(chunk) { reported += chunk; if (chunk.includes('synthetic leak')) controller.abort(); } };
+const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs', 'pass.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, stopping, controller.signal);
+console.log(JSON.stringify({ passed, failed, passReport, failureReport, stopped, stopReport: reported, cwd: process.cwd(), relativePassed }));
 `);
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
@@ -152,6 +164,9 @@ console.log(JSON.stringify({ passed, failed, passReport, failureReport: reported
     assert.match(result.passReport, /synthetic pass/);
     assert.equal(result.failed, 1);
     assert.match(result.failureReport, /expected synthetic failure/);
+    assert.equal(result.stopped, 1, 'a group stopped at its deadline fails');
+    assert.match(result.stopReport, /^Synthetic group hit its deadline while these files were still running: leak\.test\.mjs$/m,
+      'the file holding its process open is named, and the queued one behind it is not');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
