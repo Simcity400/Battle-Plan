@@ -128,12 +128,16 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 1.3.2",
  "hashbrown 0.17.1",
+ "lock_api",
  "log",
  "minisign-verify",
+ "parking_lot",
  "reqwest",
+ "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
+ "smallvec",
  "tauri",
  "test-unify",
  "uuid",
@@ -10900,18 +10904,30 @@ dependencies = [
  "replay-data",
  "replay-identity",
  "replay-rows",
+ "replay-rows-air",
  "replay-rows-derived",
  "replay-rows-economy",
+ "replay-rows-events",
  "replay-rows-intelligence",
+ "replay-rows-land",
+ "replay-rows-naval",
  "replay-rows-politics",
+ "replay-rows-presentation",
  "replay-rows-projects",
+ "replay-rows-wars",
+ "replay-rows-weather",
+ "replay-rows-world",
  "replay-spool",
- "replay-tables-a",
- "replay-tables-b",
- "replay-tables-c",
- "replay-tables-d",
- "replay-tables-e",
+ "replay-tables-air",
+ "replay-tables-derived",
  "replay-tables-economy",
+ "replay-tables-events",
+ "replay-tables-land",
+ "replay-tables-naval",
+ "replay-tables-presentation",
+ "replay-tables-wars",
+ "replay-tables-weather",
+ "replay-tables-world",
  "serde",
  "serde_json",
  "test-unify",
@@ -11148,18 +11164,25 @@ dependencies = [
 name = "replay-rows"
 version = "0.1.0"
 dependencies = [
- "crc32fast",
  "engine-allocation",
- "engine-reference-values",
  "game-model",
- "replay-identity",
  "replay-rows",
  "replay-spool",
  "serde",
- "serde_json",
  "test-unify",
- "weather-period",
- "zstd",
+]
+
+[[package]]
+name = "replay-rows-air"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "game-model",
+ "replay-rows",
+ "replay-rows-air",
+ "replay-spool",
+ "test-unify",
 ]
 
 [[package]]
@@ -11168,7 +11191,6 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-reference-values",
- "replay-identity",
  "replay-rows",
  "replay-rows-derived",
  "replay-spool",
@@ -11182,10 +11204,22 @@ dependencies = [
  "engine-allocation",
  "engine-reference-values",
  "game-model",
- "replay-identity",
  "replay-rows",
  "replay-rows-economy",
  "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-events"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-events",
+ "replay-spool",
+ "serde",
+ "serde_json",
  "test-unify",
 ]
 
@@ -11194,10 +11228,37 @@ name = "replay-rows-intelligence"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-intelligence",
  "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-land"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "game-model",
+ "replay-rows",
+ "replay-rows-land",
+ "replay-rows-weather",
+ "replay-rows-world",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-naval"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "replay-rows",
+ "replay-rows-naval",
+ "replay-spool",
+ "serde",
  "test-unify",
 ]
 
@@ -11206,9 +11267,24 @@ name = "replay-rows-politics"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-politics",
+ "replay-rows-presentation",
+ "replay-rows-world",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-presentation"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-reference-values",
+ "replay-rows",
+ "replay-rows-land",
+ "replay-rows-presentation",
+ "replay-rows-world",
  "replay-spool",
  "test-unify",
 ]
@@ -11218,9 +11294,46 @@ name = "replay-rows-projects"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-projects",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-wars"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "game-model",
+ "replay-rows",
+ "replay-rows-wars",
+ "replay-spool",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-rows-weather"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "game-model",
+ "replay-rows",
+ "replay-rows-weather",
+ "replay-rows-world",
+ "replay-spool",
+ "test-unify",
+ "weather-period",
+]
+
+[[package]]
+name = "replay-rows-world"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "game-model",
+ "replay-rows",
+ "replay-rows-world",
  "replay-spool",
  "test-unify",
 ]
@@ -11253,58 +11366,24 @@ name = "replay-spool-derive"
 version = "0.1.0"
 
 [[package]]
-name = "replay-tables-a"
+name = "replay-tables-air"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
- "replay-tables-a",
+ "replay-rows-air",
+ "replay-tables-air",
  "test-unify",
 ]
 
 [[package]]
-name = "replay-tables-b"
+name = "replay-tables-derived"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
- "replay-rows",
- "replay-tables-b",
- "test-unify",
-]
-
-[[package]]
-name = "replay-tables-c"
-version = "0.1.0"
-dependencies = [
- "engine-allocation",
- "replay-identity",
- "replay-rows",
- "replay-tables-c",
- "test-unify",
-]
-
-[[package]]
-name = "replay-tables-d"
-version = "0.1.0"
-dependencies = [
- "engine-allocation",
- "replay-identity",
- "replay-rows",
- "replay-tables-d",
- "test-unify",
-]
-
-[[package]]
-name = "replay-tables-e"
-version = "0.1.0"
-dependencies = [
- "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-derived",
- "replay-tables-e",
+ "replay-tables-derived",
  "test-unify",
 ]
 
@@ -11313,10 +11392,86 @@ name = "replay-tables-economy"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
- "replay-identity",
  "replay-rows",
  "replay-rows-economy",
  "replay-tables-economy",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-events"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-events",
+ "replay-tables-events",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-land"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-land",
+ "replay-tables-land",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-naval"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-naval",
+ "replay-tables-naval",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-presentation"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-presentation",
+ "replay-tables-presentation",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-wars"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-wars",
+ "replay-tables-wars",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-weather"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-weather",
+ "replay-tables-weather",
+ "test-unify",
+]
+
+[[package]]
+name = "replay-tables-world"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "replay-rows",
+ "replay-rows-world",
+ "replay-tables-world",
  "test-unify",
 ]
 
@@ -12644,14 +12799,13 @@ dependencies = [
  "jsonptr",
  "libc",
  "litemap",
- "lock_api",
  "memchr",
  "miniz_oxide 0.8.9",
  "miniz_oxide 0.9.1",
  "num-conv",
  "num-traits",
  "option-ext",
- "parking_lot",
+ "parking_lot_core",
  "percent-encoding",
  "phf",
  "plist",
@@ -12665,6 +12819,7 @@ dependencies = [
  "regex-syntax",
  "rustc-hash 2.1.3",
  "same-file",
+ "scopeguard",
  "serde",
  "serde-untagged",
  "serde_core",

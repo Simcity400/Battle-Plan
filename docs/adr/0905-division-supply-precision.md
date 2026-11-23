@@ -8,4 +8,4 @@ The counter hover prints the effective supply as the larger of the received rati
 
 Historical recordings that omitted `supply_ratio_exact` and `supply_grace_exact` at zero out-of-supply days remain playable through exact display-step preimage intervals: decisions proved across the whole interval stand, while intervals straddling an off-grid mod threshold withhold the undecided counter glyph, derived count, or ETA rather than guessing. Published `SupplyHealth` records its derived writer version in the container so version-1 files (computed from rounded display ratios) are identified and withheld on playback rather than reporting rounded counts as definitive. [Issue #111](https://github.com/Simcity400/BattlePlan/issues/111)
 
-[Division and unit supply layouts](../../crates/replay-rows/src/extended_rows/movement.rs) · [Display precision](0905-display-precision.md)
+[Division and unit supply layouts](../../crates/replay-rows-land/src/movement.rs) · [Display precision](0905-display-precision.md)

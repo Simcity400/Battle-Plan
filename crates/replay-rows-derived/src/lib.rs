@@ -1,7 +1,7 @@
 use engine_allocation as allocation;
 use replay_rows::codec::{Decoder, invalid_static as invalid, put_varint};
 use replay_rows::rows::*;
-use replay_rows::{row_codec, typed_codec};
+use replay_rows::row_codec;
 use std::io;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -887,7 +887,7 @@ pub struct FeedEventRow {
     pub numeric_target: Option<i32>,
     pub lifecycle: Option<i32>,
     pub days: Option<i32>,
-    pub scopes: Recorded<Vec<replay_rows::event_feed_rows::EventFeedScope>>,
+    pub scopes: Recorded<Vec<replay_rows::event_feed_values::EventFeedScope>>,
     pub opener: Option<u64>,
     pub opener_hour: Option<i32>,
     pub dated: Option<i32>,

@@ -8,4 +8,4 @@ Regional mine rows are sparse. The kind-zero length witness establishes the vect
 
 Patrol inputs use one row per demanded full task-force identity and leave occurrence order and repeats in the mission ledger. A known zero target demands neither chance nor progress. Only a registered raider with a live convoy target reaches the visibility query. A failed query leaves its individual operand unavailable and keeps the ledger row. Standing naval accident reports retain native occurrence order in their keys.
 
-[Carrier registration](../../crates/replay-rows/src/extended_rows/carrier_air.rs) · [Repair and refit](../../crates/replay-rows/src/extended_rows/naval_management.rs) · [Mines](../../crates/replay-rows/src/extended_rows/naval_mines.rs) · [Patrol inputs](../../crates/replay-rows/src/extended_rows/naval_patrol.rs)
+[Carrier registration](../../crates/replay-rows-air/src/carrier_air.rs) · [Repair and refit](../../crates/replay-rows-naval/src/naval_management.rs) · [Mines](../../crates/replay-rows-naval/src/naval_mines.rs) · [Patrol inputs](../../crates/replay-rows-naval/src/naval_patrol.rs)

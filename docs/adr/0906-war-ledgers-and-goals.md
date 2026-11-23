@@ -6,4 +6,4 @@ The serialized country war-goal roster includes goals already attached to wars a
 
 A recorded justification end date takes precedence. Otherwise the displayed completion divides fixed-point remaining cost by the daily rate with half-away-from-zero rounding. This is a display projection with no inference about the next payment. Preserve the raw goal expiry even when the save serializer suppresses the value in the initial year.
 
-[War overview](../../crates/replay-rows/src/extended_rows/war_overview.rs) · [War goal inputs](../../crates/replay-rows/src/extended_rows/wargoals.rs)
+[War overview](../../crates/replay-rows-wars/src/war_overview.rs) · [War goal inputs](../../crates/replay-rows-wars/src/wargoals.rs)

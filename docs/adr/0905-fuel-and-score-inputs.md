@@ -6,4 +6,4 @@ Treat the supplying CountryFuel row's read hour as the default demand-pack time.
 
 Game score keeps the game's stored witnesses rather than inferring counts from current unit inventories. Preserve each fleet occurrence and its signed task-force count with native wrapping. Preserve the air subsystem's first-site list including repeated bases and its order. Distinguish an unreadable subsystem, an observed null subsystem and a present subsystem with an empty list. Retain stale or reset headers when that is the game's source. Wing witnesses use every wing in the shared census, join by full handle, and preserve the signed mission selector for the score operand. Unreadable leaves remain independently unknown. Record each effective fixed5 country or part define independently, and apply the part multipliers before the total multiplier.
 
-[Demand packs](../../crates/replay-rows/src/extended_rows/fuel_demand.rs) · [Score operands](../../crates/replay-rows/src/extended_rows/game_score.rs)
+[Demand packs](../../crates/replay-rows-economy/src/fuel_demand.rs) · [Score operands](../../crates/replay-rows-wars/src/game_score.rs)

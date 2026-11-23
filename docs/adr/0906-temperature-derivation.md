@@ -10,4 +10,4 @@ The witness is the wrapping sum of slot-specific hashes of each committed temper
 
 Retain the last successful simulation as a possible starting point. Reuse it only at the same branch and anchor when the input seed prefix still agrees, and only up to the target hour. A suspended entry preserves state. An owner can keep per-hour derivations while their frames live and must trim them as those frames are released. A reset invalidates incremental changed-slot output. Tests compare an independent expected rollout, old and new inputs, order-independent threaded access, fast and guarded division and whole-recomputed versus incremental witnesses.
 
-[Temperature pass](../../crates/replay-rows/src/temperature.rs) · [Derivation tests](../../crates/replay-rows/src/temperature/tests.rs) · [Frame anchor layout](0906-weather-frame-anchors.md)
+[Temperature pass](../../crates/replay-rows-weather/src/temperature.rs) · [Derivation tests](../../crates/replay-rows-weather/src/temperature/tests.rs) · [Frame anchor layout](0906-weather-frame-anchors.md)

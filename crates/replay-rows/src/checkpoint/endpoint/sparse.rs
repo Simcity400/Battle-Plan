@@ -1,6 +1,6 @@
 use super::*;
 use crate::rows::checkpoint::Native;
-use crate::rows::{Kind, Recorded, RowCodec};
+use crate::rows::{Kind, RowCodec};
 
 pub struct SparseFixture<T> {
     pub baseline: T,
@@ -108,84 +108,6 @@ where
             source: Self::new(fixture.source),
             expected: Self::new(fixture.expected),
             payload: fixture.payload,
-        }
-    }
-}
-
-impl SparseReference for crate::rows::EventFeedHistoryRow {
-    fn sparse_fixture(&self, field: usize) -> SparseFixture<Self> {
-        use crate::{event_feed_rows::*, value::Value};
-        let baseline = Self {
-            generation: 7,
-            read_hour: 100,
-            coverage: EventFeedCoverage::Partial,
-            counts: None,
-            outstanding: 3,
-            failure: Some(b"before".to_vec()),
-            script_refusals: 1,
-            events: vec![],
-            script_tokens: b"old".to_vec(),
-            script_scopes: vec![],
-        };
-        let generation = if field == 6 { 7 } else { 9 };
-        let source = Self {
-            generation,
-            read_hour: 200,
-            coverage: EventFeedCoverage::Unavailable,
-            counts: (field == 3).then_some(EventFeedCounts {
-                acquired: 11,
-                settled: 8,
-                failed: 0,
-                rejected: 1,
-            }),
-            outstanding: if field == 3 { 3 } else { 5 },
-            failure: Some(b"after".to_vec()),
-            script_refusals: 2,
-            events: vec![EventFeedEvent {
-                sequence: 11,
-                generation,
-                hour: 50,
-                source: EventFeedSource::Annex,
-                actor: EventFeedCountry::default(),
-                target: EventFeedCountry::default(),
-                cause: Recorded::NotRecorded,
-                script: None,
-            }],
-            script_tokens: b"new".to_vec(),
-            script_scopes: vec![EventFeedScope {
-                country: 2,
-                ..Default::default()
-            }],
-        };
-        baseline.validate().unwrap();
-        source.validate().unwrap();
-        let mut expected = baseline.clone();
-        let mut payload = Vec::new();
-        macro_rules! assign {
-            ($member:ident) => {{
-                expected.$member = source.$member.clone();
-                Value::encode(&source.$member, &mut payload).unwrap();
-            }};
-        }
-        match field {
-            0 => assign!(generation),
-            1 => assign!(read_hour),
-            2 => assign!(coverage),
-            3 => assign!(counts),
-            4 => assign!(outstanding),
-            5 => assign!(failure),
-            6 => assign!(events),
-            7 => assign!(script_tokens),
-            8 => assign!(script_scopes),
-            9 => assign!(script_refusals),
-            _ => unreachable!(),
-        }
-        expected.validate().unwrap();
-        SparseFixture {
-            baseline,
-            source,
-            expected,
-            payload,
         }
     }
 }

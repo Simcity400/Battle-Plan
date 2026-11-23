@@ -17,16 +17,7 @@ test-support = ["capture"]
 game-model.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive"] }
-crc32fast = "1"
 engine-allocation.workspace = true
-engine-reference-values.workspace = true
-weather-period.workspace = true
-replay-identity.workspace = true
-
-[dev-dependencies]
-replay-identity = { workspace = true, features = ["test-support"] }
-zstd = "0.13"
-serde_json.workspace = true
 
 [lints]
 workspace = true
