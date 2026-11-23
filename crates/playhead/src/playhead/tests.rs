@@ -278,7 +278,14 @@ fn play(playhead: &Playhead, consumer: &mut Consumer, from: i32, to: i32, every:
         head = (head + every).min(to);
     }
     playhead.wait_until(|| {
-        take(consumer, if taken.last().is_some_and(|step| step.last() >= to) { to } else { i32::MAX }, taken);
+        if taken.last().is_some_and(|step| step.last() >= to) {
+            return true;
+        }
+        let mut ahead = Vec::new();
+        super::lock(&consumer.shared.ring).ahead(consumer.id, &mut ahead);
+        if let Some(through) = ahead.iter().map(|step| step.last()).find(|&last| last >= to) {
+            take(consumer, through, taken);
+        }
         taken.last().is_some_and(|step| step.last() >= to)
     });
 }
