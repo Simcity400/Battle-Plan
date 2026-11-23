@@ -558,25 +558,30 @@ impl Captured {
         let wings = |r: &cair_base::RegistrationRow| {
             &self.wings.first[r.wings_start..r.wings_start + r.wings_len]
         };
+        let equal_cursor = self.carrier.cursor();
+        let convert_cursor = self.carrier.cursor();
         crate::projection::project_table::<tables::AirBaseRegistrations, _>(
             projection,
             outcome,
             &self.registrations.rows,
             ArenaRow::key,
             |r, old| {
-                let inputs = self.carrier.registration(r);
+                if r.base != old.base
+                    || r.slot != old.slot
+                    || r.capacity_raw != old.capacity_raw
+                    || old.transport_planes != rows::Recorded::Value(rows::Retired)
+                    || wings(r) != old.wings
+                {
+                    return false;
+                }
+                let inputs = equal_cursor.registration(r);
                 let fuel = inputs.state_fuel();
-                r.base == old.base
-                    && r.slot == old.slot
-                    && r.capacity_raw == old.capacity_raw
-                    && wings(r) == old.wings
-                    && inputs.equal(&old.carrier)
-                    && old.fuel_demand_raw == rows::Recorded::Value(fuel[0])
+                old.fuel_demand_raw == rows::Recorded::Value(fuel[0])
                     && old.fuel_allocated_raw == rows::Recorded::Value(fuel[1])
-                    && old.transport_planes == rows::Recorded::Value(rows::Retired)
+                    && inputs.equal(&old.carrier)
             },
             |r| {
-                let inputs = self.carrier.registration(r);
+                let inputs = convert_cursor.registration(r);
                 let fuel = inputs.state_fuel();
                 rows::AirBaseRegistrationRow {
                     base: r.base,

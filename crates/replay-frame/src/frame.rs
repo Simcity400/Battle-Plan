@@ -695,6 +695,12 @@ pub enum TableInput {
         token: BaselineToken,
         update: Arc<crate::sliced::SliceUpdate>,
     },
+    UniformOptionalI32 {
+        token: BaselineToken,
+        column: usize,
+        value: Option<i32>,
+        update: Arc<crate::sliced::SliceUpdate>,
+    },
 }
 
 impl From<TableView> for TableInput {
@@ -715,7 +721,8 @@ impl TableInput {
             }
             Self::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. })
             | Self::ComparedEqual(_)
-            | Self::SliceUpdate { .. } => {}
+            | Self::SliceUpdate { .. }
+            | Self::UniformOptionalI32 { .. } => {}
         }
     }
 }

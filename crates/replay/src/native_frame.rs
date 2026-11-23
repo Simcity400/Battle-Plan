@@ -3,7 +3,7 @@ use crate::{
     columnar_file::{RestartState, referenced_ids},
     columnar_frames::LAST_COMPLETE,
     frame::{FrameEncoder, FrameInput, Metrics, TRUNCATED_KEYFRAME_REASON, TableInput, TableView},
-    native_columns::{self, RowCells, TableHour, TableInput as Native},
+    native_columns::{self, Pair, RowCells, TableHour, TableInput as Native},
     format::FormatVersion,
     rows::{ChangedRows, RowCodec, RowsPairVisit, RowsVisit, TABLE_COUNT, TableId, TableRows},
     scope::{self, CaptureMode},
@@ -59,7 +59,7 @@ impl Lanes for OneThread {
 struct Lane {
     cells: RowCells,
     removed: Vec<u128>,
-    pairs: Vec<(u32, Option<u32>)>,
+    pairs: Vec<Pair>,
 }
 
 pub struct FrameWriter {
@@ -735,7 +735,8 @@ impl Part<'_> {
             let at = self.changed.binary_search_by_key(&index, |(table, _)| *table).ok()?;
             Some(&self.changed[at].1)
         });
-        if let TableInput::SliceUpdate { update, .. } = input
+        if let TableInput::SliceUpdate { update, .. }
+        | TableInput::UniformOptionalI32 { update, .. } = input
             && written.is_none()
             && previous.is_none()
         {
@@ -778,7 +779,7 @@ impl Part<'_> {
             && let Some(last) = previous
         {
             return match written {
-                Some(written) => Self::written(rows, last, held, written),
+                Some(written) => Self::written(rows, last, held, written, &mut lane.pairs),
                 None => self.diff(index, rows, last, held, &mut lane.pairs, &mut lane.removed),
             };
         }
@@ -795,7 +796,7 @@ impl Part<'_> {
             }
             TableInput::SharedComplete(rows) => {
                 if let (Some(last), Some(written)) = (previous, written) {
-                    return Self::written(rows, last, held, written);
+                    return Self::written(rows, last, held, written, &mut lane.pairs);
                 }
                 let last = self.held[index].as_deref().filter(|_| known).or(previous);
                 match last {
@@ -820,11 +821,42 @@ impl Part<'_> {
                 None => rows.visit(held.with(Form::Changes(&[]))),
             },
             TableInput::SliceUpdate { update, .. } => match (previous, written) {
-                (Some(last), Some(written)) => Self::written(&update.rows, last, held, written),
-                (Some(last), None) => {
-                    Self::slice_diff(id, update, last, held, &mut lane.pairs, &mut lane.removed)
+                (Some(last), Some(written)) => {
+                    Self::written(&update.rows, last, held, written, &mut lane.pairs)
                 }
+                (Some(last), None) => Self::slice_diff(
+                    id,
+                    update,
+                    last,
+                    held,
+                    &mut lane.pairs,
+                    &mut lane.removed,
+                    None,
+                ),
                 (None, _) => update.rows.visit(held.with(Form::Changes(&lane.removed))),
+            },
+            TableInput::UniformOptionalI32 {
+                column,
+                value,
+                update,
+                ..
+            } => match previous {
+                Some(last) => Self::slice_diff(
+                    id,
+                    update,
+                    last,
+                    held,
+                    &mut lane.pairs,
+                    &mut lane.removed,
+                    Some((*column, *value)),
+                ),
+                None => Self::changes_uniform(
+                    &update.rows,
+                    held,
+                    &mut lane.pairs,
+                    &lane.removed,
+                    (*column, *value),
+                ),
             },
         }
     }
@@ -836,11 +868,27 @@ impl Part<'_> {
         last: &TableRows,
         held: Visit<'_>,
         written: &ChangedRows,
+        pairs: &mut Vec<Pair>,
     ) -> io::Result<TableHour> {
-        match rows.visit_pair(last, Written { held, written }) {
+        match rows.visit_pair(last, Written { held, written, pairs }) {
             Ok(hour) => hour,
             Err(Written { held, .. }) => rows.visit(held.with(Form::Complete)),
         }
+    }
+
+    fn changes_uniform(
+        rows: &TableRows,
+        held: Visit<'_>,
+        pairs: &mut Vec<Pair>,
+        removed: &[u128],
+        uniform: (usize, Option<i32>),
+    ) -> io::Result<TableHour> {
+        rows.visit(ChangesUniform {
+            held,
+            pairs,
+            removed,
+            uniform,
+        })
     }
 
     fn diff(
@@ -849,7 +897,7 @@ impl Part<'_> {
         rows: &TableRows,
         last: &TableRows,
         held: Visit<'_>,
-        pairs: &mut Vec<(u32, Option<u32>)>,
+        pairs: &mut Vec<Pair>,
         removed: &mut Vec<u128>,
     ) -> io::Result<TableHour> {
         let diff = Diff {
@@ -870,8 +918,9 @@ impl Part<'_> {
         update: &SliceUpdate,
         last: &TableRows,
         held: Visit<'_>,
-        pairs: &mut Vec<(u32, Option<u32>)>,
+        pairs: &mut Vec<Pair>,
         removed: &mut Vec<u128>,
+        uniform_optional_i32: Option<(usize, Option<i32>)>,
     ) -> io::Result<TableHour> {
         let diff = SliceDiff {
             id,
@@ -879,6 +928,7 @@ impl Part<'_> {
             held,
             pairs,
             removed,
+            uniform_optional_i32,
         };
         match update.rows.visit_pair(last, diff) {
             Ok(hour) => hour,
@@ -920,7 +970,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn owner_slice(update: &SliceUpdate) -> bool {
-    update.ranges.is_empty() && update.keys.is_empty()
+    !update.owners.is_empty() && update.ranges.is_empty() && update.keys.is_empty()
 }
 
 fn owner_of(id: TableId, key: u128) -> u32 {
@@ -1087,8 +1137,9 @@ impl<'a> Visit<'a> {
         self,
         rows: &[R],
         previous: &[R],
-        pairs: &[(u32, Option<u32>)],
+        pairs: &[Pair],
         removed: &[u128],
+        uniform_optional_i32: Option<(usize, Option<i32>)>,
     ) -> io::Result<TableHour> {
         let read = self.read;
         self.write(Native::Paired {
@@ -1096,6 +1147,7 @@ impl<'a> Visit<'a> {
             previous,
             pairs,
             removed,
+            uniform_optional_i32,
             read,
             sample: Sample::FromReadBit,
         })
@@ -1146,11 +1198,47 @@ impl RowsVisit for Rows<'_, '_> {
     }
 }
 
+#[inline]
+fn row_diff<R: RowCodec>(row: &R, previous: &R, narrow: bool) -> Option<u64> {
+    if narrow {
+        let diff = row.differing_fields(previous);
+        (diff != 0).then_some(diff)
+    } else {
+        (row != previous).then_some(u64::MAX)
+    }
+}
+
+struct ChangesUniform<'a> {
+    held: Visit<'a>,
+    pairs: &'a mut Vec<Pair>,
+    removed: &'a [u128],
+    uniform: (usize, Option<i32>),
+}
+
+impl RowsVisit for ChangesUniform<'_> {
+    type Output = io::Result<TableHour>;
+
+    fn rows<R: RowCodec>(self, rows: &[R]) -> io::Result<TableHour> {
+        let Self {
+            held,
+            pairs,
+            removed,
+            uniform,
+        } = self;
+        pairs.clear();
+        engine_allocation::reserve(pairs, rows.len())?;
+        for at in 0..rows.len() {
+            pairs.push(Pair::new(index(at)?, None));
+        }
+        held.paired(rows, &[], pairs, removed, Some(uniform))
+    }
+}
+
 struct Diff<'a> {
     held: Visit<'a>,
     hour: i32,
     dense: &'a AtomicI32,
-    pairs: &'a mut Vec<(u32, Option<u32>)>,
+    pairs: &'a mut Vec<Pair>,
     removed: &'a mut Vec<u128>,
 }
 
@@ -1179,6 +1267,7 @@ impl RowsPairVisit for Diff<'_> {
         if hour < dense.load(Ordering::Relaxed) {
             return dense_rows(held);
         }
+        let narrow = held.writer.kinds().len() <= 64;
         let limit = rows.len().max(last.len()) / 4 * 3;
         pairs.clear();
         removed.clear();
@@ -1209,14 +1298,21 @@ impl RowsPairVisit for Diff<'_> {
             let (row, previous) = (index(at)?, index(before)?);
             match (current, held_key) {
                 (Some(_), Some(_)) => {
-                    if rows[at] != last[before] {
-                        push_item(pairs, (row, Some(previous)))?;
+                    if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                        push_item(
+                            pairs,
+                            Pair {
+                                row,
+                                previous: Some(previous),
+                                diff,
+                            },
+                        )?;
                     }
                     at += 1;
                     before += 1;
                 }
                 (Some(_), None) => {
-                    push_item(pairs, (row, None))?;
+                    push_item(pairs, Pair::new(row, None))?;
                     at += 1;
                 }
                 (None, Some(old)) => {
@@ -1230,21 +1326,34 @@ impl RowsPairVisit for Diff<'_> {
                 return dense_rows(held);
             }
         }
-        held.paired(rows, last, pairs, removed)
+        held.paired(rows, last, pairs, removed, None)
     }
 }
 
 struct Written<'a> {
     held: Visit<'a>,
     written: &'a ChangedRows,
+    pairs: &'a mut Vec<Pair>,
 }
 
 impl RowsPairVisit for Written<'_> {
     type Output = io::Result<TableHour>;
 
     fn rows<R: RowCodec>(self, rows: &[R], last: &[R]) -> io::Result<TableHour> {
-        let Self { held, written } = self;
-        held.paired(rows, last, &written.pairs, &written.removed)
+        let Self {
+            held,
+            written,
+            pairs,
+        } = self;
+        pairs.clear();
+        engine_allocation::reserve(pairs, written.pairs.len())?;
+        pairs.extend(
+            written
+                .pairs
+                .iter()
+                .map(|&(row, previous)| Pair::new(row, previous)),
+        );
+        held.paired(rows, last, pairs, &written.removed, None)
     }
 }
 
@@ -1272,7 +1381,8 @@ fn merge_slice_diff<R: RowCodec>(
     new_span: std::ops::Range<usize>,
     last: &[R],
     old_span: std::ops::Range<usize>,
-    pairs: &mut Vec<(u32, Option<u32>)>,
+    narrow: bool,
+    pairs: &mut Vec<Pair>,
     removed: &mut Vec<u128>,
 ) -> io::Result<()> {
     let mut at = new_span.start;
@@ -1280,14 +1390,21 @@ fn merge_slice_diff<R: RowCodec>(
     while at < new_span.end && before < old_span.end {
         match rows[at].key().cmp(&last[before].key()) {
             std::cmp::Ordering::Equal => {
-                if rows[at] != last[before] {
-                    push_item(pairs, (index(at)?, Some(index(before)?)))?;
+                if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                    push_item(
+                        pairs,
+                        Pair {
+                            row: index(at)?,
+                            previous: Some(index(before)?),
+                            diff,
+                        },
+                    )?;
                 }
                 at += 1;
                 before += 1;
             }
             std::cmp::Ordering::Less => {
-                push_item(pairs, (index(at)?, None))?;
+                push_item(pairs, Pair::new(index(at)?, None))?;
                 at += 1;
             }
             std::cmp::Ordering::Greater => {
@@ -1297,7 +1414,7 @@ fn merge_slice_diff<R: RowCodec>(
         }
     }
     while at < new_span.end {
-        push_item(pairs, (index(at)?, None))?;
+        push_item(pairs, Pair::new(index(at)?, None))?;
         at += 1;
     }
     while before < old_span.end {
@@ -1311,8 +1428,9 @@ struct SliceDiff<'a> {
     id: TableId,
     update: &'a SliceUpdate,
     held: Visit<'a>,
-    pairs: &'a mut Vec<(u32, Option<u32>)>,
+    pairs: &'a mut Vec<Pair>,
     removed: &'a mut Vec<u128>,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
 }
 
 impl RowsPairVisit for SliceDiff<'_> {
@@ -1325,7 +1443,9 @@ impl RowsPairVisit for SliceDiff<'_> {
             held,
             pairs,
             removed,
+            uniform_optional_i32,
         } = self;
+        let narrow = held.writer.kinds().len() <= 64;
         pairs.clear();
         removed.clear();
         if !update.ranges.is_empty() {
@@ -1339,16 +1459,15 @@ impl RowsPairVisit for SliceDiff<'_> {
                     new_cursor + gallop(&rows[new_cursor..], |row| row.key() < range.start);
                 let new_end = new_start + gallop(&rows[new_start..], |row| row.key() < range.end);
                 new_cursor = new_end;
-                if rows[new_start..new_end] != last[old_start..old_end] {
-                    merge_slice_diff(
-                        rows,
-                        new_start..new_end,
-                        last,
-                        old_start..old_end,
-                        pairs,
-                        removed,
-                    )?;
-                }
+                merge_slice_diff(
+                    rows,
+                    new_start..new_end,
+                    last,
+                    old_start..old_end,
+                    narrow,
+                    pairs,
+                    removed,
+                )?;
             }
         } else if !update.keys.is_empty() {
             let (mut old_cursor, mut new_cursor) = (0, 0);
@@ -1361,12 +1480,19 @@ impl RowsPairVisit for SliceDiff<'_> {
                     (new_cursor < rows.len() && rows[new_cursor].key() == key).then_some(new_cursor);
                 match (at, before) {
                     (Some(at), Some(before)) => {
-                        if rows[at] != last[before] {
-                            push_item(pairs, (index(at)?, Some(index(before)?)))?;
+                        if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                            push_item(
+                                pairs,
+                                Pair {
+                                    row: index(at)?,
+                                    previous: Some(index(before)?),
+                                    diff,
+                                },
+                            )?;
                         }
                     }
                     (Some(at), None) => {
-                        push_item(pairs, (index(at)?, None))?;
+                        push_item(pairs, Pair::new(index(at)?, None))?;
                     }
                     (None, Some(_)) => {
                         push_item(removed, key)?;
@@ -1387,19 +1513,18 @@ impl RowsPairVisit for SliceDiff<'_> {
                 let new_end = new_start
                     + gallop(&rows[new_start..], |row| owner_of(id, row.key()) <= owner);
                 new_cursor = new_end;
-                if rows[new_start..new_end] != last[old_start..old_end] {
-                    merge_slice_diff(
-                        rows,
-                        new_start..new_end,
-                        last,
-                        old_start..old_end,
-                        pairs,
-                        removed,
-                    )?;
-                }
+                merge_slice_diff(
+                    rows,
+                    new_start..new_end,
+                    last,
+                    old_start..old_end,
+                    narrow,
+                    pairs,
+                    removed,
+                )?;
             }
         }
-        held.paired(rows, last, pairs, removed)
+        held.paired(rows, last, pairs, removed, uniform_optional_i32)
     }
 }
 
@@ -1410,7 +1535,7 @@ fn index(at: usize) -> io::Result<u32> {
 struct Compared<'a> {
     held: Visit<'a>,
     indices: &'a [usize],
-    pairs: &'a mut Vec<(u32, Option<u32>)>,
+    pairs: &'a mut Vec<Pair>,
 }
 
 impl RowsPairVisit for Compared<'_> {
@@ -1428,9 +1553,9 @@ impl RowsPairVisit for Compared<'_> {
         pairs.clear();
         engine_allocation::reserve(pairs, rows.len())?;
         for (at, &before) in indices.iter().enumerate() {
-            pairs.push((index(at)?, Some(index(before)?)));
+            pairs.push(Pair::new(index(at)?, Some(index(before)?)));
         }
-        held.paired(rows, last, pairs, &[])
+        held.paired(rows, last, pairs, &[], None)
     }
 }
 

@@ -262,6 +262,110 @@ impl SliceUpdate {
         })
     }
 
+    pub fn diff_owners(
+        previous: &TableRows,
+        fresh: TableRows,
+        read: impl Fn(u32) -> bool,
+        live: impl Fn(u32) -> bool,
+    ) -> io::Result<Self> {
+        fn diff<R: SlicedRow>(
+            previous: &[R],
+            fresh: Vec<R>,
+            read: impl Fn(u32) -> bool,
+            live: impl Fn(u32) -> bool,
+        ) -> io::Result<(Vec<u128>, Vec<R>)> {
+            let mut prev_key: Option<u128> = None;
+            let mut last_owner: Option<u32> = None;
+            let mut fresh_owners = 0_usize;
+            for row in &fresh {
+                let key = row.key();
+                if prev_key.is_some_and(|prev| prev >= key) {
+                    return Err(invalid(
+                        "sliced read holds an unread owner's row or is not in key order",
+                    ));
+                }
+                prev_key = Some(key);
+                let owner = row.owner();
+                if last_owner != Some(owner) {
+                    if !read(owner) {
+                        return Err(invalid(
+                            "sliced read holds an unread owner's row or is not in key order",
+                        ));
+                    }
+                    last_owner = Some(owner);
+                    fresh_owners += 1;
+                }
+            }
+            let owners = merge_owners(previous, &fresh, fresh_owners, |owner| {
+                read(owner) || !live(owner)
+            })?;
+            let mut keys = Vec::new();
+            let mut rows = Vec::new();
+            let mut next_old = 0;
+            let mut fresh_iter = fresh.into_iter().peekable();
+            for owner in owners {
+                let old_range = owner_range_from(previous, next_old, owner);
+                next_old = old_range.end;
+                let mut old_at = old_range.start;
+                loop {
+                    let old_row = (old_at < old_range.end).then(|| &previous[old_at]);
+                    let new_key = fresh_iter
+                        .peek()
+                        .filter(|row| row.owner() == owner)
+                        .map(R::key);
+                    match (old_row, new_key) {
+                        (None, None) => break,
+                        (Some(old), Some(key)) if old.key() == key => {
+                            let row = fresh_iter.next().unwrap();
+                            if row != *old {
+                                allocation::reserve_push_batch(&mut keys, 1)?;
+                                allocation::reserve_push_batch(&mut rows, 1)?;
+                                keys.push(key);
+                                rows.push(row);
+                            }
+                            old_at += 1;
+                        }
+                        (Some(old), Some(key)) if key < old.key() => {
+                            let row = fresh_iter.next().unwrap();
+                            allocation::reserve_push_batch(&mut keys, 1)?;
+                            allocation::reserve_push_batch(&mut rows, 1)?;
+                            keys.push(key);
+                            rows.push(row);
+                        }
+                        (None, Some(key)) => {
+                            let row = fresh_iter.next().unwrap();
+                            allocation::reserve_push_batch(&mut keys, 1)?;
+                            allocation::reserve_push_batch(&mut rows, 1)?;
+                            keys.push(key);
+                            rows.push(row);
+                        }
+                        (Some(old), _) => {
+                            allocation::reserve_push_batch(&mut keys, 1)?;
+                            keys.push(old.key());
+                            old_at += 1;
+                        }
+                    }
+                }
+            }
+            Ok((keys, rows))
+        }
+        let (keys, rows) = sliced_pair!(
+            previous,
+            fresh,
+            |old, new, wrap| {
+                let (keys, changed) = diff(old, new, read, live)?;
+                (keys, wrap(changed))
+            },
+            return Err(invalid("cannot merge different sliced table types"))
+        );
+        Ok(Self {
+            owners: Vec::new(),
+            ranges: Vec::new(),
+            keys,
+            rows,
+        })
+    }
+
     pub fn owners(&self) -> &[u32] {
         &self.owners
     }
@@ -289,6 +393,9 @@ impl SliceUpdate {
                     |_old, new, _wrap| key_fits(new, &self.keys),
                     false
                 );
+        }
+        if self.owners.is_empty() && self.rows.is_empty() {
+            return self.rows.table() == previous.table();
         }
         fn fits<R: SlicedRow>(fresh: &[R], listed: &[u32]) -> bool {
             fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
@@ -516,6 +623,9 @@ impl SliceUpdate {
             Ok(replaced)
         }
         let Self { owners, rows, .. } = self;
+        if owners.is_empty() && rows.is_empty() && rows.table() == previous.table() {
+            return Ok(TableRows::empty(previous.table()));
+        }
         sliced_pair!(
             &mut *previous,
             rows,
@@ -1003,5 +1113,45 @@ mod tests {
                 .iter()
                 .all(|row| row.monthly.items.as_ptr() == allocation)
         );
+    }
+
+    #[test]
+    fn diff_owners_emits_only_changed_keys_and_matches_full_merge() {
+        let row = |country: u32, id: u64, fuel: i64| LendLeaseAgreementRow {
+            country,
+            id,
+            fuel_sent_raw: fuel,
+            ..Default::default()
+        };
+        let previous = TableRows::LendLeaseAgreements(vec![
+            row(1, 1, 10),
+            row(1, 2, 20),
+            row(2, 1, 30),
+            row(3, 1, 40),
+        ]);
+        let fresh = TableRows::LendLeaseAgreements(vec![
+            row(1, 1, 10),
+            row(1, 2, 25),
+            row(1, 3, 99),
+        ]);
+        let read = |owner| owner == 1;
+        let live = |owner| owner != 3;
+        let full = SliceUpdate::new(&previous, fresh.clone(), read, live).unwrap();
+        let diff = SliceUpdate::diff_owners(&previous, fresh, read, live).unwrap();
+        assert!(diff.owners.is_empty());
+        assert!(diff.fits(&previous));
+        assert_eq!(diff.rows.len(), 2);
+        assert_eq!(diff.keys.len(), 3);
+        assert_eq!(
+            diff.merged(&previous).unwrap(),
+            full.merged(&previous).unwrap()
+        );
+        let unchanged_fresh = TableRows::LendLeaseAgreements(vec![row(2, 1, 30)]);
+        let empty = SliceUpdate::diff_owners(&previous, unchanged_fresh, |o| o == 2, |_| true)
+            .unwrap();
+        assert!(empty.keys.is_empty());
+        assert!(empty.rows.is_empty());
+        assert!(empty.fits(&previous));
+        assert_eq!(empty.merged(&previous).unwrap(), previous);
     }
 }

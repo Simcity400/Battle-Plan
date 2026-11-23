@@ -2097,7 +2097,8 @@ mod conversion_tests {
             TableInput::Sampled(actual) => assert_eq!(actual, &expected),
             TableInput::ComparedEqual(_)
             | TableInput::ComparedChanges { .. }
-            | TableInput::SliceUpdate { .. } => {
+            | TableInput::SliceUpdate { .. }
+            | TableInput::UniformOptionalI32 { .. } => {
                 panic!("lexical reuse must retain full encoder validation")
             }
         }

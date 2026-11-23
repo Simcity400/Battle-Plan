@@ -31,7 +31,8 @@ fn assert_canonical(current: &Captured, input: &[TableInput; N]) {
             }
             TableInput::ComparedEqual(_)
             | TableInput::ComparedChanges { .. }
-            | TableInput::SliceUpdate { .. } => {
+            | TableInput::SliceUpdate { .. }
+            | TableInput::UniformOptionalI32 { .. } => {
                 panic!("character reuse cannot bypass validation")
             }
         }

@@ -109,6 +109,47 @@ impl<'a> Projection<'a> {
             .observed_comparison_baseline::<S>(self.branch, self.hour, self.force)
     }
 
+    pub fn slice_baseline_rows<S: TableSchema>(
+        &self,
+    ) -> Option<(replay_frame::frame::BaselineToken, &'a [S::Row])> {
+        let (token, previous) =
+            self.encoder
+                .slice_baseline(S::ID, self.branch, self.hour, self.force)?;
+        Some((token, previous.rows::<S>()?))
+    }
+
+    pub fn current_stamp(&self) -> (u64, BranchId, Hour) {
+        (self.encoder.identity(), self.branch, self.hour)
+    }
+
+    pub fn take_custom<T: Send + 'static>(&self, table: TableId) -> Option<Box<T>> {
+        self.scratch
+            .table(table)
+            .ledger
+            .take()
+            .and_then(|state| state.downcast().ok())
+    }
+
+    pub fn put_custom<T: Send + 'static>(&self, table: TableId, state: Box<T>) {
+        self.scratch.table(table).ledger = Some(state);
+    }
+
+    pub fn note_compared(&self, table: TableId, updated_rows: Option<usize>) {
+        let mut order = self.scratch.table(table);
+        order.compared = order.compared.saturating_add(1);
+        match updated_rows {
+            None => order.reused = order.reused.saturating_add(1),
+            Some(rows) => {
+                order.updated = order.updated.saturating_add(1);
+                order.updated_rows = order.updated_rows.saturating_add(rows as u64);
+            }
+        }
+    }
+
+    pub fn timed<R>(&self, table: TableId, work: impl FnOnce() -> R) -> R {
+        crate::table_clock::timed(table, work)
+    }
+
     pub fn new(
         encoder: &'a FrameEncoder,
         branch: BranchId,
@@ -155,6 +196,7 @@ impl<'a> Projection<'a> {
                 | TableInput::ComparedEqual(_)
                 | TableInput::ComparedChanges { .. }
                 | TableInput::SliceUpdate { .. }
+                | TableInput::UniformOptionalI32 { .. }
         );
         let mut order = self.scratch.table(table);
         order.held_converted = order.held_converted.saturating_add(1);

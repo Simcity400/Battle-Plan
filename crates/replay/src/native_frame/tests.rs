@@ -1048,6 +1048,146 @@ fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
             vec![(TableInput::Sampled(TableView::Complete(TableRows::RailCooldowns(rows))), true)],
         );
     }
+    for count in [10_u32, 80_u32] {
+        let make_row = |province: u32, hour: i32| RailCooldownRow {
+            province,
+            cooldown_ticks: if province == 2 && hour >= 3 { 55 } else { 10 },
+            building: Recorded::Value(Some(RailwayBuildingState {
+                building: Some(RailwayBuildingHealth {
+                    level: 1,
+                    healthy: 1,
+                    partial: None,
+                }),
+            })),
+            selection: Recorded::Value(Some(RailwaySelectionInputs {
+                levels: Some(vec![1, 2, 3]),
+                pair_count: Some(2),
+                building_level: Some(Some(1)),
+            })),
+            selection_hour: Recorded::Value(if hour == 5 { None } else { Some(hour) }),
+            building_bound: Recorded::Value(Some(true)),
+        };
+        let frame_of = |hour: i32, table: TableInput| {
+            let mut tables = std::array::from_fn(|_| {
+                TableInput::Sampled(TableView::Unavailable {
+                    reason: "unused".into(),
+                })
+            });
+            tables[TableId::RailCooldowns.index()] = table;
+            let mut metrics = Metrics::default();
+            metrics.table_ns[TableId::RailCooldowns.index()] = 1;
+            FrameInput {
+                branch: 1,
+                hour,
+                tables,
+                metrics,
+            }
+        };
+        let mut enc_ref = FrameEncoder::new();
+        let mut enc_uni = FrameEncoder::new();
+        let mut w_ref = FrameWriter::new().unwrap();
+        let mut w_uni_with = FrameWriter::new().unwrap();
+        let mut w_uni_no_base = FrameWriter::new().unwrap();
+        let mut w_uni_rows = FrameWriter::with_staging(native_columns::Staging::Rows).unwrap();
+        for hour in 1..=6 {
+            let range = match hour {
+                4 => 1..=(count + 1),
+                6 => 2..=count,
+                _ => 1..=count,
+            };
+            let full_rows: Vec<_> = range.clone().map(|p| make_row(p, hour)).collect();
+            let ref_input = frame_of(
+                hour,
+                TableInput::SharedComplete(Arc::new(TableRows::RailCooldowns(full_rows.clone()))),
+            );
+            let ref_prepared = enc_ref.prepare_bytes(ref_input.clone(), false).unwrap();
+            let ref_hour = w_ref
+                .hour_on(
+                    &ref_input,
+                    &[],
+                    Some(RowFrame {
+                        baselines: Some(&enc_ref),
+                        keyframe: false,
+                        changed: &[],
+                    }),
+                    &OneThread,
+                )
+                .unwrap();
+            let ref_sections: Vec<(usize, Vec<u8>)> = ref_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            let ref_manifest = ref_hour.manifest.clone();
+            w_ref.commit(ref_hour).unwrap();
+            enc_ref.commit(ref_prepared).unwrap();
+
+            let uni_table = if hour == 1 {
+                TableInput::SharedComplete(Arc::new(TableRows::RailCooldowns(full_rows)))
+            } else {
+                let (token, _) = enc_uni
+                    .slice_baseline(TableId::RailCooldowns, 1, hour, false)
+                    .unwrap();
+                let (keys, changed) = match hour {
+                    2 => (Vec::new(), Vec::new()),
+                    3 => (vec![2], vec![make_row(2, hour)]),
+                    4 => (vec![u128::from(count + 1)], vec![make_row(count + 1, hour)]),
+                    5 => (vec![u128::from(count + 1)], Vec::new()),
+                    6 => (vec![1], Vec::new()),
+                    _ => unreachable!(),
+                };
+                TableInput::UniformOptionalI32 {
+                    token,
+                    column: 3,
+                    value: if hour == 5 { None } else { Some(hour) },
+                    update: Arc::new(SliceUpdate::keyed(keys, TableRows::RailCooldowns(changed))),
+                }
+            };
+            let uni_input = frame_of(hour, uni_table);
+            let uni_prepared = enc_uni.prepare_bytes(uni_input.clone(), false).unwrap();
+            let uni_hour = w_uni_with
+                .hour_on(
+                    &uni_input,
+                    &[],
+                    Some(RowFrame {
+                        baselines: Some(&enc_uni),
+                        keyframe: false,
+                        changed: &[],
+                    }),
+                    &OneThread,
+                )
+                .unwrap();
+            let uni_sections: Vec<(usize, Vec<u8>)> = uni_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            assert_eq!(uni_sections, ref_sections, "count={count} hour={hour}");
+            assert_eq!(uni_hour.manifest, ref_manifest, "count={count} hour={hour}");
+            w_uni_with.commit(uni_hour).unwrap();
+
+            let no_base_hour = w_uni_no_base.hour(&uni_input).unwrap();
+            let no_base_sections: Vec<(usize, Vec<u8>)> = no_base_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            assert_eq!(no_base_sections, ref_sections, "no_base count={count} hour={hour}");
+            w_uni_no_base.commit(no_base_hour).unwrap();
+
+            let rows_hour = w_uni_rows.hour(&uni_input).unwrap();
+            let rows_sections: Vec<(usize, Vec<u8>)> = rows_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            assert_eq!(rows_sections, ref_sections, "rows count={count} hour={hour}");
+            w_uni_rows.commit(rows_hour).unwrap();
+
+            enc_uni.commit(uni_prepared).unwrap();
+            assert_eq!(
+                enc_uni.committed_rows(TableId::RailCooldowns),
+                enc_ref.committed_rows(TableId::RailCooldowns),
+                "baseline count={count} hour={hour}"
+            );
+        }
+    }
 }
 
 struct Conversion {

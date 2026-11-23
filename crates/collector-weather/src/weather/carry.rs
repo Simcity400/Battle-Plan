@@ -329,6 +329,11 @@ pub(super) fn capture_provinces(
         sweather_per_province::STRIDE,
         layout,
     );
+    job.province_window = job
+        .carry
+        .as_deref()
+        .filter(|carry| carry.provinces_followed)
+        .and_then(|carry| carry.window(Part::Provinces));
 }
 
 fn capture(
@@ -642,6 +647,7 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
         }
         _ => None,
     };
+    job.modifiers_windowed = window.is_some();
     if window.is_some() {
         MODIFIER_WINDOW_HOURS.fetch_add(1, Relaxed);
     } else {
@@ -677,8 +683,10 @@ pub(super) fn capture_province_statics(memory: &impl Memory, job: &mut WeatherJo
     job.province_statics = None;
     if let Some(held) = job.carry.as_deref().and_then(WeatherCarry::statics_held) {
         job.province_statics = Some(held.clone());
+        job.statics_held = true;
         return;
     }
+    job.statics_held = false;
     let previous = job
         .carry
         .as_deref_mut()

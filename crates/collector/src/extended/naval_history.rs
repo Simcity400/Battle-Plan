@@ -757,63 +757,146 @@ impl Captured {
                 }
             })
         };
+        let non_hour_equal = |r: &cprovince_railway_info::Row, previous: &rows::RailCooldownRow| {
+            if r.cooldown_ticks != previous.cooldown_ticks
+                || previous.building_bound != rows::Recorded::Value(Some(r.building_bound))
+            {
+                return false;
+            }
+            let entry = entry_of(r);
+            if previous.building != rows::Recorded::Value(building_of(entry)) {
+                return false;
+            }
+            let selected = rail_hour.and_then(|_| entry?.selection);
+            match (selected, &previous.selection) {
+                (None, rows::Recorded::Value(None)) => true,
+                (Some(selected), rows::Recorded::Value(Some(prev))) => {
+                    let levels = selected.levels.ok().and_then(|span| {
+                        let end = span.first.checked_add(span.len)?;
+                        rail_levels?.get(span.first..end)
+                    });
+                    prev.levels.as_deref() == levels
+                        && prev.pair_count == selected.pair_count.ok()
+                        && prev.building_level == selected.building_level.ok().flatten()
+                }
+                _ => false,
+            }
+        };
+        let convert = |r: &cprovince_railway_info::Row| {
+            let entry = entry_of(r);
+            let building = building_of(entry);
+            let selection = rail_hour.and_then(|_| {
+                let selected = entry?.selection?;
+                let levels = selected.levels.ok().and_then(|span| {
+                    let end = span.first.checked_add(span.len)?;
+                    rail_levels?
+                        .get(span.first..end)
+                        .map(|values| owned_vec(copy_vec(values)))
+                });
+                Some(rows::RailwaySelectionInputs {
+                    levels,
+                    pair_count: selected.pair_count.ok(),
+                    building_level: selected.building_level.ok().flatten(),
+                })
+            });
+            rows::RailCooldownRow {
+                province: r.province,
+                cooldown_ticks: r.cooldown_ticks,
+                building: rows::Recorded::Value(building),
+                selection: rows::Recorded::Value(selection),
+                selection_hour: rows::Recorded::Value(rail_hour),
+                building_bound: rows::Recorded::Value(Some(r.building_bound)),
+            }
+        };
+        if let Some(projection) = projection.as_deref()
+            && matches!(outcome, Outcome::Rows { .. })
+            && !replay_data::cadence::is_staggered(TableId::RailCooldowns)
+            && let Some(source) = self.cooldowns.rows.get(..outcome.len())
+            && source
+                .windows(2)
+                .all(|pair| pair[0].province < pair[1].province)
+            && let Some((token, previous)) =
+                projection.slice_baseline_rows::<tables::RailCooldowns>()
+        {
+            return projection.timed(TableId::RailCooldowns, || {
+                let target_hour = rows::Recorded::Value(rail_hour);
+                let mut all_same_hour = true;
+                let mut keys = Vec::new();
+                let mut changed = Vec::new();
+                let mut edit = |key: u128, row: Option<rows::RailCooldownRow>| {
+                    if keys.len() == keys.capacity() {
+                        engine_allocation::reserve(&mut keys, 1)?;
+                    }
+                    keys.push(key);
+                    if let Some(mut row) = row {
+                        row.round_to_display();
+                        if changed.len() == changed.capacity() {
+                            engine_allocation::reserve(&mut changed, 1)?;
+                        }
+                        changed.push(row);
+                    }
+                    Ok::<_, std::io::Error>(())
+                };
+                let (mut current, mut held) = (0, 0);
+                let merged = loop {
+                    let row = source.get(current);
+                    let result = match (row, previous.get(held)) {
+                        (None, None) => break Ok(()),
+                        (Some(row), Some(baseline)) if row.province == baseline.province => {
+                            current += 1;
+                            held += 1;
+                            all_same_hour &= baseline.selection_hour == target_hour;
+                            if non_hour_equal(row, baseline) {
+                                continue;
+                            }
+                            edit(u128::from(row.province), Some(convert(row)))
+                        }
+                        (Some(row), baseline)
+                            if baseline.is_none_or(|b| row.province < b.province) =>
+                        {
+                            current += 1;
+                            all_same_hour = false;
+                            edit(u128::from(row.province), Some(convert(row)))
+                        }
+                        (_, Some(baseline)) => {
+                            held += 1;
+                            edit(baseline.key(), None)
+                        }
+                        (Some(_), None) => unreachable!("absent baseline takes insert arm"),
+                    };
+                    if result.is_err() {
+                        break result;
+                    }
+                };
+                if merged.is_err() {
+                    return unavailable("collector allocation failed").into();
+                }
+                if keys.is_empty() && all_same_hour {
+                    projection.note_compared(TableId::RailCooldowns, None);
+                    return TableInput::ComparedEqual(token);
+                }
+                projection.note_compared(TableId::RailCooldowns, Some(changed.len()));
+                TableInput::UniformOptionalI32 {
+                    token,
+                    column: 3,
+                    value: rail_hour,
+                    update: std::sync::Arc::new(replay_data::sliced::SliceUpdate::keyed(
+                        keys,
+                        TableRows::RailCooldowns(changed),
+                    )),
+                }
+            });
+        }
         project_table::<tables::RailCooldowns, _>(
             projection,
             outcome,
             &self.cooldowns.rows,
             |r| u128::from(r.province),
             |r, previous| {
-                if r.cooldown_ticks != previous.cooldown_ticks
-                    || previous.selection_hour != rows::Recorded::Value(rail_hour)
-                    || previous.building_bound != rows::Recorded::Value(Some(r.building_bound))
-                {
-                    return false;
-                }
-                let entry = entry_of(r);
-                if previous.building != rows::Recorded::Value(building_of(entry)) {
-                    return false;
-                }
-                let selected = rail_hour.and_then(|_| entry?.selection);
-                match (selected, &previous.selection) {
-                    (None, rows::Recorded::Value(None)) => true,
-                    (Some(selected), rows::Recorded::Value(Some(prev))) => {
-                        let levels = selected.levels.ok().and_then(|span| {
-                            let end = span.first.checked_add(span.len)?;
-                            rail_levels?.get(span.first..end)
-                        });
-                        prev.levels.as_deref() == levels
-                            && prev.pair_count == selected.pair_count.ok()
-                            && prev.building_level == selected.building_level.ok().flatten()
-                    }
-                    _ => false,
-                }
+                previous.selection_hour == rows::Recorded::Value(rail_hour)
+                    && non_hour_equal(r, previous)
             },
-            |r| {
-                let entry = entry_of(r);
-                let building = building_of(entry);
-                let selection = rail_hour.and_then(|_| {
-                    let selected = entry?.selection?;
-                    let levels = selected.levels.ok().and_then(|span| {
-                        let end = span.first.checked_add(span.len)?;
-                        rail_levels?
-                            .get(span.first..end)
-                            .map(|values| owned_vec(copy_vec(values)))
-                    });
-                    Some(rows::RailwaySelectionInputs {
-                        levels,
-                        pair_count: selected.pair_count.ok(),
-                        building_level: selected.building_level.ok().flatten(),
-                    })
-                });
-                rows::RailCooldownRow {
-                    province: r.province,
-                    cooldown_ticks: r.cooldown_ticks,
-                    building: rows::Recorded::Value(building),
-                    selection: rows::Recorded::Value(selection),
-                    selection_hour: rows::Recorded::Value(rail_hour),
-                    building_bound: rows::Recorded::Value(Some(r.building_bound)),
-                }
-            },
+            convert,
         )
     }
 

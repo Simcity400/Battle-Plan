@@ -258,6 +258,7 @@ pub struct Batch {
     keys: Vec<u128>,
     columns: Vec<Cells>,
     sparse: bool,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
 }
 
 impl Batch {
@@ -272,6 +273,7 @@ impl Batch {
             }
         }
         self.sparse = false;
+        self.uniform_optional_i32 = None;
         self.keys.clear();
         if self.columns.len() < kinds.len() {
             engine_allocation::resize_default(&mut self.columns, kinds.len())?;
@@ -302,6 +304,7 @@ impl Batch {
             }
         }
         self.sparse = true;
+        self.uniform_optional_i32 = None;
         self.keys.clear();
         if self.columns.len() < kinds.len() {
             engine_allocation::resize_default(&mut self.columns, kinds.len())?;
@@ -311,6 +314,14 @@ impl Batch {
         if self.keys.capacity() < rows {
             engine_allocation::reserve(&mut self.keys, rows)?;
         }
+        Ok(())
+    }
+
+    pub fn fill_optional_i32(&mut self, column: usize, value: Option<i32>) -> io::Result<()> {
+        if self.kinds.get(column).copied() != Some(Kind::OptionalI32) {
+            return Err(invalid_static("A uniform fill targets another column kind"));
+        }
+        self.uniform_optional_i32 = Some((column, value));
         Ok(())
     }
 
@@ -1376,6 +1387,18 @@ impl Out {
         Ok(())
     }
 
+    fn push_optional_i32(&mut self, value: Option<i32>) -> io::Result<()> {
+        if self.count % 64 == 0 {
+            push(&mut self.present, 0)?;
+        }
+        if let Some(value) = value {
+            self.present[self.count / 64] |= 1 << (self.count % 64);
+            push(&mut self.i32s, value)?;
+        }
+        self.count += 1;
+        Ok(())
+    }
+
     fn fill(&mut self, kind: Kind, pending: &Pending, order: &[u32]) -> io::Result<()> {
         self.clear();
         for &at in order {
@@ -1658,6 +1681,7 @@ pub struct TableWriter {
     dirty: Vec<u64>,
     sweep: Sweep,
     work: Work,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
 }
 
 #[derive(Default)]
@@ -1744,6 +1768,7 @@ impl TableWriter {
             dirty: engine_allocation::filled(columns.div_ceil(64), 0_u64)?,
             sweep: Sweep::Touched,
             work: Work::default(),
+            uniform_optional_i32: None,
         })
     }
 
@@ -1879,6 +1904,7 @@ impl TableWriter {
         self.touched.clear();
         self.new_keys.clear();
         self.removed.clear();
+        self.uniform_optional_i32 = None;
         if let Coverage::Changes { removed } = coverage {
             engine_allocation::reserve(&mut self.removed, removed.len())?;
             self.removed.extend_from_slice(removed);
@@ -2341,11 +2367,22 @@ impl Hour<'_> {
             cursors,
             order,
             dirty,
+            uniform_optional_i32,
             ..
         } = &mut *self.writer;
         let rows = batch.keys.len();
         if batch.kinds.as_slice() != &**kinds {
             return Err(invalid_static("A batch's columns differ from its table's"));
+        }
+        if let Some((column, value)) = batch.uniform_optional_i32 {
+            if matches!(self.coverage, Coverage::Partial) {
+                return Err(invalid_static("A partly read table cannot take a uniform fill"));
+            }
+            if kinds.get(column).copied() != Some(Kind::OptionalI32) {
+                return Err(invalid_static("A uniform fill targets another column kind"));
+            }
+            *uniform_optional_i32 = Some((column, value));
+            mark_dirty(dirty, column);
         }
         if u32::try_from(rows).is_err() {
             return Err(invalid_static("A batch holds more than 2^32 rows"));
@@ -2452,53 +2489,58 @@ impl Hour<'_> {
                     }
                     continue;
                 }
-                let held = table
-                    .column(column)
-                    .ok_or_else(|| invalid_static("A batch names a column past the table"))?;
-                let marked = table.unrecorded_bits(column).filter(|bits| {
-                    let words = bits.words();
-                    words.len() > cells.rows.len() || words.iter().any(|&word| word != 0)
-                });
-                let mut staged = Staged {
-                    slots,
-                    cells,
-                    marked,
-                    pending: &mut updates[column],
-                    unrecord: &mut unrecord[column],
-                    dirty: false,
-                    has_new,
-                };
-                let compared = match held {
-                    Column::U8(values) => staged.sparse_scalars(values),
-                    Column::I8(values) => staged.sparse_scalars(values),
-                    Column::U16(values) => staged.sparse_scalars(values),
-                    Column::I16(values) => staged.sparse_scalars(values),
-                    Column::U32(values) => staged.sparse_scalars(values),
-                    Column::I32(values) => staged.sparse_scalars(values),
-                    Column::U64(values) => staged.sparse_scalars(values),
-                    Column::I64(values) => staged.sparse_scalars(values),
-                    Column::Bool(values) => staged.sparse_bools(values),
-                    Column::OptionalI32(values, presence) => {
-                        staged.sparse_optionals(values, presence)
+                let skip_existing = batch
+                    .uniform_optional_i32
+                    .is_some_and(|(col, _)| col == column);
+                if !skip_existing {
+                    let held = table
+                        .column(column)
+                        .ok_or_else(|| invalid_static("A batch names a column past the table"))?;
+                    let marked = table.unrecorded_bits(column).filter(|bits| {
+                        let words = bits.words();
+                        words.len() > cells.rows.len() || words.iter().any(|&word| word != 0)
+                    });
+                    let mut staged = Staged {
+                        slots,
+                        cells,
+                        marked,
+                        pending: &mut updates[column],
+                        unrecord: &mut unrecord[column],
+                        dirty: false,
+                        has_new,
+                    };
+                    let compared = match held {
+                        Column::U8(values) => staged.sparse_scalars(values),
+                        Column::I8(values) => staged.sparse_scalars(values),
+                        Column::U16(values) => staged.sparse_scalars(values),
+                        Column::I16(values) => staged.sparse_scalars(values),
+                        Column::U32(values) => staged.sparse_scalars(values),
+                        Column::I32(values) => staged.sparse_scalars(values),
+                        Column::U64(values) => staged.sparse_scalars(values),
+                        Column::I64(values) => staged.sparse_scalars(values),
+                        Column::Bool(values) => staged.sparse_bools(values),
+                        Column::OptionalI32(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::OptionalU32(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::OptionalI64(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::OptionalU64(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::U32List(values) => staged.sparse_lists(values, &cells.u32s),
+                        Column::U64List(values) => staged.sparse_lists(values, &cells.u64s),
+                        Column::Opaque(values) => staged.sparse_lists(values, &cells.bytes),
+                        Column::Bytes(_) => Ok(()),
+                    };
+                    if staged.dirty {
+                        mark_dirty(dirty, column);
                     }
-                    Column::OptionalU32(values, presence) => {
-                        staged.sparse_optionals(values, presence)
-                    }
-                    Column::OptionalI64(values, presence) => {
-                        staged.sparse_optionals(values, presence)
-                    }
-                    Column::OptionalU64(values, presence) => {
-                        staged.sparse_optionals(values, presence)
-                    }
-                    Column::U32List(values) => staged.sparse_lists(values, &cells.u32s),
-                    Column::U64List(values) => staged.sparse_lists(values, &cells.u64s),
-                    Column::Opaque(values) => staged.sparse_lists(values, &cells.bytes),
-                    Column::Bytes(_) => Ok(()),
-                };
-                if staged.dirty {
-                    mark_dirty(dirty, column);
+                    compared?;
                 }
-                compared?;
                 if has_new {
                     let mut entry = 0usize;
                     for (index, &ins_row) in (0u32..).zip(insert_rows.iter()) {
@@ -2681,8 +2723,8 @@ impl Hour<'_> {
         }
         let columns = writer.kinds.len();
         writer.work.columns += dirty_count(&writer.dirty);
-        let seen =
-            |slot: u32| ordered || writer.seen[slot as usize / 64] >> (slot % 64) & 1 != 0;
+        let is_seen =
+            |seen: &[u64], slot: u32| ordered || seen[slot as usize / 64] >> (slot % 64) & 1 != 0;
         let partial = matches!(coverage, Coverage::Partial);
         let Parts {
             deleted,
@@ -2707,7 +2749,7 @@ impl Hour<'_> {
         match coverage {
             Coverage::Complete if !ordered => {
                 for slot in writer.table.live().ones() {
-                    if !seen(slot) {
+                    if !is_seen(&writer.seen, slot) {
                         push(deleted, slot)?;
                     }
                 }
@@ -2798,7 +2840,98 @@ impl Hour<'_> {
         reserve(insert_order, by_slot.len())?;
         insert_order.extend(by_slot.iter().map(|entry| entry.2));
         let mut live_after = None;
+        let mut direct_fill = None;
+        if let Some((col, value)) = writer.uniform_optional_i32 {
+            let live = *live_after.get_or_insert_with(|| {
+                writer.table.live().count() - deleted.len() + inserted_slots.len()
+            });
+            let runs = &mut writer.runs[col];
+            runs.clear();
+            if live > 0 {
+                let Some(Column::OptionalI32(held_vals, held_presence)) = writer.table.column(col)
+                else {
+                    return Err(invalid_static("A uniform fill targets another column kind"));
+                };
+                let marked = writer.table.unrecorded_bits(col).filter(|bits| {
+                    bits.words().iter().any(|&word| word != 0)
+                });
+                let mut del = deleted.iter().copied().peekable();
+                let mut held = writer
+                    .table
+                    .live()
+                    .ones()
+                    .filter(|&slot| {
+                        while del.next_if(|&gone| gone < slot).is_some() {}
+                        del.next_if_eq(&slot).is_none()
+                    })
+                    .peekable();
+                let mut ins = inserted_slots.iter().copied().peekable();
+                let mut changing = 0usize;
+                loop {
+                    match (held.peek().copied(), ins.peek().copied()) {
+                        (Some(kept), Some(new)) if new < kept => {
+                            ins.next();
+                            push(&mut runs.except, new)?;
+                        }
+                        (Some(kept), _) => {
+                            held.next();
+                            let was = !marked.is_some_and(|bits| bits.get(kept));
+                            let old = held_presence.get(kept).then(|| {
+                                *held_vals
+                                    .get(kept as usize)
+                                    .expect("live slot is within column")
+                            });
+                            if was && old == value {
+                                push(&mut runs.except, kept)?;
+                            } else {
+                                changing += 1;
+                            }
+                        }
+                        (None, Some(new)) => {
+                            ins.next();
+                            push(&mut runs.except, new)?;
+                        }
+                        (None, None) => break,
+                    }
+                }
+                if changing == 0 {
+                    runs.except.clear();
+                } else if changing >= FILL_MINIMUM && changing * 2 >= live {
+                    runs.fill = true;
+                    direct_fill = Some((col, value, changing));
+                } else {
+                    runs.except.clear();
+                    let mut del = deleted.iter().copied().peekable();
+                    for kept in writer.table.live().ones() {
+                        while del.next_if(|&gone| gone < kept).is_some() {}
+                        if del.next_if_eq(&kept).is_some() {
+                            continue;
+                        }
+                        let was = !marked.is_some_and(|bits| bits.get(kept));
+                        let old = held_presence.get(kept).then(|| {
+                            *held_vals
+                                .get(kept as usize)
+                                .expect("live slot is within column")
+                        });
+                        if was && old == value {
+                            continue;
+                        }
+                        if writer.seen[kept as usize / 64] >> (kept % 64) & 1 == 0 {
+                            see(&mut writer.seen, &mut writer.visited, kept)?;
+                        }
+                        writer.updates[col].change(
+                            kept,
+                            Cell::OptionalI32(value),
+                            was.then_some(Cell::OptionalI32(old)),
+                        )?;
+                    }
+                }
+            }
+        }
         for column in dirty_columns(&writer.dirty) {
+            if direct_fill.is_some_and(|(col, _, _)| col == column) {
+                continue;
+            }
             let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
             let noops = &mut writer.noops[column];
             runs.clear();
@@ -2853,12 +2986,16 @@ impl Hour<'_> {
             changed.sort_unstable();
             changed.dedup();
         }
-        if changed.iter().any(|&slot| !seen(slot)) {
+        if changed.iter().any(|&slot| !is_seen(&writer.seen, slot)) {
             return Err(invalid_static(
                 "A row has a NOOP but was not visited this hour",
             ));
         }
-        if writer.touched.iter().any(|&slot| !seen(slot)) {
+        if writer
+            .touched
+            .iter()
+            .any(|&slot| !is_seen(&writer.seen, slot))
+        {
             return Err(invalid_static(
                 "A row is touched but was not visited this hour",
             ));
@@ -2895,10 +3032,19 @@ impl Hour<'_> {
             let kind = writer.kinds[column];
             let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
             if runs.fill {
-                runs.values.push(kind, pending, &pending.words, 0)?;
-                census.fills += 1;
-                census.fill_slots += pending.len() as u64;
-                census.fill_exceptions += runs.except.len() as u64;
+                if let Some((_, value, changing)) =
+                    direct_fill.filter(|&(col, _, _)| col == column)
+                {
+                    runs.values.push_optional_i32(value)?;
+                    census.fills += 1;
+                    census.fill_slots += changing as u64;
+                    census.fill_exceptions += runs.except.len() as u64;
+                } else {
+                    runs.values.push(kind, pending, &pending.words, 0)?;
+                    census.fills += 1;
+                    census.fill_slots += pending.len() as u64;
+                    census.fill_exceptions += runs.except.len() as u64;
+                }
             } else {
                 let uniform = pending.uniform && pending.len() > 1;
                 let mut pos = 0usize;

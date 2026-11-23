@@ -525,7 +525,7 @@ fn paired_and_aligned_sparse_staging_matches_row_staging() {
         ship(8, 77, Some(4).into(), None),
         ship(11, 9, Recorded::NotRecorded, Some(b"New".as_slice())),
     ];
-    let pairs = [(0u32, Some(0u32)), (2u32, None)];
+    let pairs = [Pair::new(0u32, Some(0u32)), Pair::new(2u32, None)];
     let removed = [RowCodec::key(&h2[2])];
     ships
         .hour(|| TableInput::Paired {
@@ -533,6 +533,7 @@ fn paired_and_aligned_sparse_staging_matches_row_staging() {
             previous: &h2,
             pairs: &pairs,
             removed: &removed,
+            uniform_optional_i32: None,
             read: true,
             sample: READ,
         })
@@ -558,13 +559,14 @@ fn paired_and_aligned_sparse_staging_matches_row_staging() {
         a[1].clone(),
         row(3, 7, b"Third", &[4]),
     ];
-    let pairs = [(0u32, Some(0u32)), (2u32, None)];
+    let pairs = [Pair::new(0u32, Some(0u32)), Pair::new(2u32, None)];
     histories
         .hour(|| TableInput::Paired {
             rows: &b,
             previous: &a,
             pairs: &pairs,
             removed: &[],
+            uniform_optional_i32: None,
             read: true,
             sample: READ,
         })

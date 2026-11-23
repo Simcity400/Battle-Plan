@@ -804,6 +804,25 @@ impl FrameEncoder {
                 validate_recorded(update.rows()).map_err(row_encoding)?;
                 update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty()
             }
+            TableInput::UniformOptionalI32 {
+                token,
+                column,
+                update,
+                ..
+            } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Shared(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("a uniform update requires a shared baseline"));
+                };
+                if !previous.supports_optional_i32_fill(*column) || !update.fits(previous) {
+                    return Err(invalid("uniform update does not fit its baseline"));
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                validate_recorded(update.rows()).map_err(row_encoding)?;
+                false
+            }
             TableInput::Sampled(TableView::Complete(values)) => {
                 validate_complete(table, values, hour).map_err(row_validation)?;
                 validate_recorded(values).map_err(row_encoding)?;
@@ -929,6 +948,27 @@ impl FrameEncoder {
                     true
                 }
             }
+            TableInput::UniformOptionalI32 {
+                token,
+                column,
+                value,
+                update,
+            } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Shared(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("a uniform update requires a shared baseline"));
+                };
+                if !previous.supports_optional_i32_fill(*column) || !update.fits(previous) {
+                    return Err(invalid("uniform update does not fit its baseline"));
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                let mut merged = update.merged(previous)?;
+                merged.fill_optional_i32(*column, *value)?;
+                let mut ignored = None;
+                self.encode_complete(table, &merged, hour, keyframe, output, deleted, &mut ignored)?
+            }
             TableInput::Sampled(TableView::Complete(values)) => {
                 self.encode_complete(table, values, hour, keyframe, output, deleted, changed)?
             }
@@ -1015,14 +1055,24 @@ impl FrameEncoder {
         let mut retired = allocation::vec(2 * TABLE_COUNT)?;
         let mut tables = source.tables.map(Some);
         for (table, view) in TableId::ALL.into_iter().zip(tables.iter_mut()) {
-            if !matches!(view, Some(TableInput::SliceUpdate { .. })) {
+            if !matches!(
+                view,
+                Some(TableInput::SliceUpdate { .. } | TableInput::UniformOptionalI32 { .. })
+            ) {
                 continue;
             }
             if unchanged[table.index()] {
                 continue;
             }
-            let Some(TableInput::SliceUpdate { update, .. }) = view.take() else {
-                unreachable!("matched above");
+            let (update, fill) = match view.take() {
+                Some(TableInput::SliceUpdate { update, .. }) => (update, None),
+                Some(TableInput::UniformOptionalI32 {
+                    column,
+                    value,
+                    update,
+                    ..
+                }) => (update, Some((column, value))),
+                _ => unreachable!("matched above"),
             };
             let Some((hour, BaselineRows::Shared(rows))) =
                 self.state.tables[table.index()].as_mut()
@@ -1032,8 +1082,12 @@ impl FrameEncoder {
             if Arc::get_mut(rows).is_none() {
                 *rows = Arc::new(rows.try_clone()?);
             }
+            let baseline = Arc::get_mut(rows).expect("unique slice baseline");
             let update = Arc::try_unwrap(update).unwrap_or_else(|shared| (*shared).clone());
-            let replaced = update.apply(Arc::get_mut(rows).expect("unique slice baseline"))?;
+            let replaced = update.apply(baseline)?;
+            if let Some((column, value)) = fill {
+                baseline.fill_optional_i32(column, value)?;
+            }
             *hour = source.hour;
             retired.push(Retiring::Rows(replaced));
         }

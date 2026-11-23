@@ -736,9 +736,14 @@ impl<B: SegmentBackend> Campaign<B> {
                             .filter(|(_, baseline)| Arc::ptr_eq(baseline, previous))
                             .map(|(token, _)| (token, previous))
                     });
+                    let mut fresh_owners = None;
                     let merged = if let Some((token, previous)) = update {
-                        match replay_data::sliced::SliceUpdate::new(previous, fresh, captured, live)
-                        {
+                        if !replay_data::sliced::is_keyed(table) {
+                            fresh_owners = Some(replay_data::sliced::try_owners(&fresh)?);
+                        }
+                        match replay_data::sliced::SliceUpdate::diff_owners(
+                            previous, fresh, captured, live,
+                        ) {
                             Ok(update) => Merged::Update(token, update),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -779,9 +784,10 @@ impl<B: SegmentBackend> Campaign<B> {
                         continue;
                     };
                     if !replay_data::sliced::is_keyed(table) {
-                        let owners = match &merged {
-                            Merged::Rows(rows) => replay_data::sliced::try_owners(rows)?,
-                            Merged::Update(_, update) => {
+                        let owners = match (&merged, fresh_owners) {
+                            (_, Some(owners)) => owners,
+                            (Merged::Rows(rows), None) => replay_data::sliced::try_owners(rows)?,
+                            (Merged::Update(_, update), None) => {
                                 replay_data::sliced::try_owners(update.rows())?
                             }
                         };
@@ -1026,7 +1032,8 @@ impl<B: SegmentBackend> Campaign<B> {
                     TableInput::Sampled(TableView::NotRecorded { .. }) => continue,
                     TableInput::ComparedEqual(_)
                     | TableInput::ComparedChanges { .. }
-                    | TableInput::SliceUpdate { .. } => CachedTable::Unavailable {
+                    | TableInput::SliceUpdate { .. }
+                    | TableInput::UniformOptionalI32 { .. } => CachedTable::Unavailable {
                         reason: engine_allocation::string(
                             "a native comparison cannot supply a shared recovery snapshot",
                         )?,
@@ -3738,7 +3745,8 @@ fn sampled_frame(source: FrameInput) -> replay_frame::frame::DecodedFrame {
                 TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
                 TableInput::ComparedEqual(_)
                 | TableInput::ComparedChanges { .. }
-                | TableInput::SliceUpdate { .. } => {
+                | TableInput::SliceUpdate { .. }
+                | TableInput::UniformOptionalI32 { .. } => {
                     panic!("fixture expected ordinary sampled rows")
                 }
             })

@@ -32,7 +32,8 @@ fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
             }
         }
         TableInput::ComparedChanges { rows, .. } => rows.len(),
-        TableInput::SliceUpdate { update, .. } => update.rows().len(),
+        TableInput::SliceUpdate { update, .. }
+        | TableInput::UniformOptionalI32 { update, .. } => update.rows().len(),
         TableInput::ComparedEqual(_)
         | TableInput::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. }) => 0,
     }

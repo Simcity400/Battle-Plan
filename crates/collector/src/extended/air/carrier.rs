@@ -456,48 +456,16 @@ impl Registrations {
             .sort_unstable_by_key(|row| (row.base, row.slot));
         Ok(())
     }
+    pub(crate) fn cursor(&self) -> RegistrationCursor<'_> {
+        RegistrationCursor {
+            registrations: self,
+            state_at: std::cell::Cell::new(0),
+            row_at: std::cell::Cell::new(0),
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'_> {
-        let key = (source.base, source.slot);
-        if let Ok(index) = self
-            .state
-            .rows
-            .binary_search_by_key(&key, |row| (row.base, row.slot))
-        {
-            return Registration {
-                row: self.state.rows.get(index),
-                pools: &self.state.pools,
-                pools_len: self.state.pools.len(),
-                wing_len: source.wings_len,
-                state: true,
-            };
-        }
-        let row = self
-            .indexed
-            .then(|| self.rows.get(..self.len))
-            .flatten()
-            .and_then(|rows| {
-                let index = rows
-                    .binary_search_by_key(&key, |row| (row.base, row.slot))
-                    .ok()?;
-                if index
-                    .checked_sub(1)
-                    .and_then(|index| rows.get(index))
-                    .is_some_and(|row| (row.base, row.slot) == key)
-                    || rows
-                        .get(index + 1)
-                        .is_some_and(|row| (row.base, row.slot) == key)
-                {
-                    return None;
-                }
-                rows.get(index)
-            });
-        Registration {
-            row,
-            pools: &self.pools,
-            pools_len: self.pools_len,
-            wing_len: source.wings_len,
-            state: false,
-        }
+        self.cursor().registration(source)
     }
     #[cfg(test)]
     pub(crate) fn state_fuel(&self, source: &cair_base::RegistrationRow) -> [Option<i64>; 2] {
@@ -518,6 +486,106 @@ impl Registrations {
     ) -> bool {
         self.registration(source).equal(old)
     }
+}
+
+pub(crate) struct RegistrationCursor<'a> {
+    registrations: &'a Registrations,
+    state_at: std::cell::Cell<usize>,
+    row_at: std::cell::Cell<usize>,
+}
+
+fn find_sorted<T>(
+    rows: &[T],
+    cursor: &std::cell::Cell<usize>,
+    key: (u64, u32),
+    key_of: impl Fn(&T) -> (u64, u32),
+) -> Option<usize> {
+    let pos = cursor.get();
+    if pos > 0 && rows.get(pos - 1).is_some_and(|row| key_of(row) >= key) {
+        return match rows.binary_search_by_key(&key, &key_of) {
+            Ok(index) => {
+                cursor.set(index + 1);
+                Some(index)
+            }
+            Err(index) => {
+                cursor.set(index);
+                None
+            }
+        };
+    }
+    if let Some(row) = rows.get(pos) {
+        match key_of(row).cmp(&key) {
+            std::cmp::Ordering::Equal => {
+                cursor.set(pos + 1);
+                return Some(pos);
+            }
+            std::cmp::Ordering::Greater => return None,
+            std::cmp::Ordering::Less => {}
+        }
+    } else {
+        return None;
+    }
+    let mut low = pos + 1;
+    let mut step = 1;
+    while low + step < rows.len() && key_of(&rows[low + step]) < key {
+        low += step;
+        step <<= 1;
+    }
+    let end = (low + step + 1).min(rows.len());
+    let at = low + rows[low..end].partition_point(|row| key_of(row) < key);
+    if rows.get(at).is_some_and(|row| key_of(row) == key) {
+        cursor.set(at + 1);
+        Some(at)
+    } else {
+        cursor.set(at);
+        None
+    }
+}
+
+impl<'a> RegistrationCursor<'a> {
+    pub(crate) fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'a> {
+        let key = (source.base, source.slot);
+        let registrations = self.registrations;
+        if let Some(index) = find_sorted(&registrations.state.rows, &self.state_at, key, |row| {
+            (row.base, row.slot)
+        }) {
+            return Registration {
+                row: registrations.state.rows.get(index),
+                pools: &registrations.state.pools,
+                pools_len: registrations.state.pools.len(),
+                wing_len: source.wings_len,
+                state: true,
+            };
+        }
+        let row = registrations
+            .indexed
+            .then(|| registrations.rows.get(..registrations.len))
+            .flatten()
+            .and_then(|rows| {
+                let index = find_sorted(rows, &self.row_at, key, |row| (row.base, row.slot))?;
+                if index
+                    .checked_sub(1)
+                    .and_then(|index| rows.get(index))
+                    .is_some_and(|row| (row.base, row.slot) == key)
+                    || rows
+                        .get(index + 1)
+                        .is_some_and(|row| (row.base, row.slot) == key)
+                {
+                    return None;
+                }
+                rows.get(index)
+            });
+        Registration {
+            row,
+            pools: &registrations.pools,
+            pools_len: registrations.pools_len,
+            wing_len: source.wings_len,
+            state: false,
+        }
+    }
+}
+
+impl Registrations {
 }
 
 pub(crate) struct Registration<'a> {
