@@ -8,7 +8,7 @@ use dashboard_query::{
     series::MissingSpan,
     tile::{self, SeriesTileReply, TileLine},
 };
-use replay::commands::Index;
+use replay_capture_spool::commands::Index;
 use replay_data::Hour;
 use serde::Deserialize;
 use serde_json::Value;

@@ -9,7 +9,7 @@ use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContex
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, timeline::Stretch};
 use dashboard_text::catalogue::View;
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{

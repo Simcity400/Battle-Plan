@@ -9,7 +9,7 @@ use dashboard_query::{
     identity::Holder,
     series::totals::{Clock, Gap, TotalRun},
 };
-use replay::lanes::{self, Cell, Keys, Step};
+use replay_lanes::lanes::{self, Cell, Keys, Step};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{ProducedValueRow, ProductionCoverageRow, ProductionTypeTotalRow, TableId};
 use serde::{Deserialize, Serialize};
@@ -440,7 +440,7 @@ fn spellings(query: &Query<'_>, run: u32, hour: i32, tokens: &[u128]) -> io::Res
     if tokens.is_empty() {
         return Ok(HashMap::new());
     }
-    let frame = cost::storage(|| replay::at::frame(query.replay.recording(), run, hour, &[replay::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(tokens) }]))?;
+    let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &[replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(tokens) }]))?;
     let rows = frame.complete::<replay_data::rows::tables::LexicalTokens>().unwrap_or(&[]);
     Ok(rows
         .iter()

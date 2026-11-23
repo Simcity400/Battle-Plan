@@ -1,6 +1,6 @@
 
 use crate::{read, timeline::Timeline};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt, io, sync::OnceLock};

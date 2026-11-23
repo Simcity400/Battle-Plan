@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-replay.workspace = true
+replay-settings.workspace = true
 engine-native.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Registry", "Win32_System_Environment", "Win32_System_Time", "Win32_System_WindowsProgramming", "Wdk_System_SystemInformation", "Wdk_System_Threading"] }
 
@@ -21,12 +21,9 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-content-reader-province-area = { workspace = true, features = ["test-support"] }
-content-reader-regions = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-recorder-derive-framework = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
-replay-derive = { workspace = true, features = ["test-support"] }
+replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

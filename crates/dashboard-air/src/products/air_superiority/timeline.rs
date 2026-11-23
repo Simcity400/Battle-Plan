@@ -10,7 +10,7 @@ use super::{
 use dashboard_base::{Source, products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, at_hour::{self, AtHour, Read}}};
 use dashboard_query::{Query, identity::Holders, timeline::Stretch};
 use rayon::prelude::*;
-use replay::lanes::{self, Chart};
+use replay_lanes::lanes::{self, Chart};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{CountryLinkRow, RaidAirScoreRow, TableId, tables};
 use serde::{Deserialize, Serialize};

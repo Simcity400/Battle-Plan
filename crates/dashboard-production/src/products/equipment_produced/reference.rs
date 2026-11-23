@@ -42,7 +42,7 @@ fn rocket_archetypes(query: &Query<'_>, run: u32, hour: i32, variants: &[u128]) 
     if variants.is_empty() {
         return Ok(HashMap::new());
     }
-    let frame = cost::storage(|| replay::at::frame(query.replay.recording(), run, hour, &[replay::at::Read { table: TableId::VariantDefinitions, columns: None, keys: Keys::These(variants) }]))?;
+    let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &[replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: Keys::These(variants) }]))?;
     Ok(frame.complete::<tables::VariantDefinitions>().unwrap_or(&[]).iter().map(|row| (row.id, row.archetype_token)).collect())
 }
 

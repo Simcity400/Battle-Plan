@@ -264,7 +264,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     });
     let mut hidden = View { fog: false, ..View::default() };
     hidden.overlay.land_combats = false;
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "land_markers");
     markers(&history()).inputs(&hidden, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "the land combat markers switched off declare nothing");
@@ -310,7 +310,7 @@ fn outside_the_view_a_change_stays_marked_and_inside_it_is_made() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut layer = markers(&history());
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "land_markers");
     layer.inputs(&View::default(), &mut inputs).unwrap();

@@ -322,7 +322,7 @@ impl Layer for MapText {
         inputs.after("vision");
         let table = TableId::MapEvents;
         inputs.table(table, true)?;
-        let kinds = replay::native_columns::columns(table.schema())?;
+        let kinds = replay_recording::column_kind::columns(table.schema())?;
         for column in 0..kinds.len() {
             inputs.index(table, column)?;
         }

@@ -12,4 +12,4 @@ An unchanged table can share its last view across frame consumers. After buildin
 
 Reader pools can use threads isolated by priority and lifetime. Each executes the startup callback once. Pool destruction tells Rayon to terminate before joining thread handles. Dropping the final owner on one of its own workers skips the join, because waiting there would deadlock. A failed pool construction releases and joins any workers it started.
 
-[Byte source](../../crates/replay/src/columnar_frames/input.rs) · [Recording reader](../../crates/replay/src/columnar_frames/reader.rs) · [Table cells](../../crates/replay/src/cells.rs) · [Frame builder](../../crates/replay/src/columnar_frames.rs)
+[Byte source](../../crates/replay-recording/src/columnar_frames/input.rs) · [Recording reader](../../crates/replay-recording/src/columnar_frames/reader.rs) · [Table cells](../../crates/replay-recording/src/cells.rs) · [Frame builder](../../crates/replay-recording/src/columnar_frames.rs)

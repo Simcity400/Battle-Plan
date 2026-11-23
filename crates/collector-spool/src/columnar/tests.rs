@@ -3,10 +3,10 @@ use replay::campaign::{
     Replay,
     live::{Admit, Asked, Host, LiveWriter, Progress},
 };
-use replay::columnar_file::Settings;
-use replay::columnar_frames::{Recording, Segment};
-use replay::columnar_journal::{Journal, Record as Journaled, Source};
-use replay::native_frame::{OneThread, RowFrame};
+use replay_settings::compression::Settings;
+use replay_recording::columnar_frames::{Recording, Segment};
+use replay_journal::columnar_journal::{Journal, Record as Journaled, Source};
+use replay_journal::native_frame::{OneThread, RowFrame};
 use std::fs;
 
 fn journal_thread() -> Arc<JournalThread> {
@@ -177,7 +177,7 @@ fn frame(branch: u64, hour: i32) -> FrameInput {
 }
 
 fn start(columnar: &mut Columnar, branch: u64, first_hour: i32) {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let reason = match branch {
         1 => BranchReason::SessionStart,
@@ -261,7 +261,7 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
         ]
     );
     let mut frames =
-        replay::columnar_frames::Frames::new(&*recording, &[TableId::Countries]).unwrap();
+        replay_recording::columnar_frames::Frames::new(&*recording, &[TableId::Countries]).unwrap();
     let mut read = 0;
     for run in 0..recording.run_count() {
         for ordinal in 0..recording.run(run).unwrap().ordinals {
@@ -377,7 +377,8 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
 
 #[test]
 fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
-    use replay::spool::{ControlRecord, Record};
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let folder = Folder::new("controls");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
@@ -408,7 +409,7 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     write(&mut columnar, 1, 1..=2);
     columnar.finish();
     let recording = recorded(&folder.0);
-    let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
+    let encoded = |record: &Record| replay_capture_spool::spool::encode_record(record).unwrap();
     assert_eq!(
         recording.controls,
         [encoded(&start), encoded(&summary), encoded(&summary)]
@@ -417,8 +418,9 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
 
 #[test]
 fn an_hour_s_journal_record_carries_the_clock_witness_given_with_it() {
-    use replay::columnar_journal::{self, Witness};
-    use replay::spool::{ControlRecord, Record};
+    use replay_journal::columnar_journal::{self, Witness};
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     let folder = Folder::new("witness");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let mut hour = |hour: i32, witnessed: i32, load_signal: Option<i64>| {
@@ -466,7 +468,7 @@ fn an_hour_s_journal_record_carries_the_clock_witness_given_with_it() {
 
 #[test]
 fn records_no_hour_followed_reach_a_journal_when_the_recording_finishes() {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::{BranchReason, BranchStart, Gap, Parentage};
     let folder = Folder::new("records-alone");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
@@ -486,20 +488,20 @@ fn records_no_hour_followed_reach_a_journal_when_the_recording_finishes() {
     });
     columnar.note(&[Record::SessionStart(session()), start.clone(), gap.clone()]);
     assert!(
-        replay::columnar_journal::segments(&folder.0)
+        replay_journal::columnar_journal::segments(&folder.0)
             .unwrap()
             .is_empty()
     );
     columnar.finish();
     let recording = recorded(&folder.0);
-    let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
+    let encoded = |record: &Record| replay_capture_spool::spool::encode_record(record).unwrap();
     assert_eq!(recording.controls, [encoded(&start), encoded(&gap)]);
     assert_eq!(recording.run_count(), 0);
     let empty = Folder::new("nothing-given");
     let mut columnar = Columnar::open(&empty.0, "campaign", &session(), &journal_thread());
     columnar.finish();
     assert!(
-        replay::columnar_journal::segments(&empty.0)
+        replay_journal::columnar_journal::segments(&empty.0)
             .unwrap()
             .is_empty()
     );
@@ -507,7 +509,8 @@ fn records_no_hour_followed_reach_a_journal_when_the_recording_finishes() {
 
 #[test]
 fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() {
-    use replay::spool::{ControlRecord, Record};
+    use replay_recording::control::ControlRecord;
+    use replay_capture_spool::spool::Record;
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let folder = Folder::new("queued-controls");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
@@ -539,7 +542,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     write(&mut columnar, 1, 3..=4);
     columnar.finish();
     let recording = recorded(&folder.0);
-    let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
+    let encoded = |record: &Record| replay_capture_spool::spool::encode_record(record).unwrap();
     assert_eq!(
         recording.controls,
         [encoded(&start), encoded(&summary), encoded(&detach)]
@@ -623,10 +626,8 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
 
 #[test]
 fn commands_without_an_hour_reach_the_journal_at_once() {
-    use replay::{
-        commands::{Batch, Packet},
-        spool::{ControlRecord, Record, encode_record},
-    };
+    use replay_recording::{command_packet::{Batch, Packet}, control::ControlRecord};
+    use replay_capture_spool::spool::{Record, encode_record};
     let folder = Folder::new("commands");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let packet = Packet::pack(4, 1, 1, 0, 10, 20, 0, &Batch::default()).unwrap();

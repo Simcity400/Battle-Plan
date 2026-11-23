@@ -59,7 +59,7 @@ impl Pages for Recording {
 }
 
 pub fn recorded(hours: u32, mut strings: impl FnMut(u32) -> Vec<String>, mut hour: impl FnMut(u32, &mut Store)) -> Arc<dyn Pages> {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();

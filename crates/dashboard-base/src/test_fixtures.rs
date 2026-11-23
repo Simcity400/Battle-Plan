@@ -1,6 +1,6 @@
 
 pub use dashboard_core::test_fixtures::*;
-use replay::spool::Record;
+use replay_capture_spool::spool::Record;
 use replay_frame::frame::DecodedFrame;
 
 pub fn file_source(replay: replay::campaign::Replay) -> (crate::Source, std::path::PathBuf) {

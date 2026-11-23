@@ -1,8 +1,6 @@
 use super::*;
-use replay::{
-    commands::{self, Actor, Batch, Category, Event, Kind, Origin, Packet, Span},
-    spool::ControlRecord,
-};
+use replay_capture_spool::commands;
+use replay_recording::{command_packet::{Actor, Batch, Category, Event, Kind, Origin, Packet, Span}, control::ControlRecord};
 
 const HOURS: i32 = 400;
 

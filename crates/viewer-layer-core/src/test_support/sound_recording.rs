@@ -68,7 +68,7 @@ pub fn record_runs(runs: &[(i32, u32)], names: &[&[u8]], hour: impl FnMut(i32, &
 }
 
 pub fn record_runs_at(format: u16, runs: &[(i32, u32)], names: &[&[u8]], mut hour: impl FnMut(i32, &mut Store)) -> Arc<Recording> {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut written = Vec::new();
     let mut bytes = Vec::new();
     for &(first, hours) in runs {

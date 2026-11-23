@@ -1125,15 +1125,14 @@ fn port_items(
         let hit = inputs.camera.free().is_none()
             && members_equal
             && before.is_some_and(|before| before.grouping == grouping);
-        #[cfg(any(test, feature = "test-support"))]
-        if retained.is_some() {
-            viewer_counter_kit::plan_probe::record(|counts| {
+        viewer_counter_kit::plan_probe::record(|counts| {
+            if retained.is_some() {
                 counts.ordered_groups += 1;
                 counts.ordered_group_members_equal += u64::from(members_equal);
                 counts.semantic_plans += 1;
                 counts.semantic_plan_hits += u64::from(hit);
-            });
-        }
+            }
+        });
         let flotillas = if hit {
             before.unwrap().flotillas.clone()
         } else {

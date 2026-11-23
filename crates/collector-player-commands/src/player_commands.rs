@@ -9,7 +9,7 @@ use engine_native::{
     Memory, cgame_state, chuman, command_inputs as native, cpdx_array::Array, memory::LiveMemory,
     read,
 };
-use replay::commands::{Actor, Batch, Category, Event, Kind, Origin, Span};
+use replay_recording::command_packet::{Actor, Batch, Category, Event, Kind, Origin, Span};
 use std::{
     borrow::Cow,
     cell::UnsafeCell,
@@ -1990,9 +1990,10 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn command_control(mut group: Drained, ordinal: u64) -> replay::spool::ControlRecord {
-        use replay::commands::{Packet, Phase};
-        use replay::spool::{ControlRecord, Record, decode_record, encode_record};
+    fn command_control(mut group: Drained, ordinal: u64) -> replay_recording::control::ControlRecord {
+        use replay_recording::command_packet::{Packet, Phase};
+        use replay_recording::control::ControlRecord;
+        use replay_capture_spool::spool::{Record, decode_record, encode_record};
         use replay_frame::branches::{BranchReason, BranchStart, Parentage};
         if ordinal == 0 {
             group.batch.kinds = vec![Kind {
@@ -2098,7 +2099,7 @@ pub mod tests {
             let mut controls = vec![command_control(groups.remove(0), 0)];
             let session = command_session();
             let before =
-                replay::commands::analyze(std::slice::from_ref(&session), &controls, 1).unwrap();
+                replay_capture_spool::commands::analyze(std::slice::from_ref(&session), &controls, 1).unwrap();
             assert_eq!(before.lost_observations, 0);
             assert_eq!(before.players.len(), 1);
             assert!(before.players[0].coverage_complete);
@@ -2125,14 +2126,14 @@ pub mod tests {
             );
             assert_eq!(group.batch, Batch::default());
             let control = command_control(group, 1);
-            let replay::spool::ControlRecord::PlayerCommands { packet, .. } = &control else {
+            let replay_recording::control::ControlRecord::PlayerCommands { packet, .. } = &control else {
                 unreachable!();
             };
             assert!(packet.phase.is_none());
             assert_eq!(packet.unpack().unwrap(), Batch::default());
             controls.push(control);
             let after =
-                replay::commands::index(std::slice::from_ref(&session), &controls, 1).unwrap();
+                replay_capture_spool::commands::index(std::slice::from_ref(&session), &controls, 1).unwrap();
             assert_eq!(after.analysis.lost_observations, 1);
             assert_eq!(after.analysis.players[0].confirmed_orders, 1);
             assert!(!after.analysis.players[0].coverage_complete);
@@ -2177,7 +2178,7 @@ pub mod tests {
             let mut groups = drain.take_live(&live, true).unwrap();
             assert_eq!(groups[0].lost, 0);
             controls.push(command_control(groups.remove(0), 1));
-            let index = replay::commands::index(&[command_session()], &controls, 1).unwrap();
+            let index = replay_capture_spool::commands::index(&[command_session()], &controls, 1).unwrap();
             assert_eq!(index.analysis.lost_observations, 1);
             assert!(!index.timelines[0].complete);
             assert_eq!(drain.failure, 1);

@@ -5,7 +5,7 @@ use crate::{
     pieces, read,
 };
 use dashboard_declare::{FacetFrom, Holds, Log};
-use replay::cells::TableReader;
+use replay_recording::cells::TableReader;
 use replay_columnar::{
     store::{TableView, Value},
     summary::bucket_hours,
@@ -340,7 +340,7 @@ impl<'q, 'a> Reader<'q, 'a> {
     pub fn each(&self, run: u32, visit: impl FnMut(Row) -> io::Result<()>) -> io::Result<()> {
         let six = bucket_hours(0);
         let (first, last) = self.run_hours(run)?;
-        let filled = crate::cost::storage(|| replay::lanes::logged_hours(self.query.replay.recording(), run, self.log.table, first as i32, last as i32))?;
+        let filled = crate::cost::storage(|| replay_lanes::lanes::logged_hours(self.query.replay.recording(), run, self.log.table, first as i32, last as i32))?;
         let mut buckets: Vec<i64> = filled.iter().flat_map(|&(a, b)| i64::from(a).div_euclid(six)..=i64::from(b).div_euclid(six)).collect();
         buckets.dedup();
         self.walk(run, &joined(&buckets), visit)
@@ -348,7 +348,7 @@ impl<'q, 'a> Reader<'q, 'a> {
 
     pub fn inserted(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<Row>> {
         let (Some(&(from, _)), Some(&(_, to))) = (ranges.first(), ranges.last()) else { return Ok(Vec::new()) };
-        let filled = crate::cost::storage(|| replay::lanes::logged_hours(self.query.replay.recording(), run, self.log.table, from, to))?;
+        let filled = crate::cost::storage(|| replay_lanes::lanes::logged_hours(self.query.replay.recording(), run, self.log.table, from, to))?;
         let mut wanted: Vec<(i32, i32)> = Vec::new();
         let (mut a, mut b) = (0, 0);
         while a < ranges.len() && b < filled.len() {

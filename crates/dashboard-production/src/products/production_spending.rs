@@ -7,7 +7,7 @@ use dashboard_base::{
 };
 use dashboard_query::{Query, cost, identity::Holder};
 use dashboard_text::variant_names::{self, Tags, Texts};
-use replay::lanes::{self, Cell, History, Keys, Step};
+use replay_lanes::lanes::{self, Cell, History, Keys, Step};
 use replay_data::rows::{DockyardRepairRateRow, OutputPurpose, ProductionCoverageRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables};
 use replay_frame::frame::{DecodedFrame, HourFrame};
 use serde::{Deserialize, Serialize};
@@ -554,14 +554,14 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     let keys: Vec<u128> = variants.keys().map(|&variant| u128::from(variant)).collect();
     let parts: Vec<(u128, u128)> = keys.iter().map(|&variant| (variant << 32, variant << 32 | u128::from(u32::MAX))).collect();
     let mut frame: DecodedFrame = cost::storage(|| {
-        replay::at::frame(
+        replay_lanes::at::frame(
             recording,
             span.run,
             span.last,
             &[
-                replay::at::Read { table: TableId::VariantDefinitions, columns: None, keys: Keys::These(&keys) },
-                replay::at::Read { table: TableId::VariantModules, columns: None, keys: Keys::Ranges(&parts) },
-                replay::at::Read { table: TableId::VariantUpgrades, columns: None, keys: Keys::Ranges(&parts) },
+                replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: Keys::These(&keys) },
+                replay_lanes::at::Read { table: TableId::VariantModules, columns: None, keys: Keys::Ranges(&parts) },
+                replay_lanes::at::Read { table: TableId::VariantUpgrades, columns: None, keys: Keys::Ranges(&parts) },
             ],
         )
     })?;
@@ -589,15 +589,15 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     tokens.extend(upgrades.iter().flatten().filter_map(|row| u32::try_from(row.definition_token).ok()).filter(|&token| token > 0).map(u128::from));
     let tokens: Vec<u128> = tokens.into_iter().collect();
     let named = cost::storage(|| {
-        replay::at::frame(
+        replay_lanes::at::frame(
             recording,
             span.run,
             span.last,
             &[
-                replay::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&tokens) },
-                replay::at::Read { table: TableId::Countries, columns: None, keys: Keys::All },
-                replay::at::Read { table: TableId::CountryLinks, columns: None, keys: Keys::All },
-                replay::at::Read { table: TableId::CountryAppearance, columns: None, keys: Keys::All },
+                replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&tokens) },
+                replay_lanes::at::Read { table: TableId::Countries, columns: None, keys: Keys::All },
+                replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: Keys::All },
+                replay_lanes::at::Read { table: TableId::CountryAppearance, columns: None, keys: Keys::All },
             ],
         )
     })?;

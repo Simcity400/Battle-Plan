@@ -1,5 +1,7 @@
 use crate::spooling::campaign_name;
-use replay::{campaign::Replay, columnar_frames::Pool, recording_files};
+use replay::campaign::Replay;
+use replay_recording::columnar_frames::Pool;
+use replay_files::recording_files;
 use replay_data::rows::TableId;
 use replay_data::{codec::invalid, identity::Identity, identity::SessionStart};
 use replay_frame::branches::BranchTracker;
@@ -167,7 +169,7 @@ impl PreparedCampaigns {
         let (event_feed_sequence, mut event_feed_generation, event_feed_counts) =
             event_feed_history(&replay)?;
         for control in &replay.controls {
-            if let replay::spool::ControlRecord::PlayerCommands { packet, .. } = control {
+            if let replay_recording::control::ControlRecord::PlayerCommands { packet, .. } = control {
                 event_feed_generation = event_feed_generation.max(Some(packet.world));
             }
         }

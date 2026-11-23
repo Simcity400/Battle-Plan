@@ -1834,7 +1834,7 @@ mod tests {
     }
 
     fn roster_recording() -> Arc<replay::campaign::Replay> {
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use replay_data::identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification};
         use replay_data::rows::{AirDailyRosterRow, CampaignRow, CountryLinkRow, TableId, TableRows};
         use replay_frame::branches::{BranchReason, BranchStart, Parentage};

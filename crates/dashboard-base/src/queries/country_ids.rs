@@ -1,6 +1,6 @@
 
 use dashboard_query::{identity::{Holder, Holders}, read};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::summary::Source as Column;
 use replay_data::rows::TableId;
 use std::{collections::HashMap, io};

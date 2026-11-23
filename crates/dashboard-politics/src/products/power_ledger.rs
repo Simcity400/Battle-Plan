@@ -12,10 +12,7 @@ use dashboard_base::products::idea_format::{self, LocalisedText, ModifierFormat}
 use dashboard_core::dto::Artwork;
 use dashboard_base::{Source, products::at_hour};
 use dashboard_query::Query;
-use replay::{
-    lanes::{self, Keys},
-    points::Cell,
-};
+use replay_lanes::{lanes::{self, Keys}, points::Cell};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{PowerCause, PowerItemRow, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
 use serde::{Deserialize, Serialize};

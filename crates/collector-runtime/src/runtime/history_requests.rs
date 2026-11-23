@@ -180,7 +180,7 @@ impl Remote {
         Ok(reply)
     }
     fn retake(&self, campaign: &str) -> io::Result<()> {
-        use replay::recording_files;
+        use replay_files::recording_files;
         let path = match recording_files::unsaved_recording(
             &self.replay_directory,
             campaign.as_bytes(),
@@ -633,12 +633,12 @@ mod tests {
                     Ok(reply)
                 },
                 |processor, campaign| {
-                    let path = match replay::recording_files::unsaved_recording(
+                    let path = match replay_files::recording_files::unsaved_recording(
                         output,
                         campaign.as_bytes(),
                     )? {
                         Some(path) => Some(path),
-                        None => replay::recording_files::recording_of(output, campaign.as_bytes())?,
+                        None => replay_files::recording_files::recording_of(output, campaign.as_bytes())?,
                     };
                     let lease = path
                         .map(|path| collector_spool::history::lease(&path))
@@ -1435,7 +1435,7 @@ mod tests {
                 .share_mode(0)
                 .open(&recording)
                 .unwrap();
-            assert!(replay::recording_files::recording_of(&output, CAMPAIGN.as_bytes()).is_err());
+            assert!(replay_files::recording_files::recording_of(&output, CAMPAIGN.as_bytes()).is_err());
             publish(&path.with_extension("return"), token.as_bytes()).unwrap();
             now += Duration::from_secs(1);
             poll_processor(&mut requests, &live, &output, &mut processor, now);

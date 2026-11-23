@@ -1,8 +1,16 @@
 
-use super::{Revision, records::Records};
+use super::Revision;
+use replay_recording::records::Records;
 #[cfg(any(test, feature = "recording"))]
-use crate::{columnar_file::{FileWriter, Settings}, columnar_frames::schema as tables, identity::IdentityCodec};
-use crate::{columnar_frames::Recording, format::FormatVersion};
+use replay_journal::columnar_file::FileWriter;
+#[cfg(any(test, feature = "recording"))]
+use replay_settings::compression::Settings;
+#[cfg(any(test, feature = "recording"))]
+use replay_recording::schema::schema as tables;
+#[cfg(any(test, feature = "recording"))]
+use replay_data::identity::IdentityCodec;
+use replay_recording::columnar_frames::Recording;
+use replay_data::format::FormatVersion;
 use replay_columnar::{
     container::{ContainerWriter, Root, SectionKey, Tags, schema},
     envelope::{self, Kind},

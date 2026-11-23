@@ -301,7 +301,7 @@ fn a_layer_given_no_vision_is_refused_by_name_and_composes_whole_once_given_one(
 
 #[test]
 fn a_map_mode_that_draws_no_trade_routes_declares_nothing_and_one_that_does_composes() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut hidden = Convoys::new(Arc::new(Lines::default()));
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "convoys");
     hidden.inputs(&View::default(), &mut inputs).unwrap();

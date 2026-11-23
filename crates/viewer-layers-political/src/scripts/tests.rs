@@ -144,7 +144,7 @@ fn cell<'a>(field: Field<'a>, strings: &BTreeMap<Vec<u8>, u32>) -> Cell<'a> {
 }
 
 fn record(name: &str, frame: &DecodedFrame) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut strings = BTreeMap::new();
     for view in &frame.tables {
         match &**view {

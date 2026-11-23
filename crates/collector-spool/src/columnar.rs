@@ -1,9 +1,5 @@
-use replay::{
-    columnar_file::Capture,
-    columnar_frames::schema,
-    columnar_journal::Witness,
-    native_frame::{self, FrameHour, FrameWriter, RowFrame},
-};
+use replay_recording::{capture::Capture, schema::schema};
+use replay_journal::{columnar_journal::Witness, native_frame::{self, FrameHour, FrameWriter, RowFrame}};
 use replay_columnar::envelope;
 use replay_data::{
     identity::{IdentityCodec, SessionStart},
@@ -262,13 +258,13 @@ impl Columnar {
         }
     }
 
-    pub(crate) fn note(&mut self, records: &[replay::spool::Record]) {
+    pub(crate) fn note(&mut self, records: &[replay_capture_spool::spool::Record]) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.note(records));
         }
     }
 
-    pub(crate) fn stage(&mut self, records: &[replay::spool::Record]) {
+    pub(crate) fn stage(&mut self, records: &[replay_capture_spool::spool::Record]) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.stage(records));
         }
@@ -318,9 +314,9 @@ impl Columnar {
 }
 
 impl Live {
-    fn note(&mut self, records: &[replay::spool::Record]) {
+    fn note(&mut self, records: &[replay_capture_spool::spool::Record]) {
         let command_branch = records.iter().find_map(|record| match record {
-            replay::spool::Record::Control(replay::spool::ControlRecord::PlayerCommands {
+            replay_capture_spool::spool::Record::Control(replay_recording::control::ControlRecord::PlayerCommands {
                 packet,
                 ..
             }) => Some(packet.branch),
@@ -345,9 +341,9 @@ impl Live {
         }
     }
 
-    fn stage(&mut self, records: &[replay::spool::Record]) {
+    fn stage(&mut self, records: &[replay_capture_spool::spool::Record]) {
         self.witness = records.iter().find_map(|record| match record {
-            replay::spool::Record::Control(replay::spool::ControlRecord::ClockWitness {
+            replay_capture_spool::spool::Record::Control(replay_recording::control::ControlRecord::ClockWitness {
                 qpc,
                 hour,
                 load_signal,
@@ -392,8 +388,9 @@ impl Live {
         }
     }
 
-    fn encoded(records: &[replay::spool::Record]) -> io::Result<Vec<Noted>> {
-        use replay::spool::{ControlRecord, Record};
+    fn encoded(records: &[replay_capture_spool::spool::Record]) -> io::Result<Vec<Noted>> {
+        use replay_recording::control::ControlRecord;
+        use replay_capture_spool::spool::Record;
         let mut kept = Vec::new();
         for record in records {
             if matches!(
@@ -404,7 +401,7 @@ impl Live {
             ) {
                 continue;
             }
-            let bytes = replay::spool::encode_record(record)?;
+            let bytes = replay_capture_spool::spool::encode_record(record)?;
             let fact = matches!(
                 record,
                 Record::BranchStart(_)
@@ -884,7 +881,7 @@ impl Live {
         self.counters.lost += (i64::from(last) - i64::from(first) + 1) as u64;
         let reason = self.counters.stopped.as_ref().map_or("", Reason::text);
         let gap = engine_allocation::string(reason).and_then(|reason| {
-            replay::spool::encode_record(&replay::spool::Record::Gap(replay_frame::branches::Gap {
+            replay_capture_spool::spool::encode_record(&replay_capture_spool::spool::Record::Gap(replay_frame::branches::Gap {
                 branch,
                 first_hour: first,
                 last_hour: last,

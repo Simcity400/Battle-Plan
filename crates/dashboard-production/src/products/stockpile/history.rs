@@ -2,10 +2,7 @@
 use dashboard_base::products::Country;
 use dashboard_base::{Source, span::HourSpan};
 use dashboard_query::{Query, identity::Holder};
-use replay::{
-    lanes::{self, Keys},
-    points::Cell,
-};
+use replay_lanes::{lanes::{self, Keys}, points::Cell};
 use replay_data::{cadence::STAGGER_PERIOD, rows::TableId};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
