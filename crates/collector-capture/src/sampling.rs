@@ -1359,8 +1359,12 @@ impl Shared {
         ))?;
         let air_wing_parts =
             std::array::from_fn(|_| collector_air::extended::air::AirWingJob::part());
-        collector_factions::faction_goal_changes::prime();
-        collector_factions::faction_companion_changes::prime();
+        // SAFETY: `Shared::without_frames` runs during attach or an isolated fixture, priming
+        // faction watches before capture or concurrent boundaries can observe them.
+        unsafe {
+            collector_factions::faction_goal_changes::prime();
+            collector_factions::faction_companion_changes::prime();
+        }
         if collector_memory::terminal::failed() {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
@@ -2113,15 +2117,18 @@ fn lost_observer_interval() {
     collector_equipment_destruction::equipment_destruction::lost_drain();
     collector_naval_results::naval_result_sources::lost_drain();
     collector_experience_gains::experience_gains::lost_drain();
-    collector_observers::event_feed_observer::lost_drain();
-    collector_operation_outcomes::operation_outcomes::lost_drain();
-    collector_politics::politics_changes::invalidate();
-    collector_land_events::land_events::fail();
-    collector_observers::air_losses::lost_drain();
-    collector_observers::building_bombing::lost_drain();
-    collector_observers::nuclear_strikes::lost_drain();
-    collector_observers::market_changes::lost_drain();
-    collector_map_events::interval::lost_output();
+    // SAFETY: Capture recovery owns recording lost observer intervals for the active session.
+    unsafe {
+        collector_observers::event_feed_observer::lost_drain();
+        collector_operation_outcomes::operation_outcomes::lost_drain();
+        collector_politics::politics_changes::invalidate();
+        collector_land_events::land_events::fail();
+        collector_observers::air_losses::lost_drain();
+        collector_observers::building_bombing::lost_drain();
+        collector_observers::nuclear_strikes::lost_drain();
+        collector_observers::market_changes::lost_drain();
+        collector_map_events::interval::lost_output();
+    }
 }
 
 fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
@@ -2392,16 +2399,22 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     collector_experience_gains::experience_gains::boundary(
         entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
     );
-    collector_observers::air_losses::boundary(
-        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-    );
+    // SAFETY: Admitted hourly capture boundary advances air-loss, bombing, and nuclear ledgers.
+    unsafe {
+        collector_observers::air_losses::boundary(
+            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+        );
+    }
     collector_fuel_awards::fuel_awards::boundary();
-    collector_observers::building_bombing::boundary(
-        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-    );
-    collector_observers::nuclear_strikes::boundary(
-        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-    );
+    // SAFETY: Admitted hourly capture boundary advances air-loss, bombing, and nuclear ledgers.
+    unsafe {
+        collector_observers::building_bombing::boundary(
+            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+        );
+        collector_observers::nuclear_strikes::boundary(
+            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+        );
+    }
     let entry_ticks = qpc() - clock_start;
     #[cfg(feature = "callback_profile")]
     let profile_before = callback_profile_counters(shared);
@@ -2745,9 +2758,12 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 collector_characters::portrait_changes::invalidate();
                 collector_characters::advisor_changes::invalidate();
                 collector_observers::opinion_changes::invalidate();
-                collector_operation_outcomes::operation_outcomes::invalidate();
-                collector_politics::politics_changes::invalidate();
-                collector_map_events::interval::invalidate();
+                // SAFETY: Capture discontinuity recovery owns invalidating live observer epochs.
+                unsafe {
+                    collector_operation_outcomes::operation_outcomes::invalidate();
+                    collector_politics::politics_changes::invalidate();
+                    collector_map_events::interval::invalidate();
+                }
                 collector_intel::intel::forget_relation_opinions();
             }
             frame.extended.seal_map_events(clock.hour);

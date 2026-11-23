@@ -29,21 +29,29 @@ pub(super) fn stage_fixture_acquisitions(
             }
         };
     }
-    stage!(
-        slow_ticks,
-        peace_bids,
-        map_names,
-        faction_theatres,
-        model_inputs,
-        modifier_definitions,
-        hired_advisors,
-        country_tactic_unlocks,
-        logistics,
-        combat_log,
-        country_factories,
-        state_building_inputs,
-        visibility,
-    );
+    if captured.slow_ticks.is_none() {
+        let mut ticks = [0; TABLE_COUNT];
+        staggered!(
+            &mut ticks,
+            peace_bids,
+            map_names,
+            faction_theatres,
+            model_inputs,
+            modifier_definitions,
+            country_tactic_unlocks,
+            logistics,
+            country_factories,
+            state_building_inputs,
+            visibility,
+        );
+        // SAFETY: Fixture staging runs under isolated fixture control, as the sole capture pass.
+        let cost = unsafe { captured.hired_advisors.capture(memory, base, game_state, hour, force_full) };
+        scatter(&hired_advisors::TABLES, cost, &mut ticks);
+        // SAFETY: Fixture staging runs under isolated fixture control, as the sole capture pass.
+        let cost = unsafe { captured.combat_log.capture(memory, base, game_state, hour, force_full) };
+        scatter(&combat_log::TABLES, cost, &mut ticks);
+        captured.slow_ticks = Some(ticks);
+    }
     if captured.stability_ticks.is_none() && captured.records_any(&country_stability::TABLES) {
         let mut ticks = [0; TABLE_COUNT];
         scatter(
@@ -69,11 +77,12 @@ pub(super) fn stage_fixture_acquisitions(
         stage!(war_overview_ticks, war_overview);
     }
     if captured.template_ticks.is_none() {
-        captured.template_ticks = Some(
+        // SAFETY: Fixture staging runs under isolated fixture control, as the sole capture pass.
+        captured.template_ticks = Some(unsafe {
             captured
                 .division_templates
-                .capture(memory, base, game_state, hour, force_full),
-        );
+                .capture(memory, base, game_state, hour, force_full)
+        });
     }
     if captured.raid_state_ticks.is_none() {
         let mut ticks = [0; TABLE_COUNT];
@@ -2853,9 +2862,12 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
                 [0; country_appearance::N]
             );
             assert_eq!(
-                captured
-                    .division_templates
-                    .capture(&memory, base, state, hour, true),
+                // SAFETY: Isolated test exercises preacquired refusal on a local frame.
+                unsafe {
+                    captured
+                        .division_templates
+                        .capture(&memory, base, state, hour, true)
+                },
                 [0; division_templates::N]
             );
             assert!(
@@ -2881,9 +2893,12 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
         captured
             .country_appearance
             .capture_at(&memory, base, state, hour + 1);
-        captured
-            .division_templates
-            .capture(&memory, base, state, hour + 1, true);
+        // SAFETY: Isolated test exercises preacquired context mismatch on a local frame.
+        unsafe {
+            captured
+                .division_templates
+                .capture(&memory, base, state, hour + 1, true);
+        }
         assert_eq!(memory.0.get(), 0, "context mismatch remains a refusal");
         captured.reset();
         captured

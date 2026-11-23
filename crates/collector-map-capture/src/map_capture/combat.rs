@@ -39,7 +39,8 @@ impl CombatRequest {
         let progress_begin = qpc();
         let recorded = self.progress_recorded;
         if recorded {
-            self.progress.begin();
+            // SAFETY: Admitted combat job owns the daily observer baseline loan until `finish()`.
+            unsafe { self.progress.begin() };
         }
         report.progress_ticks = elapsed(progress_begin);
         let land = cland_combat::walk_with(
@@ -58,13 +59,16 @@ impl CombatRequest {
             },
         );
         let progress_begin = qpc();
-        self.progress.finish(if recorded {
-            land.outcome
-        } else {
-            Outcome::Unavailable {
-                reason: collector_extended_support::outcomes::NOT_RECORDED,
-            }
-        });
+        // SAFETY: Admitted combat job settles the daily observer baseline and reports sizing demand.
+        unsafe {
+            self.progress.finish(if recorded {
+                land.outcome
+            } else {
+                Outcome::Unavailable {
+                    reason: collector_extended_support::outcomes::NOT_RECORDED,
+                }
+            });
+        }
         report.progress_ticks = report
             .progress_ticks
             .saturating_add(elapsed(progress_begin));
@@ -101,7 +105,8 @@ impl CombatRequest {
         if !self.land_finished {
             self.land.fail(outcome);
             self.land_participants_len = 0;
-            self.progress.finish(outcome);
+            // SAFETY: Admitted combat job failed before completing land capture; settle baseline.
+            unsafe { self.progress.finish(outcome) };
         }
         if !self.naval_finished {
             self.naval.fail(outcome);
