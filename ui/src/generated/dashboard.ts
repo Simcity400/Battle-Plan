@@ -2602,8 +2602,8 @@ export type ConstructionLogParams = { branchId: string,
  */
 window: number, };
 export type ConstructionStateName = { id: number, name: string | null, };
-export type ProjectKind = "building" | "railway";
-export type ProjectSource = "census" | "outputAlone";
+export type ProjectKind = "building" | "railway" | "unknown";
+export type ProjectSource = "census" | "outputAlone" | "unknown";
 export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
@@ -2673,6 +2673,14 @@ earlierUnknown: boolean, runs: Array<ProjectRun>,
  * New levels built and levels repaired (`repair`).
  */
 built: Array<LevelsBuilt>,
+/**
+ * Hour spans where a non-output-alone step had an unrecorded built counter.
+ */
+builtUnread?: Array<[number, number]>,
+/**
+ * Hour spans where a non-output-alone step had an unrecorded repaired counter.
+ */
+repairedUnread?: Array<[number, number]>,
 /**
  * Levels that cannot be told built or dropped.
  */
