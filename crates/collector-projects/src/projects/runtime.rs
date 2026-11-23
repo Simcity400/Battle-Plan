@@ -836,9 +836,9 @@ mod tests {
             .into(),
         );
         let held = runtime.held.get_mut(&(row.owner, row.local_id)).unwrap();
-        runtime.heap_bytes -= held.recorded_bytes;
+        runtime.heap_bytes -= held.recorded_bytes as usize;
         let value = held.recorded_variables.as_ref().unwrap();
-        held.recorded_bytes = size_of::<rows::ProjectVariableStore>()
+        let bytes = size_of::<rows::ProjectVariableStore>()
             + 2 * size_of::<usize>()
             + value.entries.capacity() * size_of::<rows::ProjectVariable>()
             + value
@@ -846,7 +846,8 @@ mod tests {
                 .iter()
                 .map(|entry| entry.name.capacity())
                 .sum::<usize>();
-        runtime.heap_bytes += held.recorded_bytes;
+        held.recorded_bytes = u32::try_from(bytes).unwrap_or(u32::MAX);
+        runtime.heap_bytes += held.recorded_bytes as usize;
         let growths = engine_allocation::growths();
         let (first, second) = collector_test_support::with_allocations_denied(|| {
             (runtime.value(&row), runtime.value(&row))
@@ -970,14 +971,17 @@ mod cold_join_tests {
             23,
         )
         .unwrap();
-        let recorded_bytes = size_of::<rows::ProjectVariableStore>()
-            + 2 * size_of::<usize>()
-            + variables.entries.capacity() * size_of::<rows::ProjectVariable>()
-            + variables
-                .entries
-                .iter()
-                .map(|entry| entry.name.capacity())
-                .sum::<usize>();
+        let recorded_bytes = u32::try_from(
+            size_of::<rows::ProjectVariableStore>()
+                + 2 * size_of::<usize>()
+                + variables.entries.capacity() * size_of::<rows::ProjectVariable>()
+                + variables
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.capacity())
+                    .sum::<usize>(),
+        )
+        .unwrap_or(u32::MAX);
         let mut parts = Vec::new();
         let mut expected = Vec::new();
         let mut first = 1u32;

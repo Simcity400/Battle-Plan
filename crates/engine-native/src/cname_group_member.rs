@@ -375,12 +375,31 @@ pub fn copy_string(
             let mut buf = [0_u8; 256];
             if read_slice(memory, source, &mut buf[..len + 1]) && buf[len] == 0 {
                 names.required = demand(names.required, len)?;
-                if !names.bytes.ensure(
-                    start
-                        .checked_add(len)
-                        .ok_or("division name arena overflow")?,
-                )? {
-                    return Ok(None);
+                if len > free {
+                    match &mut names.bytes {
+                        engine_native_memory::walk::Buffer::Count
+                        | engine_native_memory::walk::Buffer::Exact(_) => return Ok(None),
+                        engine_native_memory::walk::Buffer::GrowingFrom(bytes, offset) => {
+                            msvc_string::place(
+                                &buf[..len],
+                                bytes,
+                                *offset + start,
+                                errors[2],
+                                "division name arena allocation failed",
+                            )?;
+                            return Ok(Some((start, len)));
+                        }
+                        engine_native_memory::walk::Buffer::Growing(bytes) => {
+                            msvc_string::place(
+                                &buf[..len],
+                                bytes,
+                                start,
+                                errors[2],
+                                "division name arena allocation failed",
+                            )?;
+                            return Ok(Some((start, len)));
+                        }
+                    }
                 }
                 names.bytes[start..start + len].copy_from_slice(&buf[..len]);
                 return Ok(Some((start, len)));
@@ -512,9 +531,17 @@ fn copy_string_into(
             let mut buf = [0_u8; 256];
             if read_slice(memory, source, &mut buf[..len + 1]) && buf[len] == 0 {
                 *required = demand(*required, len)?;
-                let end = at.checked_add(len).ok_or("division name arena overflow")?;
-                engine_native_memory::walk::grow(bytes, end)?;
-                bytes[at..end].copy_from_slice(&buf[..len]);
+                if len > bytes.len().saturating_sub(at) {
+                    msvc_string::place(
+                        &buf[..len],
+                        bytes,
+                        at,
+                        errors[2],
+                        "division name arena allocation failed",
+                    )?;
+                } else {
+                    bytes[at..at + len].copy_from_slice(&buf[..len]);
+                }
                 return Ok(len);
             }
         }

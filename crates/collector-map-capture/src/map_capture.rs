@@ -1345,7 +1345,7 @@ mod tests {
             assert_eq!(capacity, 256);
         }
         grow_capacity(&mut capacity, 257);
-        assert_eq!(capacity, 512);
+        assert_eq!(capacity, 384);
         grow_capacity(&mut capacity, usize::MAX);
         assert_eq!(capacity, usize::MAX);
         let mut empty = 0;
@@ -1429,13 +1429,13 @@ mod tests {
         captured.orders.geometry_required = capacity.order_geometry + 23;
         // SAFETY: This path owns the frame capacity changes and excludes teardown.
         unsafe { captured.grow(&mut capacity) };
-        assert_eq!(captured.naval.ships.rows.len(), 8192);
+        assert_eq!(captured.naval.ships.rows.len(), 5184);
 
         assert_eq!(captured.naval.ships.rows[0].id, u64::MAX);
-        assert_eq!(captured.land_participants.len(), 16384);
-        assert_eq!(captured.land_classes.len(), 16384);
+        assert_eq!(captured.land_participants.len(), 10304);
+        assert_eq!(captured.land_classes.len(), 10304);
 
-        assert_eq!(captured.player_names.len(), 8192);
+        assert_eq!(captured.player_names.len(), 5184);
 
         assert_eq!(captured.orders.geometry.len(), 16384 + 23);
 
@@ -1700,7 +1700,7 @@ mod tests {
         captured.naval_groups_required = 129;
         // SAFETY: This path owns the frame capacity changes and excludes teardown.
         unsafe { captured.grow(&mut capacity) };
-        assert_eq!(captured.orders.groups.len(), initial_group_capacity * 2);
+        assert_eq!(captured.orders.groups.len(), 2624);
         assert_eq!(captured.orders.visits.len(), 4096);
         assert_eq!(captured.naval_groups.len(), 256);
         let grown = capacity;

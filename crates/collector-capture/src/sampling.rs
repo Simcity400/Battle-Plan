@@ -943,6 +943,7 @@ pub struct Shared {
     parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
     parked_packs_bytes: AtomicU64,
     retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
+    retired_parked_bytes: AtomicU64,
     retired_parked_pending: AtomicBool,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(test)]
@@ -1529,6 +1530,7 @@ impl Shared {
             parked_packs: Mutex::new(Vec::new()),
             parked_packs_bytes: AtomicU64::new(0),
             retired_parked: Mutex::new(Vec::new()),
+            retired_parked_bytes: AtomicU64::new(0),
             retired_parked_pending: AtomicBool::new(false),
             builder_waker: OnceLock::new(),
                     #[cfg(test)]
@@ -1594,6 +1596,45 @@ impl Shared {
         Ok(())
     }
 
+    fn publish_frame_claimed(
+        &self,
+        frame: Box<Captured>,
+        ahead: bool,
+        claim: crate::frame_pool::GrowthClaim<'_>,
+    ) -> std::io::Result<()> {
+        let index = self.frames.vacant()?;
+        self.frames.install_claimed(index, frame, claim);
+        if ahead {
+            self.frames.built_ahead(index);
+        }
+        self.frame_priority.publish();
+        let published = self.frames.push(index);
+        debug_assert!(published.is_ok());
+        Ok(())
+    }
+
+    fn parked_and_retired_bytes(&self) -> u64 {
+        self.parked_packs_bytes
+            .load(Ordering::Relaxed)
+            .saturating_add(self.retired_parked_bytes.load(Ordering::Relaxed))
+    }
+
+    fn at_frame_limit(&self) -> bool {
+        self.frames.at_limit_with_extra(
+            crate::frame_pool::MAX_LIVE_FRAMES,
+            crate::frame_pool::MAX_LIVE_BYTES,
+            self.parked_and_retired_bytes(),
+        )
+    }
+
+    fn try_claim_frame_growth(&self) -> Option<crate::frame_pool::GrowthClaim<'_>> {
+        self.frames.try_claim_growth(
+            crate::frame_pool::MAX_LIVE_FRAMES,
+            crate::frame_pool::MAX_LIVE_BYTES,
+            self.parked_and_retired_bytes(),
+        )
+    }
+
     #[inline(never)]
     pub(crate) fn new_frame(&self) -> std::io::Result<Box<Captured>> {
         self.frame_for(&self.frame_capacities.published(), false)
@@ -1635,11 +1676,14 @@ impl Shared {
     /// Only the session frame builder or isolated fixture may prepare a spare. Ensure the observer
     /// stores remain live throughout its preparation.
     pub unsafe fn build_frame_ahead(&self) -> std::io::Result<()> {
-        if self.frames.spool_stalled() || self.frames.at_limit() {
+        if self.frames.spool_stalled() {
             return Ok(());
         }
+        let Some(claim) = self.try_claim_frame_growth() else {
+            return Ok(());
+        };
         let frame = self.new_frame_parked()?;
-        self.publish_frame(frame, true)
+        self.publish_frame_claimed(frame, true, claim)
     }
 
     /// # Safety
@@ -1670,7 +1714,7 @@ impl Shared {
             }
             if crate::frame_pool::builds_ahead(
                 self.frames.len(),
-                self.frames.spool_stalled() || self.frames.at_limit(),
+                self.frames.spool_stalled() || self.at_frame_limit(),
             ) {
                 observe(BuildAhead::Starting);
                 // SAFETY: The dedicated builder or owning fixture prepares a spare while observers
@@ -1696,14 +1740,15 @@ impl Shared {
         match crate::frame_pool::hour_frame(
             // SAFETY: This consumer owns the queue removal for the named pool.
             unsafe { self.frames.pop() },
-            self.frames.spool_stalled() || self.frames.at_limit(),
+            self.frames.spool_stalled(),
+            self.at_frame_limit(),
         ) {
             HourFrame::Free(index) => {
                 self.frames.taken(index);
                 self.frame_priority.claim();
                 // SAFETY: This stage owns the installed frame slot.
                 unsafe { self.frame_stage(index, FrameStage::Callback) };
-                if self.frames.len() < crate::frame_pool::AHEAD && !self.frames.at_limit() {
+                if self.frames.len() < crate::frame_pool::AHEAD && !self.at_frame_limit() {
                     self.wake_builder();
                 }
                 if !self.hold_clock(index) {
@@ -1713,17 +1758,25 @@ impl Shared {
                 self.ensure_parked_packs(index);
                 return Some(index);
             }
-            HourFrame::Drop => {
+            HourFrame::DropStalled => {
                 self.frames.drop_stalled();
+                return None;
+            }
+            HourFrame::DropLimit => {
+                self.frames.drop_limit();
                 return None;
             }
             HourFrame::Grow => {}
         }
+        let Some(claim) = self.try_claim_frame_growth() else {
+            self.frames.drop_limit();
+            return None;
+        };
         self.wake_builder();
         let started = qpc();
         let index = self.frames.vacant().ok()?;
         match self.new_frame_parked() {
-            Ok(frame) => self.frames.install(index, frame),
+            Ok(frame) => self.frames.install_claimed(index, frame, claim),
             Err(_) => {
                 self.frames.abandon(index);
                 return None;
@@ -1770,14 +1823,23 @@ impl Shared {
     }
 
     fn retire_parked_pack(&self, retired: Box<extended::ParkedPacks>) {
+        const MAX_RETIRED_PARKED: usize = 1;
         let bytes = retired.allocated_bytes() as u64;
-        if let Ok(mut queue) = self.retired_parked.lock()
-            && engine_allocation::reserve(&mut queue, 1).is_ok()
-        {
-            queue.push(retired);
-            self.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
-            self.retired_parked_pending.store(true, Ordering::Release);
-        }
+        let overflow = if let Ok(mut queue) = self.retired_parked.lock() {
+            if queue.len() < MAX_RETIRED_PARKED && engine_allocation::reserve(&mut queue, 1).is_ok()
+            {
+                queue.push(retired);
+                self.retired_parked_bytes.fetch_add(bytes, Ordering::Relaxed);
+                self.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
+                self.retired_parked_pending.store(true, Ordering::Release);
+                None
+            } else {
+                Some(retired)
+            }
+        } else {
+            Some(retired)
+        };
+        drop(overflow);
     }
 
     pub fn has_retired_parked(&self) -> bool {
@@ -1800,6 +1862,7 @@ impl Shared {
             .map(|entry| entry.allocated_bytes() as u64)
             .sum();
         drop(drained);
+        self.retired_parked_bytes.fetch_sub(bytes, Ordering::Relaxed);
         self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
         true
     }
@@ -1824,7 +1887,7 @@ impl Shared {
             frame.extended.share_country_intel(&self.country_intel);
             frame.extended.share_template_home(&self.template_home);
         }
-        self.measure_frame(index);
+        self.set_frame_bytes(index, frame.allocated_bytes() as u64);
     }
 
     pub fn grow_parked_packs(&self, capacities: &mut extended::Capacities) {
@@ -1868,7 +1931,7 @@ impl Shared {
         let before = frame.clock_bytes();
         let held = frame.prepare_clock(self.clock_required()).is_ok();
         if frame.clock_bytes() != before {
-            self.measure_frame(index);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
         }
         held
     }
@@ -1904,10 +1967,8 @@ impl Shared {
         collector_memory::terminal::failed() || self.acquisition_panics.load(Ordering::Acquire) != 0
     }
 
-    pub fn measure_frame(&self, index: usize) {
-        let frame = unsafe { &*self.frames[index].load(Ordering::Acquire) };
-        self.frames
-            .set_slot_bytes(index, frame.allocated_bytes() as u64);
+    pub fn set_frame_bytes(&self, index: usize, bytes: u64) {
+        self.frames.set_slot_bytes(index, bytes);
     }
 
     pub fn pool_owned(&self) -> u64 {
@@ -1945,10 +2006,11 @@ impl Shared {
             self.park_pack(parked);
         }
         let result = frame.prepare_clock(self.clock_required());
-        if frame.allocated_bytes() != before
+        let after = frame.allocated_bytes();
+        if after != before
             || self.frames.slot(index).bytes.load(Ordering::Relaxed) == 0
         {
-            self.measure_frame(index);
+            self.set_frame_bytes(index, after as u64);
         }
         collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
         collector_workers::private_heap::PRIVATE_HEAP.trim_large_if_needed();
@@ -2099,7 +2161,7 @@ impl Shared {
             let before = frame.clock_bytes();
             let _ = engine_allocation::advisory(|| frame.prepare_clock(required));
             if frame.clock_bytes() != before {
-                self.measure_frame(index);
+                self.set_frame_bytes(index, frame.allocated_bytes() as u64);
             }
             self.return_frame(index, Return::Idle);
         }

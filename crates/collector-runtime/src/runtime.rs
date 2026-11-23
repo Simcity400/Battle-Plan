@@ -4290,7 +4290,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         // SAFETY: Sizing holds exclusive `&mut` access to this idle frame while session observer
         // storage stays live and teardown is excluded; shared observers synchronize concurrent growth.
         unsafe { capacities.grow_frame(idle) };
-        shared.measure_frame(idle_index);
+        shared.set_frame_bytes(idle_index, idle.allocated_bytes() as u64);
         sizing.account_homes(shared);
         // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
         unsafe { shared.restore_idle_frame_prepared(idle_index) };
@@ -4348,6 +4348,7 @@ fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
             "ahead_taken": frames.ahead_taken,
             "freed": frames.freed,
             "dropped_spool_stalled": frames.dropped_stalled,
+            "dropped_frame_limit": frames.dropped_limit,
         },
         "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while fewer than two frames are free, the frame builder thread builds frames ahead until the next hour's and a spare are, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns, unless the spool is stalled on an hour it cannot take, when no frame is built or built ahead and the hour is dropped, dropped_spool_stalled; frames past the steady count are freed once more than two are free, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
     })
@@ -4376,6 +4377,7 @@ struct SpoolStatus<P, D> {
     pool_bytes: u64,
     dropped_frames: u64,
     dropped_spool_stalled: u64,
+    dropped_frame_limit: u64,
     drain_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<&'static str>,
@@ -4409,6 +4411,9 @@ fn spool_status<'a>(
         dropped_spool_stalled:
             // SAFETY: This is the runtime's frame pool for the current session.
             unsafe { shared.frames() }.stalled_drops(),
+        dropped_frame_limit:
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.limit_drops(),
         drain_complete,
         warning: warning.or(teardown.restoration_error),
         error: error.or(teardown.installation_error),
@@ -5291,7 +5296,7 @@ impl SizingShared {
                 // observer storage stays live and teardown is excluded; shared observers synchronize
                 // concurrent growth.
                 unsafe { proposal.grow_frame(frame) };
-                shared.measure_frame(index);
+                shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     // SAFETY: This is the sizing pass for the active session's cache.
                     unsafe { shared.offer_country_cache(required_cells) };

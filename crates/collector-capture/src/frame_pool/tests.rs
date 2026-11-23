@@ -60,10 +60,13 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
 
 #[test]
 fn a_stalled_spool_adds_no_frame_and_its_free_frames_are_still_taken() {
-    assert_eq!(hour_frame(Some(3), false), HourFrame::Free(3));
-    assert_eq!(hour_frame(Some(3), true), HourFrame::Free(3));
-    assert_eq!(hour_frame(None, false), HourFrame::Grow);
-    assert_eq!(hour_frame(None, true), HourFrame::Drop);
+    assert_eq!(hour_frame(Some(3), false, false), HourFrame::Free(3));
+    assert_eq!(hour_frame(Some(3), true, false), HourFrame::Free(3));
+    assert_eq!(hour_frame(Some(3), false, true), HourFrame::Free(3));
+    assert_eq!(hour_frame(None, false, false), HourFrame::Grow);
+    assert_eq!(hour_frame(None, true, false), HourFrame::DropStalled);
+    assert_eq!(hour_frame(None, false, true), HourFrame::DropLimit);
+    assert_eq!(hour_frame(None, true, true), HourFrame::DropStalled);
     assert!(builds_ahead(AHEAD - 1, false));
     assert!(!builds_ahead(AHEAD, false));
     assert!(!builds_ahead(AHEAD - 1, true));
@@ -250,8 +253,8 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     assert!(pool.at_limit_with(STEADY, u64::MAX));
     assert!(pool.at_limit_with(usize::MAX, initial));
     assert_eq!(
-        hour_frame(None, pool.at_limit_with(usize::MAX, initial)),
-        HourFrame::Drop
+        hour_frame(None, false, pool.at_limit_with(usize::MAX, initial)),
+        HourFrame::DropLimit
     );
     assert!(!builds_ahead(0, pool.at_limit_with(usize::MAX, initial)));
 
@@ -261,11 +264,21 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
         .map(|_| unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
     assert_eq!(unsafe { shared.take_frame(&mut 0) }, None);
-    assert_eq!(pool.stalled_drops(), 1);
+    assert_eq!(pool.limit_drops(), 1);
+    assert_eq!(pool.stalled_drops(), 0);
     assert_eq!(pool.live(), STEADY);
 
     pool.set_slot_bytes(0, 1);
     assert!(!pool.at_limit());
+    let claim_a = pool
+        .try_claim_growth(STEADY + 1, MAX_LIVE_BYTES, 0)
+        .expect("one growth claim up to the cap");
+    assert!(
+        pool.try_claim_growth(STEADY + 1, MAX_LIVE_BYTES, 0)
+            .is_none(),
+        "second concurrent claim at the cap is refused"
+    );
+    drop(claim_a);
     let extra = unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(pool.live(), STEADY + 1);
     held.push(extra);

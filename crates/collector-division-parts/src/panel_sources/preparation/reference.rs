@@ -501,6 +501,9 @@ impl ReferenceReads {
             variants_used: self.variants_used,
             variant_refresh: self.variant_refresh,
             dirty_read: self.dirty_read,
+            last_country_root: None,
+            last_commander_root: None,
+            last_state: None,
         }
     }
 }

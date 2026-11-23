@@ -821,7 +821,10 @@ fn text_handles_inline_and_long_owned_tokens() {
     let long = [b'a'; 128];
     mem[64..64 + short.len()].copy_from_slice(short);
     mem[256..256 + long.len()].copy_from_slice(&long);
-    let memory = SliceMemory::new(0, &mem);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &mem,
+    };
     let short_text = Text::from_source(&memory, 64, short.len(), None).unwrap();
     assert_eq!(short_text.as_bytes(), short);
     assert_eq!(short_text.allocated_bytes(), 0);

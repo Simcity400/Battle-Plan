@@ -931,12 +931,12 @@ impl PrivateHeap {
         } else {
             (ptr::null_mut(), false)
         };
-        let (base, fresh) = if reused.is_null() {
+        let (base, fresh, committed) = if reused.is_null() {
             let base = self.virtual_alloc(ptr::null(), bytes, MEM_RESERVE | MEM_COMMIT);
             if base.is_null() {
                 return ptr::null_mut();
             }
-            (base, true)
+            (base, true, bytes)
         } else {
             let base = reused.cast::<u8>();
             let committed = unsafe { (*reused).committed.load(Ordering::Relaxed) };
@@ -957,7 +957,7 @@ impl PrivateHeap {
                 }
                 return ptr::null_mut();
             }
-            (base, false)
+            (base, false, committed)
         };
         let record = base.cast::<Record>();
         unsafe {
@@ -971,8 +971,8 @@ impl PrivateHeap {
         let first = unsafe {
             self.distribute_blocks(class, count, |index| slab_block(base, class, index), cache)
         };
-        if zeroed && !fresh && !is_page_class(class) {
-            // SAFETY: `first` sits in Page 0 of a reused slab and holds `class_size(class)` bytes.
+        if zeroed && !fresh && (!is_page_class(class) || committed > PAGE) {
+            // SAFETY: `first` sits in the committed slab and holds `class_size(class)` bytes.
             unsafe { first.write_bytes(0, class_size(class)) };
         }
         first

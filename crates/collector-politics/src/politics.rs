@@ -1757,11 +1757,25 @@ mod tests {
                 ..Default::default()
             },
             Event {
+                kind: Kind::Power,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 3,
+                hour: 0,
+                currency: PowerCurrency::Political,
+                cause: PowerCause::DailyGain,
+                before: 100,
+                after: 105,
+                requested: Some(5),
+                ..Default::default()
+            },
+            Event {
                 kind: Kind::Cost,
                 country: 5002,
                 instance: 1,
                 epoch: 1,
-                sequence: 3,
+                sequence: 4,
                 hour: 0,
                 cost: 9,
                 ..Default::default()
@@ -1771,18 +1785,47 @@ mod tests {
                 country: 5002,
                 instance: 1,
                 epoch: 1,
-                sequence: 4,
+                sequence: 5,
                 hour: 0,
                 gross: 12,
                 cost: 9,
                 net: 3,
                 ..Default::default()
             },
+            Event {
+                kind: Kind::Power,
+                country: 5002,
+                instance: 1,
+                epoch: 1,
+                sequence: 6,
+                hour: 0,
+                currency: PowerCurrency::Political,
+                cause: PowerCause::DailyGain,
+                before: 200,
+                after: 203,
+                requested: Some(3),
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Cost,
+                country: 5099,
+                instance: 1,
+                epoch: 1,
+                sequence: 7,
+                hour: 0,
+                cost: 1,
+                ..Default::default()
+            },
         ];
         ledger.assemble(
             1,
             1,
-            &captured(1, 0, &first_day, &[balance(5001), balance(5002)]),
+            &captured(
+                1,
+                0,
+                &first_day,
+                &[balance(5001), balance(5002), balance(5099)],
+            ),
             &mut tables,
         );
         let Some(TableRows::CountryPowerDailyCosts(costs)) =
@@ -1794,36 +1837,45 @@ mod tests {
         assert_eq!(costs[0].country, 5001);
         assert_eq!(costs[1].country, 5002);
         assert!(ledger.costs.is_empty());
+        assert!(ledger.pending_daily.contains_key(&5099));
 
-        let stale = Event {
-            kind: Kind::Cost,
-            country: 5099,
-            instance: 1,
-            epoch: 1,
-            sequence: 5,
-            hour: 1,
-            cost: 1,
-            ..Default::default()
-        };
         let second_day = [
-            stale,
             Event {
                 kind: Kind::Daily,
                 country: 5001,
                 instance: 1,
                 epoch: 1,
-                sequence: 6,
+                sequence: 8,
                 hour: 24,
                 gross: 10,
                 cost: 0,
                 net: 10,
                 ..Default::default()
             },
+            Event {
+                kind: Kind::Power,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 9,
+                hour: 24,
+                currency: PowerCurrency::Political,
+                cause: PowerCause::DailyGain,
+                before: 105,
+                after: 115,
+                requested: Some(10),
+                ..Default::default()
+            },
         ];
         ledger.assemble(
             1,
             24,
-            &captured(1, 0, &second_day, &[balance(5001), balance(5002)]),
+            &captured(
+                1,
+                0,
+                &second_day,
+                &[balance(5001), balance(5002), balance(5099)],
+            ),
             &mut tables,
         );
         let Some(TableRows::CountryPowerDailyCosts(costs)) =

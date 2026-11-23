@@ -1468,8 +1468,9 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
         .unwrap();
     }
     let prepared = hour.finish().unwrap();
-    assert!(writer.inserts[0].words.capacity() >= 2000);
-    assert!(writer.insert_outs[0].u64s.capacity() >= 2000);
+    let scratch = writer.columns.as_ref().unwrap();
+    assert!(scratch.inserts[0].words.capacity() >= 2000);
+    assert!(scratch.insert_outs[0].u64s.capacity() >= 2000);
     assert!(writer.parts.sorted_keys.capacity() >= 2000);
     writer
         .commit(
@@ -1482,8 +1483,9 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
             0,
         )
         .unwrap();
-    assert_eq!(writer.inserts[0].words.capacity(), 0);
-    assert_eq!(writer.insert_outs[0].u64s.capacity(), 0);
+    let scratch = writer.columns.as_ref().unwrap();
+    assert_eq!(scratch.inserts[0].words.capacity(), 0);
+    assert_eq!(scratch.insert_outs[0].u64s.capacity(), 0);
     assert_eq!(writer.parts.sorted_keys.capacity(), 0);
     assert_eq!(writer.table().live().count(), 2000);
 
@@ -1508,5 +1510,8 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
         )
         .unwrap();
     let slot = writer.table().slot(1).unwrap();
-    assert_eq!(writer.table().cell(0, slot), Some(Cell::U64(999)));
+    assert_eq!(
+        writer.table().column(0).unwrap().cell(slot),
+        Some(Cell::U64(999))
+    );
 }

@@ -328,7 +328,12 @@ fn an_empty_modifier_arena_grows_in_the_pass_and_keeps_current_values() {
         capture.allocated_bytes(),
         capture.rows.allocated_bytes()
             + capture.seeds.capacity() * std::mem::size_of::<Seed>()
+            + capture.row_versions.capacity() * std::mem::size_of::<u64>()
             + capture.modifiers.borrow().allocated_bytes()
+            + capture.model.allocated_bytes()
+            + capture.store.allocated_bytes()
+            + capture.air_capacity.allocated_bytes()
+            + capture.naval_power.allocated_bytes()
             + capture
                 .extra
                 .iter()

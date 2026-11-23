@@ -2060,13 +2060,10 @@ fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocation
     let first = source(1, 100);
     let input_rows = first.complete::<tables::Countries>().unwrap().as_ptr();
     let initial = encoder.encode(first, false).unwrap();
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
     assert_eq!(
-        baseline
-            .1
-            .as_ref()
+        encoder
+            .committed_rows(TableId::Countries)
+            .unwrap()
             .rows::<tables::Countries>()
             .unwrap()
             .as_ptr(),
@@ -2084,13 +2081,10 @@ fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocation
     change_country(&mut next, 2);
     let input_rows = next.complete::<tables::Countries>().unwrap().as_ptr();
     let delta = encoder.encode(next, false).unwrap();
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
     assert_eq!(
-        baseline
-            .1
-            .as_ref()
+        encoder
+            .committed_rows(TableId::Countries)
+            .unwrap()
             .rows::<tables::Countries>()
             .unwrap()
             .as_ptr(),
@@ -2111,13 +2105,10 @@ fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocation
         update.tables[TableId::Countries.index()],
         TableUpdate::Unchanged { .. }
     ));
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
     assert_eq!(
-        baseline
-            .1
-            .as_ref()
+        encoder
+            .committed_rows(TableId::Countries)
+            .unwrap()
             .rows::<tables::Countries>()
             .unwrap()
             .as_ptr(),

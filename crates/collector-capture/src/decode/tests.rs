@@ -1429,7 +1429,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     *frame.extended.characters_pilot() =
         collector_characters::extended::characters::Captured::with_capacities(&initial);
     let family_bytes_before = frame.extended.characters_pilot().allocated_bytes();
-    shared.measure_frame(index);
+    shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
     let pool_bytes_before = shared.pool_owned();
     let ctx = CharactersCopyContext {
         force_full: false,
@@ -1517,7 +1517,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     let grown = frame.extended.characters_pilot().allocated_bytes() - family_bytes_before;
     assert!(grown > 0);
     assert_eq!(shared.pool_owned(), pool_bytes_before);
-    shared.measure_frame(index);
+    shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
     assert_eq!(shared.pool_owned(), pool_bytes_before + grown as u64);
     assert!(
         !frame
@@ -2029,7 +2029,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame.extended.test_division_detail().groups.rows = Vec::new();
     let before_bytes = frame.allocated_bytes();
-    shared.measure_frame(index);
+    shared.set_frame_bytes(index, before_bytes as u64);
     let pool_before = shared.pool_owned();
     shared
         .frames
@@ -2097,10 +2097,11 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         47
     );
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    shared.measure_frame(index);
+    let after_bytes = frame.allocated_bytes();
+    shared.set_frame_bytes(index, after_bytes as u64);
     assert_eq!(
         shared.pool_owned(),
-        pool_before + (frame.allocated_bytes() - before_bytes) as u64
+        pool_before + (after_bytes - before_bytes) as u64
     );
     assert_eq!(frame.divisions_result, direct.divisions_outcome);
     assert_eq!(

@@ -287,6 +287,40 @@ impl Columnar {
         matches!(self, Self::Live(_))
     }
 
+    pub(crate) fn has_complete(&self, table: TableId, branch: u64, hour: i32) -> bool {
+        match self {
+            Self::Live(live) => live.run.as_ref().is_some_and(|run| {
+                run.branch == branch
+                    && run.next_hour == hour
+                    && run.frames.tables()[table.index()].status()
+                        == replay_columnar::manifest::Status::Complete
+                    && run.frames.tables()[table.index()]
+                        .acquisition()
+                        .available_from
+                        .is_some()
+            }),
+            Self::Unopened => false,
+            #[cfg(test)]
+            Self::Off => true,
+        }
+    }
+
+    pub(crate) fn materialize_complete(
+        &self,
+        table: TableId,
+        branch: u64,
+    ) -> io::Result<Option<replay_data::rows::TableRows>> {
+        let Self::Live(live) = self else {
+            return Ok(None);
+        };
+        match &live.run {
+            Some(run) if run.branch == branch => {
+                engine_allocation::advisory(|| run.frames.materialize_complete(table))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn interrupt(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.interrupt());

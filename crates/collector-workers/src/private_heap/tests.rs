@@ -854,6 +854,35 @@ fn reclaim_empty_slabs_decommits_free_page_blocks_in_partially_live_slabs() {
 }
 
 #[test]
+fn warm_large_reservation_reused_by_zeroed_page_class_is_zeroed() {
+    for size in [4096, SMALL_LIMIT] {
+        let heap = Heap::new();
+        let heap = &heap.0;
+        let large = Layout::from_size_align(48 * 1024, 16).unwrap();
+        let page = Layout::from_size_align(size, 16).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                off_hold_path();
+                let dirty = unsafe { heap.alloc(large) };
+                assert!(!dirty.is_null());
+                unsafe { dirty.write_bytes(0xa5, large.size()) };
+                unsafe { heap.dealloc(dirty, large) };
+                let block = unsafe { heap.alloc_zeroed(page) };
+                assert!(!block.is_null());
+                assert!(
+                    unsafe { std::slice::from_raw_parts(block, size) }
+                        .iter()
+                        .all(|&b| b == 0),
+                    "dirty bytes leaked into zeroed {size}-byte page class"
+                );
+                unsafe { heap.dealloc(block, page) };
+                unsafe { heap.thread_exit() };
+            });
+        });
+    }
+}
+
+#[test]
 fn reclaim_empty_slabs_decommits_subpage_4k_pages_and_zeroes_reused_allocations() {
     let heap = Heap::new();
     let heap = &heap.0;

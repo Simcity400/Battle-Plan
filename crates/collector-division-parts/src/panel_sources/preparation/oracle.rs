@@ -351,7 +351,7 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
         let capture = || {
             for seed in &seeds {
                 old.capture(&old_memory, 0, 0, &store, seed, selection, None);
-                current.capture(&memory, 0, 0, &store, seed, selection, None);
+                current.capture(&memory, 0, 0, &store, seed, selection, None, None);
             }
         };
         if case.denied {

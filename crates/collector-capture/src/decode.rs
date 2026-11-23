@@ -800,9 +800,9 @@ fn process_owned_job_with_stage(
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
-    shared.measure_frame(job.index);
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        shared.set_frame_bytes(job.index, frame.allocated_bytes() as u64);
         frame.pool_bytes = shared.pool_total();
     }
     failure::stage("publish ready", None);

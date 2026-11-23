@@ -5,7 +5,7 @@ use crate::{
 };
 use replay_data::{
     format::FormatVersion,
-    rows::{ChangedRows, RowCodec, RowsPairVisit, RowsVisit, TABLE_COUNT, TableId, TableRows},
+    rows::{ChangedRows, Field, List, Opaque, RowCodec, RowsPairVisit, RowsVisit, TABLE_COUNT, TableId, TableRows},
     scope::{self, CaptureMode},
 };
 use replay_frame::frame::{
@@ -15,7 +15,8 @@ use replay_recording::schema::LAST_COMPLETE;
 use replay_columnar::{
     manifest::{self, Manifest, Section, Status},
     restart::Last,
-    writer::{Dictionary, Prepared, Sample, Strings, Sweep, TableWriter},
+    state::Cell,
+    writer::{Dictionary, Evidence, Prepared, Sample, Strings, Sweep, TableWriter},
 };
 use replay_data::{BranchId, sliced::SliceUpdate};
 use std::{
@@ -766,6 +767,59 @@ impl FrameWriter {
         &self.tables
     }
 
+    pub fn materialize_complete(&self, id: TableId) -> io::Result<Option<TableRows>> {
+        let writer = &self.tables[id.index()];
+        if writer.status() != Status::Complete {
+            return Ok(None);
+        }
+        let table = writer.table();
+        let mut keyed = engine_allocation::vec(table.live().count())?;
+        for slot in table.live().ones() {
+            let key = table
+                .key(slot)
+                .ok_or_else(|| invalid("A live columnar slot holds no row key"))?;
+            keyed.push((key, slot));
+        }
+        keyed.sort_unstable();
+        let keys = engine_allocation::collect_vec(keyed.iter().map(|&(key, _)| key))?;
+        let format = FormatVersion::CURRENT.version();
+        let dictionary = &self.dictionary;
+        let rows = id.rows_from_wire_fields(&keys, id.full_mask(), &mut |at, column| {
+            let slot = keyed[at].1;
+            if id.column_withheld_at(column, format) || !table.recorded(column, slot) {
+                return Ok(Field::NotRecorded);
+            }
+            let cell = table
+                .column(column)
+                .and_then(|values| values.cell(slot))
+                .ok_or_else(|| invalid("A live columnar slot has no cell"))?;
+            Ok(match cell {
+                Cell::U8(value) => Field::U8(value),
+                Cell::I8(value) => Field::I8(value),
+                Cell::U16(value) => Field::U16(value),
+                Cell::I16(value) => Field::I16(value),
+                Cell::U32(value) => Field::U32(value),
+                Cell::I32(value) => Field::I32(value),
+                Cell::U64(value) => Field::U64(value),
+                Cell::I64(value) => Field::I64(value),
+                Cell::Bool(value) => Field::Bool(value),
+                Cell::OptionalI32(value) => Field::OptionalI32(value),
+                Cell::OptionalU32(value) => Field::OptionalU32(value),
+                Cell::OptionalI64(value) => Field::OptionalI64(value),
+                Cell::OptionalU64(value) => Field::OptionalU64(value),
+                Cell::Bytes(string_id) => Field::Bytes(
+                    dictionary
+                        .get(string_id)
+                        .ok_or_else(|| invalid("A text cell names a string not in the dictionary"))?,
+                ),
+                Cell::U32List(values) => Field::U32List(List::Native(values)),
+                Cell::U64List(values) => Field::U64List(List::Native(values)),
+                Cell::Opaque(bytes) => Field::Opaque(Opaque::Encoded(bytes, format)),
+            })
+        })?;
+        Ok(Some(rows))
+    }
+
     pub fn with_staging(staging: native_columns::Staging) -> io::Result<Self> {
         let mut writer = Self::new()?;
         writer.lanes[0].cells = RowCells::new(staging);
@@ -821,12 +875,16 @@ impl Part<'_> {
         {
             removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
         }
-        let carried = source.is_none()
+        let skipped_carry = source.is_none()
+            && !self.starting
             && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON)
             && replay_data::cadence::is_staggered(id)
-            && writer.status() == Status::Complete
             && writer.acquisition().available_from.is_some();
+        let carried_complete = skipped_carry && writer.status() == Status::Complete;
+        let carried_unavailable = (skipped_carry
+            && matches!(writer.status(), Status::Unavailable { .. }))
+        .then_some(writer.status());
         let delta = source
             .and_then(|source| source.delta)
             .filter(|_| !self.starting && writer.status() == Status::Complete);
@@ -842,6 +900,16 @@ impl Part<'_> {
         }
         if !scope::records(self.mode, id) {
             return held.not_recorded();
+        }
+        if let Some(status) = carried_unavailable {
+            return Ok(TableHour {
+                prepared: None,
+                evidence: Evidence {
+                    status,
+                    read,
+                    sample: Sample::FromReadBit,
+                },
+            });
         }
         let complete = match input {
             TableInput::Sampled(TableView::Complete(rows)) => Some(rows),
@@ -863,7 +931,7 @@ impl Part<'_> {
             };
         }
         match input {
-            _ if carried => held.same(),
+            _ if carried_complete => held.same(),
             TableInput::ComparedEqual(_) => held.same(),
             TableInput::Sampled(view) => held.view(view),
             TableInput::SharedComplete(rows)

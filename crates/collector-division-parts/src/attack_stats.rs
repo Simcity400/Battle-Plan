@@ -1749,11 +1749,11 @@ mod tests {
         let mut captured = Captured::default();
         captured.rows = vec![Row {
             division: 3,
-            scalars: Some(Scalars {
+            scalars: Some(Scalars::of(&stats::AttackStats {
                 panel,
                 suppression: Some(-7),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }];
         let stored = captured.panel(3);
@@ -1778,7 +1778,7 @@ mod tests {
                 len: 2,
                 experience: None,
                 pending_template: None,
-                scalars: Some(Scalars {
+                scalars: Some(Scalars::of(&stats::AttackStats {
                     river: [1, 2],
                     fort: [3, 4],
                     snow: 5,
@@ -1787,7 +1787,7 @@ mod tests {
                     fuel_rate: 40,
                     air_defense: 50,
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             },
             Row {

@@ -1311,7 +1311,7 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
         // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
         unsafe { Shared::new(0, 0, 1) },
     );
-    let hours = 3 * BUFFERS + 1;
+    let hours = crate::frame_pool::MAX_LIVE_FRAMES;
     let (send, taken) = mpsc::channel();
     let producer = {
         let shared = Arc::clone(&shared);
@@ -1344,11 +1344,19 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
         indices.push(index);
     }
     producer.join().unwrap();
+    let mut over_cap_grow_ns = u64::MAX;
+    assert_eq!(
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut over_cap_grow_ns) },
+        None
+    );
     assert_eq!(indices.iter().collect::<HashSet<_>>().len(), hours);
     let backlog = shared.frames.gauge();
     assert_eq!(backlog.live, hours);
     assert_eq!(backlog.in_flight, hours);
     assert_eq!(backlog.grown, (hours - BUFFERS) as u64);
+    assert_eq!(backlog.dropped_limit, 1);
+    assert_eq!(backlog.dropped_stalled, 0);
     assert!(backlog.in_flight_bytes > 0);
     for (hour, &expected) in indices.iter().enumerate() {
         let index =
@@ -1385,7 +1393,7 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
 
 #[test]
 fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame() {
-    use crate::frame_pool::{AHEAD, STEADY};
+    use crate::frame_pool::{AHEAD, MAX_LIVE_FRAMES, STEADY};
     use std::sync::mpsc;
     let shared = Arc::new(
         // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
@@ -1396,16 +1404,21 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
         move || format!("{:?}", watching.frames.gauge()),
         move |steps| {
             let (started, builds) = mpsc::channel::<()>();
+            let (finished, built) = mpsc::channel::<()>();
             let (release, released) = mpsc::channel::<()>();
             let released = Mutex::new(released);
-            let observe = move |at| {
-                if at == BuildAhead::Starting {
+            let observe = move |at| match at {
+                BuildAhead::Starting => {
                     let _ = started.send(());
                     let _ = released
                         .lock()
                         .unwrap()
                         .recv_timeout(collector_test_support::TEST_HANG_GUARD);
                 }
+                BuildAhead::Free => {
+                    let _ = finished.send(());
+                }
+                BuildAhead::Parking => {}
             };
             let gauge = || format!("{:?}", shared.frames.gauge());
             let hour = |at: usize, held: &mut Vec<usize>| {
@@ -1435,15 +1448,30 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
                         )
                     });
             };
+            let build_finished = |at: usize| {
+                steps.at(format_args!(
+                    "after hour {at}: waiting for built spare; {}",
+                    gauge()
+                ));
+                built
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "built spare did not become free after hour {at}: {}",
+                            gauge()
+                        )
+                    });
+            };
             let mut held = Vec::new();
             let builder = TestBuilder::following(&shared, release, || {}, observe);
-            for at in 1..=STEADY - AHEAD {
+            for at in 1..=STEADY {
                 assert_eq!(hour(at, &mut held), 0, "hour {at}: {}", gauge());
             }
-            assert_eq!(hour(STEADY - 1, &mut held), 0, "{}", gauge());
-            build_started(STEADY - 1);
-            let hours = 4 * STEADY;
-            for at in STEADY..=hours {
+            build_started(STEADY);
+            builder.release();
+            build_finished(STEADY);
+            let ahead_hours = MAX_LIVE_FRAMES - 2;
+            for at in STEADY + 1..=ahead_hours {
                 assert_eq!(
                     hour(at, &mut held),
                     0,
@@ -1457,22 +1485,13 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
                     (at - STEADY) as u64,
                     "hour {at}: {gauge:?}"
                 );
-                builder.release();
                 build_started(at);
+                if at < ahead_hours {
+                    builder.release();
+                    build_finished(at);
+                }
             }
-            let behind = shared.frames.gauge();
-            assert_eq!(
-                (behind.in_flight, behind.free, behind.grown),
-                (hours, 1, 0),
-                "{behind:?}"
-            );
-            assert_eq!(
-                behind.built_ahead,
-                (hours - STEADY + 1) as u64,
-                "{behind:?}"
-            );
-            assert_eq!(hour(hours + 1, &mut held), 0, "{}", gauge());
-            let grew = hour(hours + 2, &mut held);
+            let grew = hour(ahead_hours + 1, &mut held);
             let burst = shared.frames.gauge();
             assert_eq!(burst.grown, 1, "{burst:?}");
             assert!(grew > 0, "{burst:?}");
@@ -1488,13 +1507,22 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             steps.at(format_args!("ending the builder; {}", gauge()));
             builder.end(gauge).unwrap();
             let behind = shared.frames.gauge();
+            assert_eq!(behind.live, MAX_LIVE_FRAMES, "{behind:?}");
             assert_eq!(behind.in_flight, held.len(), "{behind:?}");
-            assert_eq!(behind.free, AHEAD - 1, "{behind:?}");
+            assert_eq!(behind.free, AHEAD, "{behind:?}");
             assert_eq!(
                 behind.built_ahead,
-                (hours - STEADY + 2) as u64,
+                (ahead_hours - STEADY + 1) as u64,
                 "{behind:?}"
             );
+            assert_eq!(hour(MAX_LIVE_FRAMES, &mut held), 0, "{}", gauge());
+            assert_eq!(
+                // SAFETY: This fixture owns its frame and worker state and runs without a live
+                // attachment.
+                unsafe { shared.take_frame(&mut 0) },
+                None
+            );
+            assert_eq!(shared.frames.gauge().dropped_limit, 1);
             for index in held.drain(..) {
                 steps.at(format_args!("recycling frame {index}; {}", gauge()));
                 // SAFETY: This fixture owns its frame and worker state and runs without a live

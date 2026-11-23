@@ -190,6 +190,8 @@ pub struct WatchRegistry {
     poisoned: AtomicBool,
     refused: AtomicU64,
     refused_at_offer: AtomicU64,
+    refused_at_clear: AtomicU64,
+    purged_for_refusal: AtomicBool,
     clears: AtomicU64,
     installs: AtomicU64,
     deferred: AtomicU64,
@@ -266,6 +268,8 @@ impl WatchRegistry {
             poisoned: AtomicBool::new(false),
             refused: AtomicU64::new(0),
             refused_at_offer: AtomicU64::new(0),
+            refused_at_clear: AtomicU64::new(0),
+            purged_for_refusal: AtomicBool::new(false),
             clears: AtomicU64::new(0),
             installs: AtomicU64::new(0),
             deferred: AtomicU64::new(0),
@@ -502,22 +506,19 @@ impl WatchRegistry {
 
     #[inline]
     pub fn touch(&self, receiver: usize) {
-        self.bump_revision();
-        let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
-            Some(table) => match table.find(receiver, false) {
-                Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
-                _ => (None, None),
-            },
-            None => (None, None),
-        };
-        if self.sequences
-            && let Some(sequence) = sequence
+        let admit = self.enter();
+        if receiver != 0
+            && let Some(table) = self.table()
+            && let Lookup::Watched(index, sequence) = table.find(receiver, false)
         {
-            self.increment(sequence);
+            if self.sequences {
+                self.increment(sequence);
+            }
+            if let Some((word, bit)) = table.mark_of(index) {
+                mark_slot(word, bit);
+            }
         }
-        if let Some((word, bit)) = mark {
-            mark_slot(word, bit);
-        }
+        self.leave(admit);
     }
 
     #[inline]
@@ -773,6 +774,8 @@ impl WatchRegistry {
             self.new_epoch();
         }
         let full = self.purge && self.registered.load(Relaxed) * 2 > self.capacity.load(Relaxed);
+        let refused = self.refused.load(Relaxed);
+        let refused_since_clear = self.purge && refused > self.refused_at_clear.load(Relaxed);
         let first = self.table.load(SeqCst).is_null();
         let restart = invalidate || first;
         if !restart {
@@ -785,6 +788,25 @@ impl WatchRegistry {
                 && unsafe { self.install_growth_quiescent_preserving() }
             {
                 return Boundary::Installed;
+            }
+            if refused_since_clear && self.offered.load(SeqCst).is_null() {
+                if !self.quiet_now() {
+                    self.deferred.fetch_add(1, Relaxed);
+                    return Boundary::Deferred;
+                }
+                if let Some(table) = self.table() {
+                    self.new_epoch();
+                    table.clear();
+                    self.new_epoch();
+                    self.registered.store(0, Relaxed);
+                    self.clears.fetch_add(1, Relaxed);
+                    self.refused_at_clear.store(refused, Relaxed);
+                    self.purged_for_refusal.store(true, Relaxed);
+                    return Boundary::Cleared;
+                }
+            }
+            if self.purge && !refused_since_clear {
+                self.purged_for_refusal.store(false, Relaxed);
             }
             if full || !self.offered.load(SeqCst).is_null() {
                 self.held.fetch_add(1, Relaxed);
@@ -812,6 +834,8 @@ impl WatchRegistry {
                 self.capacity.store(len, Relaxed);
                 self.registered.store(0, Relaxed);
                 self.installs.fetch_add(1, Relaxed);
+                self.refused_at_clear.store(refused, Relaxed);
+                self.purged_for_refusal.store(false, Relaxed);
                 self.draining.store(previous, SeqCst);
                 if self.quiet_now() {
                     self.retire_drained();
@@ -826,6 +850,8 @@ impl WatchRegistry {
                 self.new_epoch();
                 self.registered.store(0, Relaxed);
                 self.clears.fetch_add(1, Relaxed);
+                self.refused_at_clear.store(refused, Relaxed);
+                self.purged_for_refusal.store(false, Relaxed);
                 return Boundary::Cleared;
             }
         }
@@ -913,6 +939,9 @@ impl WatchRegistry {
         self.capacity.store(next.slots.len(), Relaxed);
         self.registered.store(copied_count, Relaxed);
         self.installs.fetch_add(1, Relaxed);
+        self.refused_at_clear
+            .store(self.refused.load(Relaxed), Relaxed);
+        self.purged_for_refusal.store(false, Relaxed);
         if self.quiet_state() == Some(state) {
             self.retired.store(previous, SeqCst);
         } else {
@@ -948,7 +977,9 @@ impl WatchRegistry {
         };
         let refused = self.refused.load(Relaxed);
         let cap = self.capacity.load(Relaxed);
-        if refused > self.refused_at_offer.load(Relaxed)
+        let grow_on_refusal = !self.purge || self.purged_for_refusal.load(Relaxed);
+        if grow_on_refusal
+            && refused > self.refused_at_offer.load(Relaxed)
             && cap != 0
             && let Some(grown) = cap.checked_mul(2)
         {
@@ -2170,6 +2201,60 @@ mod tests {
         assert!(small.sequence(40).is_some());
         small.collect();
         unsafe { small.release() };
+    }
+
+    #[test]
+    fn purgeable_registry_clears_historical_churn_without_growing_capacity() {
+        let registry = WatchRegistry::new();
+        registry.offer(64);
+        assert_eq!(registry.boundary(false), Boundary::Installed);
+        registry.set_enabled(true);
+        let initial_cap = registry.capacity();
+        assert_eq!(initial_cap, MIN_SLOTS);
+        for round in 0..32usize {
+            for item in 0..100usize {
+                let address = 0x10_0000 + (round * 100 + item) * 8;
+                let _ = registry.sequence(address);
+            }
+            registry.offer(100);
+            unsafe { with_quiescent_growth(|| registry.boundary(false)) };
+            registry.collect();
+        }
+        assert_eq!(registry.capacity(), initial_cap);
+        assert!(registry.clears.load(Relaxed) >= 1);
+
+        let before = registry.clears.load(Relaxed);
+        for item in 0..(initial_cap + 64) {
+            let _ = registry.sequence(0x400_0000 + item * 8);
+        }
+        registry.offer(100);
+        assert_eq!(
+            unsafe { with_quiescent_growth(|| registry.boundary(false)) },
+            Boundary::Cleared
+        );
+        assert_eq!(registry.clears.load(Relaxed), before + 1);
+        for item in 0..(initial_cap + 64) {
+            let _ = registry.sequence(0x400_0000 + item * 8);
+        }
+        registry.offer(100);
+        assert_eq!(
+            unsafe { with_quiescent_growth(|| registry.boundary(false)) },
+            Boundary::Installed
+        );
+        assert!(registry.capacity() >= initial_cap * 2);
+        registry.collect();
+        unsafe { registry.release() };
+    }
+
+    #[test]
+    fn touch_updates_sequence_and_mark_and_never_leaves_active_admissions() {
+        let registry = marking(64);
+        let before = registry.sequence(0x2000).unwrap();
+        registry.touch(0x2000);
+        assert_eq!(registry.active(), 0);
+        assert_eq!(registry.sequence(0x2000), Some((before.0, before.1 + 1)));
+        assert_eq!(take(&registry), (Some(before.0), vec![0x2000]));
+        unsafe { registry.release() };
     }
 
     #[test]

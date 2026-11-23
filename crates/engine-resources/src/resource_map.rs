@@ -2044,36 +2044,27 @@ fn route_path(
     let mut ids = [0_u8; BATCH * 4];
     while first < elements.count {
         let batch = ((elements.count - first) as usize).min(BATCH);
-        let copied = if let Some(start) = elements.element(first, 8)
-            && start.checked_add(batch * 8).is_some()
-            && engine_native_memory::read_slice(memory, start, &mut raw[..batch * 8])
+        let mut spans = batch;
+        for index in 0..batch {
+            if elements.element(first + index as u32, 8).is_none() {
+                spans = index;
+                break;
+            }
+        }
+        let copied = if spans != 0
+            && let Some(start) = elements.element(first, 8)
         {
-            batch
+            memory.copy_records(
+                RecordSources::Strided {
+                    base: start,
+                    stride: 8,
+                    count: spans,
+                },
+                &ORIGIN_PTR_LAYOUT,
+                &mut raw[..spans * 8],
+            )
         } else {
-            let mut addresses = [0_usize; BATCH];
-            let mut words = [[0_u8; 8]; BATCH];
-            let mut spans = batch;
-            for (index, address) in addresses[..batch].iter_mut().enumerate() {
-                match elements.element(first + index as u32, 8) {
-                    Some(slot) => *address = slot,
-                    None => {
-                        spans = index;
-                        break;
-                    }
-                }
-            }
-            let mut destinations: [&mut [u8]; BATCH] =
-                std::array::from_fn(|_| <&mut [u8]>::default());
-            for (destination, word) in destinations.iter_mut().zip(words[..spans].iter_mut()) {
-                *destination = word.as_mut_slice();
-            }
-            let copied = memory
-                .copy_scattered(addresses, &mut destinations)
-                .min(spans);
-            for (index, word) in words[..copied].iter().enumerate() {
-                raw[index * 8..(index + 1) * 8].copy_from_slice(word);
-            }
-            copied
+            0
         };
         let mut stop = None;
         let mut live = 0;
