@@ -28,7 +28,7 @@ import { useTiles } from '../../dashboard/tiles/useTiles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { TRAILING_HOURS } from '../../dashboard/model';
 import type { ApmReply, ApmSeries } from '../../generated/dashboard';
-import { apmRuns, apmText, playerNames, pointAt, valueNote, apmValueText, validateApm, APM_EXPLANATION, GAPS_NOTE } from './apmData';
+import { apmRuns, apmText, countText, playerNames, pointAt, valueNote, apmValueText, validateApm, APM_EXPLANATION, GAPS_NOTE } from './apmData';
 import { apmHeadQuery, apmHeadRows, apmHolders, apmPausedView } from './apmHead.ts';
 import { useApm, useApmRegistry } from './useApm';
 import { useChangedState } from '../../dashboard/changedState.ts';
