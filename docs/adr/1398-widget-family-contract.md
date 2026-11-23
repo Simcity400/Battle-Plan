@@ -1,0 +1,9 @@
+# Declarative widget families with one projection for drawing and audit
+
+Dashboard widgets do not wire playback loops, canvas surfaces, hit testing, tooltips, keyboard mirrors, or separate exact-read audit row builders. Each widget declares its data sources and a pure, deterministic projection `(sources, hour, options) => model` registered with its family. The family runs that same projection inside the worker lane to paint frames and inside the main-thread audit reader against exact replies, guaranteeing that what is drawn, what the accessibility mirror speaks, what tooltips show, and what the audit compares are derived from one function.
+
+For the table family, `FamilyTableHost` subscribes declared sources directly on the playback `Pipeline`, binds a worker-painted canvas surface with fixed per-column numeric widths (avoiding per-frame text measurement growth and audit column-layout drift), and caches viewport dimensions from `ResizeObserver` so `install()` performs zero layout or style reads and zero React commits while structure is unchanged. The worker paints only visible cells whose content or geometry changed since the previous frame.
+
+Interaction is identity-tracked: pointer hover resolves to a stable row key (`inspectedKey`), a click acts on the inspected row even if rows reorder beneath a still pointer (cancelling on >4 px drag), tooltips include the shown date, throttle to 4 Hz while playing, and pin on `P`. Keyboard focus lives on visually-hidden mirror `<tr>` elements (throttled to 1 Hz while playing and flushed immediately on pause), moves with the focused row across re-sorts, and draws a 2 px accent ring on the canvas.
+
+[Family contract](../../ui/src/families/contract.ts) · [Table model](../../ui/src/families/table/model.ts) · [Table lane view](../../ui/src/families/table/laneView.ts) · [Table host](../../ui/src/families/table/FamilyTableHost.tsx) · [Value contract](1397-family-value-contract.md)

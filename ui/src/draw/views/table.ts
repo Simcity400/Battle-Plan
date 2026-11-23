@@ -8,6 +8,7 @@ import { hitTable, preserveRevealTimes, ROW_HEIGHT, SORT_GLIDE_MS } from '../tab
 import { buildDetail, buildNext, buildStretch, buildTable, type BuiltTable } from '../tables/builders.ts';
 import { liveValues, fieldsOf, type Structure } from './fields.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
+import { familyTableLaneView, isFamilyTableBinding } from '../../families/table/laneView.ts';
 import type { TableBuild } from '../tables/builders';
 
 export interface TableBinding { model: TableSurfaceModel; tooltipKeys?: Readonly<Record<string, readonly string[]>>; tooltipColumns?: readonly string[]; window?: { first: number; count: number }; audit?: boolean }
@@ -101,8 +102,10 @@ export function auditRows(rows: readonly TableRowModel[], columns: readonly stri
 }
 
 export function tableView(structureOf: (product: string | undefined) => Structure | undefined, wake: (widget: number) => void): LaneView {
+  const family = familyTableLaneView(wake);
   return {
     next(scene, hour) {
+      if (isFamilyTableBinding(scene.model)) return family.next?.(scene, hour) ?? Infinity;
       const bound = scene.model as TableBinding | undefined;
       if (!bound) return Infinity;
       const model = bound.model, { rows } = rowsAt(scene, model, hour);
@@ -111,6 +114,7 @@ export function tableView(structureOf: (product: string | undefined) => Structur
       return next;
     },
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
+      if (isFamilyTableBinding(input.model)) return family.paint(input, state, content);
       const bound = input.model as TableBinding | undefined;
       const fields = { ...fieldsOf(input, input.hour, structureOf, state, content) };
       const surface = input.binding.surfaces[0];

@@ -1,0 +1,11 @@
+# One five-state value contract for every dashboard family
+
+Every dashboard family renders values through a single discriminated union with five states: `known`, `zero`, `notRecorded` (carrying a non-empty reason), `notApplicable` (carrying a non-empty reason), and `partial` (carrying the measured value and a non-empty reason). Bare `null`, `undefined`, `NaN`, non-finite numbers and empty reasons are rejected by the TypeScript type and by a named runtime error (`InvalidFamilyValueError`) at the boundary where wire answers, live cells, or exact replies enter a family.
+
+Two adapters own conversion into this type: `valueFromWireCell` / `valueFromNamedAnswer` / `wireFloat` / `wireWhole` map followed wire cell states (`Value`, `Missing`, `Unrecorded`, `NoRow` and whole-answer `notRecorded`) while preserving exact `bigint` magnitudes and reasons; `valueFromNullable` and `valueFromRawBigInt` convert exact reply fields using the widget's explicit declaration of whether `null` means `notRecorded` or `notApplicable` and why.
+
+Sorting treats `notRecorded` and `notApplicable` as last in both ascending and descending order. Measured values (`known`, `zero`, `partial`) compare by exact value (numeric or exact `bigint` without precision loss, or collated text) and break ties deterministically by primary display name A–Z (`Intl.Collator` with numeric order) and then stable row key, never by input array index.
+
+One shared presentation specification renders all five states identically in DOM (`ValueText`) and on Canvas (`drawValueCanvas`): a known zero always draws `0` in foreground text (never `None`, never blank, never a dash); `notRecorded` draws a hatched swatch and muted `Not recorded` label; `notApplicable` draws a muted em-dash with no hatching; `partial` draws the value with a hatched tab and muted `partial` label. Screen-reader text and audit rows carry full spoken reasons (`Not recorded: <reason>`, `Not applicable: <reason>`, `<value>, partial: <reason>`).
+
+[Value contract](../../ui/src/families/value.ts) · [Value formatting](../../ui/src/families/valueFormat.ts) · [DOM value](../../ui/src/families/ValueText.tsx) · [Canvas value](../../ui/src/families/valueCanvas.ts)
