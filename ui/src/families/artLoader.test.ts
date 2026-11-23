@@ -41,6 +41,12 @@ test('F6: FamilyArtLoader bounds bitmap cache, closes evicted bitmaps, aborts sc
   assert.ok(loader.get('b.png'));
   assert.ok(loader.get('c.png'));
 
+  loader.requestVisible(['b.png', 'c.png', 'g.png']);
+  resolvers.get('g.png')!(fakeBitmap(closed, 'g.png'));
+  await Promise.resolve();
+  assert.equal(loader.cachedCount, 3, 'a visible set larger than the bound keeps every visible bitmap');
+  assert.deepEqual(closed, ['a.png'], 'no visible bitmap is closed to meet the bound');
+
   loader.requestVisible(['d.png']);
   assert.equal(loader.pendingCount, 1);
   loader.requestVisible(['e.png', 'f.png']);
@@ -62,5 +68,5 @@ test('F6: FamilyArtLoader bounds bitmap cache, closes evicted bitmaps, aborts sc
   assert.equal(loader.cachedCount, 0);
   assert.equal(loader.pendingCount, 0);
   assert.deepEqual(aborted, ['d.png', 'e.png', 'f.png'], 'dispose aborts remaining pending fetches');
-  assert.deepEqual(closed.filter(id => id !== 'late.png').sort(), ['a.png', 'b.png', 'c.png'], 'dispose closes all cached bitmaps');
+  assert.deepEqual(closed.filter(id => id !== 'late.png').sort(), ['a.png', 'b.png', 'c.png', 'g.png'], 'dispose closes all cached bitmaps');
 });

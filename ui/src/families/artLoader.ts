@@ -35,6 +35,7 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
   private readonly maxFailed: number;
   private readonly fetchBitmap: FamilyArtFetcher<TBitmap>;
   private onLoad?: () => void;
+  private wanted: ReadonlySet<string> = new Set();
   private disposed = false;
 
   constructor(options: FamilyArtLoaderOptions<TBitmap> = {}) {
@@ -63,6 +64,7 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
     if (this.disposed) return;
     const wanted = new Set<string>();
     for (const url of urls) if (url) wanted.add(url);
+    this.wanted = wanted;
     for (const [url, controller] of [...this.pending]) {
       if (!wanted.has(url)) {
         this.pending.delete(url);
@@ -92,7 +94,7 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
             prev.close();
           }
           this.bitmaps.set(url, bitmap);
-          this.evict(wanted);
+          this.evict();
           this.onLoad?.();
         },
         () => {
@@ -105,21 +107,16 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
         },
       );
     }
+    this.evict();
   }
 
-  private evict(protectedUrls?: ReadonlySet<string>): void {
+  private evict(): void {
     if (this.bitmaps.size <= this.maxEntries) return;
     for (const [key, bitmap] of [...this.bitmaps]) {
       if (this.bitmaps.size <= this.maxEntries) break;
-      if (protectedUrls?.has(key)) continue;
+      if (this.wanted.has(key)) continue;
       this.bitmaps.delete(key);
       bitmap.close();
-    }
-    while (this.bitmaps.size > this.maxEntries) {
-      const oldestKey = this.bitmaps.keys().next().value!;
-      const oldest = this.bitmaps.get(oldestKey)!;
-      this.bitmaps.delete(oldestKey);
-      oldest.close();
     }
   }
 
@@ -129,6 +126,7 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
     this.onLoad = undefined;
     for (const controller of this.pending.values()) controller.abort();
     this.pending.clear();
+    this.wanted = new Set();
     for (const bitmap of this.bitmaps.values()) bitmap.close();
     this.bitmaps.clear();
     this.failed.clear();

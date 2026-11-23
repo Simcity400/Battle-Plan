@@ -689,7 +689,7 @@ export default function FamilyTableHost<TOptions>({
 
       if (pendingAuditAck) {
         const installedAudit = visible && shown?.fields ? auditRowsOf(shown.fields.audit) : undefined;
-        if (!visible || ((shown?.installedBinding ?? 0) >= pendingAuditAck.targetBinding && installedAudit !== undefined)) {
+        if (!visible || mode !== 'picture' || ((shown?.installedBinding ?? 0) >= pendingAuditAck.targetBinding && installedAudit !== undefined)) {
           settleAuditAck();
         }
       }
