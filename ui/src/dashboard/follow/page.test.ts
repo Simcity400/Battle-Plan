@@ -112,6 +112,16 @@ test('review 3: a paused step to 20 never installs a delayed entry whose window 
   assert.deepEqual([view().id, view().through, view().dim], [1, 18, true]);
 });
 
+test('review 7 B: while paused, a different picture with the same fact hour that still does not cover the target never replaces the shown one', () => {
+  const { p, offer, view } = page();
+  offer(entry({ id: 1, h: 96, c: 119, content: 'X' })); p.publish(150);
+  p.publish(150, { playing: false });
+  offer(entry({ id: 2, h: 96, c: 140, content: 'Y' })); p.frame();
+  assert.deepEqual([view().id, p.stats.rejected.uncovered], [1, 1], 'a later confirmation from the same start is not coverage');
+  offer(entry({ id: 3, h: 96, c: 150, content: 'Y' })); p.frame();
+  assert.equal(view().id, 3, 'the picture covering the target installs');
+});
+
 test('review 3: rebinding a widget showing hour 96 to a pin at 20 shows "Reading hour 20", never hour 96', () => {
   const { p, offer, view } = page();
   offer(entry({ id: 1, h: 96, c: 120 })); p.publish(100);
