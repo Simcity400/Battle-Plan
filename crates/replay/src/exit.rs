@@ -34,30 +34,43 @@ impl What {
     }
 }
 
-#[derive(Debug)]
-struct Unconfirmed(io::Error);
+#[must_use]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied<V = (), R = ()> {
+    pub value: V,
+    pub result: R,
+    pub warning: Option<String>,
+}
 
-impl std::fmt::Display for Unconfirmed {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "the file was replaced, but Windows didn’t confirm it reached the disk: {}", self.0)
+impl Applied {
+    pub fn confirmed() -> Self {
+        Self { value: (), result: (), warning: None }
+    }
+
+    pub fn unconfirmed(error: &io::Error) -> Self {
+        Self { value: (), result: (), warning: Some(format!("the change was made, but Windows didn’t confirm it reached the disk: {error}")) }
     }
 }
 
-impl std::error::Error for Unconfirmed {}
+impl<V, R> Applied<V, R> {
+    pub fn with<W, S>(self, value: W, result: S) -> Applied<W, S> {
+        Applied { value, result, warning: self.warning }
+    }
 
-pub fn unconfirmed(error: io::Error) -> io::Error {
-    io::Error::new(error.kind(), Unconfirmed(error))
-}
+    pub fn map<W>(self, map: impl FnOnce(V) -> W) -> Applied<W, R> {
+        Applied { value: map(self.value), result: self.result, warning: self.warning }
+    }
 
-pub fn is_unconfirmed(error: &io::Error) -> bool {
-    error.get_ref().is_some_and(|inner| inner.is::<Unconfirmed>())
-}
+    pub fn warned(mut self, warning: Option<String>) -> Self {
+        self.warning = self.warning.or(warning);
+        self
+    }
 
-pub fn published<T>(value: T, written: io::Result<()>) -> io::Result<(T, Option<String>)> {
-    match written {
-        Ok(()) => Ok((value, None)),
-        Err(error) if is_unconfirmed(&error) => Ok((value, Some(error.to_string()))),
-        Err(error) => Err(error),
+    pub fn logged(self, what: &str) -> Self {
+        if let Some(warning) = &self.warning {
+            eprintln!("{what}: {warning}");
+        }
+        self
     }
 }
 
@@ -227,7 +240,7 @@ impl Receipt<'_> {
         what
     }
 
-    pub fn replace(&self, path: &Path, write: impl FnOnce(&mut BufWriter<&File>) -> io::Result<()>) -> io::Result<()> {
+    pub fn replace(&self, path: &Path, write: impl FnOnce(&mut BufWriter<&File>) -> io::Result<()>) -> io::Result<Applied> {
         if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
             fs::create_dir_all(folder)?;
         }
@@ -243,12 +256,13 @@ impl Receipt<'_> {
             file.sync_all()?;
             drop(file);
             #[cfg(windows)]
-            let replaced = crate::publication::replace_file(&staged, path).map_err(|error| match error {
-                crate::publication::ReplaceError::Unrenamed(error) => error,
-                crate::publication::ReplaceError::Unflushed(error) => unconfirmed(error),
-            });
+            let replaced = match crate::publication::replace_file(&staged, path) {
+                Ok(()) => Ok(Applied::confirmed()),
+                Err(crate::publication::ReplaceError::Unrenamed(error)) => Err(error),
+                Err(crate::publication::ReplaceError::Unflushed(error)) => Ok(Applied::unconfirmed(&error)),
+            };
             #[cfg(not(windows))]
-            let replaced = fs::rename(&staged, path);
+            let replaced = fs::rename(&staged, path).map(|()| Applied::confirmed());
             replaced
         })();
         let _ = fs::remove_file(&staged);
@@ -350,7 +364,7 @@ mod tests {
         });
         assert!(failed.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"the earlier image");
-        receipt.replace(&path, |out| out.write_all(b"the new image")).unwrap();
+        let _ = receipt.replace(&path, |out| out.write_all(b"the new image")).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"the new image");
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1, "no staged file is left beside it");
         drop(receipt);
@@ -364,18 +378,15 @@ mod tests {
         let written = exit.admit(What::Export).unwrap().replace(&name, |out| out.write_all(b"frame"));
         let read = fs::read(&name);
         let _ = fs::remove_file(&name);
-        written.unwrap();
+        let _ = written.unwrap();
         assert_eq!(read.unwrap(), b"frame");
     }
 
     #[test]
-    fn a_replacement_whose_flush_was_not_confirmed_says_so_apart_from_one_that_never_replaced() {
-        let failed = unconfirmed(io::Error::other("the disk didn’t answer"));
-        assert!(is_unconfirmed(&failed));
-        assert!(!is_unconfirmed(&io::Error::other("the rename was refused")));
-        let (applied, warning) = published(7, Err(failed)).unwrap();
-        assert_eq!(applied, 7, "a file Windows replaced is applied even when its flush wasn’t confirmed");
-        assert!(warning.is_some_and(|warning| warning.contains("didn’t confirm")));
-        assert!(published(7, Err(io::Error::other("the rename was refused"))).is_err());
+    fn a_replacement_whose_flush_was_not_confirmed_is_applied_and_says_why() {
+        let applied = Applied::unconfirmed(&io::Error::other("the disk didn’t answer")).with(7, "kept");
+        assert_eq!((applied.value, applied.result), (7, "kept"), "the change and its caller’s result go on as though confirmed");
+        assert!(applied.warning.is_some_and(|warning| warning.contains("didn’t confirm") && warning.contains("the disk didn’t answer")));
+        assert_eq!(Applied::confirmed().with(7, ()).warned(None).warning, None);
     }
 }

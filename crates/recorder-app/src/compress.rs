@@ -459,7 +459,7 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("recorder-app-compress-close-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
-        let bytes = replay::columnar_frames::fixtures::restored(7, &[(1, 100, 1)]);
+        let bytes = replay::columnar_frames::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
         let (running, queued) = (folder.join("Germany 1936.battleplan"), folder.join("Japan 1936.battleplan"));
         for path in [&running, &queued] {
             fs::write(path, &bytes).unwrap();

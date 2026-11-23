@@ -300,7 +300,7 @@ fn forget_settled(path: &Path, folders: &[PathBuf]) -> std::io::Result<()> {
             }
         }
     })
-    .map(drop)
+    .map(|applied| drop(applied.logged("Earlier save folders")))
 }
 
 fn version(path: &Path) -> Option<(SystemTime, u64)> {
@@ -829,7 +829,7 @@ mod tests {
             ..RecorderSettings::default()
         };
         let saved = settings.clone();
-        RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
+        let _ = RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         let ended = earlier.join("sessions").join("1-1");
         journal(&ended.join(OTHER), 0, 100);
         let waiting = |waiting: serde_json::Value| {
@@ -942,7 +942,7 @@ mod tests {
             ..RecorderSettings::default()
         };
         let saved = settings.clone();
-        RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
+        let _ = RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         assert!(settled(&earlier));
         fs::create_dir_all(earlier.join("sessions").join("3-3")).unwrap();
         forget_settled(&path, std::slice::from_ref(&earlier)).unwrap();

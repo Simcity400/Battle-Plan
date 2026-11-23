@@ -37,7 +37,7 @@ export function validateProductReply<T>(reply: ProductReply<T>, request: Product
 export type RecorderSettings = Omit<PanelRecorderSettings, 'effectiveSaveFolder'>;
 
 export interface ReplayFile { path: string; name: string; folder: string; partial?: import('../generated/dashboard').PartialRecording | null }
-export interface ReplayLibrary { folder: string | null; files: ReplayFile[] }
+export interface ReplayLibrary { folder: string | null; files: ReplayFile[]; warning?: string | null }
 
 export interface DashboardMapView {
   options?: MapOptions;

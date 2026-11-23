@@ -81,6 +81,7 @@ export const CHANNEL_LABELS: Record<UpdateChannel, string> = { stable: 'Stable',
 
 export function channelDescription(state: UpdateState | null): string {
   if (!state) return '';
+  if (state.channelWarning) return `Changed to ${CHANNEL_LABELS[state.channel]}, but Windows didn’t confirm the choice reached the disk.`;
   if (!state.enabled) return 'This build doesn’t update, so its channel has no effect.';
   if (state.channel === 'stable' && state.build === 'nightly')
     return `This nightly build stays until a stable release newer than ${state.currentVersion} comes out.`;

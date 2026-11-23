@@ -966,10 +966,11 @@ fn place(
         .map_err(|error| failure(naming.settings, error))?;
     if is_unsaved_recording(path) {
         if settings.name_chosen(&folder, campaign.as_bytes()) {
-            RecorderSettings::update_at(naming.settings, |settings| {
-                settings.choose_name(&folder, campaign, false)
-            })
-            .map_err(|error| failure(naming.settings, error))?;
+            drop(
+                RecorderSettings::update_at(naming.settings, |settings| settings.choose_name(&folder, campaign, false))
+                    .map_err(|error| failure(naming.settings, error))?
+                    .logged("The recording’s chosen name"),
+            );
         }
         let placed = recording_files::place_new(path, replay_dir, &stem)
             .map_err(|error| failure(path, error))?;

@@ -1,6 +1,7 @@
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
 import type { Compression } from './compression';
+import { enterWrite } from '../shell/pendingWrites.ts';
 
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
 export interface Problem { text: string; detail: string; failed: boolean }
@@ -48,6 +49,7 @@ export interface RecorderSettings {
   captureMode: CaptureMode;
   campaigns: Record<string, CampaignChoice>;
   effectiveSaveFolder: string;
+  warning?: string | null;
 }
 
 export interface UnsavedRecording {
@@ -267,19 +269,24 @@ export function stopPromptVisible(asking: boolean, snapshot: Snapshot): boolean 
 }
 
 export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => void) {
-  let last: Promise<unknown> = Promise.resolve();
+  let asked = 0, shown = 0;
   const run = (work: () => Promise<T | null>): Promise<void> => {
-    const reply = last.then(work);
-    last = reply.catch(() => {});
-    return reply.then(value => { if (value != null) show(value); });
+    const order = ++asked;
+    return work().then(value => {
+      if (value != null && order > shown) { shown = order; show(value); }
+    });
   };
   const refresh = () => run(read);
   return {
     refresh,
-    save: (work: () => Promise<T | null>) => run(work).catch((error: unknown) => {
-      void refresh().catch(() => {});
-      throw error;
-    }),
+    save: (work: () => Promise<T | null>) => {
+      const write = enterWrite();
+      return run(work).then(() => write.saved(), (error: unknown) => {
+        write.discard();
+        void refresh().catch(() => {});
+        throw error;
+      });
+    },
   };
 }
 

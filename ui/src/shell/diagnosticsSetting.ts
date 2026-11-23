@@ -21,7 +21,7 @@ export function useMapDiagnostics() {
     if (!desktopAvailable) return;
     let live = true;
     const changed = listen<MapSwitch>('map-diagnostics', event => { take(event.payload); });
-    const failed = listen<string>('map-diagnostics-error', event => setError(event.payload));
+    const failed = listen<{ error: string; wanted: boolean }>('map-diagnostics-error', event => { setError(event.payload.error); setAsked(event.payload.wanted); });
     void Promise.all([changed, failed]).then(() => invoke<MapSwitch>('map_diagnostics')).then(value => { if (live) take(value); }, cause => { if (live) setError(errorMessage(cause)); })
       .finally(() => { if (live) setPending(false); });
     return () => { live = false; void changed.then(stop => stop(), () => {}); void failed.then(stop => stop(), () => {}); };

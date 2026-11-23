@@ -64,7 +64,6 @@ struct Inner {
     session: Option<(PathBuf, PathBuf)>,
     game_running: bool,
     set_aside: Vec<Waiting>,
-    unanswered: Vec<(PathBuf, String, bool)>,
     names: BTreeMap<String, String>,
     flag_keys: Option<FlagAsk>,
     flag_folders: Option<(PathBuf, PathBuf)>,
@@ -356,10 +355,9 @@ pub fn save_folder(settings: &RecorderSettings) -> PathBuf {
 }
 
 fn keep_session_root(settings: &Path, root: &Path) {
-    if let Err(error) = RecorderSettings::update_at(settings, |settings| {
-        settings.keep_session_root(root.to_path_buf())
-    }) {
-        eprintln!("The session's save folder could not be kept listed: {error}");
+    match RecorderSettings::update_at(settings, |settings| settings.keep_session_root(root.to_path_buf())) {
+        Ok(applied) => drop(applied.logged("The session's save folder")),
+        Err(error) => eprintln!("The session's save folder could not be kept listed: {error}"),
     }
 }
 
@@ -1091,37 +1089,7 @@ impl Recorder {
             return Ended::again();
         };
         self.update(app, |inner| inner.capturing = true);
-        receipt.carry(|| {
-            let ended = self.capture_admitted(app, game, settings, manual, loaded, probe);
-            self.finish_unanswered(app);
-            ended
-        })
-    }
-
-    fn finish_unanswered(&self, app: &AppHandle) {
-        let unanswered = std::mem::take(&mut self.lock().unanswered);
-        if unanswered.is_empty() {
-            return;
-        }
-        let jobs = app.state::<Arc<crate::compress::Jobs>>();
-        let failures: Vec<String> = unanswered
-            .into_iter()
-            .filter_map(|(session, campaign, discard)| {
-                recorder::controller::lock_waiting(&session, &campaign)
-                    .and_then(|waiting| crate::commands::finish_waiting(&waiting, discard, &jobs))
-                    .err()
-                    .map(|error| format!("Campaign {campaign}: {error}"))
-            })
-            .collect();
-        if let Some(error) = failures.into_iter().next() {
-            eprintln!("Recording: {error}");
-            self.update(app, |inner| {
-                let problem = Problem::failure(controller::problem_text(&error, true), error);
-                inner.sticky = Some(problem.clone());
-                inner.snapshot.problem = Some(problem);
-            });
-        }
-        recordings_changed(app);
+        receipt.carry(|| self.capture_admitted(app, game, settings, manual, loaded, probe))
     }
 
     fn capture_admitted(
@@ -1337,13 +1305,6 @@ impl Recorder {
         self.update(app, |inner| {
             if let Some(waiting) = waiting {
                 inner.set_aside = waiting.to_vec();
-            }
-            if let Some((session, _)) = &inner.session {
-                let session = session.clone();
-                inner.unanswered.extend(done.iter().filter_map(|done| match done {
-                    SetAside::Unanswered(campaign, discard) => Some((session.clone(), campaign.clone(), *discard)),
-                    _ => None,
-                }));
             }
             if let Some(error) = failure {
                 let problem = Problem::failure(controller::problem_text(&error, true), error);
@@ -2330,7 +2291,7 @@ mod tests {
         let scratch = scratch("folder");
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.record_every_campaign = false;
             settings
                 .campaigns
@@ -2386,7 +2347,7 @@ mod tests {
         let earlier = root.join("Germany 1936–1941.battleplan");
         targets::tests::recording_file(&earlier, CAMPAIGN);
         let contents = fs::read(&earlier).unwrap();
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -2432,7 +2393,7 @@ mod tests {
         let scratch = scratch("reload-new-file");
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -2522,7 +2483,7 @@ mod tests {
         let scratch = scratch("first-loaded");
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
-        RecorderSettings::update_at(&settings, |settings| settings.record_every_campaign = false)
+        let _ = RecorderSettings::update_at(&settings, |settings| settings.record_every_campaign = false)
             .unwrap();
         let mut session = admission(&settings, &root, &root, true);
         session.first_loaded = Box::new(|| Some(CAMPAIGN.to_owned()));

@@ -58,6 +58,7 @@ export default function GameFolderSettings({ folders, unread = false, client, on
   const saved = (): Paths => ({ game: folders?.game ?? '', user: folders?.user ?? '' });
   const [paths, setShown] = useState<Paths>(() => unsaved ?? saved());
   const [error, setError] = useState<FolderFailure | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const ready = !!client.setContentFolders;
   const canBrowse = !!client.chooseContentFolder;
@@ -74,8 +75,8 @@ export default function GameFolderSettings({ folders, unread = false, client, on
     const game = next.game.trim(), user = next.user.trim();
     if (folders && game === folders.game && user === folders.user) { setError(null); return; }
     if (!game || !user) { setError(null); return; }
-    applying.current = true; setBusy(true); setError(null);
-    try { const applied = await client.setContentFolders(game, user); unsaved = null; onFoldersChange(applied); }
+    applying.current = true; setBusy(true); setError(null); setWarning(null);
+    try { const applied = await client.setContentFolders(game, user); unsaved = null; setWarning(applied.warning ?? null); onFoldersChange(applied); }
     catch (cause) { const failure = folderFailure(errorMessage(cause)); setError({ ...failure, retry: retryable(failure) ? () => void apply(next, kind) : undefined }); }
     finally { applying.current = false; setBusy(false); }
   };
@@ -99,6 +100,7 @@ export default function GameFolderSettings({ folders, unread = false, client, on
       onChange={value => setPaths({ ...paths, [field.kind]: value })}
       onCommit={() => void apply(paths, field.kind)}
       onBrowse={canBrowse ? () => void browse(field.kind) : undefined} />)}
+    {!error && warning && <div className="notice warning" role="status" data-detail={warning}><Icon name="alert" /><span>Folders changed, but Windows didn’t confirm the change reached the disk.</span></div>}
     {error && !error.field && <FailureLine className="folder-form-failure" message={error.text} detail={error.detail} retryDisabled={busy}
       onRetry={error.retry} />}
   </div>;

@@ -37,6 +37,7 @@ pub struct SettingsView {
     settings: RecorderSettings,
     effective_save_folder: String,
     start_with_windows: bool,
+    warning: Option<String>,
 }
 
 fn view(settings: RecorderSettings) -> Result<SettingsView, String> {
@@ -45,6 +46,7 @@ fn view(settings: RecorderSettings) -> Result<SettingsView, String> {
         settings,
         effective_save_folder,
         start_with_windows: startup::starts_with_windows()?,
+        warning: None,
     })
 }
 
@@ -56,17 +58,12 @@ fn change_settings(
     start_with_windows: Option<bool>,
     change: impl FnOnce(&mut RecorderSettings),
 ) -> Result<SettingsView, String> {
-    RecorderSettings::hold_at(&RecorderSettings::path(), |held| {
-        patched(start_with_windows, &Windows, || held.update(change).map(|(settings, ())| settings))
+    let applied = RecorderSettings::hold_at(&RecorderSettings::path(), |held| {
+        patched(start_with_windows, &Windows, || held.update(change))
     })
-    .map_err(|error| {
-        if replay::exit::is_unconfirmed(&error) {
-            format!("Recorder settings were changed, but Windows didn’t confirm they were saved: {error}")
-        } else {
-            format!("Recorder settings couldn’t be saved: {error}")
-        }
-    })
-    .and_then(view)
+    .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))?;
+    let warning = applied.warning;
+    view(applied.value).map(|view| SettingsView { warning, ..view })
 }
 
 trait Startup {
@@ -94,15 +91,14 @@ impl Startup for Windows {
 fn patched(
     start_with_windows: Option<bool>,
     startup: &dyn Startup,
-    save: impl FnOnce() -> std::io::Result<RecorderSettings>,
-) -> std::io::Result<RecorderSettings> {
+    save: impl FnOnce() -> std::io::Result<replay::exit::Applied<RecorderSettings>>,
+) -> std::io::Result<replay::exit::Applied<RecorderSettings>> {
     let before = start_with_windows.map(|_| startup.read()).transpose().map_err(std::io::Error::other)?;
     if let Some(enabled) = start_with_windows {
         startup.set(enabled).map_err(std::io::Error::other)?;
     }
-    save().inspect_err(|error| {
+    save().inspect_err(|_| {
         if let Some(before) = &before
-            && !replay::exit::is_unconfirmed(error)
             && let Err(error) = startup.put_back(before.as_ref())
         {
             eprintln!("Start with Windows couldn’t be put back after the settings failed to save: {error}");
@@ -447,7 +443,14 @@ pub async fn act_on_waiting(
 ) -> Result<Option<String>, String> {
     let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
     let (session, live) = waiting_part(&recorder, &session, &campaign)?;
-    if let Some(target) = live {
+    let target = match live {
+        Some(target) => Some(target),
+        None => {
+            let (session, campaign) = (session.clone(), campaign.clone());
+            blocking(move || recorder::controller::waiting_folder(&session, &campaign)).await.ok()
+        }
+    };
+    if let Some(target) = target {
         let _admitted = recorder.admit(What::WaitingRecording)?;
         if recorder.act_on_recording(&target, &campaign, discard) {
             return Ok(None);
@@ -464,7 +467,7 @@ pub async fn act_on_waiting(
     result
 }
 
-pub fn finish_waiting(waiting: &recorder::controller::WaitingLock, discard: bool, jobs: &Jobs) -> Result<Option<String>, String> {
+fn finish_waiting(waiting: &recorder::controller::WaitingLock, discard: bool, jobs: &Jobs) -> Result<Option<String>, String> {
     if discard {
         return waiting.discard().map(|()| None);
     }
@@ -610,15 +613,15 @@ mod tests {
         let exit = Exit::new();
         let registry = Registry::holding(None);
         let saved = RecorderSettings::hold_under(&exit, &path, |held| {
-            patched(Some(true), &registry, || held.update(|settings| settings.auto_save = true).map(|(settings, ())| settings))
+            patched(Some(true), &registry, || held.update(|settings| settings.auto_save = true))
         })
         .unwrap();
-        assert!(saved.auto_save);
+        assert!(saved.value.auto_save);
         assert_eq!(registry.now(), Some(RunValue::command(OsStr::new(OURS))));
 
         exit.seal();
         let refused = RecorderSettings::hold_under(&exit, &path, |held| {
-            patched(Some(false), &registry, || held.update(|settings| settings.auto_save = false).map(|(settings, ())| settings))
+            patched(Some(false), &registry, || held.update(|settings| settings.auto_save = false))
         });
         assert!(refused.is_err(), "a patch asked for once Quit commits is refused whole");
         assert_eq!(registry.0.borrow().len(), 2, "With Windows isn’t changed by a patch whose settings were refused");
@@ -640,9 +643,9 @@ mod tests {
 
         let registry = Registry::holding(None);
         let unconfirmed = patched(Some(true), &registry, || {
-            Err(replay::exit::unconfirmed(std::io::Error::other("the disk didn’t answer")))
+            Ok(replay::exit::Applied::unconfirmed(&std::io::Error::other("the disk didn’t answer")).with(RecorderSettings::default(), ()))
         });
-        assert!(unconfirmed.is_err_and(|error| replay::exit::is_unconfirmed(&error)));
+        assert!(unconfirmed.is_ok_and(|applied| applied.warning.is_some()), "an unconfirmed save is applied, and says so");
         assert_eq!(
             registry.now(),
             Some(RunValue::command(OsStr::new(OURS))),

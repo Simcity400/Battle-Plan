@@ -45,6 +45,7 @@ export default function RecordingCompressionSetting({ client }: { client: Dashbo
   const [retry, setRetry] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<{ text: string; detail: string; retry: () => void } | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     if (!client.recorderSettings) { setLoading(false); return; }
@@ -55,8 +56,8 @@ export default function RecordingCompressionSetting({ client }: { client: Dashbo
     return () => { alive = false; };
   }, [client, retry]);
   const save = async (change: () => Promise<RecorderSettings>) => {
-    setSaving(true); setError(null);
-    try { setSettings(await change()); }
+    setSaving(true); setError(null); setWarning(null);
+    try { const saved = await change(); setSettings(saved); setWarning(saved.warning ?? null); }
     catch (cause) { setError({ text: 'Couldn’t save that change.', detail: errorMessage(cause), retry: () => void save(change) }); }
     finally { setSaving(false); }
   };
@@ -65,5 +66,6 @@ export default function RecordingCompressionSetting({ client }: { client: Dashbo
       onCompression={compression => { const set = client.setRecordingCompression?.bind(client); if (set) void save(() => set(compression)); }}
       onAutoCompress={enabled => { const set = client.setAutoCompress?.bind(client); if (set) void save(() => set(enabled)); }} />
     {error && <FailureLine className="settings-failure" message={error.text} detail={error.detail} onRetry={error.retry} retryDisabled={saving || loading} />}
+    {!error && warning && <div className="notice warning" role="status" data-detail={warning}><Icon name="alert" /><span>Saved, but Windows didn’t confirm the change reached the disk.</span></div>}
   </>;
 }

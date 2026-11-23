@@ -45,11 +45,11 @@ pub fn load() -> Result<Option<Channel>, String> {
     }
 }
 
-pub fn save(channel: Channel, write: impl FnOnce(&Path, &[u8]) -> io::Result<()>) -> Result<(), String> {
+pub fn save(channel: Channel, write: impl FnOnce(&Path, &[u8]) -> io::Result<Option<String>>) -> Result<Option<String>, String> {
     save_to(&path()?, channel, write)
 }
 
-fn save_to(path: &Path, channel: Channel, write: impl FnOnce(&Path, &[u8]) -> io::Result<()>) -> Result<(), String> {
+fn save_to(path: &Path, channel: Channel, write: impl FnOnce(&Path, &[u8]) -> io::Result<Option<String>>) -> Result<Option<String>, String> {
     serde_json::to_vec_pretty(&Saved { channel: Some(channel) })
         .map_err(io::Error::from)
         .and_then(|bytes| write(path, &bytes))
@@ -66,11 +66,12 @@ mod tests {
         let refused = save_to(path, Channel::Nightly, |_, _| Err(io::Error::new(io::ErrorKind::Interrupted, "BattlePlan is closing, so nothing more is written.")));
         assert_eq!(refused, Err("updates.json couldn’t be saved: BattlePlan is closing, so nothing more is written.".to_owned()), "a channel chosen once BattlePlan closes is refused by name");
         let mut written = None;
-        save_to(path, Channel::Nightly, |to, bytes| {
+        let warning = save_to(path, Channel::Nightly, |to, bytes| {
             written = Some((to.to_path_buf(), bytes.to_vec()));
-            Ok(())
+            Ok(None)
         })
         .unwrap();
+        assert_eq!(warning, None);
         let (to, bytes) = written.unwrap();
         assert_eq!(to, path);
         assert_eq!(serde_json::from_slice::<Saved>(&bytes).unwrap().channel, Some(Channel::Nightly));

@@ -48,7 +48,6 @@ pub enum SetAside {
     Saved(String, Option<PathBuf>),
     Discarded(String),
     Failed(String, String),
-    Unanswered(String, bool),
 }
 
 #[derive(Default)]
@@ -2467,10 +2466,7 @@ pub(crate) fn capture(
         stop_load = system_times();
     }
     ahead.promote();
-    let unanswered = control.end_requests();
-    if let Some(settling) = &settling {
-        answer_ending(settling, unanswered);
-    }
+    let mut queued: BTreeMap<String, bool> = control.end_requests().into_iter().collect();
     capture_ended.store(true, Ordering::Release);
     ahead.stop.store(true, Ordering::Release);
     for worker in closing {
@@ -2478,7 +2474,8 @@ pub(crate) fn capture(
     }
     let packing = ahead.packing.clone();
     let join_began = Instant::now();
-    let (mut ahead, localisation) = finish_ahead(ahead, settling.as_deref());
+    let (mut ahead, localisation, unanswered) = finish_ahead(ahead, settling.as_deref());
+    queued.extend(unanswered);
     let join_seconds = join_began.elapsed().as_secs_f64();
     if !process.handle.signaled()? {
         detach.set()?;
@@ -2692,7 +2689,9 @@ pub(crate) fn capture(
     }
     let auto = auto_save.is_none_or(|auto_save| auto_save());
     let destination = |campaign: &str| {
-        if saved_at_end(
+        if let Some(decided) = queued_destination(&queued, campaign) {
+            decided
+        } else if saved_at_end(
             campaign,
             current.as_deref(),
             auto,
@@ -2845,6 +2844,16 @@ pub(crate) fn capture(
     for campaign in &saved_campaigns {
         if let Err(error) = unlist_waiting_sessions(output, target, campaign, Some(&directory)) {
             eprintln!("Campaign {campaign} is saved, and still listed as waiting: {error}");
+        }
+    }
+    for (campaign, &discard) in queued.iter().filter(|(campaign, _)| !spooled.iter().any(|spooled| spooled == *campaign)) {
+        let done = if discard {
+            discard_recording(output, target, campaign)
+        } else {
+            save_recording(output, target, campaign, naming).map(drop)
+        };
+        if let Err(error) = done {
+            outcome.issues.push(format!("campaign {campaign} wasn’t {}: {error}", if discard { "discarded" } else { "saved" }));
         }
     }
     if !waiting.is_empty() {
@@ -3035,17 +3044,14 @@ fn saved_at_end(
 fn finish_ahead(
     ahead: FinalizingAhead,
     settling: Option<&Settling>,
-) -> (replay_io::Live, Option<Localisation>) {
-    let ahead = ahead.finish();
-    if let Some(settling) = settling {
-        let unanswered = std::mem::take(&mut *locked(&settling.requests));
-        answer_ending(settling, unanswered);
-    }
-    ahead
+) -> (replay_io::Live, Option<Localisation>, Vec<(String, bool)>) {
+    let (live, localisation) = ahead.finish();
+    let unanswered = settling.map(|settling| std::mem::take(&mut *locked(&settling.requests))).unwrap_or_default();
+    (live, localisation, unanswered)
 }
 
-fn answer_ending(settling: &Settling, requests: Vec<(String, bool)>) {
-    locked(&settling.done).extend(requests.into_iter().map(|(campaign, discard)| SetAside::Unanswered(campaign, discard)));
+fn queued_destination(queued: &BTreeMap<String, bool>, campaign: &str) -> Option<replay_io::Destination> {
+    queued.get(campaign).map(|&discard| if discard { replay_io::Destination::Neither } else { replay_io::Destination::Recording })
 }
 
 fn report_set_aside(settling: &Settling, stage: &dyn Fn(Stage<'_>)) {
@@ -6093,7 +6099,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_the_finalizer_stopped_before_acting_on_are_answered() {
+    fn requests_the_finalizer_stopped_before_acting_on_decide_their_campaigns_destination() {
         let settling = Settling::default();
         locked(&settling.requests).push(("forwarded".to_owned(), false));
         let unstarted = FinalizingAhead {
@@ -6103,13 +6109,14 @@ mod tests {
             asked: Arc::default(),
             names: Arc::default(),
         };
-        finish_ahead(unstarted, Some(&settling));
+        let (_, _, unanswered) = finish_ahead(unstarted, Some(&settling));
         assert!(locked(&settling.requests).is_empty());
-        assert_eq!(
-            take_done(&settling),
-            [SetAside::Unanswered("forwarded".to_owned(), false)],
-            "a request the ending session never took is handed back, to be carried out once it is waiting"
-        );
+        assert_eq!(unanswered, [("forwarded".to_owned(), false)], "a request the ending session never took is handed to its final destinations");
+        assert!(take_done(&settling).is_empty(), "and it is never answered as a failure");
+        let queued = BTreeMap::from([("kept".to_owned(), false), ("dropped".to_owned(), true)]);
+        assert_eq!(queued_destination(&queued, "kept"), Some(replay_io::Destination::Recording), "an accepted Save publishes, whatever Auto save says");
+        assert_eq!(queued_destination(&queued, "dropped"), Some(replay_io::Destination::Neither), "an accepted Discard is never published, even with Auto save on");
+        assert_eq!(queued_destination(&queued, "other"), None);
     }
 
     #[test]

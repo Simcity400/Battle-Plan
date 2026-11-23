@@ -22,6 +22,7 @@ export interface UpdateState {
   message: string | null;
   errorContext: 'check' | 'download' | 'install' | null;
   installBlocked: string | null;
+  channelWarning: string | null;
 }
 
 export const updatesAvailable = isTauri();

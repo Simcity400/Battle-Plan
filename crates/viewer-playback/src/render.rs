@@ -203,7 +203,14 @@ pub fn write_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
-    write_png_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, scene, device, queue, path)
+    warn(path, write_png_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, scene, device, queue, path)?);
+    Ok(())
+}
+
+fn warn(path: &Path, warning: Option<String>) {
+    if let Some(warning) = warning {
+        eprintln!("Saved {}, but {warning}", path.display());
+    }
 }
 
 pub fn write_png_under(
@@ -212,7 +219,7 @@ pub fn write_png_under(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     path: &Path,
-) -> io::Result<()> {
+) -> io::Result<Option<String>> {
     let targets = scene
         .targets()
         .ok_or_else(|| invalid("render a map before saving PNG"))?;
@@ -225,7 +232,8 @@ pub fn write_texture_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
-    write_texture_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, texture, device, queue, path)
+    warn(path, write_texture_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, texture, device, queue, path)?);
+    Ok(())
 }
 
 fn write_texture_under(
@@ -234,7 +242,7 @@ fn write_texture_under(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     path: &Path,
-) -> io::Result<()> {
+) -> io::Result<Option<String>> {
     let (width, height) = (texture.width(), texture.height());
     let pixels = read_texture(device, queue, texture, 4)?;
     receipt.replace(path, |out| {
@@ -246,6 +254,7 @@ fn write_texture_under(
         writer.write_image_data(&pixels).map_err(io::Error::other)?;
         writer.finish().map_err(io::Error::other)
     })
+    .map(|applied| applied.warning)
 }
 
 pub struct DumpReport {

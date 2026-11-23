@@ -31,7 +31,7 @@ export interface DesktopState {
 }
 
 export interface MapOptions { country: string | null; countrySlot?: number | null; countryPinned?: boolean; fog: boolean; mapMode?: string | null; mapModeSlots?: string[]; pickerHidden?: boolean; observed?: number | null }
-export interface ContentFolders { game: string; user: string; contentReady: boolean }
+export interface ContentFolders { game: string; user: string; contentReady: boolean; warning?: string | null }
 export interface MapDetails extends ContentFolders { error: string | null; path: string | null; branch: string | null; hour: number | null; messages: string[] }
 export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'unload'; path: string } | { kind: 'cameraMode'; mode: CameraMode; overlays: boolean } | { kind: 'flyAircraft'; aircraft: string | null } | { kind: 'refreshVisualMods' };
 export function mapAction(action: MapAction): Promise<void> { requireDesktop(); return invoke('map_action', { action }); }

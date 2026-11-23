@@ -78,13 +78,18 @@ export function mapCommands(report: (operation: string, error: string | null) =>
     retries.delete(operation);
     if (failed.delete(operation)) report(operation, null);
   };
-  const send = (operation: string, command: () => Promise<void>, repeatable = true) => {
+  const send = (operation: string, command: () => Promise<string | null | void>, repeatable = true) => {
     const sequence = ++sent;
     latest.set(operation, sequence);
     retries.delete(operation);
     const current = () => latest.get(operation) === sequence && latest.delete(operation);
-    void (async () => command())().then(() => {
-      if (current() && failed.delete(operation)) report(operation, null);
+    void (async () => command())().then(warning => {
+      if (!current()) return;
+      if (warning) {
+        failed.add(operation);
+        retries.set(operation, () => forget(operation));
+        report(operation, warning);
+      } else if (failed.delete(operation)) report(operation, null);
     }, (error: unknown) => {
       if (!current()) return;
       failed.add(operation);

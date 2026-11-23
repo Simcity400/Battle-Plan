@@ -93,7 +93,8 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); refocus.current = path; cancelRename(); }
       }} /></div>;
   const saveFlag = (campaignKey: string, tag: string | null) => {
-    const report = (message: string | null) => setActionError(message ? sidebarFailure('Couldn’t change the campaign flag.', message, () => saveFlag(campaignKey, tag)) : null);
+    const report = (message: string | null, warning?: string | null) => setActionError(message ? sidebarFailure('Couldn’t change the campaign flag.', message, () => saveFlag(campaignKey, tag))
+      : warning ? actionFailure('Flag changed, but Windows didn’t confirm it was saved.', warning) : null);
     report(saveCampaignFlag(campaignKey, tag, report));
   };
   const loadError = (path: string) => Object.entries(errors).find(([failed]) => sameCampaignPath(failed, path))?.[1];

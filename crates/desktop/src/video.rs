@@ -127,11 +127,8 @@ fn update(
                 Err(error) => fallback.cloned().ok_or_else(|| io::Error::other(error))?,
             };
             change(&mut settings);
-            match receipt.replace(path, |out| serde_json::to_writer(out, &settings).map_err(io::Error::from)) {
-                Ok(()) => Ok((settings, None)),
-                Err(error) if replay::exit::is_unconfirmed(&error) => Ok((settings, Some(format!("The change was made, but Windows didn’t confirm it was saved: {error}")))),
-                Err(error) => Err(error),
-            }
+            let applied = receipt.replace(path, |out| serde_json::to_writer(out, &settings).map_err(io::Error::from))?;
+            Ok((settings, applied.warning))
         })
         .map_err(|e| e.to_string())
 }
@@ -566,7 +563,8 @@ pub fn map_diagnostics(state: State<'_, VideoState>) -> MapSwitch {
 pub async fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         change_map_diagnostics(&app, enabled).inspect_err(|error| {
-            let _ = app.emit("map-diagnostics-error", error);
+            let wanted = enabled.unwrap_or_else(|| !diagnostics_switch(&app.state::<VideoState>()).value);
+            let _ = app.emit("map-diagnostics-error", serde_json::json!({ "error": error, "wanted": wanted }));
         })
     })
     .await

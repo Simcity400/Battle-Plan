@@ -175,14 +175,14 @@ impl RecorderSettings {
             Err(error) => Err(error),
         }
     }
-    fn write_under(&self, receipt: &crate::exit::Receipt<'_>, path: &Path) -> io::Result<()> {
+    fn write_under(&self, receipt: &crate::exit::Receipt<'_>, path: &Path) -> io::Result<crate::exit::Applied> {
         receipt.replace(path, |out| serde_json::to_writer_pretty(out, self).map_err(io::Error::from))
     }
 
-    pub fn update<T>(change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
+    pub fn update<T>(change: impl FnOnce(&mut Self) -> T) -> io::Result<crate::exit::Applied<Self, T>> {
         Self::update_at(&Self::path(), change)
     }
-    pub fn update_at<T>(path: &Path, change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
+    pub fn update_at<T>(path: &Path, change: impl FnOnce(&mut Self) -> T) -> io::Result<crate::exit::Applied<Self, T>> {
         Self::hold_at(path, |held| held.update(change))
     }
     pub fn hold_at<T>(path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
@@ -274,12 +274,12 @@ pub struct Held<'a> {
 }
 
 impl Held<'_> {
-    pub fn update<T>(&self, change: impl FnOnce(&mut RecorderSettings) -> T) -> io::Result<(RecorderSettings, T)> {
+    pub fn update<T>(&self, change: impl FnOnce(&mut RecorderSettings) -> T) -> io::Result<crate::exit::Applied<RecorderSettings, T>> {
         let mut settings = RecorderSettings::load_from(self.path)?;
         let result = change(&mut settings);
         settings.campaigns.retain(|_, choice| !choice.is_empty());
-        settings.write_under(self.receipt, self.path)?;
-        Ok((settings, result))
+        let applied = settings.write_under(self.receipt, self.path)?;
+        Ok(applied.with(settings, result))
     }
 }
 
@@ -324,10 +324,11 @@ mod tests {
             br#"{"recordEveryCampaign":false,"campaigns":{"a":{"record":true},"b":{"next":"newFile","folder":"b (2)"}}}"#,
         )
         .unwrap();
-        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+        let settings = RecorderSettings::update_at(&path, |settings| {
             settings.campaigns.entry("c".into()).or_default();
         })
-        .unwrap();
+        .unwrap()
+        .value;
         assert!(settings.records_campaign("a"));
         assert!(!settings.records_campaign("b"));
         assert!(!settings.records_campaign("unknown"));
@@ -362,19 +363,21 @@ mod tests {
         let root = scratch("save-folders");
         let path = root.join("settings.json");
         let default = default_save_folder();
-        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+        let settings = RecorderSettings::update_at(&path, |settings| {
             settings.choose_save_folder(PathBuf::from(r"C:\first"));
         })
-        .unwrap();
+        .unwrap()
+        .value;
         assert_eq!(
             settings.session_roots(),
             [PathBuf::from(r"C:\first"), default.clone()]
         );
-        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+        let settings = RecorderSettings::update_at(&path, |settings| {
             settings.choose_save_folder(PathBuf::from(r"C:\second"));
             settings.choose_save_folder(PathBuf::from(r"c:/SECOND"));
         })
-        .unwrap();
+        .unwrap()
+        .value;
         assert_eq!(
             settings.session_roots(),
             [
@@ -393,11 +396,12 @@ mod tests {
                 PathBuf::from("c:/SECOND")
             ]
         );
-        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+        let settings = RecorderSettings::update_at(&path, |settings| {
             settings.forget_save_folder(Path::new(r"c:\First"));
             settings.forget_save_folder(&default);
         })
-        .unwrap();
+        .unwrap()
+        .value;
         assert_eq!(settings.session_roots(), [PathBuf::from("c:/SECOND")]);
         assert_eq!(RecorderSettings::load_from(&path).unwrap(), settings);
         let mut kept = settings.clone();
@@ -415,7 +419,7 @@ mod tests {
     fn capture_mode_is_saved_by_name_and_unknown_names_are_refused() {
         let root = scratch("capture-mode");
         let path = root.join("settings.json");
-        RecorderSettings::update_at(&path, |settings| settings.capture_mode = CaptureMode::Map)
+        let _ = RecorderSettings::update_at(&path, |settings| settings.capture_mode = CaptureMode::Map)
             .unwrap();
         let saved = fs::read_to_string(&path).unwrap();
         assert!(saved.contains(r#""captureMode": "map""#), "{saved}");
@@ -438,7 +442,7 @@ mod tests {
             let loaded = RecorderSettings::load_from(&path).unwrap();
             assert_eq!((loaded.compression, loaded.auto_compress), (Compression::Low, true));
         }
-        RecorderSettings::update_at(&path, |settings| {
+        let _ = RecorderSettings::update_at(&path, |settings| {
             settings.choose_compression(Compression::High);
             settings.auto_compress = false;
         })
@@ -462,7 +466,7 @@ mod tests {
                 std::thread::spawn(move || {
                     barrier.wait();
                     for index in 0..25 {
-                        RecorderSettings::update_at(&path, |settings| {
+                        let _ = RecorderSettings::update_at(&path, |settings| {
                             if writer == 0 {
                                 settings.choose_name(
                                     Path::new(&format!("c:/{index}")),
@@ -498,7 +502,7 @@ mod tests {
         let exit = crate::exit::Exit::new();
         let written = RecorderSettings::hold_under(&exit, &path, |held| {
             assert!(exit.seal(), "BattlePlan starts closing while the operation holds its receipt");
-            held.update(|settings| settings.auto_compress = false)?;
+            let _ = held.update(|settings| settings.auto_compress = false)?;
             held.update(|settings| settings.record_every_campaign = false)
         });
         assert!(written.is_ok(), "neither the save nor its compensating write asks for a second permit: {written:?}");

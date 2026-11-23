@@ -16,9 +16,9 @@ impl app_update::Host for Host {
         self.0.leave(Leave::Exit)
     }
 
-    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<Option<String>> {
         let receipt = self.0.admit(replay::exit::What::Change).map_err(std::io::Error::other)?;
-        receipt.replace(path, |out| std::io::Write::write_all(out, bytes))
+        Ok(receipt.replace(path, |out| std::io::Write::write_all(out, bytes))?.warning)
     }
 }
 

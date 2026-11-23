@@ -154,11 +154,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 match next
                     .save()
-                    .and_then(|()| service.configure_content(&next, false))
+                    .and_then(|applied| service.configure_content(&next, false).map(|()| applied.warning))
                 {
-                    Ok(()) => {
+                    Ok(warning) => {
                         config = next;
-                        let payload = serde_json::json!({ "game": config.game_dir, "user": config.user_dir, "contentReady": true }).to_string();
+                        let payload = serde_json::json!({ "game": config.game_dir, "user": config.user_dir, "contentReady": true, "warning": warning }).to_string();
                         answer(id, payload)?;
                     }
                     Err(error) => {

@@ -142,23 +142,40 @@ pub async fn recorder_settings() -> Result<RecorderSettings, String> {
         .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+pub struct Warned<T> {
+    #[serde(flatten)]
+    value: T,
+    warning: Option<String>,
+}
+
+impl<T> Warned<T> {
+    pub fn new(value: T, warning: Option<String>) -> Self {
+        Self { value, warning }
+    }
+}
+
+fn saved(applied: replay::exit::Applied<RecorderSettings>) -> Warned<RecorderSettings> {
+    Warned::new(applied.value, applied.warning)
+}
+
 #[tauri::command]
 pub async fn set_recording_compression(
     compression: replay::compression::Compression,
-) -> Result<RecorderSettings, String> {
+) -> Result<Warned<RecorderSettings>, String> {
     blocking(move || {
         RecorderSettings::update(|settings| settings.choose_compression(compression))
-            .map(|(settings, ())| settings)
+            .map(saved)
             .map_err(|error| error.to_string())
     })
     .await
 }
 
 #[tauri::command]
-pub async fn set_auto_compress(enabled: bool) -> Result<RecorderSettings, String> {
+pub async fn set_auto_compress(enabled: bool) -> Result<Warned<RecorderSettings>, String> {
     blocking(move || {
         RecorderSettings::update(|settings| settings.auto_compress = enabled)
-            .map(|(settings, ())| settings)
+            .map(saved)
             .map_err(|error| error.to_string())
     })
     .await
@@ -209,18 +226,18 @@ fn rename(path: &Path, name: &str, settings: &Path) -> Result<(PathBuf, Option<S
         let mut added = false;
         let mut warning = None;
         if let Some(campaign) = &campaign {
-            let chosen = held.update(|settings| {
-                added = !settings.name_chosen(&folder, campaign.as_bytes());
-                settings.choose_name(&folder, campaign, true);
-            });
-            warning = replay::exit::published((), chosen.map(drop))?.1;
+            warning = held
+                .update(|settings| {
+                    added = !settings.name_chosen(&folder, campaign.as_bytes());
+                    settings.choose_name(&folder, campaign, true);
+                })?
+                .warning;
         }
         let renamed = recording_files::rename(path, &stem);
         if renamed.is_err()
             && let (true, Some(campaign)) = (added, &campaign)
         {
-            let restored = held.update(|settings| settings.choose_name(&folder, campaign, false));
-            warning = replay::exit::published((), restored.map(drop))?.1;
+            warning = held.update(|settings| settings.choose_name(&folder, campaign, false))?.warning.or(warning);
         }
         Ok((renamed, warning))
     })
@@ -295,7 +312,7 @@ pub async fn locate_recordings(recordings: Vec<Shown>) -> Result<Vec<Option<Stri
 }
 
 #[tauri::command]
-pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Result<(), String> {
+pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Result<Option<String>, String> {
     let id = campaign_id(&campaign_key).ok_or("Unknown campaign")?;
     if tag
         .as_deref()
@@ -305,7 +322,7 @@ pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Res
     }
     blocking(move || {
         RecorderSettings::update(|settings| settings.campaigns.entry(id).or_default().flag = tag)
-            .map(|_| ())
+            .map(|applied| applied.warning)
             .map_err(|error| format!("The campaign flag couldn’t be saved: {error}"))
     })
     .await

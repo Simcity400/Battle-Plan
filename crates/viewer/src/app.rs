@@ -3236,13 +3236,13 @@ impl Viewer {
             .cloned()
             .collect::<Vec<_>>()
             .join("; ");
-        let written = (|| -> std::io::Result<()> {
+        let written = (|| -> std::io::Result<Option<String>> {
             if !unverified.is_empty() {
                 render::render_banner(scene, &state.device, &state.queue, &unverified)?;
             }
             match &capture.export {
                 Some(job) => render::write_png_under(&job.receipt, scene, &state.device, &state.queue, &output),
-                None => render::write_png(scene, &state.device, &state.queue, &output),
+                None => render::write_png(scene, &state.device, &state.queue, &output).map(|()| None),
             }
         })();
         if written.is_ok() {
@@ -3282,9 +3282,15 @@ impl Viewer {
         self.capture_written(capture, &output, shown, written.map_err(|error| error.to_string()), ctx);
     }
 
-    fn capture_written(&mut self, mut capture: Capture, output: &Path, shown: (replay_data::BranchId, replay_data::Hour), written: Result<(), String>, ctx: &egui::Context) {
+    fn capture_written(&mut self, mut capture: Capture, output: &Path, shown: (replay_data::BranchId, replay_data::Hour), written: Result<Option<String>, String>, ctx: &egui::Context) {
         let answer = match written {
-            Ok(()) => Ok(format!("Saved {}: branch {}, hour {}", output.display(), shown.0, shown.1)),
+            Ok(warning) => Ok(format!(
+                "Saved {}: branch {}, hour {}{}",
+                output.display(),
+                shown.0,
+                shown.1,
+                warning.map(|warning| format!(" ({warning})")).unwrap_or_default()
+            )),
             Err(error) => {
                 let message = format!("{}: {error}", capture.path.display());
                 if capture.exit
@@ -8900,8 +8906,14 @@ pub(crate) mod tests {
         viewer.anchor_playback(Playhead { branch: 1, hour: 40, fraction: 0.0 }, true, 4.0, true, None, now + Duration::from_secs(1), 1_000);
         assert!(viewer.capture.is_some() && taken(&answers).is_empty(), "a seek refuses no export");
         let capture = viewer.end_capture().expect("still armed");
-        viewer.capture_written(capture, Path::new("map.png"), (1, 41), Ok(()), &ctx);
+        viewer.capture_written(capture, Path::new("map.png"), (1, 41), Ok(None), &ctx);
         assert_eq!(taken(&answers), [Ok("Saved map.png: branch 1, hour 41".to_owned())]);
+
+        let (capture, answers) = export("unconfirmed.png");
+        viewer.capture = Some(capture);
+        let capture = viewer.end_capture().unwrap();
+        viewer.capture_written(capture, Path::new("unconfirmed.png"), (1, 41), Ok(Some("Windows didn’t confirm it reached the disk".to_owned())), &ctx);
+        assert_eq!(taken(&answers), [Ok("Saved unconfirmed.png: branch 1, hour 41 (Windows didn’t confirm it reached the disk)".to_owned())], "a picture Windows replaced is reported saved, with why it may not last");
 
         let (capture, answers) = export("full.png");
         viewer.capture = Some(capture);

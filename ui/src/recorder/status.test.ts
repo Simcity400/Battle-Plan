@@ -4,6 +4,7 @@ import { engineHour } from '../dashboard/calendar.ts';
 import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, escapeStep, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptDiscards, promptTitle, stopConfirmed, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
+import { unsavedNow } from '../shell/pendingWrites.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
 const PATH = `C:\\Users\\Example\\BattlePlan\\${CAMPAIGN}.battleplan`;
@@ -189,26 +190,27 @@ test('the capture mode is fixed while a session is attached, even at the game me
     assert.equal(captureModeFixed(recording({ phase, captureMode: null })), false, phase);
 });
 
-test('settings reads and saves run one at a time, and a failed save is followed by a read', async () => {
+test('a settings save is sent at once, entered as pending until its reply, and only the newest reply is shown', async () => {
   let stored = 'initial';
   const shown: string[] = [];
   const queue = settingsQueue(async () => stored, value => { shown.push(value); });
   let finishFirst!: () => void;
   const firstStored = new Promise<void>(resolve => { finishFirst = resolve; });
-  const first = queue.save(() => firstStored.then(() => { stored = 'game score off'; return stored; }));
-  let secondSaw: string | undefined;
-  const second = queue.save(async () => { secondSaw = stored; stored = 'game score and politics off'; return stored; });
-  const read = queue.refresh();
+  let secondSent = false;
+  const first = queue.save(() => firstStored.then(() => 'game score off'));
+  const second = queue.save(async () => { secondSent = true; stored = 'game score and politics off'; return stored; });
+  assert.equal(secondSent, true, 'nothing waits in the page behind an earlier save, so a tray Quit can’t overtake it');
+  assert.equal(unsavedNow(), true, 'a save in flight is pending work');
+  await second;
   finishFirst();
-  await Promise.all([first, second, read]);
-  assert.equal(secondSaw, 'game score off');
-  assert.deepEqual(shown, ['game score off', 'game score and politics off', 'game score and politics off']);
+  await first;
+  assert.deepEqual(shown, ['game score and politics off'], 'the older reply, arriving last, is not shown over the newer one');
+  assert.equal(unsavedNow(), false, 'replies leave the pending writes');
   stored = 'stored before the flush failed';
   await assert.rejects(queue.save(async () => { throw new Error('flush failed'); }), /flush failed/);
   await queue.refresh();
-  assert.deepEqual(shown.slice(-2), ['stored before the flush failed', 'stored before the flush failed']);
-  await queue.save(async () => null);
-  assert.equal(shown.length, 5);
+  assert.deepEqual(shown.slice(-1), ['stored before the flush failed'], 'a failed save is followed by a read of what is stored');
+  assert.equal(unsavedNow(), false, 'the panel keeps no draft of a failed save, so nothing is left pending');
 });
 
 interface Numbered { revision: number; phase: string }

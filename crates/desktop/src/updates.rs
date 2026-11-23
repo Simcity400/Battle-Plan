@@ -22,7 +22,7 @@ impl app_update::Host for Host {
         self.leaving().close_for_update()
     }
 
-    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-        replay::exit::EXIT.admit(replay::exit::What::Change)?.replace(path, |out| std::io::Write::write_all(out, bytes))
+    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<Option<String>> {
+        Ok(replay::exit::EXIT.admit(replay::exit::What::Change)?.replace(path, |out| std::io::Write::write_all(out, bytes))?.warning)
     }
 }

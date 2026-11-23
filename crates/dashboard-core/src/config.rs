@@ -38,12 +38,12 @@ impl Config {
         }
     }
 
-    pub fn save(&self) -> io::Result<()> {
+    pub fn save(&self) -> io::Result<replay::exit::Applied> {
         self.resolve_options()?;
         self.save_folders_at(&Self::path()?)
     }
 
-    fn save_folders_at(&self, path: &Path) -> io::Result<()> {
+    fn save_folders_at(&self, path: &Path) -> io::Result<replay::exit::Applied> {
         replay::exit::EXIT.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
             let mut config = Config::load_from(path)?;
             config.game_dir = self.game_dir.clone();
@@ -112,7 +112,7 @@ mod tests {
         let path = folder.join("BattlePlan").join("content.json");
         assert_eq!(Config::load_from(&path).unwrap(), Config::default());
         for round in 0..2 {
-            Config {
+            let _ = Config {
                 game_dir: format!("G{round}").into(),
                 user_dir: format!("U{round}").into(),
                 older_game_dirs: vec!["old".into()],

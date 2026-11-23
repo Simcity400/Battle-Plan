@@ -6,7 +6,7 @@ import { Icon } from '../components/Icons';
 import { FailureLine } from '../components/FailureLine';
 import { FRAME_LIMIT_HINT, MAX_FRAME_LIMIT, MIN_FRAME_LIMIT, frameLimitInput, sameDisplay } from './videoOptions';
 import type { VideoOptions } from './videoOptions';
-import { settingsWriting } from './settingsWrites';
+import { writeSlot } from './pendingWrites';
 interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[]; warning: string | null }
 
 const VSYNC = 'VSync';
@@ -23,8 +23,8 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
   const [warning, setWarning] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [pending, setPending] = useState(false);
-  const writes = useRef<{ next: VideoOptions | null; running: boolean; live: boolean }>({ next: null, running: false, live: true });
-  useEffect(() => { const queue = writes.current; queue.live = true; return () => { queue.live = false; }; }, []);
+  const writes = useRef({ next: null as VideoOptions | null, running: false, live: true, slot: writeSlot() });
+  useEffect(() => { const queue = writes.current; queue.live = true; return () => { queue.live = false; if (!queue.running) queue.slot.discard(); }; }, []);
   useEffect(() => {
     if (!enabled || !desktopAvailable) return;
     let active = true;
@@ -38,24 +38,27 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
     const queue = writes.current;
     if (queue.running) return;
     queue.running = true;
-    const written = settingsWriting();
+    queue.slot.enter();
     setPending(true);
+    let failed = false;
     while (queue.next) {
       const settings = queue.next; queue.next = null;
       try {
         const value = await invoke<VideoReply>('set_video_settings', { settings });
+        failed = false;
         if (queue.live) { setReply(value); setError(null); setWarning(value.warning); if (!queue.next) setDraft(value.settings); }
       } catch (cause) {
+        failed = true;
         if (queue.live) setError({ detail: errorMessage(cause), write: settings });
       }
     }
     queue.running = false;
-    written();
+    if (!failed) queue.slot.saved(); else if (queue.live) queue.slot.failed(); else queue.slot.discard();
     if (queue.live) setPending(false);
   };
   const apply = (next: VideoOptions) => {
     if (sameDisplay(next, draft ?? undefined)) return;
-    setDraft(next); writes.current.next = next; void write();
+    setDraft(next); writes.current.slot.enter(); writes.current.next = next; void write();
   };
   return {
     draft, error: error?.detail ?? null, warning, writeFailed: !!error?.write, pending, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],

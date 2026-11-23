@@ -20,8 +20,9 @@ test('the unsaved detail names every page and the theme', () => {
 });
 
 test('a settings change still on its way to BattlePlan keeps a close from going ahead unasked', () => {
-  assert.deepEqual(leavePrompt('close', unsavedDetail([], null, true)), {
+  assert.deepEqual(leavePrompt('close', unsavedDetail([], null, 'saving')), {
     title: 'Close BattlePlan without saving?', detail: 'A settings change is still being saved.', discard: 'Discard and close',
   });
-  assert.equal(unsavedDetail(['Overview'], null, true), 'Layout changes on Overview aren’t saved. A settings change is still being saved.');
+  assert.equal(unsavedDetail(['Overview'], null, 'saving'), 'Layout changes on Overview aren’t saved. A settings change is still being saved.');
+  assert.equal(unsavedDetail([], null, 'failed'), 'A settings change couldn’t be saved.', 'a change that failed to save is still unsaved work');
 });

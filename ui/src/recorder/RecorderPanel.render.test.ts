@@ -282,7 +282,7 @@ test('a downloaded update says so in words above the footer, and the footer glyp
   try {
     const { PanelView } = await vite.ssrLoadModule('/ui/src/recorder/RecorderPanel.tsx') as { PanelView: (props: PanelViewProps) => unknown };
     const state: UpdateState = { enabled: true, status: 'up-to-date', channel: 'stable', build: 'stable', currentVersion: '0.9.4', availableVersion: null,
-      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null };
+      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null };
     const update = (change: Partial<UpdateState>, ask: PanelUpdate['ask'] = null): PanelUpdate =>
       ({ state: { ...state, ...change }, failure: null, ask, pending: false, press() {}, restart() {}, retry() {}, dismiss() {}, channel() {} });
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {

@@ -364,7 +364,7 @@ mod tests {
             self.0.clone()
         }
 
-        fn write_preference(&self, _: &std::path::Path, _: &[u8]) -> std::io::Result<()> {
+        fn write_preference(&self, _: &std::path::Path, _: &[u8]) -> std::io::Result<Option<String>> {
             unreachable!("no preference in these tests")
         }
     }
@@ -385,7 +385,7 @@ mod tests {
             Ok(())
         }
 
-        fn write_preference(&self, _: &std::path::Path, _: &[u8]) -> std::io::Result<()> {
+        fn write_preference(&self, _: &std::path::Path, _: &[u8]) -> std::io::Result<Option<String>> {
             unreachable!("no preference in these tests")
         }
     }

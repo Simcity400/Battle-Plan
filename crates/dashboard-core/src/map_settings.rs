@@ -206,7 +206,7 @@ impl Store {
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<Option<String>> {
-        let (entries, warning) = exit.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
+        let applied = exit.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
             let saved = Self {
                 entries: Self::load_from(path)?.entries,
                 game: self.game,
@@ -220,11 +220,11 @@ impl Store {
             if bytes.len() > 4 * 1024 * 1024 {
                 return Err(crate::invalid("Map settings exceed their size limit"));
             }
-            replay::exit::published(entries, receipt.replace(path, |out| io::Write::write_all(out, &bytes)))
+            Ok(receipt.replace(path, |out| io::Write::write_all(out, &bytes))?.with(entries, ()))
         })?;
-        self.entries = entries;
+        self.entries = applied.value;
         self.generation += 1;
-        Ok(warning)
+        Ok(applied.warning)
     }
 }
 
