@@ -4547,6 +4547,7 @@ dependencies = [
  "content-reader-equipment-graphics",
  "content-reader-gui",
  "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
  "content-reader-mesh",
