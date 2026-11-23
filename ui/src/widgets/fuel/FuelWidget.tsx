@@ -242,7 +242,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || saved.id === 'consumption' && !!options.fuelConsumptionLevel && !savedLevel);
 
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
-    : refused ? <WidgetState kind="unavailable" message={refused} />
+    : refused ? <WidgetState kind="unavailable" technical={refused} />
     : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour) ? <WidgetState kind="outside" />
       : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
         : countries.reason ? <WidgetState kind="empty" message={countries.reason} />

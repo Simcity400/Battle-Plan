@@ -82,7 +82,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its recorded clock times." />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
     if (headEntry) {
       if (!head) return <WidgetState kind="loading" label="Loading campaign clock…" />;
       if ('reason' in head) return <WidgetState kind="unavailable" message={head.reason} />;

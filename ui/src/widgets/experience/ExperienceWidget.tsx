@@ -127,7 +127,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const head = card.data ? card.data : null;
   const error = BRANCHES.map(branch => tiles[branch].error).find(Boolean);
   if (!track) return <WidgetState kind="empty" icon="sparkle" message="Load a campaign to see experience." />;
-  if (refused) return <WidgetState kind="unavailable" message={refused} />;
+  if (refused) return <WidgetState kind="unavailable" technical={refused} />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (grouped && groups.error && !groups.data) return <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" icon="sparkle" message={resolved.reason} />;

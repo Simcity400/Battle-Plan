@@ -365,7 +365,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
 
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
     if (metadata.error) return <WidgetState kind="error" failure={asFailure(metadata.error)} onRetry={metadata.retry} />;

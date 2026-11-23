@@ -306,7 +306,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
       return <WidgetState kind="unavailable" message={why ?? 'No countries available for this selection.'} />;
     }
     if (top != null && !rank) return <WidgetState kind="unavailable" message="No measure to rank the top countries by is in this recording." />;
-    if (followedHead && (ranking.outside || columnsFollowed.outside)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (followedHead && (ranking.outside || columnsFollowed.outside)) return <WidgetState kind="outside" />;
     if (followedHead && !families.length) return <WidgetState kind="unavailable" message={shown.map(column => column.reason).filter(Boolean).join(' ') || 'No selected column is followed in this recording.'} />;
     if (followedHead ? top != null && !rankEntry?.answer : !reply) return <WidgetState kind="loading" label="Loading scoreboard…" />;
     if (followedHead && top != null && rankEntry?.answer?.kind === 'notRecorded') return <WidgetState kind="unavailable" message={rankEntry.answer.reason} />;

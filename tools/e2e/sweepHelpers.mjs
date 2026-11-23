@@ -127,7 +127,7 @@ export function buildWidgetClassifierExpr(classifySnapshot, refusalPattern) {
     const probe = window.__e2e?.stateOf?.(a) ?? null;
     return classify({
       placeholderText: placeholder?.textContent ?? null,
-      unavailableText: unavailable ? (unavailable.getAttribute('data-tooltip')?.trim() || unavailable.textContent || 'unavailable') : null,
+      unavailableText: unavailable ? (unavailable.getAttribute('data-detail')?.trim() || unavailable.getAttribute('data-tooltip')?.trim() || unavailable.textContent || 'unavailable') : null,
       errorDetail: error ? (error.getAttribute('data-detail')?.trim() || error.textContent || 'error') : null,
       emptyText: empty?.textContent ?? null,
       probeState: probe?.state ?? null,

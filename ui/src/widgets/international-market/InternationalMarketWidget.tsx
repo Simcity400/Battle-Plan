@@ -2,7 +2,6 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
@@ -31,7 +30,7 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { DETAILS, OPTIONS, SORTS, VIEWS } from './definition';
+import { DETAILS, OPTIONS, SORTS } from './definition';
 import { cic, cicLabel, collectedText, contractRows, firstWithMore, levelText, offerRows, units, unitsLabel } from './marketData';
 import type { ContractRow, MarketTab, OfferRow } from './marketData';
 import './internationalMarket.css';
@@ -145,10 +144,9 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     : groupFailure && !groups.data ? groupFailure
     : match.reason ? <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></> : null;
   if (parent && !drillOpen) return parent;
-  const header = headerSlot && createPortal(<>
-    <Segmented value={view} options={VIEWS} onChange={value => setOption?.('view', value)} label="Market view" />
-    {count !== null && section && <span className="pill">{count} {view === 'contracts' ? 'active contracts' : view === 'requests' ? 'open requests' : 'listed'}</span>}
-  </>, headerSlot);
+  const header = headerSlot && count !== null && section
+    ? createPortal(<span className="pill">{count} {view === 'contracts' ? 'active contracts' : view === 'requests' ? 'open requests' : 'listed'}</span>, headerSlot)
+    : null;
   if (!parent && !ready && !drillOpen) return <>{groupFailure}{header}<div ref={head.root} className="international-market"><WidgetState kind="loading" label="Loading the market…" /></div></>;
   const common = { sort, setOption: (key: string, value: Parameters<NonNullable<WidgetProps['setOption']>>[1]) => setOption?.(key === 'tableSort' ? `sort-${view}` : key, value),
     cellBars: options.cellBars === true, density: (options.density === 'compact' ? 'compact' : 'comfortable') as 'compact' | 'comfortable',

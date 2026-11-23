@@ -57,6 +57,8 @@
   --chart-grid: color-mix(in srgb, var(--border) 55%, var(--surface));
   --chart-axis: color-mix(in srgb, var(--border) 88%, var(--text));
   --chart-hatch-spacing: 8px;
+  --hatch: color-mix(in srgb, var(--text) 38%, transparent);
+  --hatch-edge: color-mix(in srgb, var(--text) 20%, transparent);
 
   font-family: var(--font-ui); font-size: var(--font-size-ui); line-height: 1.45;
   color: var(--text); background: var(--canvas); color-scheme: dark;
@@ -74,6 +76,8 @@
   --hover: color-mix(in srgb, var(--text) 5%, transparent);
   --field: color-mix(in srgb, var(--raised) 55%, var(--surface));
   --field-hover: color-mix(in srgb, var(--raised) 85%, var(--surface));
+  --hatch: color-mix(in srgb, var(--text) 42%, transparent);
+  --hatch-edge: color-mix(in srgb, var(--text) 22%, transparent);
 }
 :root[data-motion='reduced'] { --t-fast: 0ms; --t: 0ms; --t-slow: 0ms; }
 .theme-switching, .theme-switching *, .theme-switching *::before, .theme-switching *::after { transition: none !important; }

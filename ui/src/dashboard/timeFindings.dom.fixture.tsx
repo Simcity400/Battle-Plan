@@ -13,6 +13,7 @@ import { TimeSection } from './settings/TimeSection';
 import type { WidgetTime } from './model';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
+import { WidgetFrameContext, widgetWording } from './widgetFrame';
 import { widgetDefinition } from './definitions';
 import { datedToken } from '../test-support/gated.ts';
 import { subjectToken } from './chosen';
@@ -228,8 +229,17 @@ Object.assign(window, { findings: {
     const element = document.body.appendChild(document.createElement('div'));
     element.id = 'finding';
     element.style.cssText = 'width: 900px; height: 600px; position: relative';
+    const runtime = runtimeOf(scene.gaps ?? [], scene.last);
+    const wording = widgetWording(undefined, widget.title);
+    const frame = {
+      title: widget.title, subject: wording.subject, things: wording.things,
+      timeMode: widget.time.mode, pinned: widget.time.mode === 'pin' || widget.time.mode === 'range',
+      bounds: { firstHour: FIRST, lastHour: scene.last ?? LAST }, hasSubject: true, captionSlot: null,
+      openCountries: () => {}, openTime: () => {}, reportState: () => {}, announce: () => {},
+      setDynamicViewSwitch: () => {}, skeleton: 'generic' as const, setSkeleton: () => {},
+    };
     root = createRoot(element);
-    root.render(<WidgetBody widget={widget} runtime={runtimeOf(scene.gaps ?? [], scene.last)} setOption={(key, value) => { state.options.push([key, value]); }} />);
+    root.render(<WidgetFrameContext.Provider value={frame}><WidgetBody widget={widget} runtime={runtime} setOption={(key, value) => { state.options.push([key, value]); }} /></WidgetFrameContext.Provider>);
     await settle();
     return read();
   },

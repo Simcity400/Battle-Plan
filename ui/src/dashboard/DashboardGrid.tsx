@@ -1,4 +1,5 @@
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { Responsive, useContainerWidth } from 'react-grid-layout';
 import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
@@ -16,13 +17,18 @@ import { recordingDisplayName } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { DEFAULT_MAP_OPTIONS, flipFog } from './mapPicker';
 import { widgetDefinition } from './definitions';
-import type { WidgetRuntime } from './definitions';
+import type { WidgetRuntime, WidgetSkeletonKind } from './definitions';
 import { OptionDraft } from './optionDraft';
+import { resolveOptions } from './options';
 import type { OptionValue } from './options';
 import WidgetSettingsMenu from './WidgetSettingsMenu';
 import DefaultCountryChip from './CountryChip';
 import WidgetCountryControl from './WidgetCountryControl';
-import { HeaderActionsSlot } from '../charts/ZoomReset';
+import WidgetTimeChip, { timeChipSummary } from './WidgetTimeChip';
+import WidgetViewSwitch from './WidgetViewSwitch';
+import { headerDropStage, WidgetFrameContext, widgetWording } from './widgetFrame';
+import type { DynamicViewSwitch, WidgetFrameValue } from './widgetFrame';
+import { formatDateTime } from './calendar';
 import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
@@ -34,6 +40,9 @@ import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { commitZone } from '../shell/commitCount';
 import { engine } from '../engine/frame.ts';
+
+const RESET_UNDO_MS = 6000;
+const READING_BADGE_DELAY_MS = 400;
 
 interface Props {
   prepared?: boolean;
@@ -104,23 +113,41 @@ const Body = memo(WidgetBody);
 
 function WidgetFrame({ prepared = false, widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
   const element = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [card, setCard] = useState<HTMLElement | null>(null);
   const attach = useCallback((node: HTMLElement | null) => { element.current = node; setCard(node); }, []);
   const [active, setActive] = useState<boolean | null>(typeof IntersectionObserver === 'undefined' ? true : null);
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
-  const [actionsSlot, setActionsSlot] = useState<HTMLSpanElement | null>(null);
+  const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
+  const [headerWidth, setHeaderWidth] = useState<number | null>(null);
+  const [titleClipped, setTitleClipped] = useState(false);
+  const [summaryMeta, setSummaryMeta] = useState<{ has: boolean; chars: number }>({ has: false, chars: 0 });
+  const [hasBodyState, setHasBodyState] = useState(false);
+  const stateOwners = useRef(new Set<object>());
+  const [dynamicSwitch, setDynamicSwitch] = useState<DynamicViewSwitch | null>(null);
+  const switchOwners = useRef(new Map<object, DynamicViewSwitch>());
+  const [customSkeleton, setCustomSkeleton] = useState<WidgetSkeletonKind | (() => ReactNode) | null>(null);
+  const skeletonOwners = useRef(new Map<object, WidgetSkeletonKind | (() => ReactNode)>());
+  const [announcement, setAnnouncement] = useState('');
+  const lastAnnounced = useRef('');
+  const [readingBadge, setReadingBadge] = useState<string | null>(null);
+  const openCountriesRef = useRef<(() => void) | undefined>(undefined);
+  const openTimeRef = useRef<(() => void) | undefined>(undefined);
   const [failures] = useState(() => new HeldFailures());
   const [slots] = useState(() => {
-    const noted: Record<'header' | 'country' | 'actions', HTMLSpanElement | null> = { header: null, country: null, actions: null };
+    const noted: Record<'header' | 'country', HTMLSpanElement | null> = { header: null, country: null };
     let shown = false;
     const slot = (key: keyof typeof noted, set: (element: HTMLSpanElement | null) => void) => (element: HTMLSpanElement | null) => {
       noted[key] = element;
       if (shown) set(element);
     };
-    return { header: slot('header', setHeaderSlot), country: slot('country', setCountrySlot), actions: slot('actions', setActionsSlot),
-      show() { shown = true; setHeaderSlot(noted.header); setCountrySlot(noted.country); setActionsSlot(noted.actions); } };
+    return { header: slot('header', setHeaderSlot), country: slot('country', setCountrySlot),
+      show() { shown = true; setHeaderSlot(noted.header); setCountrySlot(noted.country); } };
   });
+
   useLayoutEffect(() => {
     const target = element.current;
     if (!target) return;
@@ -143,9 +170,50 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     seen.observe(target);
     return () => { near.disconnect(); seen.disconnect(); cancel(); };
   }, [slots, prepared]);
+
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const next = Math.round(header.clientWidth / 4) * 4;
+      setHeaderWidth(previous => previous === next ? previous : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!headerSlot || typeof MutationObserver === 'undefined') return;
+    const inspect = () => {
+      const text = (headerSlot.textContent ?? '').trim();
+      const has = text.length > 0;
+      const chars = Math.min(24, text.length);
+      setSummaryMeta(previous => previous.has === has && Math.abs(previous.chars - chars) < 3 ? previous : { has, chars });
+    };
+    inspect();
+    const observer = new MutationObserver(inspect);
+    observer.observe(headerSlot, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [headerSlot]);
+
   useEffect(() => { if (!prepared) perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title, prepared]);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
   useEffect(() => prepared ? undefined : runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id, prepared]);
+
+  const [resetUndo, setResetUndo] = useState<{ widget: WidgetSpec; mapOptions: MapOptions } | null>(null);
+  useEffect(() => {
+    if (!resetUndo) return;
+    const timer = setTimeout(() => setResetUndo(null), RESET_UNDO_MS);
+    return () => clearTimeout(timer);
+  }, [resetUndo]);
+
+  const applyWidget = useCallback((next: WidgetSpec, view?: boolean) => {
+    setResetUndo(null);
+    onApply(next, view);
+  }, [onApply]);
+
   const definition = widgetDefinition(widget.kind);
   const icons = useContext(WidgetIconsContext);
   const icon = icons.style(widget.kind);
@@ -156,26 +224,33 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   optionDraft.current.sync(widget.options);
   const saveOptions = useCallback((values: Readonly<Record<string, OptionValue>>) => {
     const options = optionDraft.current.updateAll(definition?.options, values);
-    if (options) onApply({ ...widget, options }, true);
-  }, [definition, widget, onApply]);
+    if (options) applyWidget({ ...widget, options }, true);
+  }, [definition, widget, applyWidget]);
   const saveOption = useCallback((key: string, value: OptionValue) => saveOptions({ [key]: value }), [saveOptions]);
+
   const defaultTrack = template.tracks[0]?.id;
   const reset = definition && defaultTrack !== undefined
     && !(widgetAtDefault(widget, defaultTrack) && mapOptions.country === null && mapOptions.fog === DEFAULT_MAP_OPTIONS.fog) ? () => {
+    setResetUndo({ widget, mapOptions });
     onApply(createWidget(widget.kind, defaultTrack, widget.id), true);
     setMapOptions(DEFAULT_MAP_OPTIONS);
   } : undefined;
+  const undoReset = useCallback(() => {
+    if (!resetUndo) return;
+    onApply(resetUndo.widget, true);
+    setMapOptions(resetUndo.mapOptions);
+    setResetUndo(null);
+  }, [resetUndo, onApply]);
+
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const missing = effective.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
-  const HeaderControls = definition?.headerControls;
   const CountryChip = definition?.countryChip ?? DefaultCountryChip;
-  const canFollow = !!definition?.history && definition.timeModes.includes('follow') && definition.timeModes.includes('campaign');
-  const live = widget.time.mode === 'follow';
   const campaignTrack = runtime.tracks.find(track => track.id === effective.trackIds[0]);
   const fixedAt = perfLog && campaignTrack && effective.time.mode !== 'follow'
     ? resolveWindow(effective, campaignTrack, runtime.tracks, 0)?.lastHour : undefined;
   const source = campaignTrack && definition?.data !== false && campaignTrack.roleId !== runtime.defaultRoleId ? campaignTrack.source : undefined;
   const mapRecording = campaignTrack ? `${campaignTrack.source.id}:${campaignTrack.source.revision}` : null;
+
   useEffect(() => {
     if (!mapRecording || prepared) return;
     const owners = new Map<string, object>();
@@ -186,6 +261,35 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     });
     return () => { stop(); for (const owner of owners.values()) failures.put(owner, []); };
   }, [runtime.maps, widget.id, failures, mapRecording, prepared]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || prepared || typeof MutationObserver === 'undefined') return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clear = () => {
+      if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+      setReadingBadge(null);
+    };
+    const check = () => {
+      const playing = runtime.clock.getSnapshot?.().playing ?? false;
+      const held = !playing && !!content.querySelector('[data-held="stale"]');
+      if (!held) { clear(); return; }
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (runtime.clock.getSnapshot?.().playing) { setReadingBadge(null); return; }
+        if (!content.querySelector('[data-held="stale"]')) { setReadingBadge(null); return; }
+        const target = campaignTrack ? resolveWindow(effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0)?.lastHour : null;
+        setReadingBadge(target != null ? `Reading ${formatDateTime(target)}…` : 'Reading…');
+      }, READING_BADGE_DELAY_MS);
+    };
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(content, { subtree: true, attributes: true, attributeFilter: ['data-held'], childList: true });
+    const unsub = runtime.clock.subscribe?.(check);
+    return () => { clear(); observer.disconnect(); unsub?.(); };
+  }, [prepared, runtime.clock, runtime.tracks, campaignTrack, effective]);
+
   const factionStyles = useFactionStylesKey(definition?.factionColours && campaignTrack ? campaignTrack.source.metadata.campaignKey : null);
   const settings = useMemo(() => settingsSignature(widget, factionStyles), [widget, factionStyles]);
   useEffect(() => {
@@ -193,10 +297,100 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     const frame = requestAnimationFrame(() => { if (element.current) element.current.dataset.drawn = settings; });
     return () => cancelAnimationFrame(frame);
   }, [settings, prepared]);
+
+  const reportState = useCallback((owner: object, isState: boolean) => {
+    if (isState) stateOwners.current.add(owner); else stateOwners.current.delete(owner);
+    const next = stateOwners.current.size > 0;
+    setHasBodyState(previous => previous === next ? previous : next);
+  }, []);
+
+  const announce = useCallback((key: string, text: string) => {
+    if (!text || lastAnnounced.current === key) return;
+    lastAnnounced.current = key;
+    setAnnouncement(text);
+  }, []);
+
+  const setDynamicViewSwitch = useCallback((owner: object, spec: DynamicViewSwitch | null) => {
+    if (spec) switchOwners.current.set(owner, spec); else switchOwners.current.delete(owner);
+    const latest = [...switchOwners.current.values()].at(-1) ?? null;
+    setDynamicSwitch(latest);
+  }, []);
+
+  const setSkeleton = useCallback((owner: object, skeleton: WidgetSkeletonKind | (() => ReactNode) | null) => {
+    if (skeleton) skeletonOwners.current.set(owner, skeleton); else skeletonOwners.current.delete(owner);
+    const latest = [...skeletonOwners.current.values()].at(-1) ?? null;
+    setCustomSkeleton(latest);
+  }, []);
+
+  const declaredSwitch = useMemo<DynamicViewSwitch | null>(() => {
+    const spec = definition?.viewSwitch;
+    if (!spec || !definition?.options) return null;
+    const resolved = resolveOptions(definition.options, widget.options);
+    if (spec.when && !spec.when(resolved)) return null;
+    const field = definition.options.find(item => item.key === spec.option);
+    if (!field || field.kind !== 'choice') return null;
+    if (field.visibleWhen && !field.visibleWhen(resolved, widget.countries, widget.time.mode)) return null;
+    const options = spec.choices ?? field.choices;
+    if (options.length <= 1) return null;
+    return {
+      label: spec.label ?? `${widget.title} ${field.label.toLowerCase()}`,
+      value: String(resolved[spec.option] ?? field.default),
+      options,
+      onChange: value => saveOption(spec.option, value),
+    };
+  }, [definition, widget.options, widget.countries, widget.time.mode, widget.title, saveOption]);
+
+  const activeSwitch = dynamicSwitch ?? declaredSwitch;
+  const hasSubject = definition?.data !== false && definition?.countrySelection !== false;
+  const showTime = definition?.data !== false && (definition?.timeModes.length ?? 0) > 0;
+  const timeInfo = showTime ? timeChipSummary(widget, effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0) : null;
+
+  const drop = useMemo(() => headerDropStage(headerWidth, {
+    hasSummary: summaryMeta.has && !hasBodyState,
+    summaryChars: summaryMeta.chars,
+    hasViewSwitch: !!activeSwitch,
+    viewChoices: activeSwitch?.options.length ?? 0,
+    viewChars: activeSwitch ? activeSwitch.options.reduce((sum, item) => sum + item.label.length, 0) : 0,
+    viewMenuOnly: (activeSwitch?.options.length ?? 0) >= 4,
+    hasSubject,
+    timeChars: timeInfo?.chars ?? 0,
+    titleChars: widget.title.length,
+  }), [headerWidth, summaryMeta.has, summaryMeta.chars, hasBodyState, activeSwitch, hasSubject, timeInfo?.chars, widget.title.length]);
+
+  const wording = useMemo(() => widgetWording(definition, widget.title), [definition, widget.title]);
+  const registerOpenCountries = useCallback((open: (() => void) | undefined) => { openCountriesRef.current = open; }, []);
+  const registerOpenTime = useCallback((open: (() => void) | undefined) => { openTimeRef.current = open; }, []);
+
+  const frameValue = useMemo<WidgetFrameValue>(() => ({
+    title: widget.title,
+    subject: wording.subject,
+    things: wording.things,
+    timeMode: widget.time.mode,
+    pinned: widget.time.mode === 'pin' || widget.time.mode === 'range',
+    bounds: campaignTrack ? { firstHour: campaignTrack.branch.firstHour, lastHour: campaignTrack.branch.lastHour } : null,
+    hasSubject,
+    captionSlot,
+    openCountries: hasSubject ? () => openCountriesRef.current?.() : undefined,
+    openTime: showTime && (definition?.timeModes.length ?? 0) > 1 ? () => openTimeRef.current?.() : undefined,
+    reportState,
+    announce,
+    setDynamicViewSwitch,
+    skeleton: customSkeleton ?? definition?.skeleton ?? 'generic',
+    setSkeleton,
+  }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, captionSlot, showTime, definition?.timeModes.length, definition?.skeleton, reportState, announce, setDynamicViewSwitch, customSkeleton, setSkeleton]);
+
+  useLayoutEffect(() => {
+    const heading = titleRef.current;
+    if (!heading) return;
+    const clipped = heading.scrollWidth > heading.clientWidth;
+    setTitleClipped(previous => previous === clipped ? previous : clipped);
+  }, [headerWidth, widget.title, drop.stage]);
+
   const drawnHere = !prepared || definition?.preview !== false;
+
   return <article ref={attach} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
     {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'data-fixed-hour': fixedAt === undefined ? undefined : fixedAt - campaignTrack!.axisOffset, 'aria-label': widget.title })}>
-    <header className="dash-widget-header">
+    <header ref={headerRef} className="dash-widget-header" data-header-stage={drop.stage}>
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
       <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}
         onContextMenu={event => {
@@ -204,32 +398,43 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
           event.preventDefault();
           icons.openMenu(widget.kind, event.currentTarget, definition.title, event.clientX, event.clientY);
         }}><StyledIcon icon={icon.icon} fallback={definition?.icon ?? 'grid'} /></span>
-      <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={slots.header} /></h2>
-        {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path)}</span>}</div>
-      {definition?.data !== false && definition?.countrySelection !== false && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply}>
-        <CountryChip widget={widget} runtime={runtime} active={active === true} onSlot={slots.country} /></WidgetCountryControl>}
-      <div className="dash-widget-actions">
-      <span className="dash-widget-actions-slot" ref={slots.actions} />
-      {canFollow && <button type="button" role="switch" aria-checked={live} className="live-toggle" aria-label={`${widget.title}: follow playback`}
-        data-tooltip={live ? 'Show whole campaign' : 'Follow playback'}
-        onClick={() => onApply({ ...widget, time: { mode: live ? 'campaign' : 'follow' } }, true)}>
-        <span className="live-toggle-track" aria-hidden="true"><span className="live-toggle-knob" /></span><span className="live-toggle-label">Live</span>
-      </button>}
-      {HeaderControls
-        ? <HeaderControls widget={widget} runtime={runtime} template={template} editing={editing} onApply={onApply} onRemove={() => onRemove(widget.id)} onReset={reset}
-          mapOptions={mapOptions} onMapOptions={setMapOptions} />
-        : <WidgetSettingsMenu widget={widget} template={template} runtime={runtime} onApply={onApply} onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset} />}
+      <div className="dash-widget-title">
+        <h2 ref={titleRef} data-tooltip-overflow={widget.title} tabIndex={titleClipped ? 0 : undefined}>{widget.title}</h2>
+        {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path)}</span>}
+      </div>
+      <span className="dash-widget-summary" ref={slots.header} hidden={drop.dropPill || hasBodyState || undefined} />
+      <span className="dash-header-grow" aria-hidden="true" />
+      <div className="dash-widget-controls">
+        {hasSubject && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={applyWidget}
+          compact={drop.compactSubject} onRegisterOpen={registerOpenCountries}>
+          <CountryChip widget={widget} runtime={runtime} active={active === true} compact={drop.compactSubject} onSlot={slots.country} />
+        </WidgetCountryControl>}
+        {activeSwitch && <WidgetViewSwitch label={activeSwitch.label} value={activeSwitch.value} options={activeSwitch.options}
+          compact={drop.collapseView} onChange={activeSwitch.onChange} />}
+        {showTime && <WidgetTimeChip widget={widget} effective={effective} reference={campaignTrack} runtime={runtime}
+          modes={definition!.timeModes} compact={drop.compactTime}
+          onChange={time => applyWidget({ ...widget, time }, true)} onRegisterOpen={registerOpenTime} />}
+        <WidgetSettingsMenu widget={widget} template={template} runtime={runtime} onApply={applyWidget}
+          onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset}
+          resetUndoVisible={!!resetUndo} onUndoReset={undoReset}
+          mapOptions={widget.kind === 'map' ? mapOptions : undefined}
+          onMapOptions={widget.kind === 'map' ? setMapOptions : undefined} />
       </div>
     </header>
     {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
-    <HeldFailureNotices failures={failures} />
-    <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
-      {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
-          <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
-        </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>
-      </HeaderActionsSlot.Provider>}
-    </div></div>
+    <WidgetFrameContext.Provider value={frameValue}>
+      <HeldFailureNotices failures={failures} />
+      <div ref={contentRef} className="dash-widget-content">
+        <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
+          <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
+          {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
+            <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
+          </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
+        </div>
+        {readingBadge && <div className="dash-reading-badge" role="status">{readingBadge}</div>}
+      </div>
+    </WidgetFrameContext.Provider>
+    <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
   </article>;
 }
 

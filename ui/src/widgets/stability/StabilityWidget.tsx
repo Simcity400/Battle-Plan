@@ -349,7 +349,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const retry = () => { stability.retry(); warSupport.retry(); };
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
-  if (refused) return <WidgetState kind="unavailable" message={refused} />;
+  if (refused) return <WidgetState kind="unavailable" technical={refused} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;

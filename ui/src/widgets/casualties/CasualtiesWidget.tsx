@@ -240,7 +240,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const loading = following ? reading.state === 'pending' || shownHead.awaiting : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
     if (gate.stage.stage === 'outside') return <GateState gate={gate} loading="Loading casualties…" />;
     if (moment === null) return <WidgetState kind="loading" label="Loading casualties…" />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

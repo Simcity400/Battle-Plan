@@ -246,7 +246,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   }, [series, options.areaFill, until, balances.lineOf, ceiling.lineOf, showCeiling]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
-  if (refused) return <WidgetState kind="unavailable" message={refused} />;
+  if (refused) return <WidgetState kind="unavailable" technical={refused} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;

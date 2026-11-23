@@ -11,8 +11,9 @@
 @starting-style { .ui-popover:popover-open { opacity: 0; transform: translateY(-6px) scale(.98); } }
 .ui-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; margin: -2px -2px 8px 2px; }
 .ui-popover-heading > strong { font-family: var(--font-display); font-size: calc(var(--font-size-display) * 1); font-weight: 600; }
-.ui-popover-actions { display: flex; align-items: center; gap: 1px; }
+.ui-popover-actions { display: flex; align-items: center; gap: 2px; }
 .ui-popover-action { width: 28px; height: 28px; }
+.ui-popover-reset { height: 26px; min-height: 26px; padding: 0 7px; font-size: 0.75rem; }
 .ui-popover-action.is-danger:hover:not(:disabled) { color: var(--error); background: var(--error-soft); }
 .menu-item {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 6px 8px; border: 0; border-radius: var(--r-sm);

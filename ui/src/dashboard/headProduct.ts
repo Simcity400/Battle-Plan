@@ -16,7 +16,7 @@ import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
-import { asFailure } from './queryError.ts';
+import { asFailure, RefusedError } from './queryError.ts';
 import type { Pipeline } from './follow/pipeline';
 import { coverageOf, useReadsRegion, type ReadCoverage } from './widgetTime.ts';
 import { axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
@@ -119,8 +119,10 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const panel = installedPanel(model);
   const pushed = following && view?.mode === 'picture' && panel !== undefined;
   const fromPanel = pushed ? panelReply(panel, validate) : {};
-  const named = checked?.refused ?? (following && (view?.mode === 'failed' || view?.mode === 'refused') ? view.reason ?? 'The followed stream failed' : undefined);
-  const followFailure = useMemo(() => named === undefined ? undefined : asFailure(new Error(named)), [named]);
+  const refusedNamed = following && view?.mode === 'refused' ? view.reason ?? 'Not in this recording' : undefined;
+  const failedNamed = checked?.refused ?? (following && view?.mode === 'failed' ? view.reason ?? 'The followed stream failed' : undefined);
+  const followFailure = useMemo(() => refusedNamed !== undefined ? new RefusedError(refusedNamed)
+    : failedNamed !== undefined ? asFailure(new Error(failedNamed)) : undefined, [refusedNamed, failedNamed]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : forwardRequest(track!.source, product, { ...params, branchId: track!.branch.id, hour } as unknown as ParamsFor<K>),
     [], active, validate, track?.source);

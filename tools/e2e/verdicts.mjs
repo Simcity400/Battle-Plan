@@ -47,7 +47,7 @@ export const REFUSAL_TEXT = /\brefused\b|No table \d+ in the schema|layout or me
 export function classifyWidgetSnapshot({ placeholderText = null, unavailableText = null, errorDetail = null, emptyText = null, probeState = null, probeDrawing = false } = {}, refusalPattern = REFUSAL_TEXT) {
   const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
   const ph = clean(placeholderText);
-  if (ph && /isn't playing back yet$/i.test(ph)) {
+  if (ph && /isn['’]t playing back yet\.?$/i.test(ph)) {
     return { outcome: 'placeholder', detail: ph, notMigrated: true };
   }
   const unavail = clean(unavailableText);

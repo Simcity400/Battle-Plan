@@ -141,8 +141,8 @@ function SelectMenu({ label, value, options, onChoose, onLeave }: { label: strin
             else nodes.current.delete(at);
           }}
           style={{ position: 'absolute', top: index.offset(at), minHeight: OPTION_HEIGHT, left: 0, right: 0 }}
-          disabled={option.disabled} data-detail={option.detail} data-tooltip={option.reason} data-option-index={at}
-          data-popover-autofocus={at === active || undefined} onFocus={() => setActiveValue(option.value)} onClick={() => onChoose(option.value)}>
+          disabled={option.disabled && !option.reason} aria-disabled={option.disabled || undefined} data-detail={option.detail} data-tooltip={option.reason} data-option-index={at}
+          data-popover-autofocus={at === active || undefined} onFocus={() => setActiveValue(option.value)} onClick={() => { if (!option.disabled) onChoose(option.value); }}>
           <span className="menu-item-label">{option.label}</span>{option.value === value && <Icon name="check" />}
         </button>;
       })}

@@ -300,7 +300,7 @@ await phase('visual', async () => {
     ['country picker', '.header-workspace-bar button[aria-label^="Choose country"]', '.country-picker'],
     ['saved layouts', '.header-layout-trigger', '.header-layout-menu'],
     ['widget settings', 'article.dash-widget:not(.kind-map) [data-widget-settings]', '.widget-settings-menu'],
-    ['map settings', 'article.dash-widget.kind-map button[aria-label="Map settings"]', '.map-controls-menu'],
+    ['map settings', 'article.dash-widget.kind-map :is([data-widget-settings], button[aria-label="Map settings"])', ':is(.widget-settings-menu, .map-controls-menu)'],
   ];
   for (const [name, trigger, popover] of states) {
     try {
@@ -521,7 +521,7 @@ async function playbackInputs() {
       if (canvases.length) return null;
       const content = article.querySelector('.dash-widget-content');
       if (!content) return 'no content';
-      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-state="empty"], [data-state="unavailable"]')].some(visible)) return null;
+      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-state="empty"], [data-state="unavailable"], [data-state="outside"], [data-state="not-recorded"], [data-state="nothing-chosen"], [data-state="no-members"]')].some(visible)) return null;
       if ([...content.querySelectorAll('[data-row-ink="pending"]')].some(visible)) return 'pending rows';
       if ([...content.querySelectorAll('canvas, img, svg')].some(visible)) return null;
       return [...content.querySelectorAll('*')].some(node => {
@@ -1026,9 +1026,10 @@ await phase('catalogue', async () => {
     const extra = { card: item };
     if (map) {
       if (!await s.holds(editing)) await edit(item);
-      await s.click('article.dash-widget button[aria-label="Map settings"]');
-      await s.until(`document.querySelector('.map-controls-menu:popover-open button[aria-label="Delete widget"]')`, 3000);
-      await s.step('catalogue', 'setup', 'delete', () => s.click('.map-controls-menu:popover-open button[aria-label="Delete widget"]'), { done: empty, extra });
+      await s.click('article.dash-widget :is([data-widget-settings], button[aria-label="Map settings"])');
+      const mapRemove = ':is(.widget-settings-menu, .map-controls-menu):popover-open button[aria-label="Delete widget"]';
+      await s.until(`document.querySelector(${JSON.stringify(mapRemove)})`, 3000);
+      await s.step('catalogue', 'setup', 'delete', () => s.click(mapRemove), { done: empty, extra });
       await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done editing"]'),
         { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')`, extra });
     } else {

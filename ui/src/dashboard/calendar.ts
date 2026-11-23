@@ -54,6 +54,31 @@ export function formatDateTime(hour: number): string {
     : isEngineHour(hour) ? `Hour ${usNumber.format(hour)}` : 'Unavailable date';
 }
 
+export function formatDay(hour: number): string {
+  const date = gameDate(hour);
+  return date ? formatDate(date) : isEngineHour(hour) ? `Hour ${usNumber.format(hour)}` : 'Unavailable date';
+}
+
+export function formatDateRange(firstHour: number, lastHour: number): string {
+  const start = gameDate(firstHour), end = gameDate(lastHour);
+  if (!start || !end) return `${formatDay(firstHour)} – ${formatDay(lastHour)}`;
+  if (start.year === end.year && start.month === end.month && start.day === end.day) return formatDate(start);
+  const startMonth = monthNames[start.month - 1].slice(0, 3);
+  const endMonth = monthNames[end.month - 1].slice(0, 3);
+  if (start.year === end.year && start.month === end.month) return `${start.day}–${end.day} ${endMonth} ${end.year}`;
+  if (start.year === end.year) return `${start.day} ${startMonth} – ${end.day} ${endMonth} ${end.year}`;
+  return `${formatDate(start)} – ${formatDate(end)}`;
+}
+
+export function formatHourSpan(firstHour: number, lastHour: number): string {
+  const start = gameDate(firstHour), end = gameDate(lastHour);
+  if (!start || !end) return `${formatDateTime(firstHour)} to ${formatDateTime(lastHour)}`;
+  if (start.year === end.year && start.month === end.month && start.day === end.day) {
+    return `${formatDate(start)} · ${formatTime(start.hour)} to ${formatTime(end.hour)}`;
+  }
+  return `${formatDateTime(firstHour)} to ${formatDateTime(lastHour)}`;
+}
+
 export function monthIndex(date: GameDate): number {
   return date.year * 12 + date.month - 1;
 }

@@ -1,11 +1,48 @@
 import type { QueryError } from '../generated/dashboard';
 
+export type NotInRecordingCause =
+  | { kind: 'capture-mode'; mode?: string }
+  | { kind: 'older-format' }
+  | { kind: 'format-changed' }
+  | { kind: 'mod'; modName: string; what: string }
+  | { kind: 'dlc'; dlcName: string }
+  | { kind: 'game-build'; version: string }
+  | { kind: 'damage' };
+
+function capitalise(text: string): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : text;
+}
+
+export function notInRecordingSentence(cause: NotInRecordingCause, subject?: string): string {
+  const what = subject?.trim() || 'this data';
+  switch (cause.kind) {
+    case 'capture-mode':
+      return cause.mode && cause.mode !== 'map'
+        ? `This is a ${cause.mode} recording, which holds the campaign map and battle windows only.`
+        : 'This is a Map recording, which holds the campaign map and battle windows only.';
+    case 'older-format':
+      return `This recording was made before BattlePlan recorded ${what}.`;
+    case 'format-changed':
+      return `BattlePlan changed how it records ${what} after this recording was made, so it isn’t shown.`;
+    case 'mod':
+      return `${cause.modName} changes ${cause.what} in a way BattlePlan can’t read yet.`;
+    case 'dlc':
+      return `This campaign was played without ${cause.dlcName}, which ${what} needs.`;
+    case 'game-build':
+      return `${capitalise(what)} couldn’t be checked against game version ${cause.version}, so it was withheld.`;
+    case 'damage':
+      return `Part of this recording is damaged, so ${what} is withheld.`;
+  }
+}
+
 export class RefusedError extends Error {
   readonly text: string;
-  constructor(text: string) {
+  readonly causeKind?: NotInRecordingCause;
+  constructor(text: string, causeKind?: NotInRecordingCause) {
     super(text);
     this.name = 'RefusedError';
     this.text = text;
+    this.causeKind = causeKind;
   }
 }
 
@@ -19,6 +56,22 @@ export class ShownError extends Error {
 }
 
 export type Failure = Error;
+
+export type ClassifiedFailure =
+  | { kind: 'refused'; cause?: NotInRecordingCause; reason: string; detail: string }
+  | { kind: 'retryable'; reason?: string; detail: string };
+
+export function classifyFailure(error: Failure | null | undefined): ClassifiedFailure | null {
+  if (!error) return null;
+  if (error instanceof RefusedError) {
+    const plain = plainFailure(error.text);
+    return { kind: 'refused', cause: error.causeKind, reason: plain.text, detail: error.message };
+  }
+  if (error instanceof ShownError) {
+    return { kind: 'retryable', reason: error.text, detail: error.message };
+  }
+  return { kind: 'retryable', detail: error.message };
+}
 
 export function queryFailure(error: QueryError | string): Failure {
   if (typeof error === 'string') return new ShownError(plainFailure(error).text, error);

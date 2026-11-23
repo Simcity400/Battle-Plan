@@ -177,7 +177,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const [gapFrom, until] = transferGapWindow(conference, scoped, track.branch.firstHour, moment);
   const gapHint = transferGapHint(transferGaps(data, Math.max(rangeFrom, gapFrom), until));
   const count = pinned ? drillRows.length : shown.length;
-  const header = headerSlot && count > 0 && createPortal(<span className="pill">{usNumber.format(count)} {count === 1 ? 'transfer' : 'transfers'}</span>, headerSlot);
+  const header = headerSlot && createPortal(<span className="pill">{usNumber.format(count)} {count === 1 ? 'transfer' : 'transfers'}</span>, headerSlot);
   const notes = <>
     {conference && <p className="transfer-note">{transferConferenceLabel(conference)}</p>}
     {gapHint && <p className="transfer-note has-hint" data-tooltip={gapHint}>Some transfers may be missing.</p>}

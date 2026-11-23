@@ -12,11 +12,11 @@ export default function ReadView<T>({ read, loading, gate, children }: {
     case 'ready': return <>{children(read.data, read.hour)}</>;
     case 'outside': return <WidgetState kind="outside" read={coverageOf(read.outside)} />;
     case 'pending': return <WidgetState kind="loading" label={loading} />;
-    case 'refused': return <WidgetState kind="unavailable" message={read.reason} />;
-    case 'choose': return <WidgetState kind="empty" message="Choose a country in the widget settings." />;
+    case 'refused': return <WidgetState kind="unavailable" technical={read.reason} detail={read.reason} />;
+    case 'choose': return <WidgetState kind="nothing-chosen" />;
     case 'holders': return <ReachedCountryChoice tag={gate?.country?.chosen ?? null} holders={read.stage.holders} onPick={read.stage.pick} />;
     case 'absent': return <WidgetState kind="unavailable" message={read.reason ?? 'This country does not exist at this date.'} />;
-    case 'no-members': return <WidgetState kind="unavailable" message={read.reason} />;
+    case 'no-members': return <WidgetState kind="no-members" message={read.reason} />;
     case 'failed': return <WidgetState kind="error" failure={read.failure} onRetry={read.retry} />;
   }
 }

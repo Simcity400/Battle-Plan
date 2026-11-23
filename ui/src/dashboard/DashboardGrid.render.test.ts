@@ -10,11 +10,25 @@ const replacements: Record<string, string> = {
   '/dashboard/widgets.tsx': `import { useContext } from 'react'; import { HeldFailuresContext } from './heldFailures.ts';
     export const WidgetBody = () => { globalThis.__frameFailures = useContext(HeldFailuresContext); return null; };`,
   '/dashboard/WidgetSettingsMenu.tsx': 'export default props => { globalThis.__frameReset = props.onReset; return null; };',
-  '/dashboard/definitions.ts': `export const registerWidgets = () => {}; export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
-    history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
+  '/dashboard/definitions.ts': `export const registerWidgets = () => {}; export const widgetDefinition = kind => kind === 'follow-only'
+    ? ({ icon: 'grid', data: true, version: 1, title: 'Follow only', history: false, countrySelection: false, timeModes: ['follow'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } })
+    : kind === 'switched'
+    ? ({ icon: 'grid', data: true, version: 1, title: 'Switched', history: true, countrySelection: true, timeModes: ['follow', 'campaign', 'pin', 'range'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] },
+        options: [{ key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'a', choices: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }] }],
+        viewSwitch: { option: 'view' } })
+    : kind === 'menu-switched'
+    ? ({ icon: 'grid', data: true, version: 1, title: 'Many views', history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] },
+        options: [{ key: 'pool', section: 'options', label: 'Pool', kind: 'choice', default: 'a', choices: [{ value: 'a', label: 'One' }, { value: 'b', label: 'Two' }, { value: 'c', label: 'Three' }, { value: 'd', label: 'Four' }] }],
+        viewSwitch: { option: 'pool' } })
+    : ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
+        history: true, countrySelection: false, timeModes: ['follow', 'campaign', 'pin', 'range'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
   '/dashboard/campaignSettings.ts': "export const useCampaignSettings = () => ({ campaigns: {} }); export const useFactionStylesKey = () => '';",
   '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { factions: [{ id: '42', name: null,
     nameReason: 'Synthetic native naming refusal', names: [{ firstHour: 0, lastHour: 100, name: null, reason: 'Synthetic native naming refusal' }] }] } });`,
+  '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, track) => ({ labelAt: () => tag => {
+    const entry = track?.source?.metadata?.countries?.find(item => item.tag === tag);
+    return entry ? { name: entry.name, known: true, flag: null, flagPending: false } : { name: tag, known: false, flag: null, flagPending: false };
+  }, revision: 1 });`,
 };
 const frameServer = () => createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'frame-render', enforce: 'pre',
@@ -23,17 +37,16 @@ const frameServer = () => createServer({ configFile: false, optimizeDeps: { noDi
       export const Responsive = ({ children }) => children;` : undefined,
     transform(_source, id) { return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1]; },
   }] });
-const syntheticTracks = () => ['one', 'two'].map(roleId => ({ id: `track-${roleId}`, roleId, label: roleId,
-  branch: { id: 'branch', firstHour: 0, lastHour: 100 },
-  source: { path: `${roleId}.battleplan`, metadata: { countries: [], branches: [] } } })) as unknown as BoundTrack[];
+const syntheticTracks = () => ['one', 'two'].map(roleId => ({ id: `track-${roleId}`, roleId, label: roleId, axisOffset: 0,
+  branch: { id: 'branch', firstHour: 43800000, lastHour: 43801000, gaps: [] },
+  source: { id: `src-${roleId}`, revision: '1', path: `${roleId}.battleplan`, metadata: { countries: [], branches: [] } } })) as unknown as BoundTrack[];
 
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('frame subtitles identify only campaigns different from the sidebar and warnings use the resolved campaign', async () => {
+test('frame subtitles identify only campaigns different from the sidebar, warnings use the resolved campaign, and the time chip reflects all four modes', async () => {
   const vite = await frameServer();
   try {
     const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
     const tracks = syntheticTracks();
-    const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 0 } } as unknown as WidgetRuntime;
+    const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 43800024 } } as unknown as WidgetRuntime;
     const widget: WidgetSpec = { id: 'test', kind: 'synthetic', configVersion: 1, title: 'Synthetic', campaign: 'default',
       trackIds: ['track-one', 'stale-track'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: [] } };
     const template = { tracks, widgets: [widget], layouts: {} } as unknown as DashboardTemplate;
@@ -45,7 +58,9 @@ test.skip('frame subtitles identify only campaigns different from the sidebar an
     widget.title = 'Synthetic'; widget.contentScale = 125; render(); assert.equal(typeof frame.__frameReset, 'function');
     delete widget.contentScale;
     assert.doesNotMatch(render(), /dash-widget-subtitle|dash-inline-warning/, 'default mode ignores stale saved tracks');
-    assert.match(render(), /data-tooltip="Show whole campaign"/);
+    const liveHtml = render();
+    assert.match(liveHtml, /<button[^>]*dash-time-chip[^>]*>.*Live.*<\/button>/);
+    assert.doesNotMatch(liveHtml, /live-toggle/);
     widget.trackIds = ['track-one'];
     widget.campaign = 'tracks';
     assert.doesNotMatch(render(), /dash-widget-subtitle/, 'an explicit assignment to the current campaign needs no subtitle');
@@ -53,7 +68,6 @@ test.skip('frame subtitles identify only campaigns different from the sidebar an
     assert.doesNotMatch(render(), /dash-widget-subtitle/, 'one current campaign needs no subtitle');
     runtime.tracks = tracks;
     widget.trackIds = ['track-two'];
-    assert.match(render(), /dash-widget-subtitle">two</);
     assert.match(render(), /dash-widget-subtitle">two</);
     runtime.tracks = [tracks[1]];
     assert.match(render(), /dash-widget-subtitle">two</, 'a different campaign is named even when it is the only loaded track');
@@ -78,11 +92,19 @@ test.skip('frame subtitles identify only campaigns different from the sidebar an
     widget.campaign = 'tracks';
     widget.trackIds = ['track-one'];
     widget.kind = 'decoration';
-    assert.doesNotMatch(render(), /dash-widget-subtitle/);
+    assert.doesNotMatch(render(), /dash-widget-subtitle|dash-time-chip/);
     widget.kind = 'synthetic';
     widget.time = { mode: 'campaign' };
-    assert.match(render(), /data-tooltip="Follow playback"/);
-    assert.match(render(), /aria-checked="false"/);
+    assert.match(render(), /dash-time-chip[^>]*>.*Whole campaign.*<\/button>/);
+    widget.time = { mode: 'pin', windows: { 'track-one': { firstOffset: 24, lastOffset: 24 } } };
+    assert.match(render(), /Pinned · /);
+    widget.time = { mode: 'range', firstOffset: 0, lastOffset: 720 };
+    assert.match(render(), /–/);
+    widget.kind = 'follow-only';
+    widget.time = { mode: 'follow' };
+    const staticHtml = render();
+    assert.match(staticHtml, /<span[^>]*dash-time-chip is-static[^>]*>.*Live.*<\/span>/);
+    assert.doesNotMatch(staticHtml, /<button[^>]*dash-time-chip/);
 
     const { default: Chip } = await vite.ssrLoadModule('/ui/src/dashboard/DatedCountryChip.tsx') as typeof import('./DatedCountryChip');
     const chip = (label: Parameters<typeof Chip>[0]['label'], reason: string | null = null, hour: number | null = 43800024) =>
@@ -91,10 +113,10 @@ test.skip('frame subtitles identify only campaigns different from the sidebar an
     assert.doesNotMatch(chip({ name: 'TAG' }), /Name unavailable/);
     assert.match(chip({ name: 'TAG', known: false }), />Unavailable</);
     assert.match(chip({ name: 'TAG', nameFailed: true }), /Couldn’t load country name\./);
-      const failure = new Error('Synthetic dated chip decoder failure');
-      assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: failure }), /data-detail="Synthetic dated chip decoder failure"/);
-      const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
-      assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: new RefusedError('Synthetic dated name refusal') }), />Synthetic dated name refusal</);
+    const failure = new Error('Synthetic dated chip decoder failure');
+    assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: failure }), /data-detail="Synthetic dated chip decoder failure"/);
+    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
+    assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: new RefusedError('Synthetic dated name refusal') }), />Synthetic dated name refusal</);
     assert.doesNotMatch(chip(null, 'Synthetic native refusal'), /Synthetic native refusal/);
     assert.match(chip({ name: 'Name', known: true }), /As of /);
     assert.doesNotMatch(chip({ name: '', known: true }), /Loading…|Unavailable/);
@@ -102,26 +124,78 @@ test.skip('frame subtitles identify only campaigns different from the sidebar an
 
     const { default: CountryChip } = await vite.ssrLoadModule('/ui/src/dashboard/CountryChip.tsx') as typeof import('./CountryChip');
     runtime.tracks = [tracks[0]];
+    const chipWidget = { ...widget, kind: 'synthetic', time: { mode: 'campaign' as const }, trackIds: ['track-one'] };
     const countryNames = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon'];
-    tracks[0].source.metadata.countries = countryNames.map((name, id) => ({ id: String(id), name, tag: String(id), observedBranchId: 'branch', observedHour: 0 }));
+    tracks[0].source.metadata.countries = countryNames.map((name, id) => ({ id: String(id), name, tag: String(id), observedBranchId: 'branch', observedHour: 43801000 }));
     for (const count of [1, 3, 5]) {
-      const header = renderToStaticMarkup(createElement(CountryChip, { widget: { ...widget, trackIds: ['track-one'],
+      const header = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
         countries: { kind: 'tags', tags: countryNames.slice(0, count).map((_, i) => String(i)) } }, runtime, active: false }));
-      if (count === 1) assert.doesNotMatch(header, /data-tooltip=/);
+      if (count === 1) assert.doesNotMatch(header, /<span class="dash-widget-country" data-tooltip=/);
       else assert.match(header, count === 3 ? /data-tooltip="Alpha, Beta, Gamma"/ : /data-tooltip="Alpha, Beta, Gamma and 2 more"/);
       assert.doesNotMatch(header, /Delta|Epsilon/);
     }
     const tags = Array.from({ length: 5000 }, (_, index) => `country-${index}`);
-    tracks[0].source.metadata.countries = tags.map((tag, id) => ({ id: String(id), tag, name: `Name ${id}`, observedBranchId: 'branch', observedHour: 0 }));
-    const large = renderToStaticMarkup(createElement(CountryChip, { widget: { ...widget, trackIds: ['track-one'],
+    tracks[0].source.metadata.countries = tags.map((tag, id) => ({ id: String(id), tag, name: `Name ${id}`, observedBranchId: 'branch', observedHour: 43801000 }));
+    const large = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
       countries: { kind: 'tags', tags } }, runtime, active: false }));
     assert.match(large, /data-tooltip="Name 0, Name 1, Name 2 and 4997 more"/);
     assert.match(large, />\+4999</);
-    const faction = renderToStaticMarkup(createElement(CountryChip, { widget: { ...widget, trackIds: ['track-one'],
+    const faction = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
       countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } }, runtime, active: false }));
     assert.match(faction, /Unnamed faction/);
     assert.doesNotMatch(faction, /Synthetic native naming refusal|data-tooltip=/);
   } finally { await vite.close(); delete (globalThis as { __frameReset?: unknown }).__frameReset; }
+});
+
+test('header order, view switch slot, narrow drop order, and settings section order match the frame standard', async () => {
+  const vite = await frameServer();
+  try {
+    const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
+    const { headerDropStage } = await vite.ssrLoadModule('/ui/src/dashboard/widgetFrame.tsx') as typeof import('./widgetFrame');
+    const { SECTION_TITLES, settingsSections } = await vite.ssrLoadModule('/ui/src/dashboard/settingsSections.ts') as typeof import('./settingsSections');
+    const tracks = syntheticTracks();
+    const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 43800024 } } as unknown as WidgetRuntime;
+
+    const switched: WidgetSpec = { id: 'sw', kind: 'switched', configVersion: 1, title: 'Switched', campaign: 'default',
+      trackIds: ['track-one'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] } };
+    const html = renderToStaticMarkup(createElement(Grid, { template: { tracks, widgets: [switched], layouts: {} } as unknown as DashboardTemplate,
+      runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+    const positions = [
+      html.indexOf('dash-widget-icon'),
+      html.indexOf('dash-widget-title'),
+      html.indexOf('dash-widget-summary'),
+      html.indexOf('dash-widget-country-button'),
+      html.indexOf('dash-view-switch'),
+      html.indexOf('dash-time-chip'),
+    ];
+    assert.ok(positions.every(pos => pos >= 0), 'every header slot renders');
+    for (let i = 1; i < positions.length; i++) assert.ok(positions[i] > positions[i - 1], `slot ${i} follows slot ${i - 1}`);
+    assert.match(html, /role="group"[^>]*aria-label="Switched view"/);
+
+    const many: WidgetSpec = { id: 'many', kind: 'menu-switched', configVersion: 1, title: 'Many views', campaign: 'default',
+      trackIds: ['track-one'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: [] } };
+    const manyHtml = renderToStaticMarkup(createElement(Grid, { template: { tracks, widgets: [many], layouts: {} } as unknown as DashboardTemplate,
+      runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+    assert.match(manyHtml, /dash-view-menu-trigger[^>]*aria-haspopup="menu"/, 'four or more choices render as a menu');
+
+    const full = { hasSummary: true, summaryChars: 18, hasViewSwitch: true, viewChoices: 3, viewChars: 24, viewMenuOnly: false, hasSubject: true, timeChars: 16, titleChars: 16 };
+    const wide = headerDropStage(900, full);
+    assert.deepEqual(wide, { stage: 0, dropPill: false, collapseView: false, compactSubject: false, compactTime: false });
+    const stages = [900, 620, 500, 410, 260].map(w => headerDropStage(w, full));
+    for (let i = 1; i < stages.length; i++) assert.ok(stages[i].stage >= stages[i - 1].stage, 'drop stage increases monotonically as width shrinks');
+    const narrow = headerDropStage(220, full);
+    assert.deepEqual(narrow, { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime: true });
+
+    const mapSections = settingsSections({ kind: 'map', data: true, history: false, countrySelection: true, timeModes: ['follow', 'pin'],
+      defaultTime: 'follow', factionColours: true, options: [
+        { key: 'a', section: 'options', label: 'A', kind: 'toggle', default: false },
+        { key: 'b', section: 'axes', label: 'B', kind: 'toggle', default: false },
+        { key: 'c', section: 'interaction', label: 'C', kind: 'toggle', default: false },
+      ] } as never, { a: false, b: false, c: false }, { kind: 'all' }, 'follow');
+    assert.deepEqual(mapSections, ['campaign', 'countries', 'time', 'size', 'options', 'map', 'factionColours', 'axes', 'interaction']);
+    assert.equal(SECTION_TITLES.factionColours, 'Colours');
+    assert.equal(SECTION_TITLES.map, 'Map');
+  } finally { await vite.close(); }
 });
 
 test('a widget header draws its kind\'s own icon and colour, and an image in its own colours', async () => {

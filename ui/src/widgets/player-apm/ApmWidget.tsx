@@ -196,12 +196,12 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
 
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see eAPM." />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
     if (!query.window || first == null || last == null || first > last) return <WidgetState kind="outside" />;
     if (query.groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" failure={query.groups.error} onRetry={query.groups.retry} />;
     if (query.reason && !headEntry) return <WidgetState kind="unavailable" message={query.reason} />;
     if (players && registry.error) return <WidgetState kind="error" failure={registry.error} onRetry={registry.retry} />;
-    if (headRefused) return <WidgetState kind="unavailable" message={headRefused} />;
+    if (headRefused) return <WidgetState kind="unavailable" technical={headRefused} />;
     if (headEntry) {
       if (tiled && branchSeries.error) return <WidgetState kind="error" failure={branchSeries.error} onRetry={branchSeries.retry} />;
       if (headEntry.answer === undefined || (players && !registry.data) || (tiled && !branchSeries.data)) return <WidgetState kind="loading" label="Loading eAPM…" />;

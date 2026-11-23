@@ -2,7 +2,7 @@ import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import type { WidgetRenderer } from '../dashboard/definitions';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
-type Slot = 'render' | 'headerControls' | 'countryChip';
+type Slot = 'render' | 'countryChip';
 const nothing = () => null;
 export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer {
   const renderer: WidgetRenderer = {};
