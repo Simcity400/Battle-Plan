@@ -92,21 +92,32 @@ impl Captured {
         self.countries.grow(&mut c.countries);
     }
 
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
-        self.capture_impl(memory, base, state, None)
+    /// # Safety
+    /// Only the admitted naval-base capture (or an isolated fixture owning the global naval-base
+    /// management store) may walk the authenticated image and update that store.
+    pub unsafe fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        // SAFETY: Caller guarantees admitted naval-base capture ownership of the global store.
+        unsafe { self.capture_impl(memory, base, state, None) }
     }
 
-    pub fn acquire(
+    /// # Safety
+    /// Only the admitted naval-base capture (or an isolated fixture owning the global naval-base
+    /// management store) may walk the authenticated image and take an owned publication loan, which
+    /// must be decoded or discarded before reusing this frame or detaching.
+    pub unsafe fn acquire(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         stopped: fn() -> bool,
     ) -> [u64; N] {
-        self.capture_impl(memory, base, state, Some(stopped))
+        // SAFETY: Caller guarantees admitted naval-base capture ownership and loan settlement.
+        unsafe { self.capture_impl(memory, base, state, Some(stopped)) }
     }
 
-    fn capture_impl(
+    /// # Safety
+    /// Caller holds admitted naval-base capture ownership of the global naval-base store.
+    unsafe fn capture_impl(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -118,9 +129,15 @@ impl Captured {
         self.reset();
         let mut management = match stopped {
             Some(stopped) => {
-                collector_naval_management::bases::Session::begin_owned(memory, base, stopped)
+                // SAFETY: Caller guarantees admitted naval-base capture ownership and loan settlement.
+                unsafe {
+                    collector_naval_management::bases::Session::begin_owned(memory, base, stopped)
+                }
             }
-            None => collector_naval_management::bases::Session::begin(memory, base),
+            None => {
+                // SAFETY: Caller guarantees admitted naval-base capture ownership of the global store.
+                unsafe { collector_naval_management::bases::Session::begin(memory, base) }
+            }
         };
         let walked = cnaval_base::walk_observed(
             memory,
@@ -291,7 +308,8 @@ mod tests {
             hint.presize(&memory, 0, game_state).unwrap();
             assert_eq!(hint.rows, count);
             assert_eq!(hint.countries, count * list_len);
-            capture.capture(&memory, 0, game_state);
+            // SAFETY: synthetic memory fixture with no concurrent naval-base census in this test.
+            unsafe { capture.capture(&memory, 0, game_state) };
             assert_eq!(
                 capture.outcomes(),
                 [
@@ -336,7 +354,8 @@ mod tests {
             bytes: &[],
         };
         let mut capture = Captured::with_capacities(&Capacities::default());
-        capture.capture(&memory, 0, 0x1000);
+        // SAFETY: synthetic memory fixture with no concurrent naval-base census in this test.
+        unsafe { capture.capture(&memory, 0, 0x1000) };
         assert!(matches!(capture.outcomes()[0], Outcome::Unavailable { .. }));
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         capture.reset();

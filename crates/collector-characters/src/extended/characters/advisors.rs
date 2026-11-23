@@ -642,7 +642,10 @@ static TOOLTIP_FAILURES: std::sync::Mutex<Vec<(&'static str, u64)>> =
 static MODIFIER_CAPTURED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MODIFIER_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-pub fn note_modifier_demand(demand: cadvisor::ModifierDemand) -> bool {
+/// # Safety
+/// Only the attaching runtime or its designated session sizing pass (or an isolated test owning
+/// advisor globals) may publish process-wide advisor modifier demand.
+pub unsafe fn note_modifier_demand(demand: cadvisor::ModifierDemand) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     let rows = LIVE_MODIFIER_ROWS.fetch_max(demand.rows, Relaxed);
     let bytes = LIVE_MODIFIER_BYTES.fetch_max(demand.bytes, Relaxed);

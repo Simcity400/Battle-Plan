@@ -65,7 +65,10 @@ static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
-pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static INSTALLED: [AtomicBool; 7] = [const { AtomicBool::new(false) }; 7];
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -93,7 +96,7 @@ pub fn capacity() -> usize {
     OBSERVATION.capacity.load(Ordering::Acquire)
 }
 
-pub fn presize(events: usize) {
+pub(crate) fn presize(events: usize) {
     engine_allocation::advisory(|| presize_storage(events));
 }
 
@@ -122,7 +125,11 @@ fn presize_storage(events: usize) {
     }
 }
 
-pub fn install_offered() {
+/// # Safety
+/// Caller must hold exclusive pre-publication attach ownership (before enabling hooks), run on
+/// the admitted post-drain observer boundary under the capture gate, or hold `test_lock()` in an
+/// isolated test with hooks quiesced as the sole log-swap consumer.
+pub unsafe fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
     };
@@ -192,7 +199,10 @@ thread_local! {
     static RAILWAY_LINE: Cell<(usize, u32)> = const { Cell::new((0, 0)) };
 }
 
-pub fn invalidate() {
+/// # Safety
+/// Caller must own the active session's capture or publication failure path (or hold `test_lock()`
+/// in an isolated test) when invalidating construction-IC observation.
+pub unsafe fn invalidate() {
     OBSERVATION.invalidate();
 }
 
@@ -274,7 +284,7 @@ fn refuse(reason: &'static str) {
     COUNTERS[11].fetch_add(1, Ordering::Relaxed);
     let _ = REFUSED.set(reason);
     REFUSAL_PENDING.store(true, Ordering::SeqCst);
-    invalidate();
+    OBSERVATION.invalidate();
 }
 
 fn observe_building(line: usize, caller: usize) {
@@ -465,7 +475,7 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+pub(crate) fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     let log = log();
     OBSERVATION.drain(
         output,
@@ -552,7 +562,8 @@ impl Hooks {
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let _ = presize_from_live(memory, base);
-        install_offered();
+        // SAFETY: Caller exclusively owns this hook family during attach before enabling hooks.
+        unsafe { install_offered() };
         let domain = output_hooks::Domain {
             failure: output_hooks::Failure::Unavailable,
             observation: &OBSERVATION,
@@ -707,10 +718,11 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn observe_for_test(enabled: bool, base: usize) {
+#[cfg(test)]
+pub(crate) fn observe_for_test(enabled: bool, base: usize) {
     if enabled {
-        reset_log_for_test(crate::output_log::CAPACITY);
+        // SAFETY: In-crate tests hold `test_lock()` with hooks quiescent before enabling.
+        unsafe { reset_log_for_test(crate::output_log::CAPACITY) };
     }
     BASE.store(base, Ordering::Relaxed);
     bind_returns(base).unwrap();
@@ -719,8 +731,11 @@ pub fn observe_for_test(enabled: bool, base: usize) {
     RAILWAY_LINE.set((0, 0));
 }
 
+/// # Safety
+/// Caller holds [`test_lock()`] (or exclusive fixture ownership) with construction-IC hooks
+/// disabled and quiescent (`ACTIVE == 0`).
 #[cfg(any(test, feature = "test-support"))]
-pub fn reset_log_for_test(capacity: usize) {
+pub unsafe fn reset_log_for_test(capacity: usize) {
     assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
     let mut current = Storage::new(capacity).unwrap();
     let pointer = &mut *current as *mut Storage;

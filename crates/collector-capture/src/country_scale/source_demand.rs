@@ -51,14 +51,20 @@ impl Demand {
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
         if let Ok(accounts) = engine_native::cfaction_system::accounts(memory, base, state) {
-            collector_factions::faction_companion_changes::demand_accounts(
-                accounts.count as usize * 2 + 1,
-            );
+            // SAFETY: Sizing census records measured faction-account demand for the active session.
+            unsafe {
+                collector_factions::faction_companion_changes::demand_accounts(
+                    accounts.count as usize * 2 + 1,
+                );
+            }
         }
         if let Ok((owners, _)) = faction_rows {
             collector_observers::country_input_changes::sharing_demand(owners);
-            collector_factions::faction_goal_changes::demand(owners);
-            collector_factions::faction_companion_changes::demand(owners);
+            // SAFETY: Sizing census records measured faction-owner demand for the active session.
+            unsafe {
+                collector_factions::faction_goal_changes::demand(owners);
+                collector_factions::faction_companion_changes::demand(owners);
+            }
             collector_intel::variable_changes::Observer.demand_embedded(owners);
         }
         Ok(Some(Self {
