@@ -583,7 +583,7 @@ fn main() {
                 "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
                 "/credit" => match (pull::param(&request, "session"), pull::param(&request, "released").and_then(|released| released.parse::<u64>().ok())) {
                     (Some(session), Some(released)) => {
-                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(session)) {
+                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(&session)) {
                             dashboard_follow::registry::registry().credit(epoch, released);
                         }
                         pull::refuse(responder, StatusCode::NO_CONTENT, "");
