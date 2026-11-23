@@ -10,21 +10,22 @@ fn executor_completion_preserves_exact_counts_on_workers_callers_and_panics() {
 
     for workers in [0, 2] {
         let (entered_tx, entered_rx) = mpsc::channel();
-        let pool =
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { collector_workers::acquisition::Pool::start(
-            workers,
-            4,
-            move |job: &mut (usize, bool)| {
-                entered_tx.send(std::thread::current().id()).unwrap();
-                with_table(TableId::States, || read(job.0));
-                with_table(TableId::StateFlags, || read(job.0 + 1));
-                if job.1 {
-                    panic!("synthetic owned-job failure");
-                }
-                job.0
-            },
-        ) }
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            collector_workers::acquisition::Pool::start(
+                workers,
+                4,
+                move |job: &mut (usize, bool)| {
+                    entered_tx.send(std::thread::current().id()).unwrap();
+                    with_table(TableId::States, || read(job.0));
+                    with_table(TableId::StateFlags, || read(job.0 + 1));
+                    if job.1 {
+                        panic!("synthetic owned-job failure");
+                    }
+                    job.0
+                },
+            )
+        }
         .unwrap();
         for fail in [false, true] {
             let frame = Capture::new();

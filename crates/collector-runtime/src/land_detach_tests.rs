@@ -2,8 +2,9 @@ use collector_land_events::land_events::test_support::{self, exclusive, reset};
 
 #[test]
 fn refused_detach_stops_land_production() {
-    let _guard = exclusive();
-    reset();
+    let (_family, mut owned) = exclusive();
+    // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+    unsafe { reset(&mut owned) };
     let mut retained = false;
     let result = crate::runtime::refuse_land_detach_for_test(|| {
         assert!(

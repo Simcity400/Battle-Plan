@@ -29,8 +29,9 @@ impl Capacities {
         grow_capacity(&mut self.bytes, bytes);
     }
     /// # Safety
-    /// Only the serial sizing owner may resize or retire operation logs. Keep the active log
-    /// storage live throughout and exclude detach and conflicting presizers.
+    /// Run only while operation-log storage remains live for the active session (or an isolated
+    /// test owning the global log) and `operation_outcomes::release` is excluded; once attached,
+    /// concurrent growth calls rely on the log's internal `LOGS` and `byte_rings` locks.
     pub unsafe fn prepare(&self) {
         hooks::presize(self.entries, self.bytes);
     }
@@ -56,14 +57,15 @@ impl Captured {
         self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
     /// # Safety
-    /// Only the serial sizing owner may resize or retire operation logs. Keep the active log
-    /// storage live throughout and exclude detach and conflicting presizers.
+    /// Caller holds exclusive `&mut` access to this frame while operation-log storage stays live
+    /// for the active session (or an isolated test) and `operation_outcomes::release` is excluded.
+    /// Different frames may grow concurrently across spool and sizing threads via internal locks.
     pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(
             &mut capacity.entries,
             self.drained_pending.load(Ordering::Relaxed),
         );
-        // SAFETY: The caller owns this live capacity pass and excludes observer teardown.
+        // SAFETY: Caller guarantees active-session liveness with `release` excluded.
         unsafe { capacity.prepare() };
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -75,11 +77,18 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, reason: &'static str) {
-        hooks::invalidate();
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live operation-completion observation.
+    pub unsafe fn fail(&mut self, reason: &'static str) {
+        // SAFETY: Caller owns the operation-completion capture or publication failure path.
+        unsafe { hooks::invalidate() };
         self.handoff = Some(Err(reason));
     }
-    pub fn capture(&mut self) -> u64 {
+    /// # Safety
+    /// Only the admitted hour's sole observer boundary (or an isolated test owning the global
+    /// operation log) may seal an offered generation and capture a handoff while the log stays live.
+    pub unsafe fn capture(&mut self) -> u64 {
         let started = collector_primitives::clock::qpc();
         self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
         collector_primitives::clock::qpc()
@@ -90,8 +99,8 @@ impl Captured {
     pub fn drained_pending(&self) -> usize {
         self.drained_pending.load(Ordering::Relaxed)
     }
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn sealed(handoff: hooks::Handoff, cursors: Vec<hooks::LaneCursor>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn sealed(handoff: hooks::Handoff, cursors: Vec<hooks::LaneCursor>) -> Self {
         Self {
             handoff: Some(Ok(handoff)),
             cursors,
@@ -116,29 +125,29 @@ impl Publication {
     }
 
     /// # Safety
-    /// Acknowledge only actual admission of this publication by its originating session, while its
-    /// referenced observer log remains live.
+    /// Acknowledge only actual spool queue admission for the originating session, while its
+    /// operation log remains live and before `operation_outcomes::release`.
     pub unsafe fn admitted(&self) {
         self.handoff.admitted(&self.cursors);
     }
     /// # Safety
-    /// Acknowledge only a confirmed writer receipt for this publication, before the originating
-    /// session releases its observer log.
+    /// Acknowledge only a confirmed writer receipt for the originating session, while its
+    /// operation log remains live and before `operation_outcomes::release`.
     pub unsafe fn commit(self) {
         self.handoff.commit(&self.cursors);
     }
 }
 
 /// # Safety
-/// Only the session's spool may reset its frontier after invalidating its pending writes and before
-/// the observer log is released.
+/// Only the originating session's spool may reset the admitted frontier after discarding
+/// uncommitted output, while its operation log remains live and before `operation_outcomes::release`.
 pub unsafe fn reset_admitted() {
     hooks::reset_admitted();
 }
 impl Ledger {
     /// # Safety
-    /// Only the originating spool may assemble its captured interval. Keep the corresponding log
-    /// live until its publication is committed or discarded.
+    /// Only the originating session's sole spool consumer may assemble this captured handoff, while
+    /// the operation log retained by `captured` remains live and before `operation_outcomes::release`.
     pub unsafe fn assemble_owned(
         &mut self,
         captured: &Captured,

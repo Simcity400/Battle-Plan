@@ -63,7 +63,7 @@ fn take_spill(held: &mut Vec<(u64, u64)>, end: u64) -> bool {
                 kept = false;
             } else {
                 STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-                fail();
+                record_fail();
             }
             continue;
         }
@@ -84,7 +84,11 @@ fn unless_foreign<T>(diverted: impl FnOnce() -> T, body: impl FnOnce() -> T) -> 
     body()
 }
 
-pub fn prepare() {
+/// # Safety
+/// Run only while land-event storage remains live for the active session (or an isolated test
+/// owning land-event observation) and teardown is excluded; spare allocation is serialized under
+/// `LOG_SWAP`.
+pub unsafe fn prepare() {
     unless_foreign(|| (), || engine_allocation::advisory(prepare_storage));
 }
 
@@ -112,7 +116,11 @@ fn prepare_storage() {
     }
 }
 
-pub fn presize(words: usize) {
+/// # Safety
+/// Run only while land-event storage remains live for the active session (or an isolated test
+/// owning land-event observation) and teardown is excluded; spare allocation is serialized under
+/// `LOG_SWAP`.
+pub unsafe fn presize(words: usize) {
     unless_foreign(
         || (),
         || {
@@ -126,7 +134,7 @@ pub fn presize(words: usize) {
     );
 }
 
-pub fn observe_observer_rows(rows: usize) {
+pub(crate) fn observe_observer_rows(rows: usize) {
     unless_foreign(
         || (),
         || {
@@ -144,7 +152,10 @@ pub fn capacity() -> usize {
     LOG_REQUIRED.load(Ordering::Relaxed)
 }
 
-pub fn install_offered() {
+/// # Safety
+/// Run only at attach or the admitted hour's sole observer boundary while no competing swap or
+/// teardown runs.
+pub unsafe fn install_offered() {
     unless_foreign(|| (), install_offered_owned);
 }
 fn install_offered_owned() {
@@ -166,7 +177,10 @@ fn install_offered_owned() {
     RESIZING.store(false, Ordering::SeqCst);
 }
 
-pub fn release() -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session teardown/detach after land-event observation is disabled and callbacks
+/// have quiesced (or own an isolated test fixture with no live hooks).
+pub unsafe fn release() -> Result<(), &'static str> {
     unless_foreign(|| Ok(()), release_owned)
 }
 fn release_owned() -> Result<(), &'static str> {
@@ -224,11 +238,13 @@ pub fn active() -> usize {
 fn observing() -> bool {
     ENABLED.load(Ordering::Relaxed) && escaped_unwind_reason().is_none()
 }
-pub fn stop_observation() {
+/// # Safety
+/// Caller must own session teardown/detach or isolated test cleanup for land-event observation.
+pub unsafe fn stop_observation() {
     unless_foreign(|| (), || ENABLED.store(false, Ordering::SeqCst));
 }
 static BASE: AtomicUsize = AtomicUsize::new(0);
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static PRODUCERS: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 const FINALIZE: usize = 0;
 const DESTROYED: usize = 1;
@@ -391,14 +407,20 @@ impl Drop for Call {
         if !self.completed.get() || std::thread::panicking() {
             CALL_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
             ENABLED.store(false, Ordering::SeqCst);
-            fail();
+            unless_foreign(|| (), fail_owned);
             return;
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
-pub fn fail() {
+fn record_fail() {
     unless_foreign(|| (), fail_owned);
+}
+/// # Safety
+/// Caller must own the active session's capture, decode, or publication failure path (or an
+/// isolated test fixture) when invalidating land-event observation.
+pub unsafe fn fail() {
+    record_fail();
 }
 fn fail_owned() {
     count_on_thread(1, 0);
@@ -406,7 +428,7 @@ fn fail_owned() {
     advance_epoch();
 }
 
-pub fn lost_casualty_reads(count: u64) -> u64 {
+pub(crate) fn lost_casualty_reads(count: u64) -> u64 {
     unless_foreign(|| count, || lost_casualty_reads_owned(count))
 }
 fn lost_casualty_reads_owned(count: u64) -> u64 {
@@ -434,7 +456,7 @@ fn append_owned(
     impl Drop for Producer {
         fn drop(&mut self) {
             if self.uncommitted {
-                fail();
+                record_fail();
             }
             PRODUCERS.fetch_sub(1, Ordering::SeqCst);
         }
@@ -456,7 +478,7 @@ fn append_owned(
             .is_err()
         {
             STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-            fail();
+            record_fail();
             return;
         }
         words.push(0);
@@ -470,13 +492,13 @@ fn append_owned(
         });
         producer.uncommitted = false;
         if result.is_err() || written != size {
-            fail();
+            record_fail();
             return;
         }
         words[0] = size as u64;
         if SPILL.push((first, words)).is_err() {
             STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-            fail();
+            record_fail();
         }
         return;
     };
@@ -495,7 +517,7 @@ fn append_owned(
     let lapped = CONSUMED.load(Ordering::SeqCst) > first
         && CURSOR.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
     if result.is_err() || written != size || lapped {
-        fail();
+        record_fail();
         return;
     }
     log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
@@ -513,14 +535,17 @@ pub struct Drain {
     pub lost: u64,
     pub reason: &'static str,
 }
-pub fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
+pub(crate) fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
     drain_buffer(
         engine_native::walk::Buffer::Growing(output),
         hour,
         invalidating,
     )
 }
-pub fn lost_drain(hour: i32, reason: &'static str) -> Drain {
+/// # Safety
+/// Caller must own the active session's capture or publication failure path (or an isolated test
+/// fixture) when recording a lost land-event drain.
+pub unsafe fn lost_drain(hour: i32, reason: &'static str) -> Drain {
     unless_foreign(|| diverted_drain(hour), || lost_drain_owned(hour, reason))
 }
 fn lost_drain_owned(hour: i32, reason: &'static str) -> Drain {
@@ -628,7 +653,7 @@ fn drain_interval(
         return result;
     }
     if let Err(reason) = output.ensure(required) {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -636,7 +661,7 @@ fn drain_interval(
         return result;
     }
     if required > output.len() {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -654,7 +679,7 @@ fn drain_interval(
         return result;
     }
     if PRODUCERS.load(Ordering::SeqCst) != 0 {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -662,7 +687,7 @@ fn drain_interval(
         return result;
     }
     if !take_spill(spilled, end) {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -696,7 +721,7 @@ fn drain_interval(
         || EPOCH.load(Ordering::SeqCst) != epoch
         || CURSOR.load(Ordering::SeqCst) != end
     {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -733,7 +758,7 @@ fn observe(combat: usize) {
                     Ok(())
                 });
             }
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
     } else {
         match native::ResultPlan::read(&memory, base, combat, None) {
@@ -745,7 +770,7 @@ fn observe(combat: usize) {
                 };
                 append(plan.words, |put| plan.copy(&memory, base, put));
             }
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
     }
 }
@@ -783,15 +808,15 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
                     )
                     .is_err()
                     {
-                        fail();
+                        record_fail();
                     }
                 }
             }
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
         match native::HistoryPlan::read(&memory, base, combat) {
             Ok(plan) => append(plan.words, |put| plan.copy(&memory, put)),
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
     }
     _call.finish();
@@ -831,7 +856,7 @@ unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
         Ok(Some(plan)) => append(plan.words, |put| plan.copy(&memory, base, put)),
         Ok(None) => {}
         Err(_) => {
-            fail();
+            record_fail();
         }
     }
     #[cfg(test)]
@@ -871,12 +896,12 @@ unsafe extern "system-unwind" fn destroyed(
                         put(handle);
                         Ok(())
                     }),
-                    Err(_) => fail(),
+                    Err(_) => record_fail(),
                 }
                 context.seen = true;
                 DESTRUCTION.set(context);
             } else {
-                fail();
+                record_fail();
                 if matches {
                     context.failed = true;
                     DESTRUCTION.set(context);
@@ -914,7 +939,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
                 });
             }
             Err(_) => {
-                fail();
+                record_fail();
                 DESTRUCTION.set(Destruction {
                     army,
                     from,
@@ -929,7 +954,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
         unsafe { std::mem::transmute(ORIGINAL[DESTRUCTION_ORIGINAL].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(army, from, to) });
     if observing() && !DESTRUCTION.get().seen && !DESTRUCTION.get().failed {
-        fail();
+        record_fail();
     }
     _call.finish();
 }
@@ -962,7 +987,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                 terminating: [255; 2],
             });
         } else {
-            fail();
+            record_fail();
             BORDER.set(NO_BORDER);
         }
     }
@@ -980,10 +1005,10 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                     };
                     append(plan.words, |put| plan.copy(&memory, base, put));
                 }
-                Err(_) => fail(),
+                Err(_) => record_fail(),
             }
         } else {
-            fail();
+            record_fail();
         }
     }
     let original: unsafe extern "system-unwind" fn(usize) =
@@ -1026,7 +1051,7 @@ unsafe extern "system-unwind" fn leader_tap_body(
             if self.0 {
                 TAP_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
                 ENABLED.store(false, Ordering::SeqCst);
-                fail();
+                record_fail();
             }
         }
     }
@@ -1048,7 +1073,7 @@ unsafe extern "system-unwind" fn border_terminate(side: usize, caller: usize) ->
                 BORDER.set(border);
             }
             Ok(None) => {}
-            Err(()) => fail(),
+            Err(()) => record_fail(),
         }
     }
     _call.finish();
@@ -1086,11 +1111,11 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                             plan.copy(&memory, BASE.load(Ordering::Relaxed), put)
                         });
                     }
-                    Err(_) => fail(),
+                    Err(_) => record_fail(),
                 }
             }
             Err(_) => {
-                fail();
+                record_fail();
                 DISPATCH.set(NO_DISPATCH);
             }
         }
@@ -1111,7 +1136,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                 Ok(())
             });
         } else {
-            fail();
+            record_fail();
         }
     }
     _call.finish();
@@ -1142,11 +1167,11 @@ unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: us
                         observed.seen[n] = true;
                         DISPATCH.set(observed);
                     }
-                    Err(_) => fail(),
+                    Err(_) => record_fail(),
                 }
             }
             Ok(None) => {}
-            Err(()) => fail(),
+            Err(()) => record_fail(),
         }
     }
     result
@@ -1295,7 +1320,9 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         if !self.publication_attempted {
-            let _ = release();
+            // SAFETY: Publication was never attempted, so hooks were never enabled and no
+            // callbacks are active.
+            let _ = unsafe { release() };
         }
     }
 }
@@ -1398,10 +1425,17 @@ pub mod test_support {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (family, own())
     }
-    pub fn reset() {
-        reset_with_words(1024);
+    /// # Safety
+    /// Caller holds exclusive fixture ownership (`_owned`) with no live native land-event hooks
+    /// installed or active.
+    pub unsafe fn reset(owned: &mut Owned) {
+        // SAFETY: Caller upholds the reset safety contract with exclusive `Owned` access.
+        unsafe { reset_with_words(owned, 1024) };
     }
-    pub fn reset_with_words(words: usize) {
+    /// # Safety
+    /// Caller holds exclusive fixture ownership (`_owned`) with no live native land-event hooks
+    /// installed or active.
+    pub unsafe fn reset_with_words(_owned: &mut Owned, words: usize) {
         let mut swap = LOG_SWAP.lock().unwrap();
         swap.next = None;
         swap.retired = None;
@@ -1430,11 +1464,12 @@ pub mod test_support {
         LAST_DISPATCHED.set((0, 0, 0));
         ENABLED.store(true, Ordering::SeqCst);
     }
-    pub fn free_spill() {
+    fn free_spill() {
         drop(SPILL.take());
         drop(std::mem::take(&mut *spilled()));
     }
-    pub fn append_record(payload: &[u64]) {
+    #[cfg(test)]
+    pub(crate) fn append_record(payload: &[u64]) {
         append(payload.len() + 1, |put| {
             for &word in payload {
                 put(word);
@@ -1442,7 +1477,8 @@ pub mod test_support {
             Ok(())
         });
     }
-    pub fn disable() {
+    #[cfg(test)]
+    pub(crate) fn disable() {
         ENABLED.store(false, Ordering::SeqCst);
     }
     pub fn production_enabled() -> bool {
@@ -1492,19 +1528,20 @@ mod tests {
     }
     #[test]
     fn losses_count_on_the_thread_that_records_them() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let before = test_support::thread_lost();
         collector_test_support::with_allocations_denied(|| {
-            fail();
-            fail();
+            record_fail();
+            record_fail();
         });
         assert_eq!(test_support::thread_lost(), before + 2);
         let global = LOST.load(Ordering::Relaxed);
         let calls = test_support::thread_leader_calls();
         std::thread::spawn(|| {
             test_support::adopt();
-            fail()
+            record_fail()
         })
         .join()
         .unwrap();
@@ -1519,8 +1556,9 @@ mod tests {
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
         };
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let escaped = TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst);
         assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
         let page = unsafe {
@@ -1569,15 +1607,16 @@ mod tests {
         CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
         assert!(group.set_enabled(false).unwrap());
         drop(group);
-        release().unwrap();
+        unsafe { release() }.unwrap();
         assert_ne!(unsafe { VirtualFree(page.cast(), 0, MEM_RELEASE) }, 0);
     }
     #[test]
     fn event_storage_charge_follows_offers_and_quiet_release() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         test_support::disable();
-        release().unwrap();
+        unsafe { release() }.unwrap();
         static TRACKER: collector_primitives::raw_memory::Tracker =
             collector_primitives::raw_memory::Tracker::new();
         let buffer = |size| {
@@ -1594,10 +1633,10 @@ mod tests {
         drop(swap);
         assert_eq!(TRACKER.snapshot().current.payload_vectors, 14 * 8);
         ACTIVE.store(1, Ordering::SeqCst);
-        assert!(release().is_err());
+        assert!(unsafe { release() }.is_err());
         assert_eq!(TRACKER.snapshot().current.payload_vectors, 14 * 8);
         ACTIVE.store(0, Ordering::SeqCst);
-        release().unwrap();
+        unsafe { release() }.unwrap();
         assert!(LOG.load(Ordering::SeqCst).is_null());
         assert_eq!(TRACKER.snapshot().current, Default::default());
         LOG_SWAP.lock().unwrap().next = Some(buffer(3));
@@ -1853,8 +1892,9 @@ mod tests {
     }
     #[test]
     fn repeated_division_killer_records_use_the_reserved_destruction_entry() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         unsafe extern "system-unwind" fn writer(_: usize, _: usize, _: usize, _: usize, _: usize) {}
         let original = ORIGINAL[DESTROYED].swap(writer as *const () as usize, Ordering::SeqCst);
         let _restore = Restore::new(&DESTRUCTION);
@@ -1892,8 +1932,9 @@ mod tests {
     }
     #[test]
     fn failed_destruction_read_is_counted_once_across_nested_writer() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         unsafe extern "system-unwind" fn writer(_: usize, _: usize, _: usize, _: usize, _: usize) {}
         unsafe extern "system-unwind" fn original(army: usize, from: usize, to: usize) {
             unsafe {
@@ -1976,8 +2017,9 @@ mod tests {
     }
     #[test]
     fn terminal_losses_are_read_after_native_pending_damage_flush() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let world = crate::extended::combat_progress::tests::World::new(1);
         unsafe extern "system-unwind" fn flush(combat: usize) {
             let side = unsafe {
@@ -2031,8 +2073,9 @@ mod tests {
     }
     #[test]
     fn wipe_unsupported_class_refusals_keep_interval_unknown() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let old_base = BASE.swap(0, Ordering::SeqCst);
         let mut output = vec![0; 8];
         drain(&mut output, 10, true);
@@ -2048,8 +2091,8 @@ mod tests {
             );
         }
         append(2, |_| Err("combat wipe remaining class unsupported"));
-        fail();
-        fail();
+        record_fail();
+        record_fail();
         unsafe {
             observe_wipe(0, 0);
         }
@@ -2454,11 +2497,12 @@ mod tests {
     }
     #[test]
     fn verdict_resolver_rust_unwind_retains_the_asm_owned_flight() {
-        let _guard = exclusive();
+        let (_family, mut owned) = exclusive();
         unsafe extern "system-unwind" fn native_unwind(_: usize) -> usize {
             panic!("synthetic resolver unwind");
         }
-        reset();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
         let escaped = TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst);
         let storage = LOG.load(Ordering::SeqCst);
@@ -2472,7 +2516,7 @@ mod tests {
         assert_eq!(TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst), escaped + 1);
         assert!(active() != 0);
         assert!(!ENABLED.load(Ordering::SeqCst));
-        assert!(release().is_err());
+        assert!(unsafe { release() }.is_err());
         assert_eq!(LOG.load(Ordering::SeqCst), storage);
         let mut out = vec![0; 32];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
@@ -2490,12 +2534,13 @@ mod tests {
         TAP_ESCAPED_UNWINDS.store(escaped, Ordering::SeqCst);
         ACTIVE.store(0, Ordering::SeqCst);
         CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
-        release().unwrap();
+        unsafe { release() }.unwrap();
     }
     #[test]
     fn original_unwind_retains_active_and_restores_nested_tls() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let enabled = ENABLED.swap(false, Ordering::SeqCst);
         unsafe extern "system-unwind" fn unwind_three(_: usize, _: usize, _: usize) {
             DISPATCH.set(NO_DISPATCH);
@@ -2551,7 +2596,7 @@ mod tests {
         }
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 4);
         assert!(active() != 0);
-        assert!(release().is_err());
+        assert!(unsafe { release() }.is_err());
         let mut output = vec![0; 8];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
             let refused = drain(&mut output, hour, load);
@@ -2573,8 +2618,9 @@ mod tests {
     }
     #[test]
     fn append_unwind_releases_producer_and_refuses_interval() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let mut output = vec![0; 8];
         drain(&mut output, 10, true);
         let lost = test_support::thread_lost();
@@ -2635,8 +2681,9 @@ mod tests {
     }
     #[test]
     fn dispatched_match_is_consumed_once() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         LAST_DISPATCHED.set((0x1000, 17, 1));
         assert!(take_dispatched(0x1000, 17));
         assert!(!take_dispatched(0x1000, 17));
@@ -2644,8 +2691,9 @@ mod tests {
     }
     #[test]
     fn dispatched_pointer_reuse_with_a_different_handle_keeps_fallback() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         LAST_DISPATCHED.set((0x1000, 17, 1));
         assert!(!take_dispatched(0x1000, 18));
         assert!(!take_dispatched(0x1000, 17));
@@ -2653,8 +2701,9 @@ mod tests {
     }
     #[test]
     fn failed_dispatch_append_invalidates_the_skip_witness() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let epoch = EPOCH.load(Ordering::SeqCst);
         let lost = test_support::thread_lost();
         LAST_DISPATCHED.set((0x1000, 17, epoch));
@@ -2666,8 +2715,9 @@ mod tests {
     }
     #[test]
     fn first_gap_read_failure_and_busy_producer_are_unknown() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let mut out = vec![0; 32];
         assert!(!drain(&mut out, 10, false).complete);
         assert!(drain(&mut out, 11, false).complete);
@@ -2704,8 +2754,9 @@ mod tests {
     }
     #[test]
     fn a_record_past_the_log_spills_whole_and_the_log_grows_to_it() {
-        let _guard = exclusive();
-        test_support::reset_with_words(0);
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 0) };
         let demand = (1 << 20) + 17;
         let mut out = vec![0; demand];
         drain(&mut out, 10, true);
@@ -2725,8 +2776,11 @@ mod tests {
             assert_eq!(out[0], demand as u64);
             assert!(out[1..].iter().enumerate().all(|(n, &word)| word == n as u64 + 1));
             assert!(spilled().is_empty() && SPILL.is_empty());
-            prepare();
-            install_offered();
+            // SAFETY: test holds `exclusive()` with no live land-event hooks.
+            unsafe {
+                prepare();
+                install_offered();
+            }
             assert!(LOG_CAPACITY.load(Ordering::SeqCst) >= demand);
         }
         assert_eq!(test_support::thread_lost(), lost);
@@ -2736,8 +2790,9 @@ mod tests {
 
     #[test]
     fn records_past_a_short_log_keep_their_order_among_ring_records() {
-        let _guard = exclusive();
-        test_support::reset_with_words(8);
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 8) };
         let mut out = vec![0; 64];
         drain(&mut out, 10, true);
         for payload in 1..=6 {
@@ -2757,8 +2812,9 @@ mod tests {
 
     #[test]
     fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_record_in_order() {
-        let _guard = exclusive();
-        test_support::reset_with_words(8);
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 8) };
         let mut out = vec![0; 1024];
         drain(&mut out, 10, true);
         let lost = LOST.load(Ordering::SeqCst);
@@ -2793,13 +2849,16 @@ mod tests {
 
     #[test]
     fn live_word_hint_presizes_the_log_and_drains_before_any_event_overflow() {
-        let _guard = exclusive();
-        test_support::reset_with_words(0);
-        presize(50_005);
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 0) };
+        // SAFETY: test holds `exclusive()` with no live land-event hooks.
+        unsafe { presize(50_005) };
         let prepared = capacity();
         assert!(prepared >= 50_005);
         let mut out = vec![0; prepared];
-        install_offered();
+        // SAFETY: test holds `exclusive()` with no live land-event hooks.
+        unsafe { install_offered() };
         drain(&mut out, 10, true);
         append(50_005, |put| {
             for _ in 1..50_005 {
@@ -2815,18 +2874,22 @@ mod tests {
 
     #[test]
     fn frame_headroom_never_reenters_land_log_demand() {
-        let _guard = exclusive();
-        test_support::reset_with_words(0);
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 0) };
         let mut capacities = crate::extended::land_events::Capacities { words: 9 };
         let mut frames: [crate::extended::land_events::Captured; 4] = std::array::from_fn(|_| {
             crate::extended::land_events::Captured::with_capacities(&capacities)
         });
-        presize(9);
+        // SAFETY: test holds `exclusive()` with no live land-event hooks.
+        unsafe { presize(9) };
         for hour in 10..18 {
             for frame in &mut frames {
-                frame.grow(&mut capacities);
+                // SAFETY: test holds `exclusive()` with no live land-event hooks.
+                unsafe { frame.grow(&mut capacities) };
             }
-            frames[(hour as usize - 10) % 4].drain(hour, hour == 10);
+            // SAFETY: test holds `exclusive()` with no live land-event hooks.
+            unsafe { frames[(hour as usize - 10) % 4].drain(hour, hour == 10) };
             assert_eq!(capacities.words, 9);
             assert_eq!(LOG_REQUIRED.load(Ordering::Relaxed), 9);
             assert_eq!(LOG_CAPACITY.load(Ordering::Acquire), 16);
@@ -2836,8 +2899,9 @@ mod tests {
 
     #[test]
     fn a_real_producer_overlapping_the_boundary_poisoned_only_that_interval() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let entered = std::sync::Barrier::new(2);
@@ -2858,8 +2922,11 @@ mod tests {
             });
             entered.wait();
             LOG_REQUIRED.fetch_max(4096, Ordering::SeqCst);
-            prepare();
-            install_offered();
+            // SAFETY: test holds `exclusive()` and verifies producer overlap defers swap.
+            unsafe {
+                prepare();
+                install_offered();
+            }
             assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), 1024);
             let bad = drain(&mut out, 11, false);
             assert!(!bad.complete);
@@ -2867,7 +2934,8 @@ mod tests {
             release.wait();
             producer.join().unwrap();
         });
-        install_offered();
+        // SAFETY: producer thread has joined and test holds `exclusive()`.
+        unsafe { install_offered() };
         assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), 4096);
         let next = drain(&mut out, 12, false);
         assert!(next.complete);
@@ -2876,8 +2944,9 @@ mod tests {
     }
     #[test]
     fn resolver_lifetime_at_boundary_does_not_poison_an_interval() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let _resolver_call = Call::enter();
@@ -2896,20 +2965,23 @@ mod ownership_tests {
 
     #[test]
     fn a_foreign_thread_leaves_an_owned_log_alone() {
-        let _guard = exclusive();
-        reset();
+        let (_family, mut owned) = exclusive();
+        // SAFETY: Test holds `exclusive()` with no live native land-event hooks.
+        unsafe { reset(&mut owned) };
         let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let epoch = EPOCH.load(Ordering::SeqCst);
         let capacity = LOG_CAPACITY.load(Ordering::SeqCst);
         std::thread::spawn(|| {
-            fail();
+            record_fail();
             assert_eq!(lost_casualty_reads(3), 3);
-            let drained = lost_drain(11, "land observer frame not captured");
+            // SAFETY: test verifies foreign-thread ownership guard rejects `lost_drain`.
+            let drained = unsafe { lost_drain(11, "land observer frame not captured") };
             assert!(!drained.complete);
             assert_eq!(drained.reason, "land event log owned by another test");
-            presize(1 << 16);
-            stop_observation();
+            // SAFETY: test verifies foreign-thread ownership guard rejects `presize`.
+            unsafe { presize(1 << 16) };
+            unsafe { stop_observation() };
             append_record(&[5]);
         })
         .join()
@@ -2923,7 +2995,7 @@ mod ownership_tests {
         assert_eq!(&out[..owned.words], &[2, 9]);
         std::thread::spawn(|| {
             adopt();
-            fail();
+            record_fail();
         })
         .join()
         .unwrap();
