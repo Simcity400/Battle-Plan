@@ -53,6 +53,7 @@ const capture = (name: string) => (props: Record<string, unknown>) => { state.pr
 Object.assign(globalThis, { __finding: {
   capture,
   shownSink: () => (_widget: string, hour: number | null) => reportShown(hour),
+  importing: (held: Promise<unknown>) => { importing++; void held.finally(() => { importing--; }); },
   useRaidLog: (_widget: unknown, runtime: WidgetRuntime) => state.raids === undefined ? undefined
     : state.raids === 'failed' ? { track: runtime.tracks[0], data: undefined, error: new Error('raids failed'), retry() {} }
     : { track: runtime.tracks[0], data: state.raids, error: undefined, retry() {} },
@@ -63,10 +64,18 @@ Object.assign(globalThis, { __finding: {
 
 const pending = new Promise<never>(() => {});
 const answer = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
+let inFlight = 0, importing = 0, mutations = 0;
+const delivered = <T,>(work: () => T | Promise<never>): Promise<T> => {
+  let reply: T | Promise<never>;
+  try { reply = work(); } catch (error) { reply = Promise.reject(error); }
+  if (reply === pending) return pending;
+  inFlight++;
+  return Promise.resolve(reply).finally(() => { inFlight--; });
+};
 const client = {
   available: true,
   openFollow: async () => {},
-  product: async (request: { sourceId: string; revision: string; product: string; params?: Record<string, unknown> }) => {
+  product: (request: { sourceId: string; revision: string; product: string; params?: Record<string, unknown> }) => delivered(() => {
     if (request.product === 'follow-clock') return answer(request, null);
     const params = request.params ?? null;
     if (request.product === 'unfollow') { follows.delete(params?.id as number); followLog.push(`unfollow ${params?.id}`); return answer(request, null); }
@@ -83,7 +92,7 @@ const client = {
     if (request.product === 'country-groups') return state.groups ? answer(request, state.groups) : pending;
     const reply = state.replies[request.product];
     return reply ? answer(request, reply(hour, params ?? {})) : pending;
-  },
+  }),
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 let now = 1000;
@@ -117,7 +126,15 @@ const turn = async () => {
   await new Promise<void>(resolve => setTimeout(resolve, 0));
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 };
-const settle = async () => { for (let round = 0; round < 16; round++) await turn(); };
+new MutationObserver(records => { mutations += records.length; }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+const quietState = () => `${mutations}:${state.asks.length}:${state.options.length}:${state.pins.length}:${state.shown.length}:${followLog.length}:${errors.length}`;
+const settle = async () => {
+  for (let quiet = 0; quiet < 2;) {
+    const before = quietState();
+    await turn();
+    quiet = inFlight === 0 && importing === 0 && quietState() === before ? quiet + 1 : 0;
+  }
+};
 let root: Root | null = null;
 const host = () => document.getElementById('finding');
 const read = () => {

@@ -13,6 +13,11 @@ const source = (name: string) => (code: string) => {
   if (!declared.test(code)) throw new Error(`${name} is not declared as expected`);
   return `${code.replace(declared, `function real_${name}(`)}\nexport function ${name}(...args) { return globalThis.__finding.${name}(...args) ?? real_${name}(...args); }`;
 };
+const tracked = (name: string) => (code: string) => {
+  const declared = new RegExp(`export function ${name}\\(`);
+  if (!declared.test(code)) throw new Error(`${name} is not declared as expected`);
+  return `${code.replace(declared, `function real_${name}(`)}\nexport function ${name}(...args) { const held = real_${name}(...args); globalThis.__finding.importing(held); return held; }`;
+};
 const TRANSFORMS: Record<string, (code: string) => string> = {
   '/charts/TimeChart.tsx': capture('TimeChart'),
   '/charts/timeline/Timeline.tsx': capture('Timeline'),
@@ -24,6 +29,7 @@ const TRANSFORMS: Record<string, (code: string) => string> = {
   '/widgets/trade-flows/useTradeFlows.ts': source('useTradeFlows'),
   '/dashboard/raids.ts': source('useRaidLog'),
   '/dashboard/widgetPerf.ts': source('shownSink'),
+  '/widgets/rendererLoaders.ts': tracked('loadWidgetRenderer'),
 };
 const stubs = { name: 'time-findings', enforce: 'pre' as const, transform(code: string, id: string) {
   const path = id.replaceAll('\\', '/').split('?')[0];
