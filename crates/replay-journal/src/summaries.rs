@@ -246,3 +246,36 @@ impl Summaries {
         (builders, ladders)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_span_level_refuses_the_entire_write() {
+        let mut summaries = Summaries::new(1).unwrap();
+        let first = summaries.registry[0].0 as u32;
+        let second = summaries.registry[1].0 as u32;
+        let extent = |stream, offset| envelope::Extent {
+            kind: envelope::Kind::Summary,
+            run: 0,
+            stream,
+            first: 0,
+            hours: SPAN_BLOCKS * UNIT_ORDINALS,
+            offset,
+            stored: 64,
+            raw: 64,
+            digest: [0; 16],
+        };
+        summaries.written(&[(first, 1, extent(first, 128))]).unwrap();
+        let mut before = Bytes::new();
+        summaries.write(&mut before).unwrap();
+
+        let error = summaries.written(&[(first, 2, extent(first, 192)), (second, 0, extent(second, 256))]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let mut after = Bytes::new();
+        summaries.write(&mut after).unwrap();
+        assert_eq!(after.into_bytes(), before.into_bytes());
+    }
+}
