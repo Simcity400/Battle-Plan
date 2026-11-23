@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
 import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleWarnings, navalBattleWindows,
-  rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
+  navalWindowPlaces, rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
   NAVAL_BATTLE_DEFAULT_MEASURE } from './navalBattlesData.ts';
-import { battleChangeHours, battlePlaceRequests, namedBattles, isBattleRow } from '../battles/battleRows.ts';
+import { battleChangeHours, battlePlaceRequests, battlePlaceText, battleTooltip, namedBattles, isBattleRow } from '../battles/battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { registerWidgets, widgetUnavailable } from '../../dashboard/definitions.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
@@ -22,8 +22,8 @@ test('Naval supports Pin and retains its exact moment as playback moves', () => 
   assert.deepEqual(resolveWindow(widget, track, [track], 180), { firstHour: 105, lastHour: 105 });
 });
 
-function run(firstHour = 100, lastHour = 109, result = false): NavalBattleRun {
-  return { firstHour, lastHour, row: { id: result ? 'result:800' : 'combat:900:100',
+function run(firstHour = 100, lastHour = 109, result = false, provinceId: number | null = 45): NavalBattleRun {
+  return { firstHour, lastHour, provinceId, row: { id: result ? 'result:800' : 'combat:900:100',
     place: { name: null, hour: result ? 99 : 100, ...(result ? { namedAt: 100 } : {}) },
     start: result ? null : { hour: 100, bound: 'by' }, end: result ? { hour: 99, bound: 'exact' } : null,
     sides: ['Attackers', 'Defenders'].map((label, side) => ({ label,
@@ -247,4 +247,22 @@ test('the log renders at window starts, reads and each battle run edge, never ho
   assert.deepEqual([...changes.battles.keys()].sort((a, b) => a - b), [110, 151, 301], 'the battle alone at its runs\' edges');
   assert.throws(() => validateNavalBattlesManifest({ windows: [], available: false, unavailable: null, contentWarnings: [] }),
     'an unavailable manifest names why');
+});
+
+test('per-run province ids stay unrecorded on early runs and never show as unnamed province', () => {
+  const early = run(100, 104, false, null);
+  const late = run(105, 109, false, 45);
+  const data = reply([{ id: 'combat:900:100', provinceId: 45, runs: [early, late] }]);
+  validateNavalBattlesReply(data);
+  const windows = new Map([[0, data]]);
+  assert.deepEqual(navalWindowPlaces(windows), [{ provinceId: 45, hour: 100 }]);
+  const before = navalBattleRows(windows, 102, () => true, true)[0];
+  const after = navalBattleRows(windows, 107, () => true, true)[0];
+  assert.equal(before.provinceId, null);
+  assert.equal(after.provinceId, 45);
+  const labels = { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
+    ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unrecordedPlace: 'Province not recorded', unknownStart: 'Start not recorded' };
+  assert.equal(battlePlaceText(before, labels, true), 'Province not recorded');
+  assert.equal(battleTooltip(before, labels, tag => ({ name: tag })).title, 'Province not recorded');
+  assert.equal(battlePlaceText(after, labels, false), 'Unnamed province');
 });

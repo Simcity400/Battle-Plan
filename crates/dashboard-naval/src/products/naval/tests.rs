@@ -1,7 +1,7 @@
 use dashboard_base::products::Country;
 use dashboard_query::identity::Holders;
 use super::{
-    battles::{BattleCells, NavalBattleCountryFilter, battle_id, live_run, parse_id, result_history, sides_at},
+    battles::{BattleCells, NavalBattleCountryFilter, battle_id, live_run, parse_id, result_history, sides_at, sides_at_truncated},
     losses::{Counts, NavalPeriod, month_bases, month_start, row_key, run_key, score},
     sunk::{ShipSinkingCause, cause, known_at, pruned},
 };
@@ -112,9 +112,24 @@ fn sides_count_ships_and_convoys_and_name_their_owners() {
         _ => None,
     };
     let sides = sides_at(rows.iter().map(|(key, cells)| (*key, cells.as_deref())), &tag);
-    assert_eq!((sides[0].ships, sides[0].convoys, sides[0].unknown), (1, 1, false));
+    assert_eq!((sides[0].ships, sides[0].convoys, sides[0].unknown, sides[0].counts_unknown), (1, 1, false, false));
     assert_eq!(sides[0].countries.iter().collect::<Vec<_>>(), ["ENG"]);
-    assert_eq!((sides[1].ships, sides[1].convoys, sides[1].unknown), (2, 0, true), "an owner no tag names leaves the side unknown");
+    assert_eq!((sides[1].ships, sides[1].convoys, sides[1].unknown, sides[1].counts_unknown), (2, 0, true, false), "an owner no tag names leaves the side unknown");
+
+    let partial = [
+        (combat, Some(vec![Cell::Number(11), Cell::Unrecorded, Cell::Number(0)])),
+        (combat | 1, Some(vec![Cell::Number(0), Cell::Unrecorded, Cell::Number(0)])),
+        (combat | 1 << 32, Some(vec![Cell::Unrecorded, Cell::Number(2), Cell::Number(0)])),
+    ];
+    let mixed = sides_at(partial.iter().map(|(key, cells)| (*key, cells.as_deref())), &tag);
+    assert_eq!((mixed[0].ships, mixed[0].convoys, mixed[0].unknown, mixed[0].counts_unknown), (1, 1, true, false), "an unread owner still counts known ships and convoys");
+    assert_eq!((mixed[1].ships, mixed[1].convoys, mixed[1].unknown, mixed[1].counts_unknown), (0, 0, false, true), "an unread ship type marks counts unknown while keeping the owner");
+    assert_eq!(mixed[1].countries.iter().collect::<Vec<_>>(), ["GER"]);
+
+    let truncated = sides_at_truncated(partial.iter().map(|(key, cells)| (*key, cells.as_deref())), &tag);
+    assert_eq!((truncated[0].ships, truncated[0].convoys, truncated[0].unknown, truncated[0].counts_unknown), (0, 0, true, false), "truncated snapshot keeps main's skip when owner is unread");
+    assert_eq!((truncated[1].ships, truncated[1].convoys, truncated[1].unknown, truncated[1].counts_unknown), (0, 0, true, false), "truncated snapshot keeps main's skip when ship is unread");
+    assert!(truncated[1].countries.is_empty());
 }
 
 #[test]
@@ -128,7 +143,8 @@ fn a_battle_is_named_by_its_combat_and_first_hour() {
 fn a_live_run_measures_floors_and_length_and_leaves_unread_sides_unknown() {
     let cells = BattleCells::of(&[Cell::Number(100), Cell::Number(9), Cell::Number(103), Cell::Number(2), Cell::Number(1), Cell::Unrecorded, Cell::Number(0)]).unwrap();
     assert_eq!(cells.ships_sunk(), Some(3));
-    let run = live_run("combat:1:100", &cells, None, 120, 130);
+    let run = live_run("combat:1:100", Some(500), &cells, None, 120, 130);
+    assert_eq!(run.province_id, Some(500));
     let measures = serde_json::to_value(&run.measures).unwrap();
     assert_eq!(measures[0]["value"], 3.0);
     assert_eq!(measures[2]["value"], 30.0);
@@ -136,6 +152,17 @@ fn a_live_run_measures_floors_and_length_and_leaves_unread_sides_unknown() {
     assert_eq!(side["counts"][0]["unknown"], "Participants not recorded");
     assert_eq!(side["losses"][1]["unknown"], "Participants not recorded", "a floor not recorded is not zero");
     assert_eq!(side["countriesUnknown"], "Countries not recorded");
+
+    let mut partial_sides: [super::battles::SideAt; 2] = Default::default();
+    partial_sides[0].ships = 2;
+    partial_sides[0].counts_unknown = true;
+    partial_sides[0].countries.insert("ENG".into());
+    let partial_run = live_run("combat:1:100", None, &cells, Some(&partial_sides), 120, 130);
+    assert_eq!(partial_run.province_id, None);
+    let partial_side = serde_json::to_value(&partial_run.row.sides[0]).unwrap();
+    assert_eq!(partial_side["counts"][0]["unknown"], "Participants not recorded", "unread ship type leaves count unknown");
+    assert_eq!(partial_side["counts"][1]["unknown"], "Participants not recorded");
+    assert_eq!(partial_side["countriesUnknown"], serde_json::Value::Null, "owner remains known when only ship type is unread");
 }
 
 #[test]
@@ -144,7 +171,7 @@ fn the_country_filter_keeps_sides_not_known_whole() {
     let mut sides: [super::battles::SideAt; 2] = Default::default();
     sides[0].countries.insert("ENG".into());
     sides[1].countries.insert("GER".into());
-    let run = live_run("combat:1:1", &cells, Some(&sides), 5, 5);
+    let run = live_run("combat:1:1", Some(500), &cells, Some(&sides), 5, 5);
     let tags = |tags: &[&str]| NavalBattleCountryFilter { countries: Some(tags.iter().map(|tag| Country::from(*tag)).collect()), membership: None, unobserved: Vec::new() };
     assert!(tags(&["GER"]).matches(&Holders::default(), &run.row.sides, 5));
     assert!(!tags(&["ITA"]).matches(&Holders::default(), &run.row.sides, 5));
@@ -152,7 +179,7 @@ fn the_country_filter_keeps_sides_not_known_whole() {
     assert!(!member.matches(&Holders::default(), &run.row.sides, 5));
     assert!(member.matches(&Holders::default(), &run.row.sides, 7));
     sides[1].unknown = true;
-    let unknown = live_run("combat:1:1", &cells, Some(&sides), 5, 5);
+    let unknown = live_run("combat:1:1", Some(500), &cells, Some(&sides), 5, 5);
     assert!(tags(&["ITA"]).matches(&Holders::default(), &unknown.row.sides, 5));
 }
 
@@ -236,5 +263,97 @@ mod details {
         assert_eq!(together.iter().take(5).map(ships).collect::<Vec<_>>(), [vec![101], vec![103], vec![106], vec![101], vec![103]], "each battle its own sinkings, as listed by its hour");
         assert_eq!(together[0]["shipRead"], 104, "the list as read at the hour asked");
         assert_eq!(together[5]["unavailable"], "Details are kept for live battles at a recorded hour", "an hour outside the recording");
+    }
+
+    #[test]
+    fn unread_participants_with_historical_peak_stay_unknown_while_truncated_keeps_main() {
+        use super::super::battles::{NavalBattleCountryFilter, NavalBattles, NavalBattlesParams, NavalBattlesRanking, NavalBattlesRankingParams};
+        use replay_data::rows::{CountryLinkRow, CountryRow, NavalCombatParticipantRow, NavalCombatRow, TableId, TableRows};
+
+        let frames = (100..=105)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+                countries.push(CountryRow { id: 44, canonical_slot: 2, tag: b"ENG".to_vec(), ..CountryRow::default() });
+                countries.sort_by_key(|row| row.id);
+                set::<tables::Countries>(&mut frame, countries);
+                let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+                links.push(CountryLinkRow { id: 44, canonical_slot: 2 });
+                links.sort_by_key(|row| row.id);
+                set::<tables::CountryLinks>(&mut frame, links);
+                let moved_province = if hour < 105 { 500 } else { 600 };
+                set::<tables::NavalCombats>(&mut frame, vec![
+                    NavalCombatRow { id: 7, province: 500, ..NavalCombatRow::default() },
+                    NavalCombatRow { id: 8, province: moved_province, ..NavalCombatRow::default() },
+                ]);
+                if hour == 104 {
+                    *frame.tables[TableId::NavalCombatParticipants.index()] = TableView::Truncated {
+                        rows: TableRows::NavalCombatParticipants(vec![
+                            NavalCombatParticipantRow { combat: 7, side: 0, battle_slot: 0, ship: 11, owner: 44, state: 0 },
+                            NavalCombatParticipantRow { combat: 7, side: 0, battle_slot: 1, ship: 12, owner: 44, state: 0 },
+                        ]),
+                        missing: 1,
+                    };
+                    frame.metrics.table_ns[TableId::NavalCombatParticipants.index()] = 1;
+                } else if hour == 105 {
+                    *frame.tables[TableId::NavalCombatParticipants.index()] = TableView::Unavailable { reason: "participants unreadable".into() };
+                } else {
+                    set::<tables::NavalCombatParticipants>(&mut frame, vec![
+                        NavalCombatParticipantRow { combat: 7, side: 0, battle_slot: 0, ship: 11, owner: 44, state: 0 },
+                        NavalCombatParticipantRow { combat: 7, side: 0, battle_slot: 1, ship: 12, owner: 44, state: 0 },
+                        NavalCombatParticipantRow { combat: 7, side: 1, battle_slot: 0, ship: 21, owner: 9001, state: 0 },
+                    ]);
+                }
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-runs".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+
+        let window = NavalBattles::load(&source, &NavalBattlesParams { branch_id: "1".into(), window: 0 }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        let battle = window.rows.iter().find(|row| row.id == "combat:7:100").expect("live battle present");
+        let early = battle.runs.iter().find(|run| run.first_hour <= 103 && run.last_hour >= 103).expect("early run");
+        let truncated = battle.runs.iter().find(|run| run.first_hour <= 104 && run.last_hour >= 104).expect("truncated run");
+        let late = battle.runs.iter().find(|run| run.first_hour <= 105 && run.last_hour >= 105).expect("late run");
+        assert_eq!(early.province_id, Some(500));
+        assert_eq!(truncated.province_id, Some(500));
+        assert_eq!(late.province_id, Some(500));
+        let early_side = serde_json::to_value(&early.row.sides[0]).unwrap();
+        assert_eq!(early_side["counts"][0]["value"], 2.0);
+        let truncated_attacker = serde_json::to_value(&truncated.row.sides[0]).unwrap();
+        assert_eq!(truncated_attacker["counts"][0]["value"], 2.0, "truncated roster keeps main's recorded attacking ships");
+        assert_eq!(truncated_attacker["countries"][0]["tag"], "ENG");
+        let late_side = serde_json::to_value(&late.row.sides[0]).unwrap();
+        assert_eq!(late_side["counts"][0]["unknown"], "Participants not recorded", "historical peak never makes an unread participant hour read zero");
+
+        let moved_early = window.rows.iter().find(|row| row.id == "combat:8:100").expect("first province battle");
+        let moved_late = window.rows.iter().find(|row| row.id == "combat:8:105").expect("new province battle");
+        assert_eq!(moved_early.runs[0].province_id, Some(500));
+        assert_eq!(moved_late.runs[0].province_id, Some(600));
+
+        let truncated_ranking = NavalBattlesRanking::load(
+            &source,
+            &NavalBattlesRankingParams { branch_id: "1".into(), first_hour: 100, last_hour: 104, top_n: 5.0, measure: "Peak ships".into(), countries: NavalBattleCountryFilter::default() },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let ranked_truncated = truncated_ranking.rows.iter().find(|row| row.id == "combat:7:100").expect("ranked battle at 104");
+        assert_eq!(ranked_truncated.runs[0].province_id, Some(500));
+        let ranked_attacker = serde_json::to_value(&ranked_truncated.runs[0].row.sides[0]).unwrap();
+        assert_eq!(ranked_attacker["counts"][0]["value"], 2.0, "ranking keeps main's truncated participant count");
+        assert_eq!(ranked_attacker["countries"][0]["tag"], "ENG");
+
+        let unread_ranking = NavalBattlesRanking::load(
+            &source,
+            &NavalBattlesRankingParams { branch_id: "1".into(), first_hour: 100, last_hour: 105, top_n: 5.0, measure: "Peak ships".into(), countries: NavalBattleCountryFilter::default() },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let ranked_unread = unread_ranking.rows.iter().find(|row| row.id == "combat:7:100").expect("ranked battle at 105");
+        assert_eq!(ranked_unread.runs[0].province_id, Some(500));
+        let ranked_side = serde_json::to_value(&ranked_unread.runs[0].row.sides[0]).unwrap();
+        assert_eq!(ranked_side["counts"][0]["unknown"], "Participants not recorded", "ranking keeps unread participant counts unknown at 105");
     }
 }

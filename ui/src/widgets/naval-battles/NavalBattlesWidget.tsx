@@ -25,7 +25,7 @@ const adapter: BattleViewAdapter<NavalBattleRow, NavalBattlesReply, NavalBattles
   validateRanking: validateNavalBattlesRanking, rows: navalBattleRows, row: navalBattleRow, changes: navalBattleChanges, windowPlaces: navalWindowPlaces,
   rankedRows: rankedNavalBattleRows,
   labels: { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',
-    ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unknownStart: 'Start not recorded' },
+    ongoing: 'Ongoing', unknownPlace: 'Unnamed province', unrecordedPlace: 'Province not recorded', unknownStart: 'Start not recorded' },
   measures: MEASURES, resultMeasure: MEASURES[0], compactSides: SIDES,
   formatLoss: (value, row) => `${battleValueText(value)}${value.value !== null && row.end === null ? ' so far' : ''}`,
   details: {

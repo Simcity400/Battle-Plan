@@ -85,6 +85,7 @@ pub struct NavalBattlesRankingParams {
 pub struct NavalBattleRun {
     pub first_hour: i32,
     pub last_hour: i32,
+    pub province_id: Option<u32>,
     pub row: BattleRow,
     pub peak_hour: Option<i32>,
     #[doc = " Ships sunk, Peak ships and Length."]
@@ -96,7 +97,7 @@ pub struct NavalBattleRun {
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleHistory {
     pub id: String,
-    pub province_id: u32,
+    pub province_id: Option<u32>,
     pub runs: Vec<NavalBattleRun>,
 }
 
@@ -201,11 +202,32 @@ impl BattleCells {
 pub struct SideAt {
     pub ships: i64,
     pub convoys: i64,
+    pub counts_unknown: bool,
     pub countries: BTreeSet<String>,
     pub unknown: bool,
 }
 
 pub fn sides_at<'a>(participants: impl Iterator<Item = (u128, Option<&'a [Cell]>)>, tag: &dyn Fn(u32) -> Option<String>) -> [SideAt; 2] {
+    let mut sides: [SideAt; 2] = Default::default();
+    for (key, cells) in participants {
+        let Some(cells) = cells else { continue };
+        let side = &mut sides[((key >> 32) & 1) as usize];
+        match cells.first().copied().and_then(number) {
+            Some(0) => side.convoys += 1,
+            Some(_) => side.ships += 1,
+            None => side.counts_unknown = true,
+        }
+        match cells.get(1).copied().and_then(number).and_then(|owner| u32::try_from(owner).ok()).and_then(tag) {
+            Some(tag) => {
+                side.countries.insert(tag);
+            }
+            None => side.unknown = true,
+        }
+    }
+    sides
+}
+
+pub fn sides_at_truncated<'a>(participants: impl Iterator<Item = (u128, Option<&'a [Cell]>)>, tag: &dyn Fn(u32) -> Option<String>) -> [SideAt; 2] {
     let mut sides: [SideAt; 2] = Default::default();
     for (key, cells) in participants {
         let Some(cells) = cells else { continue };
@@ -229,11 +251,12 @@ pub fn sides_at<'a>(participants: impl Iterator<Item = (u128, Option<&'a [Cell]>
     sides
 }
 
-pub fn live_run(id: &str, cells: &BattleCells, sides: Option<&[SideAt; 2]>, first: i32, last: i32) -> NavalBattleRun {
+pub fn live_run(id: &str, province_id: Option<u32>, cells: &BattleCells, sides: Option<&[SideAt; 2]>, first: i32, last: i32) -> NavalBattleRun {
     let reason = "Participants not recorded";
     NavalBattleRun {
         first_hour: first,
         last_hour: last,
+        province_id,
         row: BattleRow {
             id: id.to_owned(),
             place: BattlePlace { name: None, hour: cells.first_hour, named_at: None },
@@ -243,11 +266,12 @@ pub fn live_run(id: &str, cells: &BattleCells, sides: Option<&[SideAt; 2]>, firs
             sides: (0..2)
                 .map(|which| {
                     let side = sides.map(|sides| &sides[which]);
+                    let counted = side.filter(|side| !side.counts_unknown);
                     BattleSide {
                         label: if which == 0 { "Attackers" } else { "Defenders" }.into(),
                         countries: side.into_iter().flat_map(|side| &side.countries).map(|tag| BattleCountry { tag: tag.clone(), hour: last }).collect(),
                         countries_unknown: side.is_none_or(|side| side.unknown).then(|| "Countries not recorded".into()),
-                        counts: vec![count("Ships", side.map(|side| side.ships), false, reason), count("Convoys", side.map(|side| side.convoys), false, reason)],
+                        counts: vec![count("Ships", counted.map(|side| side.ships), false, reason), count("Convoys", counted.map(|side| side.convoys), false, reason)],
                         losses: vec![count("Sunk", cells.sunk[which], true, reason), count("Convoys sunk", cells.convoys_sunk[which], true, reason)],
                     }
                 })
@@ -300,6 +324,7 @@ fn live_battles(source: &Source, query: &Query<'_>, run: u32, first: i32, last: 
     let provinces = lanes::history(recording, run, TableId::NavalCombats, &[0], Keys::These(&keys), first, last)?;
     dashboard_text::metadata::check_cancel(cancelled)?;
     let participants = lanes::history(recording, run, TableId::NavalCombatParticipants, &PARTICIPANT_COLUMNS, Keys::All, first, last)?;
+    let participant_statuses = lanes::statuses(recording, run, TableId::NavalCombatParticipants, first, last)?;
     let mut by_combat: HashMap<u64, Vec<&(u128, Vec<Step>)>> = HashMap::new();
     for held in &participants.keys {
         by_combat.entry((held.0 >> 33) as u64).or_default().push(held);
@@ -311,25 +336,46 @@ fn live_battles(source: &Source, query: &Query<'_>, run: u32, first: i32, last: 
         dashboard_text::metadata::check_cancel(cancelled)?;
         let combat = *key as u64;
         let members = by_combat.get(&combat).map(Vec::as_slice).unwrap_or_default();
-        let mut edges: Vec<i32> = steps.iter().map(|step| step.hour).chain(members.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour))).filter(|hour| (first..=last).contains(hour)).collect();
+        let province_steps = province_of.get(key).map(|steps| steps.as_slice()).unwrap_or_default();
+        let mut edges: Vec<i32> = steps
+            .iter()
+            .map(|step| step.hour)
+            .chain(members.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)))
+            .chain(province_steps.iter().map(|step| step.hour))
+            .chain(participant_statuses.iter().flat_map(|held| [held.first, held.last.saturating_add(1)]))
+            .filter(|hour| (first..=last).contains(hour))
+            .collect();
         edges.push(first);
         edges.sort_unstable();
         edges.dedup();
         for (index, &start) in edges.iter().enumerate() {
             let end = edges.get(index + 1).map_or(last, |next| next - 1);
             let Some(cells) = step_at(steps, start).and_then(BattleCells::of) else { continue };
-            let sides = cells.peak.is_some().then(|| sides_at(members.iter().map(|(key, steps)| (*key, step_at(steps, start))), &|raw| tags.at(raw, start)));
+            let participant_status = participant_statuses.iter().find(|held| held.first <= start && start <= held.last).map(|held| held.status);
+            let sides = match (cells.peak.is_some(), participant_status) {
+                (true, Some(replay_columnar::manifest::Status::Complete)) => {
+                    Some(sides_at(members.iter().map(|(key, steps)| (*key, step_at(steps, start))), &|raw| tags.at(raw, start)))
+                }
+                (true, Some(replay_columnar::manifest::Status::Truncated { .. })) => {
+                    Some(sides_at_truncated(members.iter().map(|(key, steps)| (*key, step_at(steps, start))), &|raw| tags.at(raw, start)))
+                }
+                _ => None,
+            };
+            let province_id = step_at(province_steps, start).and_then(|cells| cells.first().copied().and_then(number)).and_then(|province| u32::try_from(province).ok());
             let id = battle_id(combat, cells.first_hour);
             let history = out.entry((combat, cells.first_hour)).or_insert_with(|| NavalBattleHistory {
                 id: id.clone(),
-                province_id: province_of.get(key).and_then(|steps| step_at(steps, start)).and_then(|cells| cells.first().copied().and_then(number)).unwrap_or(0) as u32,
+                province_id,
                 runs: Vec::new(),
             });
-            let next = live_run(&id, &cells, sides.as_ref(), start, end);
+            if province_id.is_some() {
+                history.province_id = province_id;
+            }
+            let next = live_run(&id, province_id, &cells, sides.as_ref(), start, end);
             match history.runs.last_mut() {
                 Some(previous) if previous.last_hour + 1 == start && same(previous, &next) => {
                     let first_hour = previous.first_hour;
-                    *previous = live_run(&id, &cells, sides.as_ref(), first_hour, end);
+                    *previous = live_run(&id, province_id, &cells, sides.as_ref(), first_hour, end);
                 }
                 _ => history.runs.push(next),
             }
@@ -339,7 +385,15 @@ fn live_battles(source: &Source, query: &Query<'_>, run: u32, first: i32, last: 
 }
 
 fn same(a: &NavalBattleRun, b: &NavalBattleRun) -> bool {
-    let shown = |run: &NavalBattleRun| serde_json::to_string(&(&run.row.sides.iter().map(|side| (&side.counts, &side.losses, side.countries.iter().map(|c| &c.tag).collect::<Vec<_>>(), &side.countries_unknown)).collect::<Vec<_>>(), run.peak_hour, &run.measures[..2])).ok();
+    let shown = |run: &NavalBattleRun| {
+        serde_json::to_string(&(
+            run.province_id,
+            &run.row.sides.iter().map(|side| (&side.counts, &side.losses, side.countries.iter().map(|c| &c.tag).collect::<Vec<_>>(), &side.countries_unknown)).collect::<Vec<_>>(),
+            run.peak_hour,
+            &run.measures[..2],
+        ))
+        .ok()
+    };
     shown(a) == shown(b)
 }
 
@@ -398,10 +452,11 @@ pub fn result_history(row: &NavalResultRow, observed: Option<&Observation>, name
     let id = format!("result:{}", row.id);
     NavalBattleHistory {
         id: id.clone(),
-        province_id: row.province,
+        province_id: Some(row.province),
         runs: vec![NavalBattleRun {
             first_hour: row.result_hour,
             last_hour: last,
+            province_id: Some(row.province),
             row: BattleRow {
                 id,
                 place: BattlePlace { name: None, hour: row.result_hour, named_at: None },
@@ -597,14 +652,23 @@ impl Product for NavalBattlesRanking {
                 std::collections::hash_map::Entry::Vacant(slot) => slot.insert(Tags::new(&query, battle.run)?),
             };
             let cells: Vec<(u128, Vec<Cell>)> = snapshot.rows.iter().map(|&(key, slot)| (key, PARTICIPANT_COLUMNS.iter().map(|&column| view.number(column, slot).map_or(Cell::Unrecorded, Cell::Number)).collect())).collect();
-            let sides = battle.cells.peak.is_some().then(|| sides_at(cells.iter().map(|(key, cells)| (*key, Some(cells.as_slice()))), &|raw| named.at(raw, battle.hour)));
+            let sides = match (battle.cells.peak.is_some(), snapshot.status) {
+                (true, replay_columnar::manifest::Status::Complete) => {
+                    Some(sides_at(cells.iter().map(|(key, cells)| (*key, Some(cells.as_slice()))), &|raw| named.at(raw, battle.hour)))
+                }
+                (true, replay_columnar::manifest::Status::Truncated { .. }) => {
+                    Some(sides_at_truncated(cells.iter().map(|(key, cells)| (*key, Some(cells.as_slice()))), &|raw| named.at(raw, battle.hour)))
+                }
+                _ => None,
+            };
             let id = battle_id(battle.combat, battle.cells.first_hour);
-            let run = live_run(&id, &battle.cells, sides.as_ref(), battle.hour, battle.hour);
+            let mut run = live_run(&id, None, &battle.cells, sides.as_ref(), battle.hour, battle.hour);
             if !params.countries.matches(&query.holders, &run.row.sides, battle.hour) {
                 continue;
             }
             let province = read::at(recording, battle.run, &[read::Read { table: TableId::NavalCombats, columns: Some(&[0][..]), keys: Keys::These(&[u128::from(battle.combat)][..]) }], battle.hour)?;
-            let province_id = province.first().and_then(|snapshot| snapshot.rows.first().and_then(|&(_, slot)| snapshot.view().number(0, slot))).unwrap_or(0) as u32;
+            let province_id = province.first().and_then(|snapshot| snapshot.rows.first().and_then(|&(_, slot)| snapshot.view().number(0, slot))).and_then(|province| u32::try_from(province).ok());
+            run.province_id = province_id;
             rows.push(NavalBattleHistory { id, province_id, runs: vec![run] });
         }
         let census_hour = dashboard_land::products::land_battles::last_read(&query, TableId::NavalCombats, to)?;
