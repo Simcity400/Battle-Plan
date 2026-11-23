@@ -26,7 +26,6 @@ import { activeFocus, continuousArtAsks, focusAheadUntil, focusArtAsks, focusAsk
 import type { FocusProgressState, SegmentHours } from './focusData';
 import { AHEAD_SECONDS } from '../../charts/reveal';
 import WidgetState from '../../components/WidgetState';
-import ListSkeleton from '../../components/Skeleton';
 import { Icon } from '../../components/Icons';
 import { useContextMenu } from '../../components/ContextMenu';
 import { rowJumpProps } from '../../charts/jump';
@@ -266,13 +265,13 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     if (live && count > seen.current) list.current?.scrollTo({ top: list.current.scrollHeight, behavior: document.documentElement.dataset.motion === 'reduced' ? 'auto' : 'smooth' });
     seen.current = count;
   }, [live, count]);
-  if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="target" /></span><p>Load a campaign and choose a country to see its national focuses.</p></div>;
+  if (!track || !tag) return <WidgetState kind="nothing-chosen" prompt="Load a campaign and choose a country to see its national focuses." />;
   if (!gate.open) return <GateState gate={gate} loading="Loading national focuses…" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <ListSkeleton label="Loading national focuses…" />;
+  if (!data) return <WidgetState kind="loading" label="Loading national focuses…" />;
   if (!inRange) return <WidgetState kind="outside" />;
   if (!order || readingHour === undefined) {
-    return <div className="dash-empty" role="status" data-detail={missing?.reason}>No complete focus data recorded at this date.{missing && <small className="focus-missing-reason">{missing.reason}</small>}</div>;
+    return <WidgetState kind="not-recorded" reason={missing?.reason} />;
   }
   const newest = live ? order.completed.at(-1)?.ordinal : undefined;
   const shownFocus = activeFocus(order);

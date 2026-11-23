@@ -8,22 +8,28 @@ export interface WidgetViewSwitchProps {
   value: string;
   options: readonly { value: string; label: string }[];
   compact?: boolean;
+  readOnly?: boolean;
   onChange: (value: string) => void;
 }
 
-export default function WidgetViewSwitch({ label, value, options, compact = false, onChange }: WidgetViewSwitchProps) {
+export default function WidgetViewSwitch({ label, value, options, compact = false, readOnly = false, onChange }: WidgetViewSwitchProps) {
   const id = useId();
   const menu = usePopover('end');
   if (options.length <= 1) return null;
   const asMenu = compact || options.length >= 4;
   if (!asMenu) {
-    return <div className="dash-view-switch">
-      <Segmented label={label} value={value} options={options} onChange={onChange} />
+    return <div className="dash-view-switch" data-view-switch="">
+      <Segmented label={label} value={value} options={options} onChange={readOnly ? () => {} : onChange} />
     </div>;
   }
   const current = options.find(option => option.value === value) ?? options[0];
+  if (readOnly) {
+    return <span className="dash-view-menu-trigger is-static" data-view-switch="">
+      <span>{current.label}</span>
+    </span>;
+  }
   return <>
-    <button ref={menu.trigger} type="button" className="dash-view-menu-trigger" popoverTarget={id}
+    <button ref={menu.trigger} type="button" className="dash-view-menu-trigger" data-view-switch="" popoverTarget={id}
       aria-haspopup="menu" aria-expanded={menu.open} aria-label={`${label}: ${current.label}`} data-tooltip={label}>
       <span>{current.label}</span>
       <Icon name="chevron-down" className="dash-view-menu-chevron" />

@@ -37,7 +37,7 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { paintMeasureRow, rowAmount } from '../../dashboard/follow/painters.ts';
-import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
@@ -106,6 +106,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const ceilingHead = followsHead(ceilingFollowed);
   const headFollowed = followedHead && (!showCeiling || ceilingHead);
   const refused = followRefusal(followed, ceilingFollowed);
+  const followErr = followFailure(followed, ceilingFollowed);
   const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const pinned = widget.time.mode === 'pin';
@@ -247,6 +248,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+  if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;

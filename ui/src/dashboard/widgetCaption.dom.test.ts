@@ -47,5 +47,36 @@ test('a widget body with a caption lays its content out in the reduced height be
     assert.equal(table.contentHeight, plain.contentHeight - table.captionHeight, 'table content area shrinks by caption height');
     assert.equal(table.bodyHeight, table.contentHeight, 'table body fills reduced content area');
     assert.ok(table.scrollerScrollHeight <= table.scrollerClientHeight, 'table does not overflow');
+
+    const switched = await page.evaluate<{ switchClicks: string[]; previewHasDynamicSwitch: boolean }>('window.captionLayout.testDynamicSwitchFreshness()');
+    assert.deepEqual(switched.switchClicks, ['v2:b'], 'useWidgetViewSwitch invokes the latest onChange callback after parent state changes');
+    assert.equal(switched.previewHasDynamicSwitch, true, 'catalogue WidgetPreview renders dynamic view switches registered by the body');
+
+    const headerDrop = await page.evaluate<{
+      unloadedOscillations: number; triggerWidth: number; loadedStage: number; subjectCompact: boolean;
+      stageBeforePlay: number; stageWhilePlaying: number; changesWhilePlaying: number; stageAfterPause: number;
+    }>('window.captionLayout.testHeaderDropStability()');
+    assert.equal(headerDrop.unloadedOscillations, 0, 'absent subject slot converges without oscillating');
+    assert.ok(headerDrop.triggerWidth > 120, `measured real compact view trigger width (${headerDrop.triggerWidth}px), not 84px fallback`);
+    assert.ok(headerDrop.loadedStage >= 3 && headerDrop.subjectCompact, 'wide compact view trigger advances header drop to stage 3');
+    assert.equal(headerDrop.changesWhilePlaying, 0, 'header drop re-measurement is deferred during playback');
+    assert.equal(headerDrop.stageWhilePlaying, headerDrop.stageBeforePlay, 'header stage stays frozen while playing');
+    assert.ok(headerDrop.stageAfterPause > headerDrop.stageBeforePlay, 'deferred header re-measurement flushes once playback pauses');
+
+    const reading = await page.evaluate<{
+      loadingRole: string | null; loadingAnnouncement: string;
+      badgeAfterRerender: string | null; badgeRole: string | null; badgeAnnouncement: string;
+      behindBadge: string | null;
+      firstEmptyAnnounced: string; clearedOnPicture: string; repeatedEmptyAnnounced: string;
+    }>('window.captionLayout.testReadingBadgeAndAnnouncer()');
+    assert.equal(reading.loadingRole, null, 'loading state has no duplicate role="status"');
+    assert.equal(reading.loadingAnnouncement, 'Loading probe…', 'loading announces via the single frame live region');
+    assert.match(reading.badgeAfterRerender ?? '', /^Reading /, 'reading badge stays settled across default-campaign re-renders');
+    assert.equal(reading.badgeRole, null, 'reading badge has no duplicate role="status"');
+    assert.equal(reading.badgeAnnouncement, reading.badgeAfterRerender, 'reading badge announces via the single frame live region');
+    assert.match(reading.behindBadge ?? '', /^Reading /, 'map data-held="behind" shows the reading badge during playback');
+    assert.equal(reading.firstEmptyAnnounced, 'Nothing here yet.');
+    assert.equal(reading.clearedOnPicture, '', 'returning to a picture clears the announcer state');
+    assert.equal(reading.repeatedEmptyAnnounced, 'Nothing here yet.', 're-entering the same state announces it again');
   }));
 });

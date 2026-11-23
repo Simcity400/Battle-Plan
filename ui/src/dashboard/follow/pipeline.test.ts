@@ -346,3 +346,50 @@ test('review 10: a reading\'s hour is the installed date when it is read, and th
   assert.equal(reading.state === 'covered' && reading.hour, 16, 'a same-structure install from 10 to 16 reads 16');
   assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
 });
+
+test('transport or host errors on open or follow stay retryable failures distinct from recording refusals, and retry recovers them', async () => {
+  let openAttempts = 0;
+  const opened = inProcess({
+    open: async () => {
+      openAttempts++;
+      if (openAttempts === 1) throw new Error('IPC pipe disconnected');
+      return 'session-1';
+    },
+  });
+  try {
+    const id = opened.pipeline.acquire('open-fail|0', { offset: 0, pin: null });
+    const sub = opened.pipeline.subscribe(id, {}, opened.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    opened.clock.seek(10);
+    assert.ok(await opened.settle(() => opened.pipeline.status(sub).status === 'failed'));
+    assert.equal(opened.pipeline.status(sub).reason, 'IPC pipe disconnected');
+    assert.equal(opened.pipeline.view(id)?.mode, 'failed');
+    opened.pipeline.retry(sub);
+    assert.ok(await opened.settle(() => opened.pipeline.status(sub).status === 'followed'));
+    opened.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [9n] } }], false, NATIVE, opened.clock.getSnapshot().seekSequence));
+    assert.ok(await opened.settle(() => opened.pipeline.view(id)?.mode === 'picture'));
+  } finally { opened.close(); }
+
+  let followAttempts = 0;
+  const asked = inProcess({
+    follow: (_id, query) => {
+      if ((query.params as { mode?: string } | undefined)?.mode === 'refused') return { available: false, reason: 'Table absent in format 141' };
+      followAttempts++;
+      if (followAttempts === 1) throw new Error('Host follow timed out');
+      return { available: true };
+    },
+  });
+  try {
+    const failedId = asked.pipeline.acquire('follow-fail|0', { offset: 0, pin: null });
+    const failedSub = asked.pipeline.subscribe(failedId, {}, asked.source, '1', 0, { product: 'series-state', params: { mode: 'fail' } }, 'followed')!;
+    const refusedId = asked.pipeline.acquire('follow-refuse|0', { offset: 0, pin: null });
+    const refusedSub = asked.pipeline.subscribe(refusedId, {}, asked.source, '1', 0, { product: 'series-state', params: { mode: 'refused' } }, 'followed')!;
+    asked.clock.seek(10);
+    assert.ok(await asked.settle(() => asked.pipeline.status(failedSub).status === 'failed' && asked.pipeline.status(refusedSub).status === 'refused'));
+    assert.equal(asked.pipeline.status(failedSub).reason, 'Host follow timed out');
+    assert.equal(asked.pipeline.status(refusedSub).reason, 'Table absent in format 141');
+    asked.pipeline.retry(failedSub);
+    assert.ok(await asked.settle(() => asked.pipeline.status(failedSub).status === 'followed'));
+    asked.send(message(10, [{ id: failedSub, answer: { keys: [1n], columns: 1, values: [4n] } }], false, NATIVE, asked.clock.getSnapshot().seekSequence));
+    assert.ok(await asked.settle(() => asked.pipeline.view(failedId)?.mode === 'picture'));
+  } finally { asked.close(); }
+});

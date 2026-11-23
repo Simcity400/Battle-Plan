@@ -85,11 +85,30 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.match(outsideWithBounds, /Change time/);
     assert.doesNotMatch(outsideWithBounds, /is-error|role="alert"/);
 
-    const gap = render({ kind: 'not-recorded', reason: 'Block unreadable', span: { firstHour: 43800000, lastHour: 43800024 }, pinned: true, onChangeTime: () => {} });
+    const gap = render({ kind: 'not-recorded', reason: 'Branch 1 block 1005 – 1006 is unreadable: checksum', span: { firstHour: 43800000, lastHour: 43800024 }, pinned: true, onChangeTime: () => {} });
+    const gapVisible = gap.replace(/<[^>]*>/g, ' ');
     assert.match(gap, /data-state="not-recorded"/);
-    assert.match(gap, /Not recorded at this time\./);
-    assert.match(gap, /Block unreadable/);
-    assert.match(gap, /Change time/);
+    assert.match(gapVisible, /Not recorded at this time\./);
+    assert.match(gapVisible, /From /);
+    assert.doesNotMatch(gapVisible, /unreadable: checksum/, 'raw gap decoder diagnostic stays inside Details');
+    assert.match(gap, /data-detail="Branch 1 block 1005 – 1006 is unreadable: checksum"/);
+    assert.match(gapVisible, /Change time/);
+    assert.match(gapVisible, /Details/);
+
+    const { RegionContext } = await vite.ssrLoadModule('/ui/src/dashboard/widgetTime.ts') as typeof import('../dashboard/widgetTime');
+    const gapOutside = renderToStaticMarkup(createElement(RegionContext.Provider, {
+      value: {
+        heads: { any: () => true, subscribe: () => () => {} } as never,
+        outside: { kind: 'not-recorded', message: 'Not recorded at this time.', detail: 'Branch 1 block 1005 – 1006 is unreadable: checksum', span: { firstHour: 43800000, lastHour: 43800024 }, pinned: true },
+        key: 'gap',
+      },
+    }, createElement(WidgetState as never, { kind: 'outside', onChangeTime: () => {} } as never)));
+    const gapOutsideVisible = gapOutside.replace(/<[^>]*>/g, ' ');
+    assert.match(gapOutside, /data-state="not-recorded"/);
+    assert.match(gapOutsideVisible, /From /);
+    assert.doesNotMatch(gapOutsideVisible, /unreadable: checksum/, 'Outside gap hides raw decoder reason behind Details');
+    assert.match(gapOutside, /data-detail="Branch 1 block 1005 – 1006 is unreadable: checksum"/);
+    assert.match(gapOutsideVisible, /Details/);
 
     const nothingChosen = render({ kind: 'nothing-chosen', prompt: 'Choose a country to see its factories.', onChoose: () => {} });
     assert.match(nothingChosen, /Choose a country to see its factories\./);
@@ -107,6 +126,7 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.match(loadingNow, /data-state="loading"/);
     assert.match(loadingNow, /widget-skeleton-table/);
     assert.doesNotMatch(loadingNow, /spinner/);
+    assert.doesNotMatch(loadingNow, /role="status"/, 'loading uses the frame announcer rather than a duplicate live region');
     assert.doesNotMatch(loadingNow, /widget-state-loading-label/, 'label waits until 2 s');
 
     const loadingLate = render({ kind: 'loading', label: 'Loading factories…', delayMs: 0 });

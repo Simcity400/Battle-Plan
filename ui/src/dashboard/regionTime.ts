@@ -1,5 +1,5 @@
 import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
-import { formatDateTime, formatHourSpan, gameDate } from './calendar.ts';
+import { formatDateTime, gameDate } from './calendar.ts';
 
 import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
 import { REQUEST_HOURS, REQUEST_PATHS } from '../generated/dashboard.ts';
@@ -181,13 +181,7 @@ export function gapAt(track: Branch, hour: number): RecordingGap | null {
 }
 
 function gapDetail(gap: RecordingGap): string {
-  const calendar = gameDate(gap.firstHour) && gameDate(gap.lastHour);
-  const span = calendar ? formatHourSpan(gap.firstHour, gap.lastHour) : null;
-  const reason = gap.reason?.trim() ?? '';
-  if (!reason) return span ? `From ${span}.` : '';
-  if (!span) return reason;
-  const trimmed = reason.replace(/\.+$/u, '');
-  return `${trimmed} (${span}).`;
+  return gap.reason?.trim() ?? '';
 }
 
 export function coverageAt(track: Branch | undefined, hour: number | null | undefined): { hour: TrackHour } | { hour: null; outside: Outside } {

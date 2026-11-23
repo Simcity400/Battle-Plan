@@ -32,6 +32,7 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     const live = render();
     assert.match(live, /Campaign map/);
     assert.match(live, /data-map-current="true"/);
+    assert.doesNotMatch(live, /data-held=/);
     assert.doesNotMatch(live, /Follow the campaign|Native map|dash-map-footer/);
     host.__mapReview.loading = true;
     host.__mapReview.hour = null;
@@ -45,9 +46,37 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     const stale = render();
     assert.doesNotMatch(stale, /spinner|Preparing this map/);
     assert.match(stale, /data-map-current="false"/);
+    assert.match(stale, /data-held="stale"/);
+    (props.runtime.clock as { getSnapshot: () => unknown }).getSnapshot = () => ({ position: 106, hour: 106, playing: true, sequence: 3, seekSequence: 1, fraction: 0, hoursPerSecond: 4 });
+    const behind = render();
+    assert.match(behind, /data-held="behind"/);
     host.__mapReview = { ...host.__mapReview, hour: null, branchId: null };
     const first = render();
     assert.match(first, /spinner/);
     assert.match(first, /Preparing this map…/);
+
+    const { MapSettingsSection } = await vite.ssrLoadModule('/ui/src/widgets/map/MapSettingsSection.tsx');
+    const branched = {
+      id: 'b2', firstHour: 43800000, lastHour: 43800240,
+      fork: { hour: 43800120 },
+      joins: [
+        { segmentId: 'seg-1', hour: 43800048, evidence: 'unconfirmed', parentId: 'seg-0', choices: [] },
+        { segmentId: 'seg-2', hour: 43800096, evidence: 'unrecorded', parentId: 'seg-1', choices: [] },
+      ],
+    };
+    const settingsHtml = renderToStaticMarkup(createElement(MapSettingsSection, {
+      widget: props.widget,
+      reference: {
+        id: 't',
+        branch: branched,
+        source: { id: 's', revision: 'r', metadata: { branches: [{ id: 'b1', firstHour: 43800000, lastHour: 43800120, fork: null, joins: [] }, branched] } },
+      },
+      runtime: { ...props.runtime, onMapBranch() {} },
+      mapOptions: { fog: true, country: null },
+      onMapOptions() {},
+    }));
+    assert.match(settingsHtml, /was left behind when the game was loaded from an earlier save\./);
+    assert.match(settingsHtml, /the recording can’t tell which save this play was loaded from/);
+    assert.match(settingsHtml, /play the recorder didn’t see/);
   } finally { await vite.close(); delete host.__mapReview; delete host.__mapsHidden; }
 });

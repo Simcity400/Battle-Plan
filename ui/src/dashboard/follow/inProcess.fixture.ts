@@ -33,15 +33,19 @@ function lane(views: (kind: string) => LaneView | undefined): LaneWorker {
   return worker;
 }
 
-export function inProcess({ lanes = 1, views = () => undefined, follow, gate, session }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
+export function inProcess({ lanes = 1, views = () => undefined, follow, gate, session, open }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
   follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string; route?: number };
-  gate?: (product: string) => Promise<void> | undefined; session?: string } = {}) {
+  gate?: (product: string) => Promise<void> | undefined; session?: string;
+  open?: (opened: readonly MessagePort[]) => Promise<string | undefined>; } = {}) {
   let ports: readonly MessagePort[] = [];
   const asked: { product: string; params: Record<string, unknown> }[] = [];
   const followers = new Set<unknown>();
   const client = {
     available: true,
-    openFollow: (opened: readonly MessagePort[]) => { ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return Promise.resolve(session); },
+    openFollow: (opened: readonly MessagePort[]) => {
+      if (open) return open(opened).then(id => { ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return id; });
+      ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return Promise.resolve(session);
+    },
     product: async (request: { product: string; params: Record<string, unknown> }) => {
       asked.push(request);
       await gate?.(request.product);

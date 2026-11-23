@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { actionFailure, classifyFailure, failureText, notInRecordingSentence, plainFailure, queryFailure, RefusedError, ShownError } from './queryError.ts';
 import { panelReply } from './follow/panel.ts';
 import { Page } from './follow/page.ts';
+import { followFailure, followRefusal } from './follow/useFollow.ts';
 
 test('a query the transport rejects with a sentence shows that sentence, not an invalid reply', () => {
   const lost = 'BattlePlan couldn’t reach its desktop host for dashboard_product: the IPC request failed (TypeError: Failed to fetch).';
@@ -74,4 +75,19 @@ test('follow panel and page refusals preserve the refusal type instead of turnin
   page.name(1, 'refused', 'SupplyHealth is not in this playhead');
   assert.equal(page.view(1).mode, 'refused');
   assert.equal(page.view(1).reason, 'SupplyHealth is not in this playhead');
+
+  let retried = 0;
+  const entry = { retry: () => { retried++; } } as never;
+  const base = { structure: '', entry, hidden: false, reading: null };
+  const unavailable = { ...base, status: 'unavailable' as const, reason: 'Table absent in format 141' };
+  const failed = { ...base, status: 'failed' as const, reason: 'IPC channel closed' };
+  assert.equal(followRefusal(unavailable), 'Table absent in format 141');
+  assert.equal(followRefusal(failed), null, 'stream failure is never reported as a recording refusal');
+  assert.equal(followFailure(unavailable), null, 'recording refusal is never reported as a retryable stream failure');
+  const streamError = followFailure(failed);
+  assert.ok(streamError);
+  assert.equal(streamError.error.message, 'IPC channel closed');
+  assert.equal(classifyFailure(streamError.error)?.kind, 'retryable');
+  streamError.retry();
+  assert.equal(retried, 1);
 });

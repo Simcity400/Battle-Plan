@@ -8,6 +8,7 @@ import { observeOnScreen, type OnScreen } from './onScreen.ts';
 import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading, datedReading, datedStore, onInstalled } from './useFollowed.ts';
 import type { Reading } from './useFollowed';
 import { holdElement } from '../../draw/bitmapSurface.ts';
+import { asFailure, type Failure } from '../queryError.ts';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 export type { OnScreen } from './onScreen.ts';
@@ -28,7 +29,17 @@ export interface Followed {
 export const followsHead = (followed: Followed) => followed.status === 'followed';
 
 export function followRefusal(...followed: readonly Followed[]): string | null {
-  for (const each of followed) if (each.status === 'unavailable' || each.status === 'failed') return each.reason ?? 'The followed reading stopped without a reason';
+  for (const each of followed) if (each.status === 'unavailable') return each.reason ?? 'The followed reading stopped without a reason';
+  return null;
+}
+
+export function followFailure(...followed: readonly Followed[]): { error: Failure; retry: () => void } | null {
+  for (const each of followed) if (each.status === 'failed') {
+    return {
+      error: asFailure(new Error(each.reason ?? 'The followed reading stopped without a reason')),
+      retry: () => { for (const item of followed) if (item.status === 'failed') item.entry?.retry?.(); },
+    };
+  }
   return null;
 }
 

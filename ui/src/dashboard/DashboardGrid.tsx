@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { Responsive, useContainerWidth } from 'react-grid-layout';
@@ -6,28 +6,20 @@ import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { Icon } from '../components/Icons';
-import { StyledIcon } from '../shell/appearance/StyledIcon';
-import { WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
 import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS, resolveWindow, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
 import { useFactionStylesKey } from './campaignSettings';
-import { recordingDisplayName } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { DEFAULT_MAP_OPTIONS, flipFog } from './mapPicker';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime, WidgetSkeletonKind } from './definitions';
 import { OptionDraft } from './optionDraft';
-import { resolveOptions } from './options';
 import type { OptionValue } from './options';
-import WidgetSettingsMenu from './WidgetSettingsMenu';
-import DefaultCountryChip from './CountryChip';
-import WidgetCountryControl from './WidgetCountryControl';
-import WidgetTimeChip, { timeChipSummary } from './WidgetTimeChip';
-import WidgetViewSwitch from './WidgetViewSwitch';
-import { FULL_HEADER_DROP, headerDropStage, WidgetFrameContext, widgetWording } from './widgetFrame';
-import type { DynamicViewSwitch, HeaderDropState, WidgetFrameValue } from './widgetFrame';
+import WidgetHeader from './WidgetHeader';
+import { resolveDeclaredViewSwitch, WidgetFrameContext, widgetWording } from './widgetFrame';
+import type { DynamicViewSwitch, WidgetFrameValue } from './widgetFrame';
 import { formatDateTime } from './calendar';
 import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
@@ -113,8 +105,6 @@ const Body = memo(WidgetBody);
 
 function WidgetFrame({ prepared = false, widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
   const element = useRef<HTMLElement>(null);
-  const headerRef = useRef<HTMLElement>(null);
-  const titleRef = useRef<HTMLHeadingElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [card, setCard] = useState<HTMLElement | null>(null);
   const attach = useCallback((node: HTMLElement | null) => { element.current = node; setCard(node); }, []);
@@ -122,20 +112,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
-  const [headerWidth, setHeaderWidth] = useState<number | null>(null);
-  const [titleClipped, setTitleClipped] = useState(false);
-  const [summaryText, setSummaryText] = useState('');
-  const [subjectText, setSubjectText] = useState('');
-  const [drop, setDrop] = useState<HeaderDropState>(FULL_HEADER_DROP);
-  const measuredHeader = useRef({
-    pillKey: '', pill: 0,
-    viewFullKey: '', viewFull: 0,
-    viewMenuKey: '', viewMenu: 0,
-    subjectFullKey: '', subjectFull: 0,
-    subjectCompact: 0,
-    timeFullKey: '', timeFull: 0,
-    timeCompact: 0,
-  });
   const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
   const [dynamicSwitch, setDynamicSwitch] = useState<DynamicViewSwitch | null>(null);
@@ -182,47 +158,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     return () => { near.disconnect(); seen.disconnect(); cancel(); };
   }, [slots, prepared]);
 
-  useEffect(() => {
-    const header = headerRef.current;
-    if (!header || typeof ResizeObserver === 'undefined') return;
-    const measure = () => {
-      const next = Math.floor(header.clientWidth);
-      setHeaderWidth(previous => previous === next ? previous : next);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(header);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!headerSlot || typeof MutationObserver === 'undefined') return;
-    const inspect = () => {
-      const text = (headerSlot.textContent ?? '').trim();
-      setSummaryText(previous => previous === text ? previous : text);
-    };
-    inspect();
-    const observer = new MutationObserver(inspect);
-    observer.observe(headerSlot, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
-  }, [headerSlot]);
-
-  useEffect(() => {
-    const header = headerRef.current;
-    if (!header || typeof MutationObserver === 'undefined') return;
-    const read = () => {
-      const el = header.querySelector<HTMLElement>('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country');
-      const text = (el?.textContent ?? '').trim();
-      setSubjectText(previous => previous === text ? previous : text);
-    };
-    read();
-    const controls = header.querySelector('.dash-widget-controls');
-    if (!controls) return;
-    const observer = new MutationObserver(read);
-    observer.observe(controls, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
-  }, [widget.id]);
-
   useEffect(() => { if (!prepared) perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title, prepared]);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
   useEffect(() => prepared ? undefined : runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id, prepared]);
@@ -240,8 +175,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   }, [onApply]);
 
   const definition = widgetDefinition(widget.kind);
-  const icons = useContext(WidgetIconsContext);
-  const icon = icons.style(widget.kind);
   const frames = useMemo(() => new WidgetFrames(runtime.clock, widget.id), [runtime.clock, widget.id]);
   useLayoutEffect(() => { frames.setShown(active === true && !prepared); }, [frames, active, prepared]);
   const bodyRuntime = useMemo(() => ({ ...runtime, clock: frames.clock }), [runtime, frames]);
@@ -269,7 +202,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
 
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const missing = effective.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
-  const CountryChip = definition?.countryChip ?? DefaultCountryChip;
   const campaignTrack = runtime.tracks.find(track => track.id === effective.trackIds[0]);
   const fixedAt = perfLog && campaignTrack && effective.time.mode !== 'follow'
     ? resolveWindow(effective, campaignTrack, runtime.tracks, 0)?.lastHour : undefined;
@@ -287,25 +219,41 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     return () => { stop(); for (const owner of owners.values()) failures.put(owner, []); };
   }, [runtime.maps, widget.id, failures, mapRecording, prepared]);
 
+  const readingContextRef = useRef({ effective, campaignTrack, tracks: runtime.tracks });
+  readingContextRef.current = { effective, campaignTrack, tracks: runtime.tracks };
+
   useEffect(() => {
     const content = contentRef.current;
     if (!content || prepared || typeof MutationObserver === 'undefined') return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let shown = false;
     const clear = () => {
       if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
-      setReadingBadge(null);
+      if (shown) { shown = false; setReadingBadge(null); }
+    };
+    const readHeld = () => {
+      if (content.querySelector('[data-held="behind"]')) return true;
+      const playing = runtime.clock.getSnapshot?.().playing ?? false;
+      return !playing && !!content.querySelector('[data-held="stale"]');
+    };
+    const label = () => {
+      const { effective: current, campaignTrack: track, tracks } = readingContextRef.current;
+      const target = track ? resolveWindow(current, track, tracks, runtime.clock.getHour?.() ?? 0)?.lastHour : null;
+      return target != null ? `Reading ${formatDateTime(target)}…` : 'Reading…';
     };
     const check = () => {
-      const playing = runtime.clock.getSnapshot?.().playing ?? false;
-      const held = !playing && !!content.querySelector('[data-held="stale"]');
-      if (!held) { clear(); return; }
+      if (!readHeld()) { clear(); return; }
+      if (shown) {
+        const next = label();
+        setReadingBadge(previous => previous === next ? previous : next);
+        return;
+      }
       if (timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
-        if (runtime.clock.getSnapshot?.().playing) { setReadingBadge(null); return; }
-        if (!content.querySelector('[data-held="stale"]')) { setReadingBadge(null); return; }
-        const target = campaignTrack ? resolveWindow(effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0)?.lastHour : null;
-        setReadingBadge(target != null ? `Reading ${formatDateTime(target)}…` : 'Reading…');
+        if (!readHeld()) { clear(); return; }
+        shown = true;
+        setReadingBadge(label());
       }, READING_BADGE_DELAY_MS);
     };
     check();
@@ -313,7 +261,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     observer.observe(content, { subtree: true, attributes: true, attributeFilter: ['data-held'], childList: true });
     const unsub = runtime.clock.subscribe?.(check);
     return () => { clear(); observer.disconnect(); unsub?.(); };
-  }, [prepared, runtime.clock, runtime.tracks, campaignTrack, effective]);
+  }, [prepared, runtime.clock, widget.id]);
 
   const factionStyles = useFactionStylesKey(definition?.factionColours && campaignTrack ? campaignTrack.source.metadata.campaignKey : null);
   const settings = useMemo(() => settingsSignature(widget, factionStyles), [widget, factionStyles]);
@@ -335,6 +283,17 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     setAnnouncement(text);
   }, []);
 
+  useEffect(() => {
+    if (readingBadge) {
+      announce(`reading:${readingBadge}`, readingBadge);
+      return;
+    }
+    if (!hasBodyState) {
+      lastAnnounced.current = '';
+      setAnnouncement(previous => previous === '' ? previous : '');
+    }
+  }, [hasBodyState, readingBadge, announce]);
+
   const setDynamicViewSwitch = useCallback((owner: object, spec: DynamicViewSwitch | null) => {
     if (spec) switchOwners.current.set(owner, spec); else switchOwners.current.delete(owner);
     const latest = [...switchOwners.current.values()].at(-1) ?? null;
@@ -347,113 +306,11 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     setCustomSkeleton(latest);
   }, []);
 
-  const declaredSwitch = useMemo<DynamicViewSwitch | null>(() => {
-    const spec = definition?.viewSwitch;
-    if (!spec || !definition?.options) return null;
-    const resolved = resolveOptions(definition.options, widget.options);
-    if (spec.when && !spec.when(resolved)) return null;
-    const field = definition.options.find(item => item.key === spec.option);
-    if (!field || field.kind !== 'choice') return null;
-    if (field.visibleWhen && !field.visibleWhen(resolved, widget.countries, widget.time.mode)) return null;
-    const options = spec.choices ?? field.choices;
-    if (options.length <= 1) return null;
-    return {
-      label: spec.label ?? `${widget.title} ${field.label.toLowerCase()}`,
-      value: String(resolved[spec.option] ?? field.default),
-      options,
-      onChange: value => saveOption(spec.option, value),
-    };
-  }, [definition, widget.options, widget.countries, widget.time.mode, widget.title, saveOption]);
-
+  const declaredSwitch = useMemo<DynamicViewSwitch | null>(() => resolveDeclaredViewSwitch(definition, widget, saveOption),
+    [definition, widget, saveOption]);
   const activeSwitch = dynamicSwitch ?? declaredSwitch;
-  const viewMenuOnly = (activeSwitch?.options.length ?? 0) >= 4;
-  const viewKey = activeSwitch ? `${activeSwitch.options.map(item => item.label).join('|')}:${activeSwitch.value}` : '';
   const hasSubject = definition?.data !== false && definition?.countrySelection !== false;
   const showTime = definition?.data !== false && (definition?.timeModes.length ?? 0) > 0;
-  const timeInfo = showTime ? timeChipSummary(widget, effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0) : null;
-  const timeKey = timeInfo?.label ?? '';
-  const hasSummary = summaryText.length > 0 && !hasBodyState;
-  const effectiveDrop: HeaderDropState = viewMenuOnly && !drop.collapseView
-    ? { ...drop, collapseView: true }
-    : drop;
-
-  useLayoutEffect(() => {
-    const header = headerRef.current;
-    if (!header || header.clientWidth <= 0) return;
-    const available = header.clientWidth - 16;
-    const widthOf = (el: HTMLElement | null) => el ? Math.ceil(el.getBoundingClientRect().width) : 0;
-    const iconEl = header.querySelector<HTMLElement>('.dash-widget-icon');
-    const gripEl = header.querySelector<HTMLElement>('.dash-drag-grip');
-    const settingsEl = header.querySelector<HTMLElement>('[data-widget-settings]');
-    const summaryEl = header.querySelector<HTMLElement>('.dash-widget-summary');
-    const subjectEl = header.querySelector<HTMLElement>('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country');
-    const viewEl = header.querySelector<HTMLElement>('.dash-view-switch');
-    const timeEl = header.querySelector<HTMLElement>('.dash-time-chip');
-    const heading = titleRef.current;
-    const titleFull = heading ? Math.ceil(heading.scrollWidth) : 0;
-    const fixed = widthOf(iconEl) + widthOf(settingsEl) + widthOf(gripEl);
-    const cache = measuredHeader.current;
-
-    if (hasSummary && !effectiveDrop.dropPill && summaryEl) {
-      cache.pill = Math.ceil(summaryEl.scrollWidth);
-      cache.pillKey = summaryText;
-    }
-    if (activeSwitch && viewEl) {
-      if (!effectiveDrop.collapseView) {
-        cache.viewFull = widthOf(viewEl);
-        cache.viewFullKey = viewKey;
-      } else {
-        cache.viewMenu = widthOf(viewEl);
-        cache.viewMenuKey = viewKey;
-      }
-    }
-    if (hasSubject && subjectEl) {
-      if (!effectiveDrop.compactSubject) {
-        cache.subjectFull = widthOf(subjectEl);
-        cache.subjectFullKey = subjectText;
-      } else {
-        cache.subjectCompact = widthOf(subjectEl);
-      }
-    }
-    if (showTime && timeEl) {
-      if (!effectiveDrop.compactTime) {
-        cache.timeFull = widthOf(timeEl);
-        cache.timeFullKey = timeKey;
-      } else {
-        cache.timeCompact = widthOf(timeEl);
-      }
-    }
-
-    const needsFullMeasure = (hasSummary && cache.pillKey !== summaryText && effectiveDrop.dropPill)
-      || (!!activeSwitch && !viewMenuOnly && cache.viewFullKey !== viewKey && effectiveDrop.collapseView)
-      || (hasSubject && cache.subjectFullKey !== subjectText && effectiveDrop.compactSubject)
-      || (showTime && cache.timeFullKey !== timeKey && effectiveDrop.compactTime);
-
-    const next: HeaderDropState = needsFullMeasure
-      ? { stage: 0, dropPill: false, collapseView: viewMenuOnly, compactSubject: false, compactTime: false }
-      : headerDropStage(available, {
-          fixed,
-          titleFull,
-          hasSummary,
-          pill: cache.pillKey === summaryText ? cache.pill : 0,
-          hasViewSwitch: !!activeSwitch,
-          viewMenuOnly,
-          viewFull: cache.viewFullKey === viewKey ? cache.viewFull : 0,
-          viewMenu: cache.viewMenuKey === viewKey && cache.viewMenu > 0 ? cache.viewMenu : 84,
-          hasSubject,
-          subjectFull: cache.subjectFullKey === subjectText ? cache.subjectFull : 0,
-          subjectCompact: cache.subjectCompact > 0 ? cache.subjectCompact : 42,
-          hasTime: showTime,
-          timeFull: cache.timeFullKey === timeKey ? cache.timeFull : 0,
-          timeCompact: cache.timeCompact > 0 ? cache.timeCompact : 24,
-          editing,
-        });
-
-    setDrop(previous => previous.stage === next.stage && previous.dropPill === next.dropPill
-      && previous.collapseView === next.collapseView && previous.compactSubject === next.compactSubject
-      && previous.compactTime === next.compactTime ? previous : next);
-  }, [headerWidth, widget.title, summaryText, hasSummary, subjectText, hasSubject, activeSwitch, viewKey, viewMenuOnly, showTime, timeKey, editing,
-    effectiveDrop.dropPill, effectiveDrop.collapseView, effectiveDrop.compactSubject, effectiveDrop.compactTime]);
 
   const wording = useMemo(() => widgetWording(definition, widget.title), [definition, widget.title]);
   const registerOpenCountries = useCallback((open: (() => void) | undefined) => { openCountriesRef.current = open; }, []);
@@ -477,47 +334,35 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     setSkeleton,
   }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, captionSlot, showTime, definition?.timeModes.length, definition?.skeleton, reportState, announce, setDynamicViewSwitch, customSkeleton, setSkeleton]);
 
-  useLayoutEffect(() => {
-    const heading = titleRef.current;
-    if (!heading) return;
-    const clipped = heading.scrollWidth > heading.clientWidth;
-    setTitleClipped(previous => previous === clipped ? previous : clipped);
-  }, [headerWidth, widget.title, effectiveDrop.stage]);
-
   const drawnHere = !prepared || definition?.preview !== false;
 
   return <article ref={attach} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
     {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'data-fixed-hour': fixedAt === undefined ? undefined : fixedAt - campaignTrack!.axisOffset, 'aria-label': widget.title })}>
-    <header ref={headerRef} className="dash-widget-header" data-header-stage={effectiveDrop.stage}>
-      {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
-      <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}
-        onContextMenu={event => {
-          if (!definition) return;
-          event.preventDefault();
-          icons.openMenu(widget.kind, event.currentTarget, definition.title, event.clientX, event.clientY);
-        }}><StyledIcon icon={icon.icon} fallback={definition?.icon ?? 'grid'} /></span>
-      <div className="dash-widget-title">
-        <h2 ref={titleRef} data-tooltip-overflow={widget.title} tabIndex={titleClipped ? 0 : undefined}>{widget.title}</h2>
-        {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path)}</span>}
-      </div>
-      <span className="dash-widget-summary" ref={slots.header} hidden={effectiveDrop.dropPill || hasBodyState || undefined} />
-      <div className="dash-widget-controls">
-        {hasSubject && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={applyWidget}
-          compact={effectiveDrop.compactSubject} onRegisterOpen={registerOpenCountries}>
-          <CountryChip widget={widget} runtime={runtime} active={active === true} compact={effectiveDrop.compactSubject} onSlot={slots.country} />
-        </WidgetCountryControl>}
-        {activeSwitch && <WidgetViewSwitch label={activeSwitch.label} value={activeSwitch.value} options={activeSwitch.options}
-          compact={effectiveDrop.collapseView} onChange={activeSwitch.onChange} />}
-        {showTime && <WidgetTimeChip widget={widget} effective={effective} reference={campaignTrack} runtime={runtime}
-          modes={definition!.timeModes} compact={effectiveDrop.compactTime}
-          onChange={time => applyWidget({ ...widget, time }, true)} onRegisterOpen={registerOpenTime} />}
-        <WidgetSettingsMenu widget={widget} template={template} runtime={runtime} onApply={applyWidget}
-          onRemove={editing ? () => onRemove(widget.id) : undefined} onReset={reset}
-          resetUndoVisible={!!resetUndo} onUndoReset={undoReset}
-          mapOptions={widget.kind === 'map' ? mapOptions : undefined}
-          onMapOptions={widget.kind === 'map' ? setMapOptions : undefined} />
-      </div>
-    </header>
+    <WidgetHeader
+      widget={widget}
+      definition={definition}
+      effective={effective}
+      campaignTrack={campaignTrack}
+      runtime={runtime}
+      template={template}
+      editing={editing}
+      active={active === true}
+      activeSwitch={activeSwitch}
+      hasBodyState={hasBodyState}
+      summarySlotRef={slots.header}
+      countrySlotRef={slots.country}
+      headerSlotElement={headerSlot}
+      source={source}
+      onApply={applyWidget}
+      onRemove={editing ? () => onRemove(widget.id) : undefined}
+      onReset={reset}
+      resetUndoVisible={!!resetUndo}
+      onUndoReset={undoReset}
+      mapOptions={widget.kind === 'map' ? mapOptions : undefined}
+      onMapOptions={widget.kind === 'map' ? setMapOptions : undefined}
+      onRegisterOpenCountries={registerOpenCountries}
+      onRegisterOpenTime={registerOpenTime}
+    />
     {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
     <WidgetFrameContext.Provider value={frameValue}>
       <HeldFailureNotices failures={failures} />
@@ -528,7 +373,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
             <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
           </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
         </div>
-        {readingBadge && <div className="dash-reading-badge" role="status">{readingBadge}</div>}
+        {readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}
       </div>
     </WidgetFrameContext.Provider>
     <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>

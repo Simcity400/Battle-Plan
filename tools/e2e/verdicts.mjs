@@ -42,23 +42,33 @@ export function machineLine(run) {
   return `Machine (${count(machine.logicalCpus)} logical CPUs): ${sample('before the first app', machine.start)}; ${sample('before the last app closed', machine.end)}.`;
 }
 
-export const REFUSAL_TEXT = /\brefused\b|No table \d+ in the schema|layout or meaning changed at format|this recording is format|not in this recording|not recorded|not in this playhead|not followed at the head/i;
-
-export function classifyWidgetSnapshot({ placeholderText = null, unavailableText = null, errorDetail = null, emptyText = null, probeState = null, probeDrawing = false } = {}, refusalPattern = REFUSAL_TEXT) {
+export function classifyWidgetSnapshot({
+  domState = null, domDetail = null,
+  placeholderText = null, unavailableText = null, errorDetail = null,
+  outsideText = null, notRecordedText = null, emptyText = null,
+  probeState = null, probeDrawing = false,
+} = {}) {
   const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
   const ph = clean(placeholderText);
   if (ph && /isn['’]t playing back yet\.?$/i.test(ph)) {
     return { outcome: 'placeholder', detail: ph, notMigrated: true };
   }
+  const state = clean(domState);
+  const detail = clean(domDetail);
+  if (state === 'unavailable') return { outcome: 'refusal', detail: clean(unavailableText) ?? detail ?? 'unavailable', notMigrated: false };
+  if (state === 'error') return { outcome: 'error', detail: clean(errorDetail) ?? detail ?? 'error', notMigrated: false };
+  if (state === 'outside') return { outcome: 'outside', detail: clean(outsideText) ?? detail ?? 'outside', notMigrated: false };
+  if (state === 'not-recorded') return { outcome: 'not-recorded', detail: clean(notRecordedText) ?? detail ?? 'not-recorded', notMigrated: false };
+  if (state === 'empty') return { outcome: 'content', detail: clean(emptyText) ?? detail, notMigrated: false };
+  if (state === 'loading') return probeDrawing ? { outcome: 'content', detail: null, notMigrated: false } : { outcome: 'error', detail: detail ?? 'still loading', notMigrated: false };
   const unavail = clean(unavailableText);
-  if (unavail) {
-    return { outcome: 'refusal', detail: unavail, notMigrated: false };
-  }
+  if (unavail) return { outcome: 'refusal', detail: unavail, notMigrated: false };
   const err = clean(errorDetail);
-  if (err) {
-    const isRefusal = refusalPattern.test(err);
-    return { outcome: isRefusal ? 'refusal' : 'error', detail: err, notMigrated: false };
-  }
+  if (err) return { outcome: 'error', detail: err, notMigrated: false };
+  const out = clean(outsideText);
+  if (out) return { outcome: 'outside', detail: out, notMigrated: false };
+  const unrec = clean(notRecordedText);
+  if (unrec) return { outcome: 'not-recorded', detail: unrec, notMigrated: false };
   if (probeState === 'loading' && !probeDrawing) {
     return { outcome: 'error', detail: 'still loading', notMigrated: false };
   }
@@ -66,7 +76,7 @@ export function classifyWidgetSnapshot({ placeholderText = null, unavailableText
     return { outcome: 'error', detail: 'blank widget body', notMigrated: false };
   }
   if (ph) {
-    return { outcome: refusalPattern.test(ph) ? 'refusal' : 'error', detail: ph, notMigrated: false };
+    return { outcome: 'error', detail: ph, notMigrated: false };
   }
   const empty = clean(emptyText);
   if (empty) return { outcome: 'content', detail: empty, notMigrated: false };

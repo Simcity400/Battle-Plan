@@ -413,7 +413,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (change.offset !== undefined) widget.offset = change.offset;
     if (change.bounds !== undefined) widget.bounds = change.bounds;
     if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
-    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget)) this.reading(widget); }
+    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget) || widget.status === 'failed' || widget.status === 'refused') this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);
     this.touched.add(widget);
     this.tell();

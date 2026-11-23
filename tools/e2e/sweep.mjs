@@ -9,7 +9,7 @@ import { CASES } from './controls.mjs';
 import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
 import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPicture } from './map.mjs';
-import { REFUSAL_TEXT, classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
+import { classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
 import { buildWidgetClassifierExpr, createOutcomeWatcher, measureIdleCost, mergeWidgetOutcomes, runThrottled } from './sweepHelpers.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
@@ -407,7 +407,7 @@ const traceWindow = async page => {
   }
 };
 
-const CLASSIFY_WIDGET = buildWidgetClassifierExpr(classifyWidgetSnapshot, REFUSAL_TEXT);
+const CLASSIFY_WIDGET = buildWidgetClassifierExpr(classifyWidgetSnapshot);
 
 async function watchWidgetOutcomes({ waitForPlaying = false } = {}) {
   await app.evaluate(`(() => {

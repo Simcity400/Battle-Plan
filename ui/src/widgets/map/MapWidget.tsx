@@ -38,8 +38,9 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
   const matched = mapPresentationMatches(state, desired);
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
   const framed = !nativeUnavailable && mapFrameOnScreen(state);
+  const held = framed && !matched && !hidden && !state?.error ? (desired?.playing ? 'behind' : 'stale') : undefined;
   const preparing = !hidden && !framed && (state?.loading || (desired && !matched && !nativeUnavailable));
-  return <div className="dash-map-widget" data-map-current={matched}>
+  return <div className="dash-map-widget" data-map-current={matched} data-held={held}>
     <div className="dash-map-surface" ref={body}>
       <div className="dash-map-placeholder" role={state?.error ? undefined : 'status'}>{state?.error
         ? <WidgetState kind="error" what="the campaign map" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />

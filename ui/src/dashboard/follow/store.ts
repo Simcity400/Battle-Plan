@@ -29,6 +29,7 @@ export interface FollowEntry {
   readonly through: number;
   readonly version: number;
   subscribe(changed: () => void): () => void;
+  retry?: () => void;
 }
 
 const answers = new WeakMap<Uint8Array, FollowedAnswer>();
@@ -47,6 +48,7 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
     get status() {
       const told = pipeline.status(sub);
       if (told.status === 'refused') return 'unavailable';
+      if (told.status === 'failed') return 'failed';
       const reading = componentReading(view(), sub);
       if (reading.state === 'refused') return view()?.mode === 'failed' ? 'failed' : 'unavailable';
       return told.status === 'followed' ? 'followed' : 'pending';
@@ -63,6 +65,7 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
     get through() { return installed()?.through ?? 0; },
     get version() { return installed()?.id ?? 0; },
     subscribe: changed => pipeline.onInstall(widget, changed),
+    retry: () => pipeline.retry(sub),
   };
 }
 

@@ -180,6 +180,11 @@ test('a declared gap is not a recorded hour: every region time and pick inside i
     assert.deepEqual(coverageSpan(overlapping, hour), span, `hour ${hour}: the reason changes at 20 and 31 inside the 10–60 gap`);
     for (let at = span[0]; at <= span[1]; at++) assert.equal(reasonOf(at), reasonOf(hour), `${at} shares ${hour}’s reason`);
   }
+  const datedGap = track('dated', 43800000, 43800048, 0, [{ firstHour: 43800010, lastHour: 43800020, reason }]);
+  const covered = coverageAt(datedGap, 43800015);
+  assert.equal(covered.hour, null);
+  assert.deepEqual(covered.outside, { kind: 'not-recorded', message: UNRECORDED_MESSAGE, detail: reason, span: { firstHour: 43800010, lastHour: 43800020 } },
+    'calendar-dated gap keeps raw reason in detail and span separately without concatenating them');
 });
 
 const GAPPED = { firstHour: 100, lastHour: 109, gaps: [{ firstHour: 105, lastHour: 106, reason: 'unreadable' }] };

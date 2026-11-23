@@ -1,4 +1,4 @@
-import { selectIndex } from './selectNavigation';
+import { selectFocusable, selectIndex } from './selectNavigation';
 import { VirtualListIndex } from './virtualListIndex';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
@@ -39,9 +39,9 @@ const sameOptions = (a: readonly SelectOption[], b: readonly SelectOption[]) => 
 
 const OPTION_HEIGHT = 32;
 function SelectMenu({ label, value, options, onChoose, onLeave }: { label: string; value: string; options: readonly SelectOption[]; onChoose(value: string): void; onLeave(): void }) {
-  const selected = options.findIndex(option => option.value === value && !option.disabled);
+  const selected = options.findIndex(option => option.value === value && selectFocusable(option));
   const [activeValue, setActiveValue] = useState<string | null>(() => options[selected >= 0 ? selected : selectIndex(options, -1, 'Home') ?? -1]?.value ?? null);
-  const kept = options.findIndex(option => option.value === activeValue && !option.disabled);
+  const kept = options.findIndex(option => option.value === activeValue && selectFocusable(option));
   const active = kept >= 0 ? kept : selectIndex(options, -1, 'Home') ?? -1;
   const [top, setTop] = useState(Math.max(0, active * OPTION_HEIGHT));
   const list = useRef<HTMLDivElement>(null);

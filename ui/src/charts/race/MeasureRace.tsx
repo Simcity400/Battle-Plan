@@ -43,7 +43,7 @@ import { useInstalledValue } from '../../dashboard/follow/useFollowed.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
@@ -194,6 +194,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const followed = useFollow(store, followQuery, root, () => live.current?.wake(), rowsShape);
   const followedHead = followsHead(followed) && followed.entry !== null;
   const refused = followRefusal(followed);
+  const followErr = followFailure(followed);
   const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const askHour = following ? null : gate.hour;
@@ -357,6 +358,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     if (shared) return shared;
     if (!track) return <WidgetState kind="empty" icon={icon} message={`Load a campaign to see ${label.toLowerCase()}.`} />;
     if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+    if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
     if (gate.outside) return <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={icon} message={resolved.reason} />;

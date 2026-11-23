@@ -12,6 +12,7 @@ import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
 import type { GatedParams } from '../regionTime';
+import { RefusedError } from '../queryError.ts';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
@@ -25,10 +26,11 @@ export interface PipelineHost {
   rate(): number;
 }
 
-export type SubStatus = 'pending' | 'followed' | 'refused';
+export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string;
+  query: FollowQuery; product?: string;
   widgets: Set<number>; released: boolean;
 }
 
@@ -95,7 +97,9 @@ export class Pipeline {
   }
 
   private open(): Promise<void> {
-    this.opened ??= this.host.open(this.ports).then(session => { if (typeof session === 'string') this.session = session; });
+    this.opened ??= this.host.open(this.ports)
+      .then(session => { if (typeof session === 'string') this.session = session; })
+      .catch(error => { this.opened = null; throw error; });
     return this.opened;
   }
 
@@ -291,7 +295,7 @@ export class Pipeline {
     let sub = this.subs.get(key);
     if (!sub) {
       const id = this.nextSub[widget.lane]!++ * this.lanes + widget.lane;
-      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', widgets: new Set(), released: false };
+      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', query, product, widgets: new Set(), released: false };
       this.subs.set(key, sub); this.byId.set(id, sub);
       this.register(sub, query, product);
     }
@@ -336,7 +340,9 @@ export class Pipeline {
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
     widget.mounted = true;
     const refused = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'refused');
+    const failed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'failed');
     if (refused) this.page.name(widget.id, 'refused', refused.reason);
+    else if (failed) this.page.name(widget.id, 'failed', failed.reason);
     this.flush();
   }
 
@@ -429,12 +435,35 @@ export class Pipeline {
         for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
         if (first || moved) sub.route.told = null;
         this.anchor();
-      }, error => this.refuse(sub, error instanceof Error ? error.message : String(error)));
+      }, error => {
+        if (sub.released) return;
+        const reason = error instanceof Error ? error.message : String(error);
+        if (error instanceof RefusedError) this.refuse(sub, reason);
+        else this.fail(sub, reason);
+      });
+  }
+
+  retry(subId: number) {
+    const sub = this.byId.get(subId);
+    if (!sub || sub.released || sub.status !== 'failed') return;
+    sub.status = 'pending';
+    sub.reason = undefined;
+    for (const widgetId of sub.widgets) {
+      const widget = this.widgets.get(widgetId);
+      if (widget) this.remount(widget);
+    }
+    this.register(sub, sub.query, sub.product);
   }
 
   private refuse(sub: SubState, reason: string) {
     sub.status = 'refused'; sub.reason = reason;
     for (const widget of sub.widgets) this.page.name(widget, 'refused', reason);
+    this.flush();
+  }
+
+  private fail(sub: SubState, reason: string) {
+    sub.status = 'failed'; sub.reason = reason;
+    for (const widget of sub.widgets) this.page.name(widget, 'failed', reason);
     this.flush();
   }
 

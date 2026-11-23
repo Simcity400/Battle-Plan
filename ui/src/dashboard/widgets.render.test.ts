@@ -9,7 +9,7 @@ import type { WidgetRuntime } from './definitions';
 const replacements: Record<string, string> = {
   '/dashboard/definitions.ts': `export const widgetUnavailable = () => null;
     export const widgetDefinition = kind => ({ data: true,
-      playsBackDated: ['research', 'active-research', 'special-projects', 'doctrine-mastery', 'nuclear-arsenal'].includes(kind),
+      playsBackDated: kind === 'synthetic-dated',
       render: () => 'RENDERED' });`,
 };
 
@@ -31,11 +31,9 @@ test('a default-campaign widget is gated by the campaign it renders, not its sav
     assert.match(gated, /This is a Map recording, which holds the campaign map and battle windows only\./, 'Full to Map: the Map default is gated');
     assert.match(gated, /data-state="unavailable"/);
     assert.doesNotMatch(gated, /is-error|role="alert"/);
-    const placeholder = render('full', 'track-full', true);
+    const placeholder = render('full', 'track-full', true, 'synthetic');
     assert.match(placeholder, /Synthetic isn’t playing back yet\./);
     assert.doesNotMatch(placeholder, /is-error|role="alert"/);
-    for (const kind of ['research', 'active-research', 'special-projects', 'doctrine-mastery', 'nuclear-arsenal']) {
-      assert.match(render('full', 'track-full', true, kind), /RENDERED/, kind);
-    }
+    assert.match(render('full', 'track-full', true, 'synthetic-dated'), /RENDERED/, 'a playsBackDated widget renders during playback');
   } finally { await vite.close(); }
 });

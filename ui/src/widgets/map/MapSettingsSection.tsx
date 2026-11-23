@@ -1,15 +1,13 @@
 import { useState } from 'react';
 import { Icon } from '../../components/Icons';
-import { Select } from '../../components/Select';
+import { MapHistorySection } from '../../components/MapControls';
 import MapAppearance from '../../components/MapAppearance';
 import { FailureLine } from '../../components/FailureLine';
-import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { actionFailure, type PlainFailure } from '../../dashboard/queryError.ts';
 import { desktopAvailable, errorMessage, exportMap } from '../../shell/api';
 import type { MapOptions, SavedExport } from '../../shell/api';
-import { historyLabels } from '../../shell/diagnosticsData';
 import '../../components/mapControls.css';
 
 export function MapSettingsSection({ widget, reference, runtime, mapOptions, onMapOptions }: {
@@ -24,7 +22,6 @@ export function MapSettingsSection({ widget, reference, runtime, mapOptions, onM
   const [saved, setSaved] = useState<SavedExport | null>(null);
   const metadata = reference?.source.metadata ?? null;
   const branch = reference?.branch ?? null;
-  const labels = historyLabels(metadata?.branches ?? []);
 
   const exportImage = async () => {
     setBusy(true); setError(null); setSaved(null);
@@ -40,12 +37,8 @@ export function MapSettingsSection({ widget, reference, runtime, mapOptions, onM
   };
 
   return <div className="map-settings-section">
-    {metadata && branch && <div className="map-menu-section map-recording-options">
-      {metadata.branches.length > 1 && <div className="map-option-row"><span>History</span>
-        <Select label="Campaign history" value={branch.id} onChange={id => { if (reference) runtime.onMapBranch(reference.id, id); }}
-          options={metadata.branches.map(item => ({ value: item.id, label: labels.get(item.id) ?? item.id }))} /></div>}
-      <small className="map-branch-range">{formatDateTime(branch.firstHour)} to {formatDateTime(branch.lastHour)}</small>
-    </div>}
+    <MapHistorySection metadata={metadata} branch={branch} busy={busy}
+      onBranch={id => { if (reference) runtime.onMapBranch(reference.id, id); }} />
     <div className="map-menu-section">
       <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy}
         data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available in the desktop app'} onClick={() => void exportImage()}>

@@ -5,10 +5,8 @@ import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { useContextMenu } from '../../components/ContextMenu';
-import { Icon } from '../../components/Icons';
 import { Popover, PopoverHeading, usePopover } from '../../components/Popover';
 import type { AnchorRect } from '../../components/Popover';
-import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import { VirtualList } from '../../components/VirtualList';
 import { jumpItem, rowJumpProps } from '../../charts/jump';
@@ -219,14 +217,13 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const jump = useCallback<Jump>(at => track ? rowJumpProps(runtime, track.id, at, menu.open) : {}, [runtime, track, menu.open]);
   const completed = useMemo(() => lanes.reduce((total, lane) => total + lane.items.filter(item => item.kind === 'completed').length, 0), [lanes]);
   const header = headerSlot && data && slots ? createPortal(<span className="pill">{usNumber.format(completed)} completed</span>, headerSlot) : null;
-  if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
+  if (!track || !tag) return <WidgetState kind="nothing-chosen" prompt="Load a campaign and choose a country to see its research." />;
   if (!gate.open) return <>{header}<GateState gate={gate} loading="Loading research…" /></>;
   if (hour === undefined) return <>{header}<WidgetState kind="outside" /></>;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return <>{header}{failure}</>;
-  if (!data || !slots) return <>{header}<ListSkeleton label="Loading research…" /></>;
-  if (!lanes.length) return <>{header}{failure}<div className="dash-empty" role="status"><span className="empty-icon"><Icon name="history" /></span>
-    <p>No research slots recorded by {researchDate(hour)}.</p></div></>;
+  if (!data || !slots) return <>{header}<WidgetState kind="loading" label="Loading research…" /></>;
+  if (!lanes.length) return <>{header}{failure}<WidgetState kind="empty" icon="history" message={`No research slots recorded by ${researchDate(hour)}.`} /></>;
   const detailHour = shown && Math.min(shown.hour, following ? runtime.clock.getHour() + track.axisOffset : hour);
   const detailSlots = detailHour === null ? null : researchAt(data.history, detailHour);
   const shownSlot = shown ? detailSlots?.find(item => item.index === shown.slotIndex) : undefined;
@@ -321,6 +318,6 @@ function ResearchList({ rows, text, looks, sort, density, narrow, setOption, men
   const body: ReactNode = rows.length
     ? <Table rowRevision={row => [row, columns]} label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption} narrow={narrow}
       cellBars={false} rankMarkers={false} density={density} muted={row => row.kind === 'gap'} onRowClick={click} menu={menu} tooltip={tooltip} />
-    : <div className="dash-empty" role="status">No research in these folders by this date.</div>;
+    : <WidgetState kind="empty" scale="section" message="No research in these folders by this date." />;
   return <div className="research-list" onPointerDownCapture={event => { pointer.current = { x: event.clientX, y: event.clientY }; }}>{body}</div>;
 }

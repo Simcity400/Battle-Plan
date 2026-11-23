@@ -17,7 +17,7 @@ import { validateMeasureStates } from '../country-measure/measureSeriesData';
 import type { LiveShares } from '../../charts/share';
 import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import type { PlaybackController } from '../../dashboard/playback';
 import { DIVISIONS, SHARE_MEASURES, STATES, SUPPLY_FAMILY, liveShareRuns, mostDivisions, shareRunsFromLines, supplyAt } from './supplyHealthData';
@@ -103,9 +103,11 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const retry = () => { setFailure(undefined); none.retry(); strained.retry(); held.retry(); total.retry(); stateRead.retry(); };
   const stateError = stateRead.errorKey === JSON.stringify(asked) ? stateRead.error : undefined;
   const tileError = none.error ?? strained.error ?? held.error ?? total.error;
-  const error = useHeldFailure((failure?.owner === owner ? failure.error : undefined) ?? stateError ?? (tileError ? asFailure(tileError) : undefined),
-    states !== undefined || drawn, retry);
+  const followErr = following ? followFailure(...followed) : null;
+  const retryAll = () => { followErr?.retry(); retry(); };
+  const error = useHeldFailure(followErr?.error ?? (failure?.owner === owner ? failure.error : undefined) ?? stateError ?? (tileError ? asFailure(tileError) : undefined),
+    states !== undefined || drawn, retryAll);
   return { refused: following ? followRefusal(...followed) : null, enabled, owner, drawn, shares, liveShares, sharesOf: (tag: string) => shares.get(tag) ?? NO_RUNS, missing, divisions, at, onSummaryView, onNavigateHour,
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
-    error, retry, notRecorded: none.unrecorded && strained.unrecorded && held.unrecorded ? none.unrecorded : null };
+    error, retry: retryAll, notRecorded: none.unrecorded && strained.unrecorded && held.unrecorded ? none.unrecorded : null };
 }

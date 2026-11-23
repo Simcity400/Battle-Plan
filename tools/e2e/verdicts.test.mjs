@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, REFUSAL_TEXT, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
+import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -301,13 +301,22 @@ test('windowLosses counts only perf log losses overlapping a window, and losses 
   assert.deepEqual(summary[0].windows, ['Overview 1440 h/s']);
 });
 
-test('classifyWidgetSnapshot requires positive refusal text and flags loading or blank states as errors (both direct and serialized)', () => {
+test('classifyWidgetSnapshot classifies strictly from explicit DOM state and keeps text as diagnostic detail (both direct and serialized)', () => {
   const serialized = new Function(`return (${classifyWidgetSnapshot.toString()});`)();
-  for (const fn of [snap => classifyWidgetSnapshot(snap), snap => serialized(snap, REFUSAL_TEXT)]) {
-    const errWithoutRetry = fn({ errorDetail: 'Changed rows arrived without the table they change.' });
-    assert.deepEqual(errWithoutRetry, { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
-    const refused = fn({ errorDetail: 'No table 44 in the schema' });
-    assert.deepEqual(refused, { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
+  for (const fn of [snap => classifyWidgetSnapshot(snap), snap => serialized(snap)]) {
+    assert.deepEqual(fn({ domState: 'error', errorDetail: 'Changed rows arrived without the table they change.' }),
+      { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
+    assert.deepEqual(fn({ domState: 'error', errorDetail: 'No table 44 in the schema' }),
+      { outcome: 'error', detail: 'No table 44 in the schema', notMigrated: false },
+      'an explicit error state is never reclassified as a refusal by message text');
+    assert.deepEqual(fn({ domState: 'unavailable', unavailableText: 'No table 44 in the schema' }),
+      { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
+    assert.deepEqual(fn({ domState: 'outside', outsideText: 'This time is outside the recording.' }),
+      { outcome: 'outside', detail: 'This time is outside the recording.', notMigrated: false });
+    assert.deepEqual(fn({ domState: 'not-recorded', notRecordedText: 'Not recorded at this time.' }),
+      { outcome: 'not-recorded', detail: 'Not recorded at this time.', notMigrated: false });
+    assert.deepEqual(fn({ domState: 'empty', emptyText: 'No battles yet.' }),
+      { outcome: 'content', detail: 'No battles yet.', notMigrated: false });
     assert.deepEqual(fn({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
     assert.deepEqual(fn({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
     assert.deepEqual(fn({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });

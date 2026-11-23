@@ -1,8 +1,9 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { WidgetMeta, WidgetSkeletonKind } from './definitions';
-import type { WidgetTime } from './model';
+import type { WidgetDefinition, WidgetMeta, WidgetSkeletonKind } from './definitions';
+import type { WidgetSpec, WidgetTime } from './model';
+import { resolveOptions } from './options';
 
 export interface DynamicViewSwitch {
   label: string;
@@ -74,12 +75,41 @@ export function useWidgetSkeleton(skeleton: WidgetSkeletonKind | (() => ReactNod
 export function useWidgetViewSwitch(spec: DynamicViewSwitch | null): void {
   const frame = useContext(WidgetFrameContext);
   const [owner] = useState(() => ({}));
+  const onChangeRef = useRef(spec?.onChange);
+  onChangeRef.current = spec?.onChange;
   const signature = spec ? JSON.stringify([spec.label, spec.value, spec.options]) : '';
   useEffect(() => {
     if (!frame) return;
-    frame.setDynamicViewSwitch(owner, spec);
+    frame.setDynamicViewSwitch(owner, spec ? {
+      label: spec.label,
+      value: spec.value,
+      options: spec.options,
+      onChange: value => onChangeRef.current?.(value),
+    } : null);
     return () => frame.setDynamicViewSwitch(owner, null);
   }, [frame, owner, signature]);
+}
+
+export function resolveDeclaredViewSwitch(
+  definition: Pick<WidgetDefinition, 'options' | 'viewSwitch'> | undefined,
+  widget: Pick<WidgetSpec, 'options' | 'countries' | 'time' | 'title'>,
+  onChange: (option: string, value: string) => void,
+): DynamicViewSwitch | null {
+  const spec = definition?.viewSwitch;
+  if (!spec || !definition?.options) return null;
+  const resolved = resolveOptions(definition.options, widget.options);
+  if (spec.when && !spec.when(resolved)) return null;
+  const field = definition.options.find(item => item.key === spec.option);
+  if (!field || field.kind !== 'choice') return null;
+  if (field.visibleWhen && !field.visibleWhen(resolved, widget.countries, widget.time.mode)) return null;
+  const options = spec.choices ?? field.choices;
+  if (options.length <= 1) return null;
+  return {
+    label: spec.label ?? `${widget.title} ${field.label.toLowerCase()}`,
+    value: String(resolved[spec.option] ?? field.default),
+    options,
+    onChange: value => onChange(spec.option, value),
+  };
 }
 
 export function WidgetCaption({ children, className = '' }: { children: ReactNode; className?: string }) {

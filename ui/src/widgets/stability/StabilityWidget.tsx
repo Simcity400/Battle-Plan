@@ -58,7 +58,7 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
@@ -153,6 +153,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const warFollowed = useFollow(store, warQuery, root, NO_PAINT);
   const headFollowed = followsHead(stabilityFollowed) && followsHead(warFollowed);
   const refused = followRefusal(stabilityFollowed, warFollowed);
+  const followErr = followFailure(stabilityFollowed, warFollowed);
   const clockHour = usePlaybackHour(runtime.clock, active && focused && single !== null && following);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const playhead = window && (following || pinned) ? window.lastHour : null;
@@ -350,6 +351,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
   if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+  if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;

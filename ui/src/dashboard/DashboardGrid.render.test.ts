@@ -342,3 +342,71 @@ test('a frame says each failure its body holds beside published data once, above
     assert.deepEqual(asked, ['roster', 'labels'], 'its Retry asks every reader holding it again');
   } finally { await vite.close(); delete host.__frameFailures; }
 });
+
+test('catalogue previews respect field.visibleWhen, TimeSection stays usable without a campaign, and research/lazy widgets use WidgetState', async () => {
+  const vite = await frameServer();
+  try {
+    const { default: Preview } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetPreview.tsx') as typeof import('./WidgetPreview');
+    const { TimeSection } = await vite.ssrLoadModule('/ui/src/dashboard/settings/TimeSection.tsx') as typeof import('./settings/TimeSection');
+    const tracks = syntheticTracks();
+    const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 43800024 } } as unknown as WidgetRuntime;
+
+    const conditionalDef = {
+      kind: 'conditional-switch', icon: 'grid', title: 'Stockpile', defaultSize: { w: 4, h: 8 },
+      timeModes: ['follow'], defaultTime: 'follow', data: true,
+      options: [
+        { key: 'mode', section: 'options', label: 'Mode', kind: 'choice', default: 'table', choices: [{ value: 'table', label: 'Table' }, { value: 'over-time', label: 'Over time' }] },
+        { key: 'metric', section: 'options', label: 'Metric', kind: 'choice', default: 'count', choices: [{ value: 'count', label: 'Count' }, { value: 'ic', label: 'IC' }],
+          visibleWhen: (opts: Record<string, unknown>) => opts.mode !== 'over-time' },
+      ],
+      viewSwitch: { option: 'metric' },
+    } as never;
+    const shownPreview = renderToStaticMarkup(createElement(Preview, { definition: conditionalDef, initial: { title: 'Stockpile', options: { mode: 'table' } }, runtime }));
+    assert.match(shownPreview, /data-view-switch=""/, 'preview shows declared view switch when visibleWhen passes');
+    const hiddenPreview = renderToStaticMarkup(createElement(Preview, { definition: conditionalDef, initial: { title: 'Stockpile', options: { mode: 'over-time' } }, runtime }));
+    assert.doesNotMatch(hiddenPreview, /data-view-switch/, 'preview hides declared view switch when visibleWhen hides the option');
+
+    const unloadedWidget: WidgetSpec = { id: 't', kind: 'synthetic', configVersion: 1, title: 'Synthetic', campaign: 'default',
+      trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' } };
+    const timeHtml = renderToStaticMarkup(createElement(TimeSection, {
+      widget: unloadedWidget, effective: unloadedWidget, reference: undefined,
+      runtime: { ...runtime, tracks: [], campaignTracks: [] } as WidgetRuntime,
+      modes: ['follow', 'pin'], onChange() {},
+    }));
+    assert.match(timeHtml, />Live</);
+    assert.match(timeHtml, /aria-disabled="true"[^>]*data-tooltip="Load a campaign to pin a moment\."[^>]*>Pinned</);
+    assert.doesNotMatch(timeHtml, /disabled=""[^>]*>Pinned</, 'unavailable time mode stays focusable with its tooltip');
+    assert.match(timeHtml, /Load a campaign to pin a moment\./, 'unloaded time popover explains why pinning is unavailable');
+  } finally { await vite.close(); }
+
+  const realVite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'widget-state-ssr', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/dashboard/follow/useFollowed.ts')) {
+          return source.replace(/export function usePipeline\(/, 'function real_usePipeline(') + '\nexport function usePipeline() { return null; }';
+        }
+        if (path.endsWith('/charts/useChartTokens.ts')) return 'export const useChartTokens = () => ({ categories: ["#777"] });';
+      },
+    }] });
+  try {
+    const { lazyWidget } = await realVite.ssrLoadModule('/ui/src/widgets/lazyWidget.tsx') as typeof import('../widgets/lazyWidget');
+    const lazy = lazyWidget('never-loaded-synthetic-kind', ['render']);
+    const fallbackHtml = renderToStaticMarkup(createElement(lazy.render! as never, {} as never));
+    assert.match(fallbackHtml, /data-state="loading"/, 'lazy widget fallback renders WidgetState loading');
+    assert.doesNotMatch(fallbackHtml, /dash-empty|role="status"/);
+
+    const { default: Research } = await realVite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
+    const { default: ActiveResearch } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchWidget.tsx');
+    const { default: NationalFocus } = await realVite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const emptyRuntime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
+      clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } } as unknown as WidgetRuntime;
+    const baseWidget = { id: 'r', kind: 'research', configVersion: 1, title: 'Research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
+    for (const [name, Component] of [['research', Research], ['active-research', ActiveResearch], ['national-focus', NationalFocus]] as const) {
+      const html = renderToStaticMarkup(createElement(Component as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
+      assert.match(html, /data-state="empty"/, `${name} routes empty state through WidgetState`);
+      assert.doesNotMatch(html, /dash-empty/, `${name} does not render raw dash-empty`);
+    }
+  } finally { await realVite.close(); }
+});

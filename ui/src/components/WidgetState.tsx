@@ -122,11 +122,15 @@ export default function WidgetState(props: WidgetStateProps) {
       return <Outside read={props.read} pinned={props.pinned} onChangeTime={props.onChangeTime} scale={scale} />;
     case 'not-recorded': {
       const span = props.span && gameDate(props.span.firstHour) && gameDate(props.span.lastHour) ? formatHourSpan(props.span.firstHour, props.span.lastHour) : null;
-      const secondLine = props.reason ? (span && !props.reason.includes(span) ? `${props.reason.replace(/\.+$/u, '')} (${span}).` : props.reason)
-        : span ? `From ${span}.` : undefined;
+      const technical = props.reason?.trim() || undefined;
+      const secondLine = span ? `From ${span}.` : technical ? 'Details has the technical reason.' : undefined;
       const change = props.onChangeTime ?? (props.pinned ? frame?.openTime : undefined);
       return <StateBox scale={scale} state="not-recorded" icon="info" title={UNRECORDED_MESSAGE} secondLine={secondLine}
-        actions={change && <button type="button" className="button small" onClick={change}>Change time</button>} />;
+        detailAttr={technical}
+        actions={(change || technical) && <>
+          {change && <button type="button" className="button small" onClick={change}>Change time</button>}
+          {technical && <DetailsAction technical={technical} />}
+        </>} />;
     }
     case 'nothing-chosen': {
       const title = props.prompt ?? (frame ? `Choose a country to see its ${frame.subject}.` : 'Choose a country.');
@@ -214,10 +218,22 @@ function Outside({ read, pinned, onChangeTime, scale }: { read?: ReadCoverage; p
   const isGap = outside?.kind === 'not-recorded';
   const showChange = pinned ?? outside?.pinned ?? frame?.pinned ?? false;
   const change = onChangeTime ?? (showChange ? frame?.openTime : undefined);
-  const fallbackBounds = !isGap && !outside?.detail && frame?.bounds && gameDate(frame.bounds.firstHour) && gameDate(frame.bounds.lastHour)
+  if (isGap) {
+    const span = outside.span && gameDate(outside.span.firstHour) && gameDate(outside.span.lastHour) ? formatHourSpan(outside.span.firstHour, outside.span.lastHour) : null;
+    const technical = outside.detail?.trim() || undefined;
+    const secondLine = span ? `From ${span}.` : technical ? 'Details has the technical reason.' : undefined;
+    return <StateBox scale={scale} state="not-recorded" icon="info"
+      title={outside.message ?? UNRECORDED_MESSAGE} secondLine={secondLine}
+      detailAttr={technical}
+      actions={(change || technical) && <>
+        {change && <button type="button" className="button small" onClick={change}>Change time</button>}
+        {technical && <DetailsAction technical={technical} />}
+      </>} />;
+  }
+  const fallbackBounds = !outside?.detail && frame?.bounds && gameDate(frame.bounds.firstHour) && gameDate(frame.bounds.lastHour)
     ? `The recording covers ${formatDateTime(frame.bounds.firstHour)} to ${formatDateTime(frame.bounds.lastHour)}.`
     : undefined;
-  return <StateBox scale={scale} state={isGap ? 'not-recorded' : 'outside'} icon="info"
+  return <StateBox scale={scale} state="outside" icon="info"
     title={outside?.message ?? OUTSIDE_MESSAGE} secondLine={outside?.detail ?? fallbackBounds}
     actions={change && <button type="button" className="button small" onClick={change}>Change time</button>} />;
 }
@@ -228,22 +244,26 @@ function Loading({ label, read, skeleton, delayMs = 2000, scale }: {
   const frame = useWidgetFrame();
   const outside = useOutsideRecording(read);
   const [delayed, setDelayed] = useState(delayMs <= 0);
+  const text = label ?? (frame ? `Loading ${frame.subject}…` : 'Loading…');
   useEffect(() => {
     if (delayMs <= 0) { setDelayed(true); return; }
     setDelayed(false);
     const timer = setTimeout(() => setDelayed(true), delayMs);
     return () => clearTimeout(timer);
   }, [delayMs]);
+  useEffect(() => {
+    if (scale !== 'body' || outside || !frame) return;
+    frame.announce(`loading:${text}`, text);
+  }, [scale, outside, frame, text]);
   if (outside) return <Outside read={read} scale={scale} />;
-  const text = label ?? (frame ? `Loading ${frame.subject}…` : 'Loading…');
   if (scale === 'section') {
-    return <div className="widget-state is-section" data-state="loading" role="status" aria-label={text}>
+    return <div className="widget-state is-section" data-state="loading" aria-label={text}>
       <span className="skeleton widget-skeleton-inline" aria-hidden="true" />
       {delayed && <span className="widget-state-loading-label">{text}</span>}
     </div>;
   }
   const shape = skeleton ?? frame?.skeleton ?? 'generic';
-  return <div className="widget-state is-loading" data-state="loading" role="status" aria-label={text}>
+  return <div className="widget-state is-loading" data-state="loading" aria-label={text}>
     <SkeletonVisual shape={shape} />
     {delayed && <span className="widget-state-loading-label">{text}</span>}
   </div>;

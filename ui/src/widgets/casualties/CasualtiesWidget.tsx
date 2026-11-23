@@ -27,7 +27,7 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -140,7 +140,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   ];
   const rankFollowed = top == null || followsHead(ranked);
   const reading = joinReadings([ranked.reading, ...measured.map(item => item.reading)]);
-  const refused = reading.state === 'refused' ? reading.reason : null;
+  const followErr = followFailure(ranked, ...measured);
+  const refused = followRefusal(ranked, ...measured) ?? (followErr ? null : reading.state === 'refused' ? reading.reason : null);
   const answeredLives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined && item.live ? retainedLive(item.live) : undefined);
   const complete = useRef<HeldCasualties<Live<FollowEntry>> | null>(null);
   const subIds = measured.map(item => item.entry?.id ?? null).join(',');
@@ -241,6 +242,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
     if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+    if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
     if (gate.stage.stage === 'outside') return <GateState gate={gate} loading="Loading casualties…" />;
     if (moment === null) return <WidgetState kind="loading" label="Loading casualties…" />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

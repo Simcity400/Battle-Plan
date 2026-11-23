@@ -2,7 +2,6 @@ import { useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { Icon } from '../../components/Icons';
-import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
 import { useOpenTooltip } from '../../charts/openTooltip.ts';
@@ -42,11 +41,11 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const tips = useOpenTooltip(owner, now.live.subscribe);
   const untip = tips.hide;
   const [opened, setOpened] = useState<{ on: string; research: OpenedResearch; x: number; y: number } | null>(null);
-  if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
+  if (!track || !tag) return <WidgetState kind="nothing-chosen" prompt="Load a campaign and choose a country to see its research." />;
   if (now.read === 'off') return <WidgetState kind="outside" />;
   const failure = history.error ?? now.error;
   if (failure && (!data || !reply)) return <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
-  if (!data || !reply) return <ListSkeleton label="Loading research..." />;
+  if (!data || !reply) return <WidgetState kind="loading" label="Loading research…" />;
   const describe = (research: OpenedResearch) => ({ icon: artwork.get(research.token)?.icon ?? undefined,
     name: contentTitle(research.firstObservedHour === null ? research.definition?.name : researchArt(artwork, research.token, research.databaseIndex)?.name,
       research.token, 'Technology name unavailable') });
@@ -95,13 +94,14 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
     shown={describe(shown.research)} feed={now.feed} installed={now.inspected} subscribe={now.live.subscribe} active={active} anchor={shown} onClose={() => setOpened(null)} />;
   const idle = rows.filter(item => item.kind === 'idle').length;
+  if (!rows.length && !failure) return <WidgetState kind="empty" message={reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`} />;
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
     <div className="active-rows">
       {rows.length > 0 && <p className="active-section">Researching<span>{researching.length}</span>{idle > 0 && <span className="is-idle">{idle} idle</span>}</p>}
       {rows.map(row)}
     </div>
-    {!rows.length && <p>{reply.missing ?? <>No research slots recorded at <span data-paint="date">{researchDate(reply.hour)}</span>.</>}</p>}
+    {!rows.length && <WidgetState kind="empty" scale="section" message={reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`} />}
     {popup}
   </section>;
 }
