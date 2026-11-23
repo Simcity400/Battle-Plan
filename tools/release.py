@@ -729,7 +729,8 @@ def resolve(args):
                                + " has green CI and main's workflows")
             commit = on_main(green, "nightly")
             if args.scheduled and since and only_bumps(since, commit):
-                say(f"No release yet: only a stable release's version bump landed on main since the nightly of {since[:12]}.")
+                say(f"No release yet: from the nightly of {since[:12]} to {commit[:12]}, main's newest green commit, "
+                    "only a stable release's version bump landed.")
                 return outputs(found, args.github_output) or 0
         name = artifact_name("nightly", commit)
         built, _ = find_candidate(repo, name)
@@ -982,7 +983,8 @@ def finalize(args):
     """After a stable release, main's workspace version becomes it: the release deploy key, which
     main's ruleset lets bypass its pull-request rule, pushes the bump straight to main over SSH,
     refetching main and stamping again whenever main moved first. A push with a deploy key starts
-    main's CI as any commit's does, so the next nightly can release the bump. An older release never
+    main's CI as any commit's does; a scheduled nightly waits for a change besides the bump, and one
+    dispatched by hand can release it alone. An older release never
     sets the version back."""
     for attempt in range(1, PUSH_ATTEMPTS + 1):
         git("fetch", "--quiet", "origin", "main")

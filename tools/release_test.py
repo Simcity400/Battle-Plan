@@ -267,7 +267,7 @@ class Resolve(unittest.TestCase):
         bump = f"{release.BUMP_AUTHOR}\x00Release: v1.4.3 is the workspace version"
         landed = lambda *lines: mock.Mock(side_effect=lambda *args: "\n".join(lines) if args[0] == "log" else "")
         self.assertEqual(self.resolve(git=landed(bump))["due"], "false")
-        self.assertEqual(self.resolve(git=landed(bump, "Someone\x00Map: fog of war (#280)"))["due"], "true")
+        self.assertEqual(self.resolve(git=landed(bump, f"{release.BUMP_AUTHOR}\x00Map: fog of war (#280)"))["due"], "true")
         self.assertEqual(self.resolve(git=landed("Someone\x00Release: v1.4.3 is the workspace version"))["due"], "true",
                          "only the release's own commit is passed over")
         self.assertEqual(self.resolve(scheduled=False, git=landed(bump))["due"], "true", "a nightly asked for by hand releases the bump")
