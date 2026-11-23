@@ -14,6 +14,8 @@ Rules, over first-party files (vendor/ and fuzz/ are not read):
   a hasher, along a chain of a hasher's calls), heading a method chain that calls `hash`, alone
   or in a tuple or array, or writing to a hasher. An error message (`map_err`, `expect`, ...)
   is not hashed input. Debug output is not an identity.
+- test-support-branch: `cfg!` checks of `test-support` and `#[cfg]` predicates that negate it,
+  outside test and fixture code in `crates/`.
 
 Test code is a `tests/` target, an item under a test-only `cfg` or `#[test]`, or a file the
 crate's targets reach only through such items (`mod` declarations, `#[path]` included). Files
@@ -36,7 +38,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch")
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
@@ -56,6 +58,15 @@ TOKEN = re.compile(r"""//|/\*|(?<![\w'])(?:b|c)?r(#*)"|(?<![\w'])[bc]?"|'(?:\\(?
 BLOCK = re.compile(r"/\*|\*/")
 STRING_END = re.compile(r'(?:[^"\\]|\\.)*"', re.DOTALL)
 ATTRIBUTE = re.compile(r"#\s*(!?)\s*\[")
+CFG_GATE = re.compile(r"\bcfg\s*!\s*([([{])|#\s*!?\s*\[\s*cfg\s*\(")
+CFG_NOT = re.compile(r"\bnot\s*\(")
+CFG_FEATURE = re.compile(r'\bfeature\s*=\s*(?:r#*)?"(\s*)"#*')
+STRINGIFY = re.compile(r"\bstringify\s*!\s*[(\[{]")
+TEST_ITEM = re.compile(
+    r'(?:pub\s*(?:\([^)]*\)\s*)?)?'
+    r'(?:(?:const|async|unsafe|safe|extern(?:\s*"\s*")?)\s+)*'
+    r'(?:(?:fn|mod|trait|enum|struct)\s+(?:r#)?\w+|impl\b)'
+)
 MOD_DECLARATION = re.compile(r"\bmod\s+(?:r#)?(\w+)\s*([;{])")
 PATH_START = re.compile(r'#\s*\[\s*path\s*=\s*"')
 
@@ -111,6 +122,24 @@ def closing(code, start, opening="(", close=")"):
     return len(code)
 
 
+def delimiter_end(code, start):
+    opening = code[start]
+    return closing(code, start, opening, {"(": ")", "[": "]", "{": "}"}[opening])
+
+
+def mask_stringify(code):
+    """Blank the token trees that stringify turns into text, preserving offsets and lines."""
+    chunks, at = [], 0
+    for macro in STRINGIFY.finditer(code):
+        if macro.start() < at:
+            continue
+        end = delimiter_end(code, macro.end() - 1)
+        chunks += [code[at:macro.end()], re.sub(r"[^\n]", " ", code[macro.end():end - 1])]
+        at = end - 1
+    chunks.append(code[at:])
+    return "".join(chunks)
+
+
 def cfg_value(predicate):
     """Whether a `cfg` predicate holds in a build that is not a test and has no `test-support`
     feature: True, False, or None when other configuration decides it."""
@@ -137,28 +166,65 @@ def cfg_value(predicate):
     return True if True in values else None if None in values else False
 
 
-def item_end(code, at):
+def item_end(code, at, *, skip_generics=False):
     """The end of the item starting at `at`, after its attributes: its `;` or closing brace."""
-    depth = 0
-    for index in range(at, len(code)):
+    depth, angles = 0, 0
+    index = at
+    while index < len(code):
         char = code[index]
         if char in "([":
             depth += 1
         elif char in ")]":
             depth -= 1
+        elif skip_generics and not depth and char == "<":
+            angles += 1
+        elif angles and not depth and char == ">" and code[index - 1] != "-":
+            angles -= 1
         elif not depth and char == ";":
             return index + 1
         elif not depth and char == "{":
-            return closing(code, index, "{", "}")
+            end = closing(code, index, "{", "}")
+            if not angles:
+                return end
+            index = end
+            continue
+        index += 1
     return len(code)
 
 
-def test_spans(text, code):
-    """The (start, end) spans of items only tests compile, and whether the whole file is one."""
+def test_support_features(text, code, start, end):
+    return (feature for feature in CFG_FEATURE.finditer(code, start, end)
+            if text[feature.start(1):feature.end(1)] == "test-support")
+
+
+def cfg_attribute_text(text, code, start, end):
+    """Read the attribute with comments and unrelated literal contents still masked."""
+    parts, at = [], start
+    for feature in test_support_features(text, code, start, end):
+        parts += [code[at:feature.start()], 'feature = "test-support"']
+        at = feature.end()
+    parts.append(code[at:end])
+    return "".join(parts)
+
+
+def test_spans(text, code, *, branch_rule=False):
+    """Test-only spans and whether the whole file is test code. The branch rule groups outer
+    attributes and extends spans past them only when it recognizes the item boundary."""
     spans, whole = [], False
+    group_start, previous_end, previous_inner = 0, 0, None
     for found in ATTRIBUTE.finditer(code):
         end = closing(code, found.end() - 1, "[", "]")
-        inside = text[found.end():end - 1].strip()
+        if branch_rule:
+            if found.start() < previous_end:
+                continue
+            if found.group(1) != previous_inner or found.start() != skip_space(code, previous_end):
+                group_start = found.start()
+            previous_inner = found.group(1)
+            previous_end = end
+            inside = cfg_attribute_text(text, code, found.end(), end - 1).strip()
+        else:
+            group_start = found.start()
+            inside = text[found.end():end - 1].strip()
         cfg = re.fullmatch(r"cfg\s*\((.*)\)", inside, re.DOTALL)
         test_only = (cfg and cfg_value(cfg.group(1)) is False) or re.fullmatch(r"(?:\w+\s*::\s*)*test", inside)
         if not test_only:
@@ -174,7 +240,9 @@ def test_spans(text, code):
         at = end
         while (more := ATTRIBUTE.match(code, skip_space(code, at))) and not more.group(1):
             at = closing(code, more.end() - 1, "[", "]")
-        spans.append((found.start(), item_end(code, at)))
+        if not branch_rule or TEST_ITEM.match(code, skip_space(code, at)):
+            at = item_end(code, at, skip_generics=branch_rule)
+        spans.append((group_start, at))
     return spans, whole
 
 
@@ -240,14 +308,17 @@ class Revision:
         return data.decode("utf-8", errors="replace")
 
     @cache
-    def code(self, name):
+    def code(self, name, branch_rule=False):
+        if branch_rule:
+            code = self.code(name, False)
+            return None if code is None else mask_stringify(code)
         text = self.text(name)
         return None if text is None else mask(text)
 
     @cache
-    def spans(self, name):
-        code = self.code(name)
-        return ([], False) if code is None else test_spans(self.text(name), code)
+    def spans(self, name, branch_rule=False):
+        code = self.code(name, branch_rule)
+        return ([], False) if code is None else test_spans(self.text(name), code, branch_rule=branch_rule)
 
     @cache
     def files(self, crate):
@@ -257,7 +328,7 @@ class Revision:
         return frozenset(name for name in listed if name and (self.rev is not None or (ROOT / name).is_file()))
 
     @cache
-    def tests_only(self, crate):
+    def tests_only(self, crate, branch_rule=False):
         """{Rust file: whether only tests compile it} for each file the crate's targets reach
         through `mod` declarations. A file several declarations reach is test-only when all are."""
         files = self.files(crate)
@@ -287,26 +358,26 @@ class Revision:
         pending = list(state)
         while pending:
             parent = pending.pop()
-            for child, declared_test, by_path in self.children(parent, owner[parent]):
+            for child, declared_test, by_path in self.children(parent, owner[parent], branch_rule):
                 if child not in files:
                     continue
-                test = state[parent] or self.spans(parent)[1] or declared_test
+                test = state[parent] or self.spans(parent, branch_rule)[1] or declared_test
                 owner[child] = owner.get(child, False) or by_path or child.endswith("/mod.rs")
                 if child not in state or (state[child] and not test):
                     state[child] = test
                     pending.append(child)
         return state
 
-    def children(self, name, owns_directory):
+    def children(self, name, owns_directory, branch_rule=False):
         """[(child file, whether its declaration is test-only, whether `#[path]` names it)] for
         each `mod x;` in the file. A crate root, a `mod.rs` and a file `#[path]` loads own their
         directory; another file's children live in the folder of its name."""
-        text, code = self.text(name), self.code(name)
+        text, code = self.text(name), self.code(name, branch_rule)
         if code is None:
             return []
         path = PurePosixPath(name)
         here = path.parent if owns_directory else path.parent / path.stem
-        spans = self.spans(name)[0]
+        spans = self.spans(name, branch_rule)[0]
         inline = [(found.group(1), found.start(), closing(code, found.end() - 1, "{", "}")) for found in MOD_DECLARATION.finditer(code) if found.group(2) == "{"]
         out = []
         for found in MOD_DECLARATION.finditer(code):
@@ -324,7 +395,7 @@ class Revision:
         return out
 
     @cache
-    def test_file(self, name):
+    def test_file(self, name, branch_rule=False):
         """Whether only tests compile the Rust file: anything under a crate's `tests/`, or a file
         its crate's targets reach only through test-only items. A file no target reaches is not
         a test file."""
@@ -333,7 +404,7 @@ class Revision:
             return False
         if parts[2] == "tests":
             return True
-        return self.tests_only("/".join(parts[:2])).get(name, False) or self.spans(name)[1]
+        return self.tests_only("/".join(parts[:2]), branch_rule).get(name, False) or self.spans(name, branch_rule)[1]
 
     def close(self):
         if self.batch is not None:
@@ -455,21 +526,42 @@ def debug_format(text, code, opening):
     return bool(DEBUG_PLACEHOLDER.search(body.replace("{{", "")))
 
 
+def test_support_branches(text, code, spans):
+    """Offsets of runtime checks and negated feature gates in production code."""
+    for gate in CFG_GATE.finditer(code):
+        if within(spans, gate.start()):
+            continue
+        start = gate.end()
+        end = delimiter_end(code, start - 1) - 1
+        if gate.group(1):
+            if any(test_support_features(text, code, start, end)):
+                yield gate.start()
+            continue
+        for negation in CFG_NOT.finditer(code, start, end):
+            negation_end = closing(code, negation.end() - 1) - 1
+            if any(test_support_features(text, code, negation.end(), negation_end)):
+                yield gate.start()
+                break
+
+
 def rust_matches(name, revision):
     """{rule: [line, ...]} for a Rust file at a revision."""
-    text, code = revision.text(name), revision.code(name)
-    spans, _ = revision.spans(name)
-    test = revision.test_file(name)
+    text, code = revision.text(name), revision.code(name, False)
+    spans, _ = revision.spans(name, False)
+    test = revision.test_file(name, False)
     found = {rule: [] for rule in RULES}
     for match in RUST_CLOCK.finditer(code):
         if test or within(spans, match.start()):
             found["test-clock"].append(line_of(text, match.start()))
-    if test:
-        return found
-    for match in RUST_LEAK.finditer(code):
-        if not within(spans, match.start()):
-            found["box-leak"].append(line_of(text, match.start()))
-    found["debug-hash"] = [line_of(text, offset) for offset in debug_hashes(text, code, spans)]
+    if not test:
+        for match in RUST_LEAK.finditer(code):
+            if not within(spans, match.start()):
+                found["box-leak"].append(line_of(text, match.start()))
+        found["debug-hash"] = [line_of(text, offset) for offset in debug_hashes(text, code, spans)]
+    if name.startswith("crates/") and "test-support" in text and not revision.test_file(name, True):
+        branch_code = revision.code(name, True)
+        branch_spans, _ = revision.spans(name, True)
+        found["test-support-branch"] = [line_of(text, offset) for offset in test_support_branches(text, branch_code, branch_spans)]
     return found
 
 
@@ -570,8 +662,12 @@ def reclassified(base, now, changed):
     crates = {"/".join(name.split("/")[:2]) for name in [*names, *manifests] if name.startswith("crates/") and name.endswith((".rs", "/Cargo.toml"))}
     moved = []
     for crate in sorted(crates):
-        reached = set(base.tests_only(crate)) | set(now.tests_only(crate))
-        moved += [(name, name) for name in sorted(reached) if name not in names and base.text(name) is not None and base.test_file(name) != now.test_file(name)]
+        reached = {name for revision in (base, now) for branch_rule in (False, True)
+                   for name in revision.tests_only(crate, branch_rule)}
+        for name in sorted(reached - names):
+            if base.text(name) is not None and any(base.test_file(name, branch_rule) != now.test_file(name, branch_rule)
+                                                   for branch_rule in (False, True)):
+                moved.append((name, name))
     return moved
 
 

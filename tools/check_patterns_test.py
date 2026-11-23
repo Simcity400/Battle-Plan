@@ -199,6 +199,133 @@ class DebugHash(unittest.TestCase):
         self.assertEqual(rust({LIB: text}, LIB)["debug-hash"], [])
 
 
+class TestSupportBranch(unittest.TestCase):
+    def test_runtime_checks_and_negated_attributes_are_ratchet_instances(self):
+        runtime = 'fn runtime() -> bool { cfg!(any(test, feature = "test-support")) }\n'
+        production = '#[cfg(not(any(test, feature = "test-support")))]\nfn production() {}\n'
+        code, out = check({}, {LIB: runtime + production})
+        self.assertEqual(code, 1)
+        self.assertIn(f"{LIB}: test-support-branch: 0 at the base, 2 now; new at line 1, 2", out)
+        self.assertEqual(check({LIB: runtime + production}, {LIB: runtime + production + "fn added() {}\n"})[0], 0)
+
+    def test_multiline_negations_and_other_macro_delimiters_count(self):
+        text = (
+            'fn live() -> bool { cfg!{feature = r#"test-support"#} }\n'
+            '#[cfg(all(unix, not(\n    feature /* comment */ = "test-support",\n)))]\n'
+            'fn production() {}\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [1, 2])
+
+    def test_a_fixture_match_arm_does_not_exempt_the_following_production_arm(self):
+        text = (
+            'fn live() -> bool {\n'
+            '    match 1 {\n'
+            '        #[cfg(feature = "test-support")]\n'
+            '        1 => false,\n'
+            '        #[cfg(not(feature = "test-support"))]\n'
+            '        1 => true,\n'
+            '        _ => false,\n'
+            '    }\n'
+            '}\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [5])
+
+    def test_fixture_items_and_unrelated_predicates_pass(self):
+        gate = '#[cfg(any(test, feature = "test-support"))] '
+        text = (
+            f'{gate}fn fixture() {{}}\n'
+            f'{gate}impl State {{}}\n'
+            f'{gate}mod fixture {{}}\n'
+            f'{gate}use fixture::build;\n'
+            f'{gate}struct Fixture {{}}\n'
+            f'struct State {{ {gate}counter: u8 }}\n'
+            f'fn live() {{ {gate}fn local_fixture() {{}} }}\n'
+            '#[cfg(all(not(windows), feature = "test-support"))] fn on_unix() {}\n'
+            '#[cfg(not(target_os = "test-support"))] fn other_key() {}\n'
+            'fn other_feature() -> bool { cfg!(feature = "test-support-extra") }\n'
+            'fn comment() -> bool { cfg!(test /* feature = "test-support" */) }\n'
+            '// cfg!(feature = "test-support")\n'
+            'const EXAMPLE: &str = r#"#[cfg(not(feature = "test-support"))]"#;\n'
+        )
+        self.assertEqual(check({}, {LIB: text})[0], 0)
+
+    def test_test_files_and_inline_test_modules_pass(self):
+        text = ('fn fixture() -> bool { cfg!(feature = "test-support") }\n'
+                '#[cfg(not(feature = "test-support"))] fn only_without_feature() {}\n')
+        self.assertEqual(check({}, {
+            LIB: ('#[cfg(test)] mod inline {\n' + text + '}\n'
+                  '#[cfg(test)] mod checks;\n#[cfg(test)] mod unit_tests;\n'
+                  '#[cfg(test)] mod test_support;\n#[cfg(test)] mod testing;\n'),
+            'crates/a/src/checks.rs': text,
+            'crates/a/src/unit_tests.rs': text,
+            'crates/a/tests/support/fixture.rs': text,
+            'crates/a/src/test_support.rs': 'mod builder;\n' + text,
+            'crates/a/src/test_support/builder.rs': text,
+            'crates/a/src/testing.rs': text,
+            'tools/example.rs': text,
+        })[0], 0)
+
+    def test_a_production_module_named_contests_is_checked(self):
+        name = "crates/a/src/contests.rs"
+        code, out = check({LIB: "pub mod contests;\n"}, {
+            name: 'pub fn live() -> bool { cfg!(feature = "test-support") }\n',
+        })
+        self.assertEqual(code, 1)
+        self.assertIn(f"{name}: test-support-branch: 0 at the base, 1 now; new at line 1", out)
+
+    def test_test_only_item_bodies_are_exempt(self):
+        feature = 'cfg!(feature = "test-support")'
+        text = (
+            f'#[cfg(test)] impl<const N: usize> State<{{ N }}> {{ fn test() -> bool {{ {feature} }} }}\n'
+            f'#[cfg(test)] pub(crate) trait Fixture {{ const ENABLED: bool = {feature}; }}\n'
+            f'#[cfg(test)] enum Choice {{ First = {feature} as isize }}\n'
+            f'#[cfg(test)] struct Sample {{ bytes: [u8; {feature} as usize] }}\n'
+            f'fn live() -> bool {{ {feature} }}\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [5])
+
+    def test_any_test_only_attribute_exempts_the_whole_group(self):
+        text = (
+            '#![cfg(not(feature = "test-support"))]\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            '#[doc = "Fixture."]\n'
+            '#[cfg(any(test, feature = "test-support"))]\n'
+            'fn first() {}\n'
+            '#[cfg(test)]\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            'fn second() {}\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            'fn live() {}\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            '#[cfg(test)]\n'
+            'const FIXTURE: bool = true;\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [1, 9])
+
+    def test_comments_in_test_predicates_leave_inline_and_external_modules_exempt(self):
+        feature = 'fn example() -> bool { cfg!(feature = "test-support") }\n'
+        gate = '#[cfg(any(test /* units */, feature /* fixtures */ = "test-support"))] '
+        name = 'crates/a/src/external.rs'
+        base = {LIB: gate + 'mod inline {\n' + feature + '}\n' + gate + 'mod external;\n', name: feature}
+        self.assertEqual(check({}, base)[0], 0)
+        code, out = check(base, {LIB: gate + 'mod inline {\n' + feature + '}\nmod external;\n'})
+        self.assertEqual(code, 1)
+        self.assertIn(f"{name}: test-support-branch: 0 at the base, 1 now; new at line 1", out)
+
+    def test_stringify_arguments_are_exempt_and_do_not_hide_live_gates(self):
+        text = (
+            '#[doc = stringify!(cfg!(feature = "test-support"))] fn example() {}\n'
+            'const EXAMPLE: &str = stringify! {\n'
+            '    #[cfg(not(feature = "test-support"))] fn only_without_feature() {}\n'
+            '    #[cfg(test)] mod tests;\n'
+            '    #![cfg(test)]\n'
+            '};\n'
+            'const FEATURE: &str = core::stringify![cfg!(feature = "test-support")];\n'
+            'fn live() -> bool { cfg!(feature = "test-support") }\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [8])
+
+
 class Against(unittest.TestCase):
     def test_existing_instances_pass_and_a_new_one_fails_at_its_line(self):
         base = {LIB: "fn a() { Box::leak(x); }\n"}
