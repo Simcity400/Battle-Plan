@@ -21,7 +21,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/store.ts';
 import { answered, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
-import { joinReadings } from '../../dashboard/follow/useFollowed.ts';
+import { joinReadings, useInstalledValue } from '../../dashboard/follow/useFollowed.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { canonical } from '../../dashboard/follow/canonical.ts';
@@ -36,7 +36,7 @@ import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CasualtyLabelsReply, SeriesStateReply } from '../../generated/dashboard';
-import { answerHeld, heldCasualties, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, FAMILY, formatCasualties,
+import { answerHeld, heldCasualties, retainedLive, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, FAMILY, formatCasualties,
   MEASURES, RANK, rankCasualties, rankedTags, stateHeld, SUBTOTAL_NOTE } from './casualtiesData.ts';
 import type { CasualtyMeasure, CountryCasualties, HeldCasualties, HeldMeasures } from './casualtiesData';
 import { OPTIONS } from './definition';
@@ -135,7 +135,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const rankFollowed = top == null || followsHead(ranked);
   const reading = joinReadings([ranked.reading, ...measured.map(item => item.reading)]);
   const refused = reading.state === 'refused' ? reading.reason : null;
-  const answeredLives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined ? item.live : undefined);
+  const answeredLives = measured.map(item => rankFollowed && item.status === 'followed' && item.entry?.answer !== undefined && item.live ? retainedLive(item.live) : undefined);
   const complete = useRef<HeldCasualties<Live<FollowEntry>> | null>(null);
   const shownHead = heldCasualties(complete.current, answeredLives, members, following, refused);
   complete.current = shownHead.held;
@@ -216,6 +216,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const raceRows = useMemo(() => race ? followedHead ? rowsAt.current(headHour()) : askedRows : [],
     [race, followedHead, liveRanked, askedRows, headHour]);
   const raceEntries = useMemo(() => casualtyRaceEntries(raceRows), [raceRows]);
+  const shownChanges = useMemo(() => followedHead ? (changed: () => void) => {
+    const stops = lives.map(live => live!.subscribe(changed));
+    return () => stops.forEach(stop => stop());
+  } : undefined, [followedHead, dealt.live, taken.live, unknown.live, partial.live]);
+  const notes = JSON.parse(useInstalledValue(shownChanges, () => {
+    const rows = race ? followedHead ? rowsAt.current(headHour()) : askedRows : [];
+    const atLeast = race ? rows.some(row => row.atLeast) : (followedHead ? liveItems?.read() ?? [] : items).some(item => item.data.atLeast);
+    return JSON.stringify([rows.filter(row => row.taken === null).map(row => [row.tag, row.hour]), atLeast]);
+  })) as [[string, number][], boolean];
   const groupWarnings = useMemo(() => [...(groups.data?.warnings ?? []), ...(groups.error ? [`Country groups could not be loaded: ${groups.error.message}`] : [])], [groups.data, groups.error]);
   useEffect(() => { onWarnings(groupWarnings); }, [groupWarnings, onWarnings]);
 
@@ -233,7 +242,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     if (!drawn.length || (!followedHead && !(race ? askedRows : items).length)) return <WidgetState kind="empty" icon="target" message="No casualties yet." />;
     if (race) {
       const rowOf = (tag: string) => (followedHead ? rowsAt.current(headHour()) : askedRows).find(row => row.tag === tag);
-      const unknownTaken = raceRows.filter(row => row.taken === null);
+      const unknownTaken = notes[0].map(([tag, hour]) => ({ tag, hour }));
       const extent: [number, number] = widget.time.mode === 'range' ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];
       return <>
         <CountryRaceView key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} runtime={runtime} track={track} active={active}
@@ -244,7 +253,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
           tooltip={(tag, _hour, name) => { const row = rowOf(tag); return row ? [casualtyTooltip(row, name, unknownLabel)] : null; }} />
         {unknownTaken.length > 0 && <p className="chart-line-key casualties-unknown themed-scrollbar">Losses taken are unknown for {unknownTaken
           .map(row => looks.name(row.tag, row.hour)).join(', ')}.</p>}
-        {raceRows.some(row => row.atLeast) && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}
+        {notes[1] && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}
       </>;
     }
     return <>
@@ -254,7 +263,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
         showValues={options.values !== false} showRatio={options.ratio !== false} labelCandidates={drawn.map(tag => looks.name(tag, looksHour))}
         tooltip={item => ({ ...casualtyTooltip(item.data, item.label, unknownLabel), ...countryNameDetails(item.countryFlag) })}
         contextItems={item => [jumpItem(runtime, track.id, item.data.hour)]} />
-      {items.some(item => item.data.atLeast) && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}
+      {notes[1] && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}
     </>;
   })();
   return <div ref={setRoot} className="casualties">{content}</div>;

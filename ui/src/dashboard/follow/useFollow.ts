@@ -5,7 +5,7 @@ import { PreparingPage } from '../preparing.ts';
 import type { FollowedAnswer } from './message.ts';
 import { FollowedCard, FollowedWidgetKey, installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from './store.ts';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
-import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading } from './useFollowed.ts';
+import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading, onInstalled } from './useFollowed.ts';
 import type { Reading } from './useFollowed';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
@@ -59,12 +59,12 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
   const entry = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedEntry(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const painting = useRef(paint);
   painting.current = paint;
-  useLayoutEffect(() => { if (entry && view?.mode === 'picture') painting.current?.(entry); }, [entry, view]);
+  useLayoutEffect(() => entry && pipeline && pipe !== null ? onInstalled(pipeline, pipe, () => painting.current?.(entry)) : undefined, [entry, pipeline, pipe]);
   const status: Followed['status'] = !query ? 'off' : entry ? entry.status : 'pending';
   return {
     status, ...entry?.reason !== undefined ? { reason: entry.reason } : {},
     structure: entry ? structureOf(entry.answer, entry) : '',
     entry, hidden: !!query && !visible,
-    reading: query ? componentReading(view, sub) : null,
+    reading: query ? componentReading(pipeline && pipe !== null ? pipeline.view(pipe) : view, sub) : null,
   };
 }

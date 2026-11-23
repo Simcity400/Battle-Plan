@@ -1,3 +1,4 @@
+import { useInstalledValue } from '../../dashboard/follow/useFollowed.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -204,6 +205,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
   const cells = useRef(new Map<number, RowCells>());
   const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
     { active, validate: validateResourceBalance, structure: barStructure });
+  const shownDay = useInstalledValue(head.live.subscribe, () => { const at = head.atNow(); return at === null ? null : dayLabel(at); });
   const data = head.data;
   const report = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -288,7 +290,7 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     body = <div className="resource-balance">
       <p className="resource-caption">Per day · outlined parts are negative{data.dealsMissing ? ` · ${data.dealsMissing}` : ''}</p>
       <Legend label="Bar parts" items={legend} />
-      <ol className="resource-bars" aria-label={head.at === null ? 'Resources' : `Resources on ${dayLabel(head.at)}`}
+      <ol className="resource-bars" aria-label={shownDay === null ? 'Resources' : `Resources on ${shownDay}`}
         style={{ '--resource-glide': `${Math.round(3 * easeTau(tokens.motion, motionOf(runtime.clock.getSnapshot()), tokens.reducedMotion))}ms` } as CSSProperties}>
         {rows.map(({ resource, held: has, balance }) => <li key={resource.id} role="button" aria-label={describe(resource, balance)} {...rowTips.rowProps(resource.id)}
           onClick={() => onPick(resource, head.hour)} onKeyDown={event => {

@@ -559,3 +559,28 @@ test('review 8 5: the held entry is the one shown when the pause began, not the 
   assert.equal(inputPictures([1, 2, 3], shown, [before, tick, other, landed]).stale > 0, true, 'a different uncovered picture landing before the first judged frame is stale');
   assert.equal(inputPictures([1, 2, 3], shown, [before, tick, { ...before, at: 0.5, dim: true }, landed]).stale, 0, 'the paused entry itself, dimmed, is held');
 });
+
+test('review 9: a paused picture with the same displayed content is the held one, whatever its entry id', () => {
+  const shown = [{ at: 0, shown: [[1, null, 'active']] }];
+  const before = { t: 'picture', at: 0, hour: 110, since: 100, through: 110, seek: 3, placement: 1, dim: false, entry: 7, face: 'model:3=structure:A' };
+  const tick = { t: 'tick', at: 0, hour: 120, playing: false, seek: 3 };
+  const landed = { ...before, at: 2, hour: 120, through: 120, entry: 8 };
+  assert.equal(inputPictures([1, 2, 3], shown, [before, tick, { ...before, at: 0.5, dim: true, entry: 11 }, landed]).stale, 0, 'confirmation moving on gives a new id, not new content');
+  assert.equal(inputPictures([1, 2, 3], shown, [before, tick, { ...before, at: 0.5, dim: true, entry: 11, face: 'model:3=structure:B' }, landed]).stale > 0, true);
+});
+
+test('review 9: a table placement passes exact content only on its own renderer\'s comparison', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const window = owner => ({ page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['table'] }], audit: [{ widget: 'w', surface: 'table', placement: 1, owner, error: null }],
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } });
+  assert.equal(datedPlaybackVerdict([window(-1)], records).pass, true, 'the table renderer compared its own rows');
+  assert.equal(datedPlaybackVerdict([window(-1000)], records).pass, false, 'the raw panel answer at the same placement is not the table\'s comparison');
+});

@@ -105,3 +105,15 @@ export function heldCasualties<L>(held: HeldCasualties<L> | null, lives: readonl
   if (held) return { held, lives: held.lives, members: held.members, awaiting: false };
   return { held: null, lives, members, awaiting: members.length > 0 };
 }
+
+const retained = new WeakMap<object, unknown>();
+
+export function retainedLive<E extends { readonly answer: unknown }>(live: { read(): E; subscribe(changed: () => void): () => void }) {
+  let held = retained.get(live) as typeof live | undefined;
+  if (!held) {
+    let last: E | undefined;
+    held = { read: () => { const now = live.read(); if (now.answer !== undefined) last = { ...now }; return last ?? now; }, subscribe: changed => live.subscribe(changed) };
+    retained.set(live, held);
+  }
+  return held;
+}

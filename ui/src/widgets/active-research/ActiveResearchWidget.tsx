@@ -55,8 +55,9 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const databaseIndex = entry?.databaseIndex ?? null;
     const art = researchArt(artwork, token, databaseIndex);
     const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
-    const content = (): TooltipContent => {
-      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
+    const content = (): TooltipContent | null => {
+      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index);
+      if (!current || current.state.token !== token) return null;
       const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
       const shown = latest.inspect(slot.index);
       const progress = shown ? shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }

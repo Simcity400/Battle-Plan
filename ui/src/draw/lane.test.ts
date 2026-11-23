@@ -499,3 +499,10 @@ test('review 8 2: a removed component keeps its facts charged while the page sti
   await step(10);
   assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > before, 'the removed facts come back once the joined picture replaces them');
 });
+
+test('review 9: a lane without the route\'s follower keeps no packets after a reset, and gives each charge back', () => {
+  const { lane, released } = rig();
+  lane.follow(8, 'followed');
+  for (let hour = 0; hour < 50; hour++) lane.receive('follow', message(hour, [{ id: 5, answer: rows([1n], [BigInt(hour)]) }], hour % 10 === 0, NATIVE, 1));
+  assert.deepEqual([(lane as unknown as { early: unknown[] }).early.length, released.length > 0], [0, true], 'the other lane\'s records are released, never queued without limit');
+});

@@ -117,6 +117,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly natives = new Map<number, number>();
   private readonly offsets = new Map<number, number>();
   private readonly resets = new Map<number, number>();
+  private readonly unbound = new Map<number, Map<number, number>>();
   private readonly told = new Map<number, number>();
   private held: Held[] = [];
   private early: { native: number; seek: number; bytes: Uint8Array }[] = [];
@@ -156,6 +157,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.offsets.set(route, offset);
     this.facts.follow(sub, route, held.channel);
     this.facts.stamp(route, seek);
+    this.settleResets();
     this.replay();
     this.replayEarly();
     this.after();
@@ -219,6 +221,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (native !== undefined) for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
     this.facts.seek(route, seek, target + (this.offsets.get(route) ?? 0));
     for (const widget of this.widgets.values()) if (this.routeOf(widget) === route) widget.inflight = null;
+    this.settleResets();
     this.replay();
     this.replayEarly();
     this.after();
@@ -289,6 +292,29 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.release(this.held.filter(item => item.id === id));
     this.held = this.held.filter(item => item.id !== id);
     this.reindex();
+  }
+
+  private unboundReset(native: number, seek: number) {
+    let seeks = this.unbound.get(native);
+    if (!seeks) this.unbound.set(native, seeks = new Map());
+    seeks.set(seek, (seeks.get(seek) ?? 0) + 1);
+    const dropped = this.held.filter(item => item.native === native && item.kind === 'follow' && item.seek <= seek);
+    this.release(dropped);
+    this.held = this.held.filter(item => !dropped.includes(item));
+    this.reindex();
+  }
+
+  private settleResets() {
+    for (const [native, seeks] of this.unbound) {
+      const route = this.routes.get(native);
+      if (route === undefined) continue;
+      const current = this.facts.generation(route).seek;
+      for (const [seek, count] of seeks) {
+        if (seek === current) this.resets.set(native, (this.resets.get(native) ?? 0) + count);
+        if (seek <= current) seeks.delete(seek);
+      }
+      if (!seeks.size) this.unbound.delete(native);
+    }
   }
 
   private drop(native: number) {
@@ -380,8 +406,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = data.getUint32(12, true);
     if (order === -1) { this.freed += recordsCharge(bytes); return; }
-    if (order === 1 || order === null && (message.reset || this.early.some(item => item.native === message.route))) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
-    if (message.reset) {
+    if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
+    if (message.reset && order === null) this.unboundReset(message.route, message.seek);
+    else if (message.reset) {
       this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
       this.drop(message.route);
     }
@@ -595,7 +622,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           hour: selected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
         mode = painted.mode ?? 'picture'; reason = painted.reason;
         const refusals = selected.pictures.map(refusalOf);
-        if (mode === 'picture' && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = refusals[0]!; }
+        if (mode === 'picture' && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
         else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
           painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
       } catch (error) {

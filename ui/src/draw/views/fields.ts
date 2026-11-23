@@ -1,4 +1,4 @@
-import { liveKey } from '../../charts/live.ts';
+﻿import { liveKey } from '../../charts/live.ts';
 import { CellGroup, sectionGroups, sectionOf, sectionValues, valuedGroup, type GroupValues } from '../../dashboard/follow/liveCells.ts';
 import type { FollowedPanel } from '../../dashboard/follow/message';
 import type { Picture } from '../../dashboard/follow/facts';
@@ -10,22 +10,6 @@ export type LiveMap = Map<string, number | bigint | string>;
 export interface ModelField { bytes: Uint8Array | null; data?: unknown; refused: string | null; structure?: string }
 
 const groups = new WeakMap<object, GroupValues>();
-const shapes = new WeakMap<object, string>();
-
-export function shapeOf(value: Extract<Value, { kind: 'answer' }>): string {
-  let held = shapes.get(value);
-  if (held !== undefined) return held;
-  const answer = value.answer;
-  if (answer.kind === 'notRecorded') held = `refused:${answer.reason}`;
-  else {
-    const u64 = answer.views.u64, bytes = new Uint8Array(u64.buffer, u64.byteOffset + answer.keys * 8, answer.rows * 16);
-    let hash = 0x811c9dc5;
-    for (const byte of bytes) hash = Math.imul(hash ^ byte, 0x01000193);
-    held = `${answer.kind}:${answer.columns}:${answer.rows}:${(hash >>> 0).toString(36)}`;
-  }
-  shapes.set(value, held);
-  return held;
-}
 
 function groupOf(value: Value, spec: Parameters<typeof valuedGroup>[0]): GroupValues {
   if (value.kind === 'seed') return valuedGroup(spec, value.values);
@@ -73,7 +57,6 @@ export function fieldsOf(scene: Scene, hour: number, structureOf: (product: stri
     const picture = scene.pictures[at]!, head = picture.parts[0]!;
     if (head.value.kind === 'answer') {
       fields[`answer:${sub.id}`] = { value: head.value.body, content: `answer:${head.version}` };
-      fields[`shape:${sub.id}`] = { value: null, content: shapeOf(head.value) };
       return;
     }
     if (head.value.kind !== 'panel') return;

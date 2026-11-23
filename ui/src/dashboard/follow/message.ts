@@ -214,3 +214,21 @@ export function parseDatedPanels(bytes: Uint8Array) {
   if (at !== bytes.length) throw new Error('Unexpected bytes after dated panels.');
   return { route, clock, seek, panels, completed };
 }
+
+const shapes = new WeakMap<Uint8Array, string>();
+
+export function answerShape(body: Uint8Array): string {
+  let held = shapes.get(body);
+  if (held !== undefined) return held;
+  let answer: FollowedAnswer;
+  try { answer = parseAnswer(body); } catch { answer = { kind: 'notRecorded', reason: 'unreadable' }; }
+  if (answer.kind === 'notRecorded') held = `refused:${answer.reason}`;
+  else {
+    const u64 = answer.views.u64, keys = new Uint8Array(u64.buffer, u64.byteOffset + answer.keys * 8, answer.rows * 16);
+    let hash = 0x811c9dc5;
+    for (const byte of keys) hash = Math.imul(hash ^ byte, 0x01000193);
+    held = `${answer.kind}:${answer.columns}:${answer.rows}:${(hash >>> 0).toString(36)}`;
+  }
+  shapes.set(body, held);
+  return held;
+}

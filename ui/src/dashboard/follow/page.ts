@@ -1,3 +1,5 @@
+import { answerShape } from './message.ts';
+
 export const SAME = 'same' as const;
 export type Same = typeof SAME;
 
@@ -99,9 +101,11 @@ interface RouteState { reset: number; command: number; failed: { seek: number; r
 
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null }
 
-const STRUCTURAL = /^(model|shape|refused):|^(rows|failed)$/;
-const structureOf = (content: Readonly<Record<string, string>>) => Object.entries(content)
-  .filter(([key]) => STRUCTURAL.test(key)).map(([key, id]) => `${key}=${id}`).join('|');
+const STRUCTURAL = /^(model|refused):|^(rows|failed)$/;
+const structureOf = (content: Readonly<Record<string, string>>, fields: Readonly<Record<string, unknown>>) => [
+  ...Object.entries(content).filter(([key]) => STRUCTURAL.test(key)).map(([key, id]) => `${key}=${id}`),
+  ...Object.entries(fields).flatMap(([key, value]) => key.startsWith('answer:') && value instanceof Uint8Array ? [`${key}~${answerShape(value)}`] : []),
+].join('|');
 
 const sameContent = (a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>) => {
   const keys = Object.keys(a).filter(key => key !== 'hour');
@@ -295,6 +299,8 @@ export class Page<B extends Bitmap = Bitmap> {
     if (shown && shown.binding === entry.binding && entry.id < shown.id) return 'superseded';
     if (at < entry.lo) return 'early';
     if (at > entry.hi) return 'superseded';
+    if (!shown && Object.values(entry.fields).some(value => value === SAME)) return 'kept content';
+    if (entry.mode === 'refused' && !this.playing && shown && at > entry.c && !sameContent(entry.content, widget.content)) return 'uncovered';
     if (entry.mode !== 'picture') return null;
     for (let k = 0; k < widget.surfaces.length; k++) {
       const part = entry.surfaces[k];
@@ -394,7 +400,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (!shown) return { mode: widget.status, reason: widget.reason, target: at, dim: false, tooltip: null };
     const tip = shown.fields.tooltip as { key: string; text: unknown } | undefined;
     const until = Math.min(shown.c, shown.hi);
-    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: structureOf(widget.content), target: at,
+    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: structureOf(widget.content, shown.fields), target: at,
       dim: (!this.playing && at > until) || shown.binding !== widget.binding, fields: shown.fields,
       tooltip: tip && widget.inspect !== null && tip.key === widget.inspect ? tip.text : null };
   }
@@ -448,10 +454,18 @@ export class Page<B extends Bitmap = Bitmap> {
 
   mountRoute(id: number, route: number) {
     const widget = this.widgets.get(id);
-    if (widget) { widget.route = route; this.route(route); }
+    if (!widget) return;
+    widget.route = route;
+    const failed = this.route(route).failed;
+    if (widget.pin === null && failed && failed.seek === this.seek && widget.status !== 'failed') this.reading(widget);
   }
 
   command(route: number) { return ++this.route(route).command; }
+
+  carry(from: number, to: number) {
+    const failed = this.routes.get(from)?.failed;
+    if (failed) this.route(to).failed = failed;
+  }
 
   fail(route: number, command: number, reason: string): boolean {
     const at = this.route(route);

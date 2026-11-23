@@ -38,15 +38,15 @@ export function usePipeline(clock: PlaybackController | null, client: DashboardC
 }
 
 export function useFollowedWidget(pipeline: Pipeline | null, key: string | null, options: MountOptions): number | null {
-  const [id, setId] = useState<number | null>(null);
+  const [held, setHeld] = useState<{ key: string; id: number } | null>(null);
   const timing = useRef(options);
   timing.current = options;
   useLayoutEffect(() => {
-    if (key === null || !pipeline) { setId(null); return; }
-    const made = pipeline.acquire(key, timing.current);
-    setId(made);
+    if (key === null || !pipeline) { setHeld(null); return; }
+    setHeld({ key, id: pipeline.acquire(key, timing.current) });
     return () => { pipeline.drop(key); };
   }, [pipeline, key]);
+  const id = heldFor(held, key);
   const { offset, pin, bounds } = options;
   const boundsKey = bounds === undefined ? 'kept' : bounds ? `${bounds[0]}:${bounds[1]}` : '';
   useLayoutEffect(() => {
@@ -155,9 +155,20 @@ export function datedStore(pipeline: Pipeline | null, widget: number | null) {
   };
 }
 
-export function useInstalledDate(pipeline: Pipeline | null, widget: number | null): number | null {
-  const store = useMemo(() => datedStore(pipeline, widget), [pipeline, widget]);
-  return useSyncExternalStore(store.subscribe, store.read, store.read);
+export function onInstalled(pipeline: Pipeline, widget: number, paint: () => void): () => void {
+  const run = () => { if (pipeline.view(widget)?.mode === 'picture') paint(); };
+  run();
+  return pipeline.onInstall(widget, run);
+}
+
+export const heldFor = (held: { key: string; id: number } | null, key: string | null) => held !== null && held.key === key ? held.id : null;
+
+export function useInstalledValue<T extends string | number | boolean | null>(subscribe: ((changed: () => void) => () => void) | undefined, select: () => T): T {
+  const selected = useRef(select);
+  selected.current = select;
+  const listen = useMemo(() => (changed: () => void) => subscribe?.(changed) ?? (() => {}), [subscribe]);
+  const read = useMemo(() => () => selected.current(), []);
+  return useSyncExternalStore(listen, read, read);
 }
 
 const panels = new WeakMap<object, FollowedPanel>();

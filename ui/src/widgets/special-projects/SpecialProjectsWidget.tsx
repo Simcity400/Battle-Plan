@@ -62,7 +62,7 @@ type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
 
 type HourNow = () => number;
 
-function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
+function CurrentList({ reply, at, item, clock, feed, placement }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; placement?: number; feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
   const widths = useMemo(() => {
@@ -83,7 +83,7 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
   const rows = (g: typeof groups) => (['running', 'completed', 'earlier', 'cancelled'] as const).flatMap(section =>
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
   useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
-    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined, feed?.pipe);
+    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined, placement);
   if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
   const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`special-project-row${className}`} {...item(card)}>
     <ProjectTile icon={card.info.icon} /><span className="special-project-label"><strong data-panel-label={card.project.id}>{card.info.name}</strong><span>{line}</span></span></div>;
@@ -262,7 +262,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     else {
       const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
-      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
+      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} placement={live.placement} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
         reply={reply} at={at} item={item(reply)} />{details}</>
         : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}</>;
     }

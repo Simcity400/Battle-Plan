@@ -492,3 +492,13 @@ test('review 8 2: while paused, a joined picture of a new binding that does not 
   offer(entry({ id: 3, binding, h: 96, c: 150, content: 'Y' })); p.frame();
   assert.equal(view().id, 3);
 });
+
+test('review 9: while paused, a dated refusal that does not cover the target never clears the held picture', () => {
+  const { p, offer, view } = page();
+  offer(entry({ id: 1, h: 96, c: 150, content: 'X' })); p.publish(150);
+  p.publish(150, { playing: false });
+  offer(entry({ id: 2, h: 96, c: 140, mode: 'refused', reason: 'Not recorded', content: 'R' })); p.frame();
+  assert.deepEqual([view().id, view().mode], [1, 'picture']);
+  offer(entry({ id: 3, h: 96, c: 150, mode: 'refused', reason: 'Not recorded', content: 'R' })); p.frame();
+  assert.deepEqual([view().id, view().mode], [3, 'refused'], 'the refusal that covers the target installs');
+});

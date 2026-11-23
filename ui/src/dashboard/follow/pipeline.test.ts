@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, NATIVE } from './inProcess.fixture.ts';
-import { datedStore, joinReadings, readingOf } from './useFollowed.ts';
+import { datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
+import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
 import type { LaneView } from '../../draw/lane';
 
@@ -280,5 +281,53 @@ test('review 8 3: a numeric update keeps the structure React reads, while date r
     send(message(16, [{ id: sub, answer: { keys: [1n, 2n], columns: 1, values: [8n, 9n] } }], false, NATIVE, seek));
     assert.ok(await settle(() => pipeline.view(id)!.structure !== structure), 'a new row is a new structure');
     stop();
+  } finally { close(); }
+});
+
+test('review 9: value-dependent output runs on every install, while React keeps one structure', async () => {
+  const { pipeline, clock, send, source, settle, close } = inProcess();
+  try {
+    const id = pipeline.acquire('arsenal|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    const seek = clock.getSnapshot().seekSequence;
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE, seek));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
+    const totals: bigint[] = [];
+    const stop = onInstalled(pipeline, id, () => totals.push(parseAnswer(pipeline.view(id)!.fields!['answer:' + sub] as Uint8Array).kind === 'notRecorded' ? -1n
+      : cellValue(parseAnswer(pipeline.view(id)!.fields!['answer:' + sub] as Uint8Array) as Exclude<ReturnType<typeof parseAnswer>, { kind: 'notRecorded' }>, 0) as bigint));
+    const structure = pipeline.view(id)!.structure;
+    for (let at = 0; at < 2; at++) clock.step(1);
+    send(message(12, [{ id: sub, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE, seek));
+    assert.ok(await settle(() => totals.at(-1) === 3n), JSON.stringify(totals.map(String)));
+    assert.equal(pipeline.view(id)!.structure, structure, 'the stockpile going from 2 to 3 with the same rows is painted, not committed');
+    stop();
+    assert.deepEqual([heldFor({ key: 'parent|0', id: 4 }, 'parent|0|detail'), heldFor({ key: 'detail', id: 5 }, 'detail')], [null, 5],
+      'R2-S5: a detail never times the id acquired for its parent');
+  } finally { close(); }
+});
+
+test('review 9: a rejoin keeps its route\'s named failure, and a detail\'s samples name their widget', async () => {
+  const { capturePictures } = await import('../pulled.ts');
+  const { pipeline, clock, source, settle, fail, close } = inProcess();
+  try {
+    const query = { product: 'series-state' };
+    const first = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(first, {}, source, '1', 0, query, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    fail('The followed stream broke');
+    assert.ok(await settle(() => pipeline.view(first)?.mode === 'failed'));
+    pipeline.drop('widget|0');
+    const again = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const back = pipeline.subscribe(again, {}, source, '1', 0, query, 'followed')!;
+    await settle(() => pipeline.status(back).status === 'followed');
+    assert.deepEqual([pipeline.view(again)?.mode, pipeline.view(again)?.reason], ['failed', 'The followed stream broke'], 'R3-S4');
+    await capturePictures(true);
+    const detail = pipeline.acquire('card|0|detail', { offset: 0, pin: 40, widget: 'card' });
+    pipeline.answer(detail, -1000, { hour: 40, rows: () => [] });
+    const named = (await capturePictures(false) as { t: string; placement?: number; widget?: string }[]).filter(record => record.t === 'picture' && record.placement === detail);
+    assert.ok(named.length > 0 && named.every(record => record.widget === 'card'), 'R3-S7: ' + JSON.stringify(named.slice(-1)));
   } finally { close(); }
 });

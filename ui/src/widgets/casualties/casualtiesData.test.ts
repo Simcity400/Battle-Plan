@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesStateReply } from '../../generated/dashboard';
-import { casualtyRaceEntries, casualtyRatio, casualtyRows, formatCasualties, rankCasualties, stateHeld, heldCasualties } from './casualtiesData.ts';
+import { casualtyRaceEntries, casualtyRatio, casualtyRows, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
 import type { HeldMeasures } from './casualtiesData';
 
 const state = (measure: string, values: Record<string, string | null>): SeriesStateReply => ({ branchId: '1', measure, decimals: 0,
@@ -58,4 +58,14 @@ test('review 8 2: a ranking awaiting its measures is loading, an answered empty 
   const moved = heldCasualties<string>(complete.held, [undefined, undefined], ['GER', 'ITA'], true, null);
   assert.deepEqual([moved.lives, moved.members, moved.awaiting], [['a', 'b'], ['GER', 'SOV'], false], 'a new member keeps the last complete result until its measures land');
   assert.equal(heldCasualties<string>(complete.held, [undefined, undefined], ['GER'], true, 'Not recorded').held, null, 'a refusal drops the held result');
+});
+
+test('review 9: a retained reader keeps the last complete values when its installation no longer holds them', () => {
+  let answer: string | undefined = 'complete';
+  const live = { read: () => ({ answer, version: answer ? 1 : 2 }), subscribe: () => () => {} };
+  const held = retainedLive(live);
+  assert.equal(held.read().answer, 'complete');
+  answer = undefined;
+  assert.deepEqual(held.read(), { answer: 'complete', version: 1 }, 'a rank-only install does not lose the previous measures');
+  assert.equal(retainedLive(live), held, 'one retained reader per reader, so members and values stay paired');
 });

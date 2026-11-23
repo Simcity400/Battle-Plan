@@ -8,7 +8,7 @@ import type { Failure } from './queryError';
 import { panelReply } from './follow/panel.ts';
 import { canonical } from './follow/canonical.ts';
 import { useWidgetKey } from './follow/useFollow.ts';
-import { datedStore, installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, useInstalledDate, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
+import { datedStore, installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
 import type { ModelField } from '../draw/views/fields';
 import { perfLog } from '../shell/perf.ts';
 import { exactLive, panelAuditRows, panelTexts } from './follow/panelAudit.ts';
@@ -102,13 +102,12 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const widgetKey = useWidgetKey();
   const [owner] = useState(() => pinnedOwners--);
   const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? headKey(widgetKey, track.axisOffset, hoverHour) : null,
-    { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, key: `${widget.kind}|${product}|${paramsKey}` });
+    { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, widget: widgetKey, key: `${widget.kind}|${product}|${paramsKey}` });
   const query = useMemo(() => following ? { ...params, panel: product, branchId: track!.branch.id } : null,
     [following, product, paramsKey, track?.branch.id]);
   const follow = useMemo(() => track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null, [track?.source, track?.branch.id, track?.axisOffset]);
   const sub = useFollowedSub(pipeline, pipe, follow, query, 'panel', product);
   const view = useInstalled(pipeline, pipe);
-  const dated = useInstalledDate(pipeline, following ? pipe : null);
   const model = installedModel(view, sub);
   const panel = installedPanel(model);
   const pushed = following && view?.mode === 'picture' && panel !== undefined;
@@ -128,7 +127,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const error: Failure | undefined = outside ? undefined : following ? followFailure ?? fromPanel.error : asked.error;
   const askedLive = useMemo(() => repliedCells(following ? undefined : data), [following, data]);
   const shownLive = following && live ? live : askedLive;
-  const at = outside ? null : following ? (pushed ? dated ?? view!.painted ?? view!.h ?? null : null) : shown?.hour ?? null;
+  const at = outside ? null : following ? (pushed ? view!.painted ?? view!.h ?? null : null) : shown?.hour ?? null;
   const latest = useRef(paint);
   latest.current = paint;
   useLayoutEffect(() => { if (data !== undefined) latest.current?.(data); }, [data]);

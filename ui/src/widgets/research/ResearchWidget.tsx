@@ -54,7 +54,7 @@ const NO_COVERAGE: ResearchCoverage[] = [];
 const NO_LANES: ResearchLane[] = [];
 const NO_LOOKS: ReadonlyMap<string, ResearchFolderLook> = new Map();
 type Breakdown = { slotIndex: number; entry: ResearchEntry; hour: number };
-type Tip = (content: () => TooltipContent, key: string, x: number, y: number) => void;
+type Tip = (content: () => TooltipContent | null, key: string, x: number, y: number) => void;
 type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpProps>;
 const laneInteractive = (item: ResearchItem) => item.kind !== 'opened' && item.kind !== 'closed';
 const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.databaseIndex : null;
@@ -63,7 +63,7 @@ function Art({ icon, className }: { icon: string | undefined; className: string 
   return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
-function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
+function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent | null) {
   return {
     onPointerMove: (event: { clientX: number; clientY: number }) => tip(content, key, event.clientX, event.clientY),
     onPointerLeave: untip,
@@ -113,6 +113,7 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
   const databaseIndex = entry?.databaseIndex ?? null;
   const name = text.name(token, databaseIndex);
   const content = () => {
+    if ((latest.current ?? now).slots.find(item => item.index === slot.index)?.state.token !== read.state.token) return null;
     const shown = latest.inspect?.(slot.index);
     if (shown) return currentTooltip(token, slot.index, shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }, shown.left, !!entry, text, null, databaseIndex);
     const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;

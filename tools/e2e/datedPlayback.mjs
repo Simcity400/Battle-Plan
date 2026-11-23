@@ -10,6 +10,8 @@ const gaps = times => times.slice(1).map((at, i) => at - times[i]);
 const rate = times => times.length < 2 ? null : 1000 * (times.length - 1) / (times.at(-1) - times[0]);
 const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
 const WORKER_GRACE_MS = 34;
+const RENDERER_OWNER = { table: -1, race: -2 };
+const rendered = sample => !(sample.surface in RENDERER_OWNER) || !Number.isFinite(sample.owner) || sample.owner === RENDERER_OWNER[sample.surface];
 export const CANONICAL_INPUTS = Object.freeze(['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause']);
 
 export function inputPictures(frames, visibility, records, pinWidget) {
@@ -28,7 +30,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       if (r.t === 'tick') {
         const pause = !r.playing && (!anchor || anchor.playing || anchor.seek !== r.seek || Math.floor(anchor.hour) !== Math.floor(r.hour));
         const newSeek = anchor && Number.isFinite(anchor.seek) && Number.isFinite(r.seek) && anchor.seek !== r.seek;
-        if (pause) heldAtPause = new Map([...pictures].map(([id, picture]) => [id, picture.entry]));
+        if (pause) heldAtPause = new Map([...pictures].map(([id, picture]) => [id, picture.face ?? picture.entry]));
         if (hasWorkerFrames && pause) {
           if (newSeek) for (const [id, state] of states) if (state.settled) settledBeforeSeek.add(id);
           workerApplied = false; applied.clear(); states.clear();
@@ -72,7 +74,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       if (hidden.has(id)) continue;
       const valid = ink && r.seek === anchor.seek && Number.isFinite(r.seek) && (r.fixedHour ?? null) === pin &&
         r.since <= r.hour && r.hour <= r.through && (fixed ? r.hour === target : r.hour <= target);
-      const held = fixed && ink && !valid && r.dim === true && r.hour <= target && state.held !== undefined && r.entry === state.held;
+      const held = fixed && ink && !valid && r.dim === true && r.hour <= target && state.held !== undefined && (r.face ?? r.entry) === state.held;
       if (settledBeforeSeek.has(id) && fixed && ink && !valid && !held) { stale++; settledBeforeSeek.delete(id); }
       if (fixed && ink && !valid && !held) state.invalid = true;
       if (fixed && state.settled && ink && !valid) stale++;
@@ -281,9 +283,9 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         eligibleAges.push(available.length && visibleCount === expected ? Math.max(...available) : Infinity);
       }
       const samples = auditByWidget.get(widget.id) ?? [];
-      const auditedPairs = new Set(samples.map(s => `${s.surface}\u0000${s.placement}`));
+      const auditedPairs = new Set(samples.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
       const exact = required.size > 0 && [...required].every(surface => observedSurfaces.has(surface))
-        && [...required].every(surface => samples.some(s => s.surface === surface))
+        && [...required].every(surface => samples.some(s => s.surface === surface && rendered(s)))
         && [...observedPairs].every(pair => auditedPairs.has(pair)) && samples.every(s => s.error === null);
       const age = p95(ages), eligible = p95(eligibleAges);
       const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length, draw: drawCost(reports, id) }));

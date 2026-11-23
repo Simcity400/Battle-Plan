@@ -37,7 +37,7 @@ interface WidgetState {
   held: Map<string, unknown>;
 }
 
-export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string }
+export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string }
 
 const NO_CHANNEL = 'This connection has no channel for pushed answers';
 
@@ -133,11 +133,11 @@ export class Pipeline {
 
   private sample(seek: number) {
     const at = performance.timeOrigin + performance.now();
-    for (const [key, held] of this.shared) {
+    for (const held of this.shared.values()) {
       const view = this.page.view(held.id), widget = this.widgets.get(held.id), shown = this.page.widgets.get(held.id);
       if (!widget || !shown) continue;
       const offset = shown.offset, clock = (hour: number) => hour - offset;
-      const name = key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key, surface = widget.view === 'table' || widget.view === 'race' ? widget.view : 'page';
+      const name = held.widget, surface = widget.view === 'table' || widget.view === 'race' ? widget.view : 'page';
       const answers = [...this.answered.get(held.id) ?? []];
       for (const [owner, answer] of answers) {
         const hour = clock(answer.hour), rows = answer.rows();
@@ -155,7 +155,8 @@ export class Pipeline {
         head: clock(view.target), hour, offset, ...shown.pin !== null ? { fixedHour: clock(shown.pin) } : {},
         ...view.h !== undefined ? { since: clock(view.h) } : {}, ...shown.installed ? { through: clock(shown.installed.c) } : {},
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
-        ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content) } : {},
+        ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
+          face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
         drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
@@ -221,11 +222,12 @@ export class Pipeline {
     return id;
   }
 
-  private readonly shared = new Map<string, { id: number; holders: number }>();
+  private readonly shared = new Map<string, { id: number; holders: number; widget: string }>();
 
   acquire(key: string, options: MountOptions): number {
     let held = this.shared.get(key);
-    if (!held) this.shared.set(key, held = { id: this.mount({ ...options, key: options.key ?? key }), holders: 0 });
+    if (!held) this.shared.set(key, held = { id: this.mount({ ...options, key: options.key ?? key }), holders: 0,
+      widget: options.widget ?? (key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key) });
     held.holders++;
     return held.id;
   }
@@ -317,7 +319,7 @@ export class Pipeline {
     sub.released = true;
     this.host.lanes[sub.lane]!.postMessage({ type: 'unfollow', sub: id });
     if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route).catch(() => {});
-    if (!this.holds(sub.route)) { sub.route.told = null; sub.route.page = this.nextRoute++; }
+    if (!this.holds(sub.route)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
   }
 
   private remount(widget: WidgetState) {
