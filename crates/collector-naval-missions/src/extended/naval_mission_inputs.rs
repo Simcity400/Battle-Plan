@@ -7,10 +7,23 @@ use collector_primitives::{
 use collector_projection::table_conversion::table;
 use engine_allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
 use engine_native::{
-    Memory, ccountry, cfleet, creference_registry, cstrategic_navy, cstrategic_navy_manager,
-    cweather_manager, modifier_accumulator as accumulator, modifier_accumulator::Value,
-    naval_mission_inputs as inputs, naval_mission_inputs::COUNTRY_KEYS,
-    naval_mission_inputs::MISSION_KINDS, naval_mission_inputs::Operands, walk::Outcome,
+    Memory,
+    ccountry,
+    cfleet,
+    creference_registry,
+    cweather_manager,
+    modifier_accumulator::{self as accumulator, Value},
+    walk::Outcome,
+};
+use engine_native_naval::{
+    cstrategic_navy,
+    cstrategic_navy_manager,
+    naval_mission_inputs::{
+        self as inputs,
+        COUNTRY_KEYS,
+        MISSION_KINDS,
+        Operands,
+    },
 };
 use replay_data::{
     rows::NavalMissionCommanderRow, rows::NavalMissionCountryRow, rows::NavalMissionLedgerRow,
@@ -211,7 +224,7 @@ struct CommanderRow {
 struct PatrolMember {
     id: u64,
     owner: Option<u32>,
-    row: engine_native::naval_patrol_inputs::Operands,
+    row: engine_native_naval::naval_patrol_inputs::Operands,
     local: Option<Value>,
     weather: Option<Value>,
     leader: u64,
@@ -1189,7 +1202,7 @@ impl Captured {
                     .visit
                     .ok_or("naval patrol member lacks asynchronous witness")?;
                 let header = member.mission_header.unwrap_or_else(|| {
-                    engine_native::naval_patrol_inputs::read_header(memory, base, visit)
+                    engine_native_naval::naval_patrol_inputs::read_header(memory, base, visit)
                 });
                 self.census.first[member_index].mission_header = Some(header);
                 let known = self
@@ -1205,7 +1218,7 @@ impl Captured {
                             targets[0] == Some(true)
                                 || targets[0] == Some(false) && targets[1] == Some(true)
                         });
-                let row = engine_native::naval_patrol_inputs::read_member_observed_stats(
+                let row = engine_native_naval::naval_patrol_inputs::read_member_observed_stats(
                     memory,
                     base,
                     visit,
@@ -1236,7 +1249,7 @@ impl Captured {
                 if known.is_some() {
                     packet.existing_context = true;
                 } else if member.range_failure.is_none() {
-                    let context = engine_native::naval_patrol_inputs::read_context_with_location(
+                    let context = engine_native_naval::naval_patrol_inputs::read_context_with_location(
                         memory,
                         base,
                         visit,
@@ -1373,11 +1386,11 @@ impl Captured {
                 .visit
                 .ok_or("escort source lacks asynchronous witness")?;
             let header = member.mission_header.unwrap_or_else(|| {
-                engine_native::naval_patrol_inputs::read_header(memory, base, visit)
+                engine_native_naval::naval_patrol_inputs::read_header(memory, base, visit)
             });
             self.census.first[at].mission_header = Some(header);
             let owner = member.mission_owner.unwrap_or_else(|| {
-                engine_native::naval_patrol_inputs::read_owner(memory, base, visit, header)
+                engine_native_naval::naval_patrol_inputs::read_owner(memory, base, visit, header)
             });
             self.census.first[at].mission_owner = Some(owner);
             if let Ok(packet) = self.patrol.binary_search_by_key(&first, |packet| packet.id) {

@@ -580,11 +580,10 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
     use engine_native_intelligence::{ccountry_intel, country_intel_row};
     use engine_native::{
         cdiplomacy_status,
-        cstrategic_navy,
-        cstrategic_navy_manager,
         cweather_manager,
         cprovince::definition as province_definition,
     };
+    use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
     use engine_native_parts::{
         cstatic_modifier,
         cstrategic_region,

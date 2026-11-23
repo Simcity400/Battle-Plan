@@ -14,7 +14,7 @@ pub struct Row {
     pub damage: i64,
 }
 
-pub(crate) fn read(
+pub fn read(
     memory: &impl crate::Memory,
     base: usize,
     pointer: usize,

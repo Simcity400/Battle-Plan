@@ -12,7 +12,7 @@ use engine_native::cland_combat::{
     Source,
     WIDTH_FACTOR,
 };
-use engine_native::naval_commander_inputs::SkillDefinition;
+use engine_native_naval::naval_commander_inputs::SkillDefinition;
 use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Buffer};
 use engine_native::{carmy, cland_combatant};
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ type Selection = Result<CommanderSource, &'static str>;
 
 #[derive(Default)]
 pub struct Leaders {
-    presentations: HashMap<usize, engine_native::naval_commander_inputs::Presentation>,
+    presentations: HashMap<usize, engine_native_naval::naval_commander_inputs::Presentation>,
     next_skills: HashMap<(i32, i32), Result<SkillDefinition, &'static str>>,
     pub(crate) parents: HashMap<usize, Result<usize, &'static str>>,
     pub(crate) preferred: HashMap<usize, Result<i32, &'static str>>,
@@ -51,8 +51,8 @@ impl Leaders {
     fn presentation(
         &mut self,
         leader: usize,
-        read: impl FnOnce() -> Result<engine_native::naval_commander_inputs::Presentation, &'static str>,
-    ) -> Result<engine_native::naval_commander_inputs::Presentation, &'static str> {
+        read: impl FnOnce() -> Result<engine_native_naval::naval_commander_inputs::Presentation, &'static str>,
+    ) -> Result<engine_native_naval::naval_commander_inputs::Presentation, &'static str> {
         if let Some(Ok(copy)) = self.presentations.get(&leader).map(|held| held.copied()) {
             return Ok(copy);
         }
@@ -69,7 +69,7 @@ impl Leaders {
 
     pub fn allocated_bytes(&self) -> usize {
         self.presentations.capacity()
-            * size_of::<(usize, engine_native::naval_commander_inputs::Presentation)>()
+            * size_of::<(usize, engine_native_naval::naval_commander_inputs::Presentation)>()
             + self
                 .presentations
                 .values()
@@ -247,14 +247,14 @@ pub struct SideDetails {
     pub commander_category: i32,
     pub commander_country: u32,
     pub commander_experience: i64,
-    pub next_skill: Option<engine_native::naval_commander_inputs::SkillDefinition>,
+    pub next_skill: Option<engine_native_naval::naval_commander_inputs::SkillDefinition>,
     pub learning_threshold: Option<i64>,
     pub skill_modifiers: Option<[i64; 2]>,
     pub side_input_refusals: [Option<&'static str>; 3],
     pub commander_name_token: Span,
     pub commander_description_token: Span,
     pub commander_formation: u64,
-    pub presentation: engine_native::naval_commander_inputs::Presentation,
+    pub presentation: engine_native_naval::naval_commander_inputs::Presentation,
     pub traits_start: usize,
     pub traits_len: usize,
     pub timed_traits_start: usize,
@@ -725,7 +725,7 @@ impl<M: Memory> DetailReader<'_, M> {
             &mut leaders.next_skills,
             (commander.skill, commander.category),
             || {
-                engine_native::naval_commander_inputs::capture_next_skill(
+                engine_native_naval::naval_commander_inputs::capture_next_skill(
                     self.memory,
                     self.base,
                     commander.skill,
@@ -736,7 +736,7 @@ impl<M: Memory> DetailReader<'_, M> {
         .inspect_err(|reason| refused[0] = Some(*reason))
         .ok();
         row.learning_threshold =
-            engine_sites::at(self.base, engine_native::naval_commander_inputs::LEARNING_THRESHOLD_RVA)
+            engine_sites::at(self.base, engine_native_naval::naval_commander_inputs::LEARNING_THRESHOLD_RVA)
                 .ok_or("land combat field unreadable or address overflow")
                 .and_then(|address| self.field(address, 0))
                 .inspect_err(|reason| refused[1] = Some(*reason))
@@ -769,7 +769,7 @@ impl<M: Memory> DetailReader<'_, M> {
             row.commander_formation = self.field(selected, carmy_leader::FORMATION_REFERENCE)?;
         }
         row.presentation = leaders.presentation(selected, || {
-            engine_native::naval_commander_inputs::capture_presentation(self.memory, self.base, selected)
+            engine_native_naval::naval_commander_inputs::capture_presentation(self.memory, self.base, selected)
         })?;
         let traits = self.array(selected, cunit_leader::TRAIT_DATA, 8)?;
         arenas.traits.ensure(

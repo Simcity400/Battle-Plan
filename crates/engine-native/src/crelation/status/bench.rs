@@ -94,7 +94,7 @@ impl Counting {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_census(mut self, game_state: usize, objects: &[usize]) -> Self {
         let n = objects.len() as u32;
         let read = |at: usize| crate::cpdx_array::Array {

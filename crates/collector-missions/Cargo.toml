@@ -16,6 +16,7 @@ navy_ledger_changes = []
 test-support = []
 
 [dependencies]
+engine-native-naval.workspace = true
 collector-air-sorties.workspace = true
 collector-certificates.workspace = true
 collector-hooks.workspace = true

@@ -1,10 +1,9 @@
 
-use crate::cunit_leader::{CommanderLearningTrait, CommanderTrait};
-use crate::memory::Raw;
-use crate::{
-    Memory, ccharacter, cnavy_leader, cpdx_array::Array, cunit_leader, cunit_leader_skill,
-    cunit_leader_trait, read,
-};
+use engine_native::cunit_leader::{CommanderLearningTrait, CommanderTrait};
+use engine_native_memory::memory::Raw;
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccharacter, cunit_leader};
+use engine_native_parts::{cnavy_leader, cunit_leader_skill, cunit_leader_trait};
 use engine_sites::Rva;
 
 pub const LEARNING_THRESHOLD_RVA: Rva = Rva(0x033e_4ce0);
@@ -63,7 +62,7 @@ pub struct Presentation {
 
 impl Presentation {
     pub fn copied(&self) -> std::io::Result<Self> {
-        use crate::allocation::copy_vec;
+        use engine_allocation::copy_vec;
         let [first, second, third] = &self.fallback_text;
         Ok(Self {
             fallback_text: [copy_vec(first)?, copy_vec(second)?, copy_vec(third)?],
@@ -153,7 +152,7 @@ pub fn capture(
         return Ok(Row::default());
     }
     let r = Reader { memory, base };
-    let pointer = crate::creference_registry::resolve(memory, base, handle)?
+    let pointer = engine_native_parts::creference_registry::resolve(memory, base, handle)?
         .ok_or("naval commander reference unresolved")?;
     r.vtable(pointer, cnavy_leader::VTABLE_RVA)?;
     if r.leader(pointer)? != handle {
@@ -206,7 +205,7 @@ pub fn capture(
         .checked_add(timed.count as usize)
         .ok_or("naval commander timed trait demand overflow")?;
     if timed_traits.len() < end {
-        crate::allocation::resize_default(timed_traits, end)
+        engine_allocation::resize_default(timed_traits, end)
             .map_err(|_| "collector allocation failed")?;
     }
     if let Err(reason) = cunit_leader::read_timed_traits(memory, base, timed, |value| {
@@ -218,7 +217,7 @@ pub fn capture(
     }
     row.timed_traits = [start, timed.count as usize];
     let learning = r.array(pointer, cunit_leader::TRAIT_EXPERIENCE_DATA, 16)?;
-    crate::allocation::resize_default(&mut row.learning_traits, learning.count as usize)
+    engine_allocation::resize_default(&mut row.learning_traits, learning.count as usize)
         .map_err(|_| "commander learning allocation failed")?;
     row.learning_traits_len = learning.count as usize;
     for index in 0..learning.count {
@@ -259,7 +258,7 @@ pub fn capture_presentation(
     };
     if row.character != 0 {
         row.character_state = 1;
-        if let Some(character) = crate::creference_registry::resolve(memory, base, row.character)? {
+        if let Some(character) = engine_native_parts::creference_registry::resolve(memory, base, row.character)? {
             r.vtable(character, ccharacter::VTABLE_RVA)?;
             if row.character as u32 != ccharacter::REFERENCE_TYPE
                 || r.field::<u64>(character, ccharacter::TYPE)? != row.character
@@ -271,7 +270,7 @@ pub fn capture_presentation(
             row.character_gender = r.field(character, 0x70)?;
             let live = (|| {
                 let portraits = r.array(character, ccharacter::PORTRAIT_DATA, 0x38)?;
-                crate::allocation::resize_default(&mut row.portraits, portraits.count as usize)
+                engine_allocation::resize_default(&mut row.portraits, portraits.count as usize)
                     .map_err(|_| "commander portrait allocation failed")?;
                 row.portraits_len = portraits.count as usize;
                 for index in 0..portraits.count {
@@ -293,14 +292,14 @@ pub fn capture_presentation(
                 Ok(())
             })();
             let array = character.wrapping_add(ccharacter::PORTRAIT_DATA);
-            crate::portrait_cache::settled(array, live, |image| {
-                let count = crate::cpdx_array::Array::from_header(image.header, 0x38)
+            engine_native::portrait_cache::settled(array, live, |image| {
+                let count = engine_native_memory::cpdx_array::Array::from_header(image.header, 0x38)
                     .ok_or("commander array invalid")?
                     .count as usize;
                 if count != image.entries().len() {
                     return Err("character portrait pre-image incomplete");
                 }
-                crate::allocation::resize_default(&mut row.portraits, count)
+                engine_allocation::resize_default(&mut row.portraits, count)
                     .map_err(|_| "commander portrait allocation failed")?;
                 row.portraits_len = count;
                 row.portrait_text.clear();
@@ -308,7 +307,7 @@ pub fn capture_presentation(
                 for (index, entry) in image.entries().iter().enumerate() {
                     let text = image.identity(index)?;
                     let start = row.portrait_text_len;
-                    crate::allocation::resize(&mut row.portrait_text, start + text.len(), 0)
+                    engine_allocation::resize(&mut row.portrait_text, start + text.len(), 0)
                         .map_err(|_| "commander text allocation failed")?;
                     row.portrait_text[start..].copy_from_slice(text);
                     let field =
@@ -331,7 +330,7 @@ pub fn capture_presentation(
                 row.character_role_source = 1;
                 Some(direct)
             } else {
-                let role = crate::creference_registry::resolve(
+                let role = engine_native_parts::creference_registry::resolve(
                     memory,
                     base,
                     row.character_fallback_leader,
@@ -395,7 +394,7 @@ impl<M: Memory> Reader<'_, M> {
             vtable as usize,
             &[
                 cunit_leader::VTABLE_RVA,
-                crate::carmy_leader::VTABLE_RVA,
+                engine_native::carmy_leader::VTABLE_RVA,
                 cnavy_leader::VTABLE_RVA,
                 engine_native_parts::coperative_leader_layout::VTABLE_RVA,
             ],
@@ -437,9 +436,9 @@ impl<M: Memory> Reader<'_, M> {
         let end = start
             .checked_add(len)
             .ok_or("commander text length overflow")?;
-        crate::allocation::resize(output, end, 0)
+        engine_allocation::resize(output, end, 0)
             .map_err(|_| "commander text allocation failed")?;
-        if !crate::read_slice(self.memory, source, &mut output[start..end]) {
+        if !engine_native_memory::read_slice(self.memory, source, &mut output[start..end]) {
             output.truncate(start);
             return Err("commander text unreadable");
         }
@@ -452,7 +451,7 @@ impl<M: Memory> Reader<'_, M> {
         text: &mut Vec<u8>,
     ) -> Result<(usize, usize), &'static str> {
         let a = self.array(p, cunit_leader::TRAIT_DATA, 8)?;
-        crate::allocation::resize_default(output, a.count as usize)
+        engine_allocation::resize_default(output, a.count as usize)
             .map_err(|_| "commander trait allocation failed")?;
         let mut used = 0;
         for index in 0..a.count {
@@ -525,7 +524,7 @@ impl<M: Memory> Reader<'_, M> {
             .modifiers_len
             .checked_add(a.count as usize)
             .ok_or("commander modifier demand overflow")?;
-        crate::allocation::resize_default(&mut row.modifiers, required)
+        engine_allocation::resize_default(&mut row.modifiers, required)
             .map_err(|_| "commander modifier allocation failed")?;
         let mut previous = 0;
         for index in 0..a.count {
@@ -561,7 +560,7 @@ impl<M: Memory> Reader<'_, M> {
             .tooltips_len
             .checked_add(count as usize)
             .ok_or("commander tooltip demand overflow")?;
-        crate::allocation::resize_default(&mut row.tooltips, required)
+        engine_allocation::resize_default(&mut row.tooltips, required)
             .map_err(|_| "commander tooltip allocation failed")?;
         if data == 0 {
             if count != 0 {
@@ -611,7 +610,7 @@ pub(crate) fn capture_modifier_metadata(
     base: usize,
     key: u32,
 ) -> Result<[u32; 3], &'static str> {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     let root = engine_sites::at(base, md::TABLE_RVA).ok_or("commander metadata root withheld")?;
     let table = read::<u64>(memory, root)
         .filter(|&p| p != 0)
@@ -634,7 +633,7 @@ pub(crate) fn capture_modifier_gate(
     memory: &impl Memory,
     base: usize,
 ) -> Result<(u32, u8), &'static str> {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     let callback_address = engine_sites::at(base, md::ELIGIBILITY_CALLBACK_RVA)
         .ok_or("commander modifier callback withheld")?;
     let flags_address = engine_sites::at(base, md::TRADE_FEATURE_FLAGS_RVA)
@@ -677,7 +676,7 @@ mod tests {
             if self.fail == Some(address) {
                 return false;
             }
-            use crate::modifier_definition as md;
+            use engine_native_parts::modifier_definition as md;
             if address == md::TABLE_RVA.0 && out.len() == 8 {
                 out.copy_from_slice(&0x200000_u64.to_le_bytes());
                 return true;
@@ -696,9 +695,9 @@ mod tests {
                 }
                 return true;
             }
-            if (address == crate::creference_registry::HIGH_ROOT_RVA.0
+            if (address == engine_native_parts::creference_registry::HIGH_ROOT_RVA.0
                 || address
-                    == crate::creference_registry::LOW_ROOTS_RVA.0
+                    == engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
                         + ccharacter::REFERENCE_TYPE as usize * 8)
                 && out.len() == 8
             {
@@ -739,14 +738,14 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
-        use crate::creference_registry as registry;
+        use engine_native_parts::creference_registry as registry;
         let mut f = Fixture {
             bytes: vec![0; 0x10000],
             copies: 0.into(),
             bytes_read: 0.into(),
             reads: RefCell::new(Vec::new()),
             fail: None,
-            callback: crate::modifier_definition::ELIGIBILITY_FLAGS_GETTER_RVA.0 as u64,
+            callback: engine_native_parts::modifier_definition::ELIGIBILITY_FLAGS_GETTER_RVA.0 as u64,
         };
         f.u64(0x1000 + registry::ENTRIES, 0x1100);
         f.u32(0x1000 + registry::COUNT, 1);
@@ -878,15 +877,15 @@ mod tests {
         assert_eq!((row.next_skill.present, row.next_skill.valid), (1, 0));
         let reads = f.reads.borrow();
         for address in [
-            crate::creference_registry::HIGH_ROOT_RVA.0,
+            engine_native_parts::creference_registry::HIGH_ROOT_RVA.0,
             LEADER + cunit_leader::CHARACTER_TYPE,
             LEADER + cunit_leader::TRAIT_DATA,
             LEADER + cunit_leader::TRAIT_EXPERIENCE_DATA,
             SKILL_DATABASE_RVA.0,
             0x1800 + 0xe8 + 2 * 0x18,
-            crate::modifier_definition::TABLE_RVA.0,
-            crate::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0,
-            crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
+            engine_native_parts::modifier_definition::TABLE_RVA.0,
+            engine_native_parts::modifier_definition::ELIGIBILITY_CALLBACK_RVA.0,
+            engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0,
         ] {
             assert_eq!(
                 reads.iter().filter(|read| read.0 == address).count(),
@@ -1006,7 +1005,7 @@ mod tests {
 
     #[test]
     fn metadata_and_callback_preserve_primary_values_and_fault_prefixes() {
-        use crate::modifier_definition as md;
+        use engine_native_parts::modifier_definition as md;
         let address = 0x200000 + 0x5f * md::STRIDE + md::FLAGS;
         let f = fixture();
         assert_eq!(
@@ -1150,7 +1149,7 @@ mod tests {
         struct Metadata<'a>(&'a Fixture);
         impl Memory for Metadata<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if (0x200000..0x200000 + 2_000 * crate::modifier_definition::STRIDE)
+                if (0x200000..0x200000 + 2_000 * engine_native_parts::modifier_definition::STRIDE)
                     .contains(&address)
                     && output.len() == 12
                 {
@@ -1178,7 +1177,7 @@ mod tests {
 
     #[test]
     fn character_portraits_and_role_traits_follow_native_headers() {
-        use crate::creference_registry as registry;
+        use engine_native_parts::creference_registry as registry;
         const COUNT: usize = 5_001;
         const CHARACTER: usize = 0xa000;
         let character = (0xf000_0002_u64 << 32) | u64::from(ccharacter::REFERENCE_TYPE);
@@ -1220,7 +1219,7 @@ mod tests {
                 b"portrait"
             );
         }
-        use crate::portrait_cache::{EntryImage, HolderImage, test_images};
+        use engine_native::portrait_cache::{EntryImage, HolderImage, test_images};
         f.u32(CHARACTER + ccharacter::PORTRAIT_DATA + 12, COUNT as u32 + 1);
         assert!(capture(&f, 0, HANDLE).is_err());
         let entries: &'static [EntryImage] = Box::leak(Box::new([

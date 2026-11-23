@@ -1932,7 +1932,7 @@ pub(super) fn experience_ratio(experience: i64, required: i32) -> i64 {
 
 pub(super) fn skill_progress(
     experience: i64,
-    next: Option<engine_native::naval_commander_inputs::SkillDefinition>,
+    next: Option<engine_native_naval::naval_commander_inputs::SkillDefinition>,
     refused: bool,
 ) -> i64 {
     match next {
@@ -1946,7 +1946,7 @@ pub(super) fn skill_progress(
 }
 
 pub fn commander_presentation(
-    p: &engine_native::naval_commander_inputs::Presentation,
+    p: &engine_native_naval::naval_commander_inputs::Presentation,
 ) -> replay_data::rows::CombatCommanderPresentation {
     use replay_data::{rows::CombatCommanderPortraitEntry, rows::CombatCommanderPresentation};
     CombatCommanderPresentation {

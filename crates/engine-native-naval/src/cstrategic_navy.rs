@@ -1,10 +1,11 @@
-use crate::{
-    Memory, ccountry,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     read,
     walk::{Buffer, Outcome},
 };
+use engine_native::ccountry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_f950);
@@ -237,7 +238,7 @@ pub fn access_modes_buffer(
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let manager = game_state
-            .checked_add(crate::cgame_state::STRATEGIC_NAVY_MANAGER)
+            .checked_add(engine_native::cgame_state::STRATEGIC_NAVY_MANAGER)
             .and_then(|root| read::<u64>(memory, root))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
@@ -351,7 +352,9 @@ pub fn access_modes_buffer(
 #[cfg(test)]
 mod access_tests {
     use super::*;
-    use crate::{cgame_state, cstrategic_navy_manager as manager, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use crate::cstrategic_navy_manager as manager;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const COUNTRIES: [usize; 2] = [0x4000, 0x5000];
@@ -458,11 +461,11 @@ mod access_tests {
 #[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
 mod bench {
     use super::*;
-    use crate::{
+    use engine_native::{
         cgame_state,
         crelation::status::bench::{Arena, Counting, countries, report},
-        cstrategic_navy_manager as manager,
     };
+    use crate::cstrategic_navy_manager as manager;
 
     #[test]
     #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]

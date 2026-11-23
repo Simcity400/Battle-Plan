@@ -1,5 +1,6 @@
 use crate::{Snapshot, changes};
-use engine_native::{Memory, ccountry, naval_management as native, read};
+use engine_native::{Memory, ccountry, read};
+use engine_native_naval::naval_management as native;
 use engine_sites::Rva;
 use replay_data::rows::*;
 use std::{
@@ -285,7 +286,7 @@ impl<'a, M: Memory> Session<'a, M> {
                     )?)
                     .map_err(|_| "naval repair production pointer overflow")?;
                     let navies = *self.navies.get_or_insert_with(|| {
-                        engine_native::cstrategic_navy_manager::navies(
+                        engine_native_naval::cstrategic_navy_manager::navies(
                             self.memory,
                             self.base,
                             self.state,
@@ -415,7 +416,7 @@ impl<'a, M: Memory> Session<'a, M> {
                 {
                     return Err("naval repair production owner identity mismatch");
                 }
-                engine_native::cstrategic_navy::authenticate(self.memory, self.base, navy)?;
+                engine_native_naval::cstrategic_navy::authenticate(self.memory, self.base, navy)?;
                 let (maximum, used) = native::repair_dockyards(self.memory, navy)?;
                 let row = NavalRepairCountryRow {
                     country: country.id,
@@ -1291,10 +1292,10 @@ mod tests {
         const BASE: usize = 0x9000;
         memory.put(
             BASE,
-            &(engine_native::cnaval_base::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_naval::cnaval_base::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         memory.put(
-            BASE + engine_native::cnaval_base::PROVINCE_ID,
+            BASE + engine_native_naval::cnaval_base::PROVINCE_ID,
             &17_u32.to_le_bytes(),
         );
         memory.put(BASE + native::BASE_REPAIR_PRIORITY, &1_i32.to_le_bytes());
@@ -1304,7 +1305,7 @@ mod tests {
         let mut bases = unsafe { crate::bases::Session::begin(&memory, 0) };
         bases.visit(
             BASE,
-            &engine_native::cnaval_base::Row {
+            &engine_native_naval::cnaval_base::Row {
                 province: 17,
                 ..Default::default()
             },
@@ -1315,7 +1316,7 @@ mod tests {
         let mut bases = unsafe { crate::bases::Session::begin(&memory, 0) };
         bases.visit(
             BASE,
-            &engine_native::cnaval_base::Row {
+            &engine_native_naval::cnaval_base::Row {
                 province: 17,
                 ..Default::default()
             },

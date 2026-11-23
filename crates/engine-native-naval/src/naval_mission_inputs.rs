@@ -1,23 +1,41 @@
-pub use crate::ctask_force::mission_layout::{CHARACTER_UNIT_LEADER, CHARACTER_UNIT_LEADER_REFERENCE, COMMANDER_CHARACTER, FUEL, HEADQUARTERS_COMMANDER, LEADER_MODIFIERS, LOCAL_MODIFIERS, REPLENISHMENT, SOURCE_MODIFIERS, STAT_RANGE, UNDERWAY, UNIT_LEADER_KIND, UNIT_LEADER_SOURCES};
-pub use crate::ctask_force::targeted_spotting;
+pub use engine_native::ctask_force::mission_layout::{
+    CHARACTER_UNIT_LEADER,
+    CHARACTER_UNIT_LEADER_REFERENCE,
+    COMMANDER_CHARACTER,
+    FUEL,
+    HEADQUARTERS_COMMANDER,
+    LEADER_MODIFIERS,
+    LOCAL_MODIFIERS,
+    REPLENISHMENT,
+    SOURCE_MODIFIERS,
+    STAT_RANGE,
+    UNDERWAY,
+    UNIT_LEADER_KIND,
+    UNIT_LEADER_SOURCES,
+};
+pub use engine_native::ctask_force::targeted_spotting;
 
-use crate::{
+use engine_native_memory::{
     Memory,
+    cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources, read_slice},
+    read,
+};
+use engine_native::{
     ccharacter,
     cfleet,
-    cnaval_mission,
-    cnavy_leader,
-    cpdx_array::Array,
     cprovince,
-    cstrategic_navy,
     ctask_force,
     cunit,
     cweather_manager::{self, region_weather as sweather_per_region},
-    memory::{RecordField, RecordLayout, RecordSources, read_slice},
-    modifier_accumulator::{self as accumulator, Value},
-    modifier_keys as keys,
-    read,
 };
+use engine_native_parts::{
+    cnaval_mission,
+    cnavy_leader,
+    modifier_accumulator::{self as accumulator, Value},
+};
+use crate::cstrategic_navy;
+use engine_executable::modifier_keys as keys;
 use engine_sites::Rva;
 
 mod convoy_targets;
@@ -120,7 +138,7 @@ pub fn read_raiding_grid(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
-    resolver: &mut crate::creference_registry::ScopedResolver,
+    resolver: &mut engine_native_parts::creference_registry::ScopedResolver,
 ) -> Option<RaidingGrid> {
     if visit.kind != RAIDING {
         return None;
@@ -137,7 +155,7 @@ pub fn read_raiding_grid(
             if pointer == 0 {
                 Some(0)
             } else {
-                crate::cstrategic_region::id(memory, base, pointer as usize)
+                engine_native_parts::cstrategic_region::id(memory, base, pointer as usize)
                     .ok()
                     .flatten()
             }
@@ -182,7 +200,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("naval mission input address overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -276,7 +294,7 @@ pub fn read_task_force_observed(
 }
 #[cfg(test)]
 pub(crate) fn read_task_force_transport_observed(memory: &impl Memory, base: usize, visit: cfleet::TaskForceVisit, headquarters: &mut Vec<u64>, original_header: &mut Option<Result<[u8; 16], &'static str>>, original_owner: &mut Option<Result<u32, &'static str>>) -> Result<Operands, &'static str> {
-    read_task_force_transport_observed_buffer(memory, base, visit, crate::walk::Buffer::Growing(headquarters), original_header, original_owner)
+    read_task_force_transport_observed_buffer(memory, base, visit, engine_native_memory::walk::Buffer::Growing(headquarters), original_header, original_owner)
 }
 
 
@@ -284,7 +302,7 @@ pub fn read_task_force_transport_observed_buffer(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
-    headquarters: crate::walk::Buffer<'_, u64>,
+    headquarters: engine_native_memory::walk::Buffer<'_, u64>,
     original_header: &mut Option<Result<[u8; 16], &'static str>>,
     original_owner: &mut Option<Result<u32, &'static str>>,
 ) -> Result<Operands, &'static str> {
@@ -309,7 +327,7 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
-    mut headquarters: crate::walk::Buffer<'_, u64>,
+    mut headquarters: engine_native_memory::walk::Buffer<'_, u64>,
     original_header: &mut Option<Result<[u8; 16], &'static str>>,
     original_owner: &mut Option<Result<u32, &'static str>>,
     original_selectors: &mut OriginalSelectors,
@@ -396,7 +414,7 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
             cprovince::STRATEGIC_REGION,
             "task-force location unreadable",
         )?;
-        row.region = crate::cstrategic_region::id(memory, base, region as usize)?
+        row.region = engine_native_parts::cstrategic_region::id(memory, base, region as usize)?
             .ok_or("task-force location has no strategic region")?;
         accumulator::lookup_many_at(
             memory,
@@ -410,7 +428,7 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     row.headquarters = attached.count as usize;
     headquarters.ensure(row.headquarters)?;
     if let Some(out) = headquarters.get_mut(..row.headquarters) {
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             attached,
             "task-force headquarters entry unreadable or null",
@@ -509,7 +527,7 @@ pub fn ledger(
 ) -> Result<usize, &'static str> {
     let count = missions.count as usize;
     if let Some(out) = out.get_mut(..count) {
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             missions,
             "navy ledger mission unreadable or null",
@@ -526,19 +544,19 @@ pub fn ledger(
 }
 
 pub fn count_navy_hubs(memory: &impl Memory, navy: usize) -> Result<usize, &'static str> {
-    navy_hubs_buffer(memory, navy, crate::walk::Buffer::Count)
+    navy_hubs_buffer(memory, navy, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn navy_hubs_buffer(
     memory: &impl Memory,
     navy: usize,
-    mut out: crate::walk::Buffer<'_, u32>,
+    mut out: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Result<usize, &'static str> {
     let array = Array::read(memory, at(navy, HUBS)?, 4).ok_or("navy supply hubs invalid")?;
     let count = array.count as usize;
     out.ensure(count)?;
     if count != 0 && count <= out.len() {
-        crate::cpdx_array::copy_u32s(
+        engine_native_memory::cpdx_array::copy_u32s(
             memory,
             array,
             &mut out[..count],

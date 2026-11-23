@@ -332,7 +332,7 @@ pub fn movement_modifiers(
 }
 
 impl<M: Memory> Reader<'_, M> {
-    pub(crate) fn movement_record(&self, id: i32, region: bool) -> Result<usize, &'static str> {
+    pub fn movement_record(&self, id: i32, region: bool) -> Result<usize, &'static str> {
         if id < 0 {
             return Ok(0);
         }

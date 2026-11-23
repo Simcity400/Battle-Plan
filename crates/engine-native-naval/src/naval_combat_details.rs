@@ -1,18 +1,28 @@
 
-use crate::{
-    Memory, cfex_group, cgame_state, cland_border_war_combat, cland_combat,
-    cnaval_combatant,
-    cnaval_combatant::field,
-    cpdx_array::Array,
+use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
+use engine_native_parts::{cfex_group, cland_border_war_combat};
+use engine_native::{
+    cgame_state,
+    cland_combat,
+    cnaval_combatant::{self, field},
     cprovince,
-    walk::Outcome,
 };
 use std::collections::{HashMap, HashSet};
 
 type GroupOrdinals = HashMap<usize, Option<u32>>;
 type GroupSet = HashSet<usize>;
 
-use crate::cnaval_combat::{ATTACKER, DEFENDER, HANDLE, PROVINCE, VTABLE_RVA, TimedCapture, Capture, outcome, pointer};
+use engine_native::cnaval_combat::{
+    ATTACKER,
+    DEFENDER,
+    HANDLE,
+    PROVINCE,
+    VTABLE_RVA,
+    TimedCapture,
+    Capture,
+    outcome,
+    pointer,
+};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
@@ -32,7 +42,7 @@ pub fn walk_details_timed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut details: crate::walk::Buffer<'_, DetailsRow>,
+    mut details: engine_native_memory::walk::Buffer<'_, DetailsRow>,
     ships: &mut Vec<crate::naval_member_details::DetailsRow>,
     groups: &mut Vec<usize>,
     buffers: &mut crate::naval_member_details::DetailBuffers<'_>,
@@ -192,12 +202,12 @@ pub fn walk_details_timed(
                         let capacity = (array.count as usize)
                             .checked_mul(2)
                             .ok_or("naval details group capacity overflow")?;
-                        crate::allocation::reserve_map(
+                        engine_allocation::reserve_map(
                             &mut ordinals[side_index],
                             array.count as usize,
                         )
                         .map_err(|_| "collector allocation failed")?;
-                        crate::allocation::reserve_set(&mut taken, capacity)
+                        engine_allocation::reserve_set(&mut taken, capacity)
                             .map_err(|_| "collector allocation failed")?;
                         for index in 0..array.count {
                             let group = pointer(memory, array, index)?;
@@ -226,7 +236,7 @@ pub fn walk_details_timed(
                                     required_group_capacity.max(group_count + 1);
                                 if group_count == groups.len() {
                                     if groups.len() == groups.capacity() {
-                                        crate::allocation::reserve(groups, 1)
+                                        engine_allocation::reserve(groups, 1)
                                             .map_err(|_| "collector allocation failed")?;
                                     }
                                     groups.push(0);
@@ -252,7 +262,7 @@ pub fn walk_details_timed(
                             let required = lengths[1]
                                 .checked_add(array.count as usize)
                                 .ok_or("naval details member capacity overflow")?;
-                            crate::allocation::reserve_push_batch(
+                            engine_allocation::reserve_push_batch(
                                 ships,
                                 required.saturating_sub(ships.len()),
                             )
@@ -317,11 +327,11 @@ fn custom_sea(
     if region == 0 {
         return Ok([buffers.custom_sea_len, 0]);
     }
-    let id = crate::cstrategic_region::id(memory, base, region)?
+    let id = engine_native_parts::cstrategic_region::id(memory, base, region)?
         .ok_or("naval strategic region absent")?;
-    let template = field::<u64>(memory, region, crate::cstrategic_region::TEMPLATE)? as usize;
+    let template = field::<u64>(memory, region, engine_native_parts::cstrategic_region::TEMPLATE)? as usize;
     if field::<u64>(memory, template, 0)?
-        != engine_sites::at(base, crate::cstrategic_region::TEMPLATE_VTABLE_RVA)
+        != engine_sites::at(base, engine_native_parts::cstrategic_region::TEMPLATE_VTABLE_RVA)
             .ok_or("naval strategic template module overflow")? as u64
     {
         return Err("naval strategic template identity mismatch");
@@ -329,12 +339,12 @@ fn custom_sea(
     let capacity = field::<i32>(
         memory,
         template,
-        crate::cstrategic_region::TEMPLATE_MODIFIERS_CAPACITY,
+        engine_native_parts::cstrategic_region::TEMPLATE_MODIFIERS_CAPACITY,
     )?;
     let count = field::<i32>(
         memory,
         template,
-        crate::cstrategic_region::TEMPLATE_MODIFIERS_COUNT,
+        engine_native_parts::cstrategic_region::TEMPLATE_MODIFIERS_COUNT,
     )?;
     if capacity < 0 || count < 0 || count > capacity {
         return Err("naval custom sea modifier vector invalid");
@@ -353,7 +363,7 @@ fn custom_sea(
         .custom_sea
         .get_mut(start..end)
         .ok_or("naval custom sea arena capacity exceeded")?;
-    crate::cweather_manager::Reader::new(memory, base, state)?
+    engine_native::cweather_manager::Reader::new(memory, base, state)?
         .custom_sea_into(id as i32, output)?;
     buffers.custom_sea_len = end;
     Ok([start, count as usize])
@@ -417,7 +427,7 @@ fn read_planes(
         let capacity = (array.count as usize)
             .checked_mul(2)
             .ok_or("naval plane group capacity overflow")?;
-        crate::allocation::reserve_set(&mut taken, capacity)
+        engine_allocation::reserve_set(&mut taken, capacity)
             .map_err(|_| "collector allocation failed")?;
         for i in 0..array.count {
             let group = pointer(memory, array, i)?;
@@ -442,7 +452,7 @@ fn read_planes(
                 *required_groups = (*required_groups).max(count + 1);
                 if count == groups.len() {
                     if groups.len() == groups.capacity() {
-                        crate::allocation::reserve(groups, 1)
+                        engine_allocation::reserve(groups, 1)
                             .map_err(|_| "collector allocation failed")?;
                     }
                     groups.push(0);

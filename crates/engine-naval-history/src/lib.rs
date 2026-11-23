@@ -25,8 +25,6 @@ use engine_native::{
     cprovince,
     creference_registry,
     cstatic_modifier,
-    cstrategic_navy,
-    cstrategic_navy_manager,
     cstrategic_region,
     csub_unit_definition,
     cunit_leader,
@@ -35,15 +33,19 @@ use engine_native::{
     modifier_accumulator,
     modifier_definition,
     msvc_string,
+    read,
+    read_slice,
+    sweather_per_region,
+    walk,
+};
+use engine_native_naval::{
+    cstrategic_navy,
+    cstrategic_navy_manager,
     naval_air_efficiency_inputs,
     naval_combat_air_hit,
     naval_combat_hit,
     naval_combat_summary_inputs,
     naval_ship_modifier_inputs,
-    read,
-    read_slice,
-    sweather_per_region,
-    walk,
 };
 use engine_native_intelligence::{ccountry_intel, country_intel_row};
 #[cfg(test)]

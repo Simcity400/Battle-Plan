@@ -1,4 +1,6 @@
-use crate::{Memory, cfleet, cnaval_mission, ctask_force, cunit, read};
+use engine_native_memory::{Memory, read};
+use engine_native::{cfleet, ctask_force, cunit};
+use engine_native_parts::cnaval_mission;
 
 pub const CHANCE: usize = 0x78;
 pub const PROGRESS: usize = 0x80;
@@ -81,7 +83,7 @@ pub fn read_member_observed_stats(
     original_header: Option<Result<[u8; 16], &'static str>>,
     original_stats: Option<Result<usize, &'static str>>,
     convoy_demand: bool,
-    resolver: &mut crate::creference_registry::ScopedResolver,
+    resolver: &mut engine_native_parts::creference_registry::ScopedResolver,
 ) -> Operands {
     read_with(
         memory,
@@ -175,7 +177,7 @@ fn read_with(
 pub struct Context {
     pub leader: u64,
     pub headquarters: Result<usize, &'static str>,
-    pub local_detection: Option<crate::modifier_accumulator::Value>,
+    pub local_detection: Option<engine_native_parts::modifier_accumulator::Value>,
     pub region: Option<u32>,
 }
 
@@ -184,7 +186,7 @@ pub fn read_context(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
-    headquarters: crate::walk::Buffer<'_, u64>,
+    headquarters: engine_native_memory::walk::Buffer<'_, u64>,
 ) -> Context {
     read_context_with_location(memory, base, visit, None, headquarters)
 }
@@ -194,7 +196,7 @@ pub fn read_context_with_location(
     base: usize,
     visit: cfleet::TaskForceVisit,
     original_location: Option<Result<usize, &'static str>>,
-    mut headquarters: crate::walk::Buffer<'_, u64>,
+    mut headquarters: engine_native_memory::walk::Buffer<'_, u64>,
 ) -> Context {
     let mut result = Context {
         leader: visit.leader,
@@ -218,24 +220,24 @@ pub fn read_context_with_location(
         } else {
             result.region = (|| {
                 if read::<u64>(memory, location)
-                    != engine_sites::at(base, crate::cprovince::VTABLE_RVA).map(|at| at as u64)
+                    != engine_sites::at(base, engine_native::cprovince::VTABLE_RVA).map(|at| at as u64)
                 {
                     return None;
                 }
                 let region = location
-                    .checked_add(crate::cprovince::STRATEGIC_REGION)
+                    .checked_add(engine_native::cprovince::STRATEGIC_REGION)
                     .and_then(|at| read::<u64>(memory, at))?;
-                crate::cstrategic_region::id(memory, base, region as usize)
+                engine_native_parts::cstrategic_region::id(memory, base, region as usize)
                     .ok()
                     .flatten()
             })();
-            let mut value = [crate::modifier_accumulator::Value::default(); 1];
+            let mut value = [engine_native_parts::modifier_accumulator::Value::default(); 1];
             result.local_detection = at(crate::naval_mission_inputs::LOCAL_MODIFIERS)
                 .and_then(|at| {
-                    crate::modifier_accumulator::lookup_many_at(
+                    engine_native_parts::modifier_accumulator::lookup_many_at(
                         memory,
                         at,
-                        &[crate::modifier_keys::NAVAL_DETECTION],
+                        &[engine_executable::modifier_keys::NAVAL_DETECTION],
                         &mut value,
                     )
                     .ok()
@@ -245,14 +247,14 @@ pub fn read_context_with_location(
     }
     result.headquarters = (|| {
         let roots = at(ctask_force::ATTACHED_HEADQUARTERS)
-            .and_then(|at| crate::cpdx_array::Array::read(memory, at, 8))
+            .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, 8))
             .ok_or("patrol headquarters vector invalid")?;
         let count = roots.count as usize;
         headquarters.ensure(count)?;
         let Some(output) = headquarters.get_mut(..count) else {
             return Err("patrol headquarters arena too small");
         };
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             roots,
             "patrol headquarters reference unreadable",

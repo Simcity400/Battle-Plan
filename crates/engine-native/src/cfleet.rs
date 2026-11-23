@@ -697,7 +697,7 @@ fn pointer(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'st
         .ok_or(ROSTER_POINTER)
 }
 
-pub(crate) fn province(
+pub fn province(
     memory: &impl Memory,
     base: usize,
     provinces: Array,

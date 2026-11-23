@@ -775,7 +775,7 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
     w.u32(skill + cunit_leader_skill::CATEGORY, 2);
     let skills = w.alloc(0x200);
     w.u64(
-        engine_native::naval_commander_inputs::SKILL_DATABASE_RVA.0,
+        engine_native_naval::naval_commander_inputs::SKILL_DATABASE_RVA.0,
         skills as u64,
     );
     let levels = w.alloc(8 * 5);

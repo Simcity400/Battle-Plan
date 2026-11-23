@@ -176,10 +176,8 @@ pub fn observe(memory: &impl Memory, base: usize, state: usize) -> Demand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{
-        cgame_state, cprovince, cstrategic_navy, cstrategic_navy_manager, ctask_force, ctheatre,
-        cunit,
-    };
+    use engine_native::{cgame_state, cprovince, ctask_force, ctheatre, cunit};
+    use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
     use std::cell::{Cell, RefCell};
 
     const STATE: usize = 0x1000;

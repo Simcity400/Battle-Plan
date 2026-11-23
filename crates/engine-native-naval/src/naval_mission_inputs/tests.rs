@@ -1,5 +1,7 @@
 use super::*;
-use crate::{ccountry, cgame_state, cstrategic_region, memory::SliceMemory};
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::cstrategic_region;
+use engine_native_memory::memory::SliceMemory;
 
 const TASK: usize = 0x1000;
 const STATS: usize = 0x2000;
@@ -182,7 +184,7 @@ fn mission_operands_authenticate_without_reading_accessible_regions() {
 
 #[test]
 fn walk_visits_every_authenticated_task_force() {
-    use crate::ccountry::synthetic::World;
+    use engine_native::ccountry::synthetic::World;
     const MODULE: usize = 0x4000_0000;
     let mut world = World::new(MODULE, 2, 0x300);
     let country = world.object(1);
@@ -303,7 +305,7 @@ fn navy_hubs_allow_empty_lists_and_preserve_demand_order_and_grow_short_storage(
         navy_hubs_buffer(&SliceMemory {
                 base: 0,
                 bytes: &bytes
-            }, 0x100, crate::walk::Buffer::Count),
+            }, 0x100, engine_native_memory::walk::Buffer::Count),
         Ok(0)
     );
     array(&mut bytes, 0x100 + HUBS, 0x1000, 300);
@@ -315,17 +317,17 @@ fn navy_hubs_allow_empty_lists_and_preserve_demand_order_and_grow_short_storage(
         bytes: &bytes,
     };
     let mut short = vec![u32::MAX; 2];
-    assert_eq!(navy_hubs_buffer(&memory, 0x100, crate::walk::Buffer::Growing(&mut short)), Ok(300));
+    assert_eq!(navy_hubs_buffer(&memory, 0x100, engine_native_memory::walk::Buffer::Growing(&mut short)), Ok(300));
     assert_eq!(short[..300], (0..300).map(|index| index % 7).collect::<Vec<_>>()[..]);
-    assert_eq!(navy_hubs_buffer(&memory, 0x100, crate::walk::Buffer::Count), Ok(300));
+    assert_eq!(navy_hubs_buffer(&memory, 0x100, engine_native_memory::walk::Buffer::Count), Ok(300));
     let mut out = vec![0; 300];
-    assert_eq!(navy_hubs_buffer(&memory, 0x100, crate::walk::Buffer::Growing(&mut out)), Ok(300));
+    assert_eq!(navy_hubs_buffer(&memory, 0x100, engine_native_memory::walk::Buffer::Growing(&mut out)), Ok(300));
     assert_eq!(out, (0..300).map(|index| index % 7).collect::<Vec<_>>());
     assert_eq!(
         navy_hubs_buffer(&SliceMemory {
                 base: 0,
                 bytes: &bytes[..0x1000 + 300 * 4 - 1]
-            }, 0x100, crate::walk::Buffer::Growing(&mut out)),
+            }, 0x100, engine_native_memory::walk::Buffer::Growing(&mut out)),
         Err("navy supply hub unreadable")
     );
 }
@@ -625,7 +627,7 @@ fn regional_raiding_packet_is_kind_and_activation_demanded() {
     }
     let mut bytes = task_force();
     let mission = TASK + MISSION;
-    let mut resolver = crate::creference_registry::ScopedResolver::new(0);
+    let mut resolver = engine_native_parts::creference_registry::ScopedResolver::new(0);
     let trace = Trace {
         memory: SliceMemory {
             base: 0,
@@ -687,7 +689,7 @@ fn active_raider_spotting_refusal_preserves_region_and_target_observations() {
         }),
         0,
         visit(RAIDING),
-        &mut crate::creference_registry::ScopedResolver::new(0),
+        &mut engine_native_parts::creference_registry::ScopedResolver::new(0),
     )
     .unwrap();
     assert_eq!(row.spotting, None);
@@ -727,7 +729,7 @@ fn original_selector_observations_keep_first_fault_and_successful_prefix() {
             &memory,
             0,
             visit(2),
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
             &mut None,
             &mut None,
             &mut selectors,

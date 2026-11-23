@@ -9,7 +9,7 @@ pub struct Row {
     pub maximum_strength: i64,
     pub maximum_organisation: i64,
 }
-pub(crate) fn read(
+pub fn read(
     memory: &impl Memory,
     base: usize,
     pointer: usize,

@@ -6,7 +6,8 @@ use crate::{
     world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, crelation_status, cstrategic_navy, cweather_manager, walk::Outcome};
+use engine_native::{Memory, crelation_status, cweather_manager, walk::Outcome};
+use engine_native_naval::cstrategic_navy;
 use engine_visibility::visibility_inputs as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryVisibilityRow, rows::CountryWarRow,

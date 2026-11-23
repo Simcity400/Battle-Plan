@@ -1,4 +1,5 @@
-use crate::{Memory, cequipment_variant, cnaval_combatant::field};
+use engine_native_memory::Memory;
+use engine_native::{cequipment_variant, cnaval_combatant::field};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a5_6fd8);
@@ -10,7 +11,7 @@ pub struct Row {
     pub country: u32,
 }
 
-pub const RECORD: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+pub const RECORD: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
     source_offset: 0,
     destination_offset: 0,
     len: 0x18,

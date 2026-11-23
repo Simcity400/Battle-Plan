@@ -1,5 +1,5 @@
-pub use crate::cfleet::{CensusVisit};
-use crate::{Memory, cpdx_array::Array, read};
+pub use engine_native::cfleet::CensusVisit;
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_sites::Rva;
 
 
@@ -47,7 +47,7 @@ pub struct CompositionEntry {
     pub amount: i32,
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -63,12 +63,12 @@ fn variant(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'s
         return Ok(0);
     }
     if field::<u64>(memory, pointer, 0)?
-        != engine_sites::at(base, crate::cequipment_variant::VTABLE_RVA)
+        != engine_sites::at(base, engine_native::cequipment_variant::VTABLE_RVA)
             .ok_or("naval refit variant vtable withheld")? as u64
     {
         return Err("naval refit variant identity mismatch");
     }
-    let handle = field(memory, pointer, crate::cequipment_variant::TYPE)?;
+    let handle = field(memory, pointer, engine_native::cequipment_variant::TYPE)?;
     if handle == 0 {
         return Err("naval refit variant has null handle");
     }
@@ -85,15 +85,15 @@ pub fn task_settings(
         field::<u64>(memory, task, offset)
             .and_then(|value| usize::try_from(value).map_err(|_| "naval repair pointer overflow"))
     };
-    let target = pointer(crate::ctask_force::REPAIR_TARGET)?;
+    let target = pointer(engine_native::ctask_force::REPAIR_TARGET)?;
     let repair_target = if target == 0 {
         0
     } else {
         let provinces = state
-            .checked_add(crate::cgame_state::PROVINCES)
+            .checked_add(engine_native::cgame_state::PROVINCES)
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("naval repair province array unreadable")?;
-        crate::cfleet::province(memory, base, provinces, target)?
+        engine_native::cfleet::province(memory, base, provinces, target)?
     };
     Ok(TaskSettings {
         repair_mode: field(memory, task, REPAIR_MODE)?,
@@ -124,7 +124,7 @@ pub fn composition(
         .and_then(|at| Array::read(memory, at, COMPOSITION_ENTRY_BYTES))
         .ok_or("naval composition array unreadable or invalid")?;
     entries.clear();
-    crate::allocation::reserve(entries, array.count as usize)
+    engine_allocation::reserve(entries, array.count as usize)
         .map_err(|_| "naval composition allocation failed")?;
     for index in 0..array.count {
         let at = array
@@ -177,7 +177,7 @@ pub fn base_settings_authenticated(
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("naval repair queue unreadable or invalid")?;
     queue.clear();
-    crate::allocation::reserve(queue, array.count as usize)
+    engine_allocation::reserve(queue, array.count as usize)
         .map_err(|_| "naval repair queue allocation failed")?;
     for index in 0..array.count {
         queue.push(field(
@@ -215,7 +215,7 @@ pub fn ship_refit_line(
     ship: usize,
 ) -> Result<u64, &'static str> {
     let handle = field(memory, ship, SHIP_REFIT_LINE)?;
-    let invalid = engine_sites::at(base, crate::creference_registry::INVALID_REFERENCE_RVA)
+    let invalid = engine_sites::at(base, engine_native_parts::creference_registry::INVALID_REFERENCE_RVA)
         .and_then(|at| read::<u64>(memory, at))
         .ok_or("naval refit invalid reference unreadable")?;
     Ok(if handle == invalid { 0 } else { handle })
@@ -232,7 +232,7 @@ pub fn repair_children(
     let array = Array::read(memory, object, 8)
         .ok_or("naval repair children array unreadable or invalid")?;
     children.clear();
-    crate::allocation::reserve(children, array.count as usize)
+    engine_allocation::reserve(children, array.count as usize)
         .map_err(|_| "naval repair children allocation failed")?;
     for index in 0..array.count {
         children.push(field(

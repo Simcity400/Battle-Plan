@@ -1,6 +1,7 @@
-use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::{cequipment_variant, cnaval_combatant::field};
 
-use crate::cfex_air::VTABLE_RVA;
+use engine_native::cfex_air::VTABLE_RVA;
 
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -35,7 +36,7 @@ pub(crate) fn read_hits(
     row: &mut Row,
     buffers: &mut crate::naval_member_details::DetailBuffers<'_>,
 ) -> Result<(), &'static str> {
-    use crate::cfex_member::{EntryOutput, append_entries};
+    use engine_native::cfex_member::{EntryOutput, append_entries};
     use crate::naval_member_details::DETAIL_ARENA_CAPACITY;
     let mut counts = [0usize; 2];
     let mut arrays = [Array::default(); 3];
@@ -116,10 +117,10 @@ pub(crate) fn read(
         base,
         pointer,
         group,
-        crate::walk::Buffer::Growing(wing_types),
+        engine_native_memory::walk::Buffer::Growing(wing_types),
         wing_types_len,
         wing_types_required,
-        crate::walk::Buffer::Growing(plane_wings),
+        engine_native_memory::walk::Buffer::Growing(plane_wings),
         plane_wings_len,
         plane_wings_required,
     )
@@ -131,10 +132,10 @@ pub(crate) fn read_buffer(
     base: usize,
     pointer: usize,
     group: usize,
-    mut wing_types: crate::walk::Buffer<'_, u32>,
+    mut wing_types: engine_native_memory::walk::Buffer<'_, u32>,
     wing_types_len: &mut usize,
     wing_types_required: &mut usize,
-    mut plane_wings: crate::walk::Buffer<'_, u64>,
+    mut plane_wings: engine_native_memory::walk::Buffer<'_, u64>,
     plane_wings_len: &mut usize,
     plane_wings_required: &mut usize,
 ) -> Result<Row, &'static str> {
@@ -151,14 +152,14 @@ pub(crate) fn read_buffer(
         0
     } else {
         if field::<u64>(memory, carrier, 0)?
-            != engine_sites::at(base, crate::cfex_member::VTABLE_RVA)
+            != engine_sites::at(base, engine_native::cfex_member::VTABLE_RVA)
                 .ok_or("naval plane carrier module overflow")? as u64
-            || field::<i32>(memory, carrier, crate::cfex_member::BATTLE_SLOT)? != carrier_slot
-            || field::<u64>(memory, carrier, crate::cfex_member::GROUP)? != group as u64
+            || field::<i32>(memory, carrier, engine_native::cfex_member::BATTLE_SLOT)? != carrier_slot
+            || field::<u64>(memory, carrier, engine_native::cfex_member::GROUP)? != group as u64
         {
             return Err("naval plane carrier identity mismatch");
         }
-        field(memory, carrier, crate::cfex_member::STATE)?
+        field(memory, carrier, engine_native::cfex_member::STATE)?
     };
     let mut row = Row {
         carrier_slot,
@@ -199,7 +200,7 @@ pub(crate) fn read_buffer(
             .get_mut(start..end)
             .ok_or("naval plane wing arena capacity exceeded")?;
         for (i, slot) in output.iter_mut().enumerate() {
-            let reference = crate::read(
+            let reference = engine_native_memory::read(
                 memory,
                 array
                     .element(i as u32, 8)
@@ -225,7 +226,7 @@ pub(crate) fn read_buffer(
         .iter()
         .zip(output)
     {
-        *slot = match crate::creference_registry::resolve(memory, base, handle)? {
+        *slot = match engine_native_parts::creference_registry::resolve(memory, base, handle)? {
             None => u32::MAX,
             Some(secondary) => {
                 let wing = secondary
@@ -244,17 +245,17 @@ pub(crate) fn read_buffer(
                 }
                 let pool = field::<u64>(memory, wing, engine_native_parts::cair_wing_layout::POOL)? as usize;
                 if field::<u64>(memory, pool, 0)?
-                    != engine_sites::at(base, crate::cair_wing_pool::VTABLE_RVA)
+                    != engine_sites::at(base, engine_native_parts::cair_wing_pool::VTABLE_RVA)
                         .ok_or("naval air wing pool module overflow")? as u64
                 {
                     return Err("naval air wing pool identity mismatch");
                 }
                 let definition =
-                    field::<u64>(memory, pool, crate::cair_wing_pool::DEFINITION)? as usize;
+                    field::<u64>(memory, pool, engine_native_parts::cair_wing_pool::DEFINITION)? as usize;
                 field(
                     memory,
                     definition,
-                    crate::csub_unit_definition::DATABASE_INDEX,
+                    engine_native_parts::csub_unit_definition::DATABASE_INDEX,
                 )?
             }
         };
@@ -275,7 +276,7 @@ mod presentation_cache_tests {
         impl Memory for Guard {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 assert!(address >= ENTRY + 0xf0 || address + output.len() <= ENTRY + 0x88);
-                crate::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &self.0,
                 }
@@ -293,14 +294,14 @@ mod presentation_cache_tests {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: crate::walk::Buffer::Count,
+            planes: engine_native_memory::walk::Buffer::Count,
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: crate::walk::Buffer::Count,
-            plane_naval_hits: crate::walk::Buffer::Count,
+            plane_air_hits: engine_native_memory::walk::Buffer::Count,
+            plane_naval_hits: engine_native_memory::walk::Buffer::Count,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: crate::walk::Buffer::Count,
+            plane_kills: engine_native_memory::walk::Buffer::Count,
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
@@ -310,26 +311,26 @@ mod presentation_cache_tests {
             doctrine_keys: Default::default(),
             term_metadata: Default::default(),
             source_memo: Default::default(),
-            commander_inputs: crate::walk::Buffer::Count,
+            commander_inputs: engine_native_memory::walk::Buffer::Count,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: crate::walk::Buffer::Count,
+            side_units: engine_native_memory::walk::Buffer::Count,
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: crate::walk::Buffer::Count,
+            custom_sea: engine_native_memory::walk::Buffer::Count,
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: crate::walk::Buffer::Count,
+            damage_sources: engine_native_memory::walk::Buffer::Count,
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: crate::walk::Buffer::Count,
+            wing_types: engine_native_memory::walk::Buffer::Count,
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: crate::walk::Buffer::Count,
+            plane_wings: engine_native_memory::walk::Buffer::Count,
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -357,7 +358,7 @@ mod presentation_cache_tests {
         for (at, value) in [
             (ENTRY + 0x100, DATA as u64),
             (HIT, crate::naval_combat_hit::VTABLE_RVA.0 as u64),
-            (HIT + 0x28, crate::msvc_string::INLINE_CAPACITY),
+            (HIT + 0x28, engine_native_memory::msvc_string::INLINE_CAPACITY),
             (HIT + 0x38, i64::MIN as u64),
         ] {
             memory.0[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -370,7 +371,7 @@ mod presentation_cache_tests {
             entry.copy_from_slice(&(HIT as u64).to_le_bytes());
         }
         let mut hits = Vec::new();
-        buffers.plane_naval_hits = crate::walk::Buffer::Growing(&mut hits);
+        buffers.plane_naval_hits = engine_native_memory::walk::Buffer::Growing(&mut hits);
         read_hits(&memory, 0, ENTRY, &mut row, &mut buffers).unwrap();
         assert_eq!(row.naval_hits, [0, COUNT]);
         assert_eq!(buffers.plane_naval_hits[COUNT - 1].damage, i64::MIN);
@@ -393,7 +394,7 @@ mod presentation_cache_tests {
                 bytes[DATA + index * 8..DATA + index * 8 + 8]
                     .copy_from_slice(&(index as u64 + 1).to_le_bytes());
             }
-            let memory = crate::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             };
@@ -402,10 +403,10 @@ mod presentation_cache_tests {
                 0,
                 PLANE,
                 0,
-                crate::walk::Buffer::Growing(&mut types),
+                engine_native_memory::walk::Buffer::Growing(&mut types),
                 &mut 0,
                 &mut 0,
-                crate::walk::Buffer::Growing(&mut wings),
+                engine_native_memory::walk::Buffer::Growing(&mut wings),
                 &mut 0,
                 &mut 0,
             )

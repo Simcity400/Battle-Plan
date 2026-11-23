@@ -1,5 +1,6 @@
 use crate::{Snapshot, changes};
-use engine_native::{Memory, naval_management as native, read};
+use engine_native::{Memory, read};
+use engine_native_naval::naval_management as native;
 use replay_data::rows::*;
 use std::{
     collections::HashMap,
@@ -136,7 +137,7 @@ impl<'a, M: Memory> Session<'a, M> {
         }
         session
     }
-    pub fn visit(&mut self, pointer: usize, row: &engine_native::cnaval_base::Row) {
+    pub fn visit(&mut self, pointer: usize, row: &engine_native_naval::cnaval_base::Row) {
         if !self.observed || self.store.entries.get(&pointer) == Some(&row.province) {
             return;
         }
@@ -167,7 +168,7 @@ impl<'a, M: Memory> Session<'a, M> {
     ) -> Result<(), &'static str> {
         if !authenticated
             && pointer
-                .checked_add(engine_native::cnaval_base::PROVINCE_ID)
+                .checked_add(engine_native_naval::cnaval_base::PROVINCE_ID)
                 .and_then(|at| read::<u32>(self.memory, at))
                 != Some(province)
         {

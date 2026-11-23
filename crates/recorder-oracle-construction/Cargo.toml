@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-naval.workspace = true
 content-reader-parser.workspace = true
 content-reader-script.workspace = true
 replay.workspace = true

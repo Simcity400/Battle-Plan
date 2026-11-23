@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 const TASK: usize = 0x100;
 const STATS: usize = 0x900;
@@ -8,7 +8,7 @@ fn put(bytes: &mut [u8], at: usize, value: u64) {
 }
 fn visit() -> cfleet::TaskForceVisit {
     cfleet::TaskForceVisit {
-        country: crate::ccountry::Country {
+        country: engine_native::ccountry::Country {
             id: 1,
             canonical_slot: 1,
             pointer: 1,
@@ -170,7 +170,7 @@ fn null_location_has_no_local_modifier_demand_and_empty_hq_is_known() {
         reads: Default::default(),
         deny: None,
     };
-    let context = read_context(&memory, 0, visit(), crate::walk::Buffer::Count);
+    let context = read_context(&memory, 0, visit(), engine_native_memory::walk::Buffer::Count);
     assert_eq!(context.region, Some(0));
     assert_eq!(context.headquarters, Ok(0));
     assert_eq!(context.local_detection, Some(Default::default()));
@@ -206,7 +206,7 @@ fn original_failed_stat_and_location_selectors_are_never_retried() {
         0,
         visit(),
         Some(Err("first location refused")),
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     );
     assert_eq!(context.region, None);
     assert_eq!(context.local_detection, None);

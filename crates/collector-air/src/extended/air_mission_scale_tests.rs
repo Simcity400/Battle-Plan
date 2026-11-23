@@ -1,11 +1,16 @@
 use super::*;
 use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
 use engine_native::{
-    cgame_state as gs, creference_registry as registry, cship, cstrategic_air, cstrategic_navy,
-    cstrategic_navy_manager, ctask_force, cunit,
+    cgame_state as gs,
+    creference_registry as registry,
+    cship,
+    cstrategic_air,
+    ctask_force,
+    cunit,
     memory::{RecordLayout, RecordSources},
     reference_bucket as bucket,
 };
+use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},

@@ -183,6 +183,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 collector-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
+engine-native-naval = { workspace = true, features = ["test-support"] }
 collector-test-support.workspace = true
 collector-advisors = { workspace = true, features = ["test-support"] }
 collector-air = { workspace = true, features = ["test-support"] }

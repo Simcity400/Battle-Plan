@@ -28,7 +28,7 @@ pub(super) fn bind(
             })
             .collect()
     };
-    let patrol = keys(&engine_native::naval_patrol_inputs::SAVE_TOKENS)?;
+    let patrol = keys(&engine_native_naval::naval_patrol_inputs::SAVE_TOKENS)?;
     let patrol = [patrol[0], patrol[1], patrol[2]];
     save.naval_missions.patrol_inputs = Some(match country_emission_layout(frame) {
         Ok(Some(layout)) => document.project(&layout)?.mission_patrol_inputs(patrol)?,
@@ -38,7 +38,7 @@ pub(super) fn bind(
         .iter()
         .any(|row| row.radar_cache.is_some() || row.air_cache.is_some())
     {
-        let caches = keys(&engine_native::naval_patrol_inputs::CACHE_SAVE_TOKENS)?;
+        let caches = keys(&engine_native_naval::naval_patrol_inputs::CACHE_SAVE_TOKENS)?;
         let caches = [caches[0], caches[1]];
         save.naval_missions.spotting_caches = Some(match country_emission_layout(frame) {
             Ok(Some(layout)) => document.project(&layout)?.mission_spotting_caches(caches)?,
@@ -440,9 +440,9 @@ mod tests {
         row.radar_cache = Some(300_000);
         *frame.tables[TableId::NavalPatrolMissionInputs.index()] =
             TableView::Complete(TableRows::NavalPatrolMissionInputs(vec![row]));
-        let tokens = engine_native::naval_patrol_inputs::SAVE_TOKENS
+        let tokens = engine_native_naval::naval_patrol_inputs::SAVE_TOKENS
             .into_iter()
-            .chain(engine_native::naval_patrol_inputs::CACHE_SAVE_TOKENS);
+            .chain(engine_native_naval::naval_patrol_inputs::CACHE_SAVE_TOKENS);
         let mut lexical: Vec<_> = tokens
             .zip([
                 b"custom_target".as_slice(),

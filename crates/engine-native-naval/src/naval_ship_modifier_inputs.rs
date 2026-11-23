@@ -1,11 +1,17 @@
-pub use crate::cship::modifier_sources::{DoctrineKeys, doctrine_keys, doctrine_keys_kept, selected_class, terrain, terrain_class, terrain_from_template_kept, terrain_kept, terrain_with_policy};
-use crate::cship::modifier_sources::{add, array, auth, element, ptr, site, text};
-use crate::{
-    Memory,
-    capture_text::Owned,
-    cnaval_combatant::field,
-    cpdx_array::Array,
+pub use engine_native::cship::modifier_sources::{
+    DoctrineKeys,
+    doctrine_keys,
+    doctrine_keys_kept,
+    selected_class,
+    terrain,
+    terrain_class,
+    terrain_from_template_kept,
+    terrain_kept,
+    terrain_with_policy,
 };
+use engine_native::cship::modifier_sources::{add, array, auth, element, ptr, site, text};
+use engine_native_memory::{Memory, capture_text::Owned, cpdx_array::Array};
+use engine_native::cnaval_combatant::field;
 use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -86,7 +92,7 @@ impl TermMetadata {
         if let Some(table) = self.table {
             return Ok(table);
         }
-        let table = crate::modifier_definition::table(memory, base)?;
+        let table = engine_native_parts::modifier_definition::table(memory, base)?;
         self.table = Some(table).filter(|_| self.keep);
         Ok(table)
     }
@@ -101,13 +107,13 @@ impl TermMetadata {
         if let Some(Some(bytes)) = self.rows.get(key as usize) {
             return Ok(*bytes);
         }
-        let bytes: [u8; 12] = field(memory, at, crate::modifier_definition::FLAGS)?;
+        let bytes: [u8; 12] = field(memory, at, engine_native_parts::modifier_definition::FLAGS)?;
         if !self.keep {
             return Ok(bytes);
         }
         if !self.sized {
             self.sized = true;
-            if crate::allocation::resize_default(&mut self.rows, table.count as usize).is_err() {
+            if engine_allocation::resize_default(&mut self.rows, table.count as usize).is_err() {
                 self.rows = Vec::new();
             }
         }
@@ -185,7 +191,7 @@ impl<M: Memory> Capture<'_, '_, M> {
             row.accumulator = accumulator;
             row.terms = previous.terms;
             self.buffers.sources.truncate(source);
-            crate::allocation::reserve(self.buffers.sources, 1)
+            engine_allocation::reserve(self.buffers.sources, 1)
                 .map_err(|_| "collector allocation failed")?;
             self.buffers.sources.push(row);
             self.buffers.lengths[0] = source
@@ -210,13 +216,13 @@ impl<M: Memory> Capture<'_, '_, M> {
         row.terms = [first, count];
         row.accumulator = accumulator.unwrap_or(0);
         self.buffers.terms.truncate(first);
-        crate::allocation::reserve_push_batch(self.buffers.terms, count)
+        engine_allocation::reserve_push_batch(self.buffers.terms, count)
             .map_err(|_| "collector allocation failed")?;
         self.buffers.sources.truncate(source);
-        crate::allocation::reserve(self.buffers.sources, 1)
+        engine_allocation::reserve(self.buffers.sources, 1)
             .map_err(|_| "collector allocation failed")?;
         if let Some(entries) = data {
-            use crate::modifier_definition as md;
+            use engine_native_parts::modifier_definition as md;
             let table = match self.metadata.as_deref_mut() {
                 Some(metadata) => metadata.table(self.memory, self.base)?,
                 None => md::table(self.memory, self.base)?,
@@ -225,7 +231,7 @@ impl<M: Memory> Capture<'_, '_, M> {
             let mut bytes = [0u8; 64 * 16];
             for start in (0..count).step_by(64) {
                 let n = (count - start).min(64);
-                if !crate::read_slice(
+                if !engine_native_memory::read_slice(
                     self.memory,
                     element(entries, start as u32, 16)?,
                     &mut bytes[..n * 16],
@@ -264,14 +270,14 @@ impl<M: Memory> Capture<'_, '_, M> {
 
 #[derive(Default)]
 pub struct SourceMemo {
-    tasks: crate::recent::Recent<usize, (usize, usize), 16>,
+    tasks: engine_native_memory::recent::Recent<usize, (usize, usize), 16>,
     rows: Vec<(SourceRow, Option<usize>)>,
-    leaders: crate::recent::Recent<usize, usize, 8>,
-    classes: crate::recent::Recent<(usize, u32, bool), usize, 16>,
-    countries: crate::recent::Recent<(usize, u32), crate::ccountry::Country, 8>,
+    leaders: engine_native_memory::recent::Recent<usize, usize, 8>,
+    classes: engine_native_memory::recent::Recent<(usize, u32, bool), usize, 16>,
+    countries: engine_native_memory::recent::Recent<(usize, u32), engine_native::ccountry::Country, 8>,
     locations: Vec<((usize, usize), LocationTerms, Owned)>,
-    terrain_classes: crate::recent::Recent<(usize, u32), TerrainClass, 16>,
-    influences: crate::recent::Recent<usize, (usize, usize), 16>,
+    terrain_classes: engine_native_memory::recent::Recent<(usize, u32), TerrainClass, 16>,
+    influences: engine_native_memory::recent::Recent<usize, (usize, usize), 16>,
     globals: Option<([i64; 2], i64, u32)>,
 }
 
@@ -318,7 +324,7 @@ impl SourceMemo {
         };
         if self.locations.len() == LOCATION_SLOTS {
             self.locations.remove(0);
-        } else if crate::allocation::reserve(&mut self.locations, 1).is_err() {
+        } else if engine_allocation::reserve(&mut self.locations, 1).is_err() {
             return;
         }
         self.locations.push(((task, location), terms, name));
@@ -378,7 +384,7 @@ fn mixed_terrain(
     selected: usize,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    use crate::cship;
+    use engine_native::cship;
     let ships = array(memory, task, 0x348, 8)?;
     for index in 0..ships.count {
         let p = ptr(memory, element(ships, index, 8)?, 0)?;
@@ -416,10 +422,10 @@ fn location_terms<const TERMINAL: bool>(
     memo: &mut Option<&mut SourceMemo>,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<usize, &'static str> {
-    use crate::ccountry;
-    auth(memory, base, location, crate::cprovince::VTABLE_RVA)?;
-    let province = field::<u32>(memory, location, crate::cprovince::ID)?;
-    let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
+    use engine_native::ccountry;
+    auth(memory, base, location, engine_native::cprovince::VTABLE_RVA)?;
+    let province = field::<u32>(memory, location, engine_native::cprovince::ID)?;
+    let expeditionary = field::<i32>(memory, task, engine_native::cunit::EXPEDITIONARY_OWNER)?;
     let owner_id = if expeditionary > 0 {
         expeditionary as u32
     } else {
@@ -438,13 +444,13 @@ fn location_terms<const TERMINAL: bool>(
         memory,
         base,
         diplomacy,
-        crate::cdiplomacy_status::VTABLE_RVA,
+        engine_native::cdiplomacy_status::VTABLE_RVA,
     )?;
-    let relations = array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
+    let relations = array(memory, diplomacy, engine_native::cdiplomacy_status::RELATIONS, 8)?;
     let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
     let relation = if relation != 0 {
-        auth(memory, base, relation, crate::crelation::status::VTABLE_RVA)?;
-        if ptr(memory, relation, crate::crelation::status::DIPLOMACY_STATUS)? != diplomacy {
+        auth(memory, base, relation, engine_native::crelation::status::VTABLE_RVA)?;
+        if ptr(memory, relation, engine_native::crelation::status::DIPLOMACY_STATUS)? != diplomacy {
             return Err("naval weapon relation owner mismatch");
         }
         let accumulator = add(relation, 0x140)?;
@@ -482,8 +488,8 @@ fn location_terms<const TERMINAL: bool>(
     if (row.ship_class as i32) < 0 {
         mixed_terrain(memory, base, task, selected, emit)?;
     }
-    let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
-    auth(memory, base, weather, crate::cweather_manager::VTABLE_RVA)?;
+    let weather = ptr(memory, game, engine_native::cgame_state::WEATHER_MANAGER)?;
+    auth(memory, base, weather, engine_native::cweather_manager::VTABLE_RVA)?;
     let region = field::<u32>(memory, definition, 0x58)?;
     let regions = array(memory, weather, 0x40, 0x160)?;
     let region = add(element(regions, region, 0x160)?, 0x48)?;
@@ -547,7 +553,7 @@ fn doctrine_kept<const TERMINAL: bool>(
     let mut kept = true;
     let rows = &mut memo.rows;
     let result = visit_doctrine::<TERMINAL>(memory, base, task, keys, &mut |row, accumulator| {
-        if kept && crate::allocation::reserve(rows, 1).is_ok() {
+        if kept && engine_allocation::reserve(rows, 1).is_ok() {
             rows.push((row, accumulator));
         } else {
             kept = false;
@@ -593,7 +599,7 @@ fn influences_kept(
     let mut kept = true;
     let rows = &mut memo.rows;
     let result = walk(&mut |row, accumulator| {
-        if kept && crate::allocation::reserve(rows, 1).is_ok() {
+        if kept && engine_allocation::reserve(rows, 1).is_ok() {
             rows.push((row, accumulator));
         } else {
             kept = false;
@@ -615,7 +621,7 @@ fn globals_kept(
     memo: &mut Option<&mut SourceMemo>,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     let defines = |weights: [i64; 2]| SourceRow {
         scope: 24,
         weights,
@@ -663,13 +669,13 @@ fn visit_influence(
         return Ok(());
     }
     let reference = field(memory, influence, 8)?;
-    let Some(character) = crate::creference_registry::resolve(memory, base, reference)? else {
+    let Some(character) = engine_native_parts::creference_registry::resolve(memory, base, reference)? else {
         return Ok(());
     };
     let mut country = ptr(memory, character, 0xa8)?;
     if country == 0 {
         country =
-            crate::creference_registry::resolve(memory, base, field(memory, character, 0xc8)?)?
+            engine_native_parts::creference_registry::resolve(memory, base, field(memory, character, 0xc8)?)?
                 .unwrap_or(0);
     }
     if country == 0 || field::<i32>(memory, country, 0xe7c)? != 2 {
@@ -711,7 +717,7 @@ fn visit_doctrine<const TERMINAL: bool>(
     keys: &mut DoctrineKeys,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    let mut tree = crate::msvc_tree_node::Cursor::read(memory, task, 0x640)
+    let mut tree = engine_native_memory::msvc_tree_node::Cursor::read(memory, task, 0x640)
         .map_err(|_| "naval doctrine tree header invalid")?;
     let mut previous = None;
     let mut index = 0;
@@ -790,7 +796,8 @@ pub fn visit_sources<const TERMINAL: bool>(
     mut memo: Option<&mut SourceMemo>,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<ContextRow, &'static str> {
-    use crate::{ccountry, cnavy_leader, cship, ctask_force, cunit};
+    use engine_native::{ccountry, cship, ctask_force, cunit};
+    use engine_native_parts::cnavy_leader;
     auth(memory, base, ship, cship::VTABLE_RVA)?;
     let task = ptr(memory, ship, 0x728)?;
     auth(memory, base, task, ctask_force::VTABLE_RVA)?;
@@ -816,7 +823,7 @@ pub fn visit_sources<const TERMINAL: bool>(
         leader
     } else {
         let leader =
-            crate::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
+            engine_native_parts::creference_registry::resolve(memory, base, field(memory, fleet, 0xb0)?)?
                 .unwrap_or(0);
         if let Some(memo) = memo.as_deref_mut() {
             memo.leaders.insert(fleet, leader);
@@ -851,16 +858,16 @@ pub fn visit_sources<const TERMINAL: bool>(
     }
     let air_base = ptr(memory, ship, 0x730)?;
     if air_base != 0 {
-        auth(memory, base, air_base, crate::cair_base::VTABLE_RVA)?;
-        row.air_base = field(memory, air_base, crate::cair_base::HANDLE)?;
-        row.air_base_maximum = field(memory, air_base, crate::cair_base::CAPACITY)?;
+        auth(memory, base, air_base, engine_native::cair_base::VTABLE_RVA)?;
+        row.air_base = field(memory, air_base, engine_native::cair_base::HANDLE)?;
+        row.air_base_maximum = field(memory, air_base, engine_native::cair_base::CAPACITY)?;
     }
-    let equipment = add(ship, crate::cship::EQUIPMENT_POOL)?;
-    let variants = crate::cequipment_variant::pool::entries(memory, base, equipment)?;
+    let equipment = add(ship, engine_native::cship::EQUIPMENT_POOL)?;
+    let variants = engine_native::cequipment_variant::pool::entries(memory, base, equipment)?;
     for index in 0..variants.count {
         let entry = element(variants, index, 16)?;
         let variant = ptr(memory, entry, 0)?;
-        auth(memory, base, variant, crate::cequipment_variant::VTABLE_RVA)?;
+        auth(memory, base, variant, engine_native::cequipment_variant::VTABLE_RVA)?;
         emit(
             SourceRow {
                 scope: 27,
@@ -868,7 +875,7 @@ pub fn visit_sources<const TERMINAL: bool>(
                 reference: field(memory, variant, 8)?,
                 weights: [
                     field(memory, entry, 8)?,
-                    field::<u64>(memory, variant, crate::cequipment_variant::CLASSIFIER_FLAGS)?
+                    field::<u64>(memory, variant, engine_native::cequipment_variant::CLASSIFIER_FLAGS)?
                         as i64,
                 ],
                 ..Default::default()

@@ -2,11 +2,20 @@ use super::*;
 #[cfg(test)]
 use engine_native::memory::{CountedMemory, LiveMemory};
 use engine_native::{
-    ccharacter, cfleet, cgame_state, cnaval_mission, cnavy_leader, cprovince, cstrategic_navy,
-    cstrategic_region, ctask_force, cunit,
-    memory::SliceMemory, naval_mission_inputs as native, reference_bucket as bucket,
+    ccharacter,
+    cfleet,
+    cgame_state,
+    cnaval_mission,
+    cnavy_leader,
+    cprovince,
+    cstrategic_region,
+    ctask_force,
+    cunit,
+    memory::SliceMemory,
+    reference_bucket as bucket,
     sweather_per_region,
 };
+use engine_native_naval::{cstrategic_navy, naval_mission_inputs as native};
 
 const GAME_STATE: usize = 0x10000;
 const HEAP: usize = 0x0350_0000;
@@ -1555,7 +1564,7 @@ fn patrol_leaf_failure_preserves_existing_missions_ranges_and_map_outcomes() {
     let memory = TransportMemory {
         world: &world,
         reads: Default::default(),
-        fail_once: Some(stats + engine_native::naval_patrol_inputs::SURFACE_DETECTION),
+        fail_once: Some(stats + engine_native_naval::naval_patrol_inputs::SURFACE_DETECTION),
         failed: Default::default(),
     };
     let mut failed = Captured::vacant().fixture();

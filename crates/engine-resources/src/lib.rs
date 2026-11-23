@@ -2,10 +2,24 @@
 #[cfg(test)]
 use engine_native::crelation_status;
 use engine_native::{
-    Memory, allocation, batch_fallback, ccountry, cequipment_variant, cequipment_variant_pool,
-    cgame_state, cpdx_array, cstate, cstate_template, cstrategic_navy, cstrategic_navy_manager,
-    equipment_entry, memory, modifier_accumulator, read, read_slice, walk,
+    Memory,
+    allocation,
+    batch_fallback,
+    ccountry,
+    cequipment_variant,
+    cequipment_variant_pool,
+    cgame_state,
+    cpdx_array,
+    cstate,
+    cstate_template,
+    equipment_entry,
+    memory,
+    modifier_accumulator,
+    read,
+    read_slice,
+    walk,
 };
+use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 
 pub mod ccountry_resources;
 pub mod clend_lease_exchange;

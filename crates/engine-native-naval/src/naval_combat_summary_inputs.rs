@@ -1,6 +1,8 @@
 pub use engine_native_parts::naval_side_layout::{COUNTRIES, COUNTRY_COUNT};
-use crate::{
-    Memory, ccountry, cnaval_combatant, cpdx_array::Array, modifier_accumulator as accumulator,
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::{ccountry, cnaval_combatant};
+use engine_native_parts::{
+    modifier_accumulator as accumulator,
     modifier_definition as metadata,
 };
 use cnaval_combatant::field;
@@ -13,11 +15,11 @@ pub const NODE_NEXT: usize = 0x10;
 pub const RECENT_JOIN: usize = 0x160;
 pub const ESCORT: usize = 0x168;
 pub const MODIFIER_KEYS: [u32; 5] = [
-    crate::modifier_keys::NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK,
-    crate::modifier_keys::SCREENING_EFFICIENCY,
-    crate::modifier_keys::POSITIONING,
-    crate::modifier_keys::SCREENING_WITHOUT_SCREENS,
-    crate::modifier_keys::NAVAL_ENEMY_FLEET_SIZE_RATIO_PENALTY_FACTOR,
+    engine_executable::modifier_keys::NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK,
+    engine_executable::modifier_keys::SCREENING_EFFICIENCY,
+    engine_executable::modifier_keys::POSITIONING,
+    engine_executable::modifier_keys::SCREENING_WITHOUT_SCREENS,
+    engine_executable::modifier_keys::NAVAL_ENEMY_FLEET_SIZE_RATIO_PENALTY_FACTOR,
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +109,7 @@ fn list(
         .checked_add(count as usize)
         .ok_or("naval summary country arena overflow")?;
     let additional = required.saturating_sub(arena.len());
-    crate::allocation::reserve_push_batch(arena, additional)
+    engine_allocation::reserve_push_batch(arena, additional)
         .map_err(|_| "collector allocation failed")?;
     let mut end = start;
     let mut node = head;
@@ -179,7 +181,7 @@ pub fn read(
     for (scope, leader) in [(3, own), (4, enemy)] {
         if leader != 0 {
             if field::<u64>(memory, leader, 0)?
-                != site(base, crate::cnavy_leader::VTABLE_RVA)? as u64
+                != site(base, engine_native_parts::cnavy_leader::VTABLE_RVA)? as u64
             {
                 return Err("naval summary commander identity mismatch");
             }
@@ -192,11 +194,11 @@ pub fn read(
             memory,
             add(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
         )?;
-        let province = field::<u64>(memory, combat, crate::cnaval_combat::PROVINCE)? as usize;
+        let province = field::<u64>(memory, combat, engine_native::cnaval_combat::PROVINCE)? as usize;
         let (_, regional) =
-            crate::cweather_manager::movement_modifiers(memory, base, state, province)?;
+            engine_native::cweather_manager::movement_modifiers(memory, base, state, province)?;
         row.modifiers[1] = values(memory, regional)?;
-        let region = field::<u64>(memory, province, crate::cprovince::STRATEGIC_REGION)? as usize;
+        let region = field::<u64>(memory, province, engine_native::cprovince::STRATEGIC_REGION)? as usize;
         let terrain = crate::naval_ship_modifier_inputs::terrain(memory, base, region)?;
         row.modifiers[2] = values(memory, add(terrain, 0xb8)?)?;
     }
@@ -239,7 +241,7 @@ mod tests {
         data[SECONDARY_COUNTRIES..SECONDARY_COUNTRIES + 8].copy_from_slice(&head);
         data[SECONDARY_COUNTRIES + LIST_COUNT..SECONDARY_COUNTRIES + LIST_COUNT + 4]
             .copy_from_slice(&count);
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: BASE,
             bytes: &data,
         };
@@ -259,7 +261,7 @@ mod tests {
     fn country_list_beyond_the_old_cap_fills_the_caller_arena_in_order() {
         let count = 15_000;
         let data = side_list(count);
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: BASE,
             bytes: &data,
         };
@@ -287,7 +289,7 @@ mod tests {
     fn country_list_count_mismatches_fail_without_publishing_a_span() {
         let mut data = side_list(3);
         data[COUNTRY_COUNT..COUNTRY_COUNT + 4].copy_from_slice(&2i32.to_le_bytes());
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: BASE,
             bytes: &data,
         };
@@ -298,7 +300,7 @@ mod tests {
         );
         assert_eq!(len, 0);
         data[COUNTRY_COUNT..COUNTRY_COUNT + 4].copy_from_slice(&4i32.to_le_bytes());
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: BASE,
             bytes: &data,
         };
@@ -307,7 +309,7 @@ mod tests {
             Err("naval summary country list ended early")
         );
         data[COUNTRY_COUNT..COUNTRY_COUNT + 4].copy_from_slice(&(-1i32).to_le_bytes());
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: BASE,
             bytes: &data,
         };
@@ -328,7 +330,7 @@ mod tests {
         data[40..48].copy_from_slice(&i64::MIN.to_le_bytes());
         data[48..52].copy_from_slice(&0x1d0u32.to_le_bytes());
         data[56..64].copy_from_slice(&i64::MAX.to_le_bytes());
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &data,
         };
@@ -352,7 +354,7 @@ mod tests {
         data[12..16].copy_from_slice(&8193u32.to_le_bytes());
         assert_eq!(
             values(
-                &crate::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &data
                 },
@@ -375,7 +377,7 @@ mod tests {
             data[at + 8..at + 16].copy_from_slice(&i64::MIN.to_le_bytes());
         }
         let row = values(
-            &crate::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &data,
             },

@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{Memory, naval_management as native};
+use engine_native::Memory;
+use engine_native_naval::naval_management as native;
 use replay_data::rows::*;
 use replay_frame::frame::{
     DecodedFrame, FrameDecoder, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableUpdate,
@@ -59,7 +60,8 @@ impl Census {
         self.put(at + 12, &count.to_le_bytes());
     }
     fn populated(phase: i32) -> Self {
-        use engine_native::{ccountry, cgame_state, cstrategic_navy, cstrategic_navy_manager};
+        use engine_native::{ccountry, cgame_state};
+        use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
         let mut memory = Self::default();
         memory.array(STATE + cgame_state::COUNTRIES, LISTS, 8);
         memory.array(STATE + cgame_state::COUNTRY_LINKS, LISTS + 0x100, 8);
@@ -162,8 +164,8 @@ impl Census {
             LINE + engine_native::cproduction_line::PRODUCED,
             &(12345_i64 + i64::from(phase)).to_le_bytes(),
         );
-        memory.word(BASE, engine_native::cnaval_base::VTABLE_RVA.0 as u64);
-        memory.integer(BASE + engine_native::cnaval_base::PROVINCE_ID, 17);
+        memory.word(BASE, engine_native_naval::cnaval_base::VTABLE_RVA.0 as u64);
+        memory.integer(BASE + engine_native_naval::cnaval_base::PROVINCE_ID, 17);
         memory.integer(BASE + native::BASE_REPAIR_PRIORITY, 2 + phase);
         memory.integer(BASE + native::BASE_REPAIR_DOCKYARDS, 3 + phase);
         memory.array(BASE + native::BASE_REPAIR_QUEUE, LISTS + 0x800, 2);
@@ -236,7 +238,7 @@ impl Census {
         let mut bases = unsafe { bases::Session::begin(self, 0) };
         bases.visit(
             BASE,
-            &engine_native::cnaval_base::Row {
+            &engine_native_naval::cnaval_base::Row {
                 province: 17,
                 ..Default::default()
             },
@@ -460,7 +462,7 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
         for index in 0..BASES {
             session.visit(
                 pointer(index),
-                &engine_native::cnaval_base::Row {
+                &engine_native_naval::cnaval_base::Row {
                     province: index + 1,
                     ..Default::default()
                 },
@@ -494,7 +496,8 @@ impl Memory for Zeroed<'_> {
 
 #[test]
 fn naval_management_census_with_a_foreign_task_force_is_complete() {
-    use engine_native::{ccountry, cfleet, cship, cstrategic_navy, ctask_force, cunit};
+    use engine_native::{ccountry, cfleet, cship, ctask_force, cunit};
+    use engine_native_naval::cstrategic_navy;
     const FOREIGN: usize = 0xf0000;
     const FOREIGN_PRODUCTION: usize = 0xf1000;
     const FOREIGN_NAVY: usize = 0xf2000;

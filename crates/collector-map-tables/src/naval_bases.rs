@@ -4,7 +4,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec};
-use engine_native::{Memory, cnaval_base, walk::Outcome};
+use engine_native::{Memory, walk::Outcome};
+use engine_native_naval::cnaval_base;
 use replay_data::rows::{NavalBaseRow, TableId, tables};
 use replay_frame::frame::{TableInput, TableView};
 

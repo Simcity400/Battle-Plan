@@ -256,14 +256,14 @@ fn world(shape: &Shape) -> Built {
         table + 0x29 * modifier_definition::STRIDE + modifier_definition::CATEGORY_MASK,
         5,
     );
-    let navy_manager = w.object(0x100, engine_native::cstrategic_navy_manager::VTABLE_RVA.0);
+    let navy_manager = w.object(0x100, engine_native_naval::cstrategic_navy_manager::VTABLE_RVA.0);
     w.u64(
         GAME + cgame_state::STRATEGIC_NAVY_MANAGER,
         navy_manager as u64,
     );
     let navies = w.alloc(slots * 8);
     w.array(
-        navy_manager + engine_native::cstrategic_navy_manager::NAVIES,
+        navy_manager + engine_native_naval::cstrategic_navy_manager::NAVIES,
         navies,
         slots as u32,
     );
@@ -295,17 +295,17 @@ fn world(shape: &Shape) -> Built {
             country + ccountry::FOG_NETWORK_TABLE_COUNT,
             u32::from(owner % 4 != 3),
         );
-        let navy = w.object(0x100, engine_native::cstrategic_navy::VTABLE_RVA.0);
+        let navy = w.object(0x100, engine_native_naval::cstrategic_navy::VTABLE_RVA.0);
         w.u64(
             navy + 8,
-            engine_native::cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
+            engine_native_naval::cstrategic_navy::SECONDARY_VTABLE_RVA.0 as u64,
         );
-        w.u32(navy + engine_native::cstrategic_navy::OWNER, slot as u32);
+        w.u32(navy + engine_native_naval::cstrategic_navy::OWNER, slot as u32);
         let regional = w.alloc(16);
         w.u64(regional, 700 + owner as u64);
         w.u64(regional + 8, 800 + owner as u64);
         w.array(
-            navy + engine_native::cstrategic_navy::REGIONAL_OPERANDS,
+            navy + engine_native_naval::cstrategic_navy::REGIONAL_OPERANDS,
             regional,
             2,
         );

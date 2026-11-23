@@ -382,11 +382,11 @@ pub const PARADROP_TRANSPORT: Family = Family {
     tables: &[],
 };
 
-const NAVAL_MISSION_KEYS: [u32; engine_native::naval_mission_inputs::COUNTRY_KEYS.len() + 1] = {
-    let mut out = [0; engine_native::naval_mission_inputs::COUNTRY_KEYS.len() + 1];
+const NAVAL_MISSION_KEYS: [u32; engine_native_naval::naval_mission_inputs::COUNTRY_KEYS.len() + 1] = {
+    let mut out = [0; engine_native_naval::naval_mission_inputs::COUNTRY_KEYS.len() + 1];
     let mut index = 0;
-    while index < engine_native::naval_mission_inputs::COUNTRY_KEYS.len() {
-        out[index] = engine_native::naval_mission_inputs::COUNTRY_KEYS[index];
+    while index < engine_native_naval::naval_mission_inputs::COUNTRY_KEYS.len() {
+        out[index] = engine_native_naval::naval_mission_inputs::COUNTRY_KEYS[index];
         index += 1;
     }
     out[index] = keys::SPOTTING_CHANCE_AGAINST;

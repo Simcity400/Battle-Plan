@@ -1,5 +1,5 @@
 use super::*;
-use crate::cship::modifier_sources::terrain_from_template_with_policy;
+use engine_native::cship::modifier_sources::terrain_from_template_with_policy;
 use std::cell::{Cell, RefCell};
 const IMAGE: usize = 0x1000_0000;
 struct Fixture {
@@ -19,17 +19,17 @@ impl Memory for Fixture {
             return false;
         }
         for (base, bytes) in &self.globals {
-            if (crate::memory::SliceMemory { base: *base, bytes }).copy(address, output) {
+            if (engine_native_memory::memory::SliceMemory { base: *base, bytes }).copy(address, output) {
                 return true;
             }
         }
-        if address == IMAGE + crate::modifier_definition::TABLE_RVA.0 && output.len() == 16 {
+        if address == IMAGE + engine_native_parts::modifier_definition::TABLE_RVA.0 && output.len() == 16 {
             output[..8].copy_from_slice(&0x4000u64.to_le_bytes());
             output[8..12].copy_from_slice(&64u32.to_le_bytes());
             output[12..].copy_from_slice(&64u32.to_le_bytes());
             return true;
         }
-        crate::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &self.bytes,
         }
@@ -54,8 +54,8 @@ fn fixture() -> Fixture {
         put(0x2008 + i * 16, &value.to_le_bytes());
         put(
             0x4000
-                + key as usize * crate::modifier_definition::STRIDE
-                + crate::modifier_definition::FLAGS,
+                + key as usize * engine_native_parts::modifier_definition::STRIDE
+                + engine_native_parts::modifier_definition::FLAGS,
             &0x81234567u32.to_le_bytes(),
         );
     }
@@ -88,7 +88,7 @@ const NODES: usize = 0x10000;
 const TOKENS: usize = 0x50000;
 
 fn doctrine_fixture(count: usize) -> Fixture {
-    use crate::cpdx_lexer as lexer;
+    use engine_native_memory::cpdx_lexer as lexer;
     let mut f = fixture();
     let tokens = TOKENS.max(NODES + count * 0x38);
     f.bytes.resize(tokens + (count + 1) * 32 - 0x1000, 0);
@@ -255,7 +255,7 @@ fn doctrine_source_visitor_sizes_populations_in_operand_order() {
             assert_eq!(source.weights, [index as i64 + 7, index as i64]);
             assert_eq!(*accumulator, Some(0x1800));
         }
-        let failed = IMAGE + crate::cpdx_lexer::INITIALIZED_RVA.0;
+        let failed = IMAGE + engine_native_memory::cpdx_lexer::INITIALIZED_RVA.0;
         memory.fail = Some(failed);
         memory.reads.borrow_mut().clear();
         sources.clear();
@@ -385,7 +385,7 @@ fn cold_doctrine_keys_keep_mod_heap_segments_and_original_text_faults() {
         memory.put(NODE + 0x10, &2u32.to_le_bytes());
         memory.put(NODE + 0x14, &77u32.to_le_bytes());
         for address in [TOKENS + 32, GENERATOR + 0x10, GENERATOR + 0x30, TOKENS + 64] {
-            assert!(crate::msvc_string::read_text::<256>(&memory, address).is_none());
+            assert!(engine_native_memory::msvc_string::read_text::<256>(&memory, address).is_none());
         }
         memory.reads.borrow_mut().clear();
         assert_eq!(doctrine_keys::<true>(&memory, IMAGE, 1), Ok([77; 2]));
@@ -434,7 +434,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         let mut memory = fixture();
         memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
         memory.globals.push((
-            IMAGE + crate::cterrain_database::SINGLETON_RVA.0,
+            IMAGE + engine_native_parts::cterrain_database::SINGLETON_RVA.0,
             (DATABASE as u64).to_le_bytes().to_vec(),
         ));
         memory.q(DATABASE + 0x40, TYPES as u64);
@@ -442,7 +442,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         memory.q(TYPES, LONG as u64);
         memory.q(TYPES + 8, MATCHED as u64);
         for terrain in [LONG, MATCHED] {
-            memory.q(terrain, (IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64);
+            memory.q(terrain, (IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64);
             memory.put(terrain + 0x10, &[1]);
         }
         memory.heap_text(LONG + 0x18, DATA, &vec![b'z'; length]);
@@ -450,7 +450,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
         memory.q(MATCHED + 0x28, key.len() as u64);
         memory.q(MATCHED + 0x30, 15);
         assert_eq!(ContextRow::default().terrain_name.allocated_bytes(), 0);
-        assert!(crate::msvc_string::read_text::<256>(&memory, LONG + 0x18).is_none());
+        assert!(engine_native_memory::msvc_string::read_text::<256>(&memory, LONG + 0x18).is_none());
         memory.reads.borrow_mut().clear();
         assert_eq!(
             terrain_from_template_with_policy::<true>(&memory, IMAGE, TASK),
@@ -495,13 +495,13 @@ fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
     let mut memory = fixture();
     memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
     memory.globals.push((
-        IMAGE + crate::cterrain_database::SINGLETON_RVA.0,
+        IMAGE + engine_native_parts::cterrain_database::SINGLETON_RVA.0,
         (DATABASE as u64).to_le_bytes().to_vec(),
     ));
     memory.q(DATABASE + 0x40, TYPES as u64);
     memory.q(DATABASE + 0x48, (1u64 << 32) | 1);
     memory.q(TYPES, OCEAN as u64);
-    memory.q(OCEAN, (IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64);
+    memory.q(OCEAN, (IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64);
     memory.put(OCEAN + 0x10, &[1]);
     memory.put(OCEAN + 0x18, &key);
     memory.q(OCEAN + 0x28, key.len() as u64);
@@ -527,7 +527,7 @@ fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
 
 #[test]
 fn modifier_terms_and_keys_exceed_65536() {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     const COUNT: usize = 65_537;
     const TERMS: usize = 0x10000;
     const DEFINITIONS: usize = 0x200000;
@@ -582,7 +582,7 @@ fn terrain_buckets_exceed_65536() {
 
 #[test]
 fn native_modifier_sources_share_owned_terms_per_accumulator() {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     let source_reads = [
         (0x1800, 16),
         (IMAGE + md::TABLE_RVA.0, 16),
@@ -637,7 +637,7 @@ fn native_modifier_sources_share_owned_terms_per_accumulator() {
 
 #[test]
 fn a_capture_reads_each_keys_metadata_once() {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     let mut memory = fixture();
     memory.put(0x1810, &0x2000u64.to_le_bytes());
     memory.put(0x1818, &3u32.to_le_bytes());
@@ -680,7 +680,7 @@ fn a_capture_reads_each_keys_metadata_once() {
 
 #[test]
 fn modifier_source_faults_stop_at_primary_prefix_and_leave_lengths_unpublished() {
-    use crate::modifier_definition as md;
+    use engine_native_parts::modifier_definition as md;
     for (fail, calls, copied, required_terms, reason) in [
         (0x1800, 1, 16, 0, "naval field unreadable"),
         (

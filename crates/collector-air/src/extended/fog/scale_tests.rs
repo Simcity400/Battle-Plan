@@ -54,10 +54,10 @@ impl World {
         world.u64(GS + cgame_state::STRATEGIC_NAVY_MANAGER, MANAGER);
         world.u64(
             MANAGER,
-            engine_native::cstrategic_navy_manager::VTABLE_RVA.0,
+            engine_native_naval::cstrategic_navy_manager::VTABLE_RVA.0,
         );
         world.array(
-            MANAGER + engine_native::cstrategic_navy_manager::NAVIES,
+            MANAGER + engine_native_naval::cstrategic_navy_manager::NAVIES,
             NAVIES,
             countries + 1,
         );
@@ -71,14 +71,14 @@ impl World {
             world.u32(country + ccountry::ID, slot as u32);
             let navy = country + 0x1800;
             world.u64(NAVIES + slot * 8, navy);
-            world.u64(navy, engine_native::cstrategic_navy::VTABLE_RVA.0);
+            world.u64(navy, engine_native_naval::cstrategic_navy::VTABLE_RVA.0);
             world.u64(
                 navy + 8,
-                engine_native::cstrategic_navy::SECONDARY_VTABLE_RVA.0,
+                engine_native_naval::cstrategic_navy::SECONDARY_VTABLE_RVA.0,
             );
-            world.u32(navy + engine_native::cstrategic_navy::OWNER, slot as u32);
+            world.u32(navy + engine_native_naval::cstrategic_navy::OWNER, slot as u32);
             world.array(
-                navy + engine_native::cstrategic_navy::ACCESS_MODES,
+                navy + engine_native_naval::cstrategic_navy::ACCESS_MODES,
                 country + 0x4100,
                 population,
             );

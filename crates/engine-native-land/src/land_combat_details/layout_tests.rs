@@ -835,13 +835,13 @@ impl Memory for DetailMemory<'_> {
             }
             return true;
         }
-        if address == BASE + engine_native::naval_commander_inputs::SKILL_DATABASE_RVA.0
+        if address == BASE + engine_native_naval::naval_commander_inputs::SKILL_DATABASE_RVA.0
             && destination.len() == 8
         {
             destination.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
-        if address == BASE + engine_native::naval_commander_inputs::LEARNING_THRESHOLD_RVA.0
+        if address == BASE + engine_native_naval::naval_commander_inputs::LEARNING_THRESHOLD_RVA.0
             && destination.len() == 8
         {
             destination.copy_from_slice(&5_000_i64.to_le_bytes());

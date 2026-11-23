@@ -1,6 +1,13 @@
-use crate::cnaval_combat::{OBSERVED_REFERENCE_TYPE, Row, walk, walk_timed, storage_demand};
+use engine_native::cnaval_combat::{
+    OBSERVED_REFERENCE_TYPE,
+    Row,
+    walk,
+    walk_timed,
+    storage_demand,
+};
 use super::*;
-use crate::{cfex_member, cship, memory::SliceMemory};
+use engine_native::{cfex_member, cship};
+use engine_native_memory::memory::SliceMemory;
 
 fn capture_details(
     memory: &impl Memory,
@@ -15,7 +22,7 @@ fn capture_details(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(details),
+        engine_native_memory::walk::Buffer::Growing(details),
         ships,
         groups,
         buffers,
@@ -137,7 +144,8 @@ struct Fault<'a> {
 struct DetailMemory<'a>(SliceMemory<'a>);
 impl Memory for DetailMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        use crate::{modifier_definition as md, naval_combat_summary_inputs as summary};
+        use engine_native_parts::modifier_definition as md;
+        use crate::naval_combat_summary_inputs as summary;
         if address == IMAGE + md::TABLE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x100000u64.to_le_bytes());
             return true;
@@ -187,9 +195,9 @@ fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
     world.u64(FRONT + cprovince::STRATEGIC_REGION, REGION as u64);
     world.u64(
         REGION,
-        (IMAGE + crate::cstrategic_region::VTABLE_RVA.0) as u64,
+        (IMAGE + engine_native_parts::cstrategic_region::VTABLE_RVA.0) as u64,
     );
-    world.u32(REGION + crate::cstrategic_region::ID, 94);
+    world.u32(REGION + engine_native_parts::cstrategic_region::ID, 94);
     world.u64(REGION + 0x30, TEMPLATE as u64);
     world.u64(TEMPLATE, (IMAGE + 0x02a5_5348) as u64);
     world.u32(TEMPLATE + 0x140, 1);
@@ -212,12 +220,12 @@ fn side_units_keep_stored_order_and_report_their_demand() {
     world.array(ATTACKING + cnaval_combatant::UNITS, SLOTS, 4, 2);
     for (index, (force, handle)) in FORCES.into_iter().zip(handles).enumerate() {
         world.u64(SLOTS + index * 8, force as u64);
-        world.u64(force, (IMAGE + crate::ctask_force::VTABLE_RVA.0) as u64);
+        world.u64(force, (IMAGE + engine_native::ctask_force::VTABLE_RVA.0) as u64);
         world.u64(
-            force + crate::ctask_force::SECONDARY_BASE,
-            (IMAGE + crate::ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
+            force + engine_native::ctask_force::SECONDARY_BASE,
+            (IMAGE + engine_native::ctask_force::SECONDARY_VTABLE_RVA.0) as u64,
         );
-        world.u64(force + crate::ctask_force::SECONDARY_BASE + 8, handle);
+        world.u64(force + engine_native::ctask_force::SECONDARY_BASE + 8, handle);
     }
     let run = |world: &World, arena: &mut Vec<u64>| {
         let mut details = vec![DetailsRow::default(); 1];
@@ -227,14 +235,14 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: crate::walk::Buffer::Count,
+            planes: engine_native_memory::walk::Buffer::Count,
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: crate::walk::Buffer::Count,
-            plane_naval_hits: crate::walk::Buffer::Count,
+            plane_air_hits: engine_native_memory::walk::Buffer::Count,
+            plane_naval_hits: engine_native_memory::walk::Buffer::Count,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: crate::walk::Buffer::Count,
+            plane_kills: engine_native_memory::walk::Buffer::Count,
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
@@ -244,26 +252,26 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             doctrine_keys: Default::default(),
             term_metadata: Default::default(),
             source_memo: Default::default(),
-            commander_inputs: crate::walk::Buffer::Count,
+            commander_inputs: engine_native_memory::walk::Buffer::Count,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: crate::walk::Buffer::Growing(arena),
+            side_units: engine_native_memory::walk::Buffer::Growing(arena),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: crate::walk::Buffer::Growing(&mut vec![0; 64]),
+            custom_sea: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: crate::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
+            damage_sources: engine_native_memory::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: crate::walk::Buffer::Growing(&mut vec![0; 512]),
+            wing_types: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: crate::walk::Buffer::Growing(&mut vec![0; 1024]),
+            plane_wings: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -271,7 +279,7 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             &DetailMemory(world.memory()),
             IMAGE,
             GS,
-            crate::walk::Buffer::Growing(&mut details),
+            engine_native_memory::walk::Buffer::Growing(&mut details),
             &mut vec![crate::naval_member_details::DetailsRow::default(); 2],
             &mut vec![0; 4],
             &mut buffers,
@@ -319,10 +327,10 @@ fn null_commander_never_falls_back_to_the_last_leader() {
         let mut arenas = crate::naval_side_details::SideArenas {
             countries: &mut countries,
             countries_len: &mut countries_len,
-            units: crate::walk::Buffer::Growing(&mut units),
+            units: engine_native_memory::walk::Buffer::Growing(&mut units),
             units_len: &mut units_len,
             units_required: &mut units_required,
-            damage_sources: crate::walk::Buffer::Growing(&mut damage_sources),
+            damage_sources: engine_native_memory::walk::Buffer::Growing(&mut damage_sources),
             damage_sources_len: &mut damage_sources_len,
             damage_sources_required: &mut damage_sources_required,
         };
@@ -390,14 +398,14 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         naval_hits: &mut Vec::new(),
         lengths: [0; 3],
         required: [0; 3],
-        planes: crate::walk::Buffer::Count,
+        planes: engine_native_memory::walk::Buffer::Count,
         planes_len: 0,
         planes_required: 0,
-        plane_air_hits: crate::walk::Buffer::Count,
-        plane_naval_hits: crate::walk::Buffer::Count,
+        plane_air_hits: engine_native_memory::walk::Buffer::Count,
+        plane_naval_hits: engine_native_memory::walk::Buffer::Count,
         plane_hit_lengths: [0; 2],
         plane_hit_required: [0; 2],
-        plane_kills: crate::walk::Buffer::Count,
+        plane_kills: engine_native_memory::walk::Buffer::Count,
         plane_kills_len: 0,
         plane_kills_required: 0,
         weapon_sources: &mut Vec::new(),
@@ -407,26 +415,26 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         doctrine_keys: Default::default(),
         term_metadata: Default::default(),
         source_memo: Default::default(),
-        commander_inputs: crate::walk::Buffer::Count,
+        commander_inputs: engine_native_memory::walk::Buffer::Count,
         commander_inputs_len: 0,
         commander_inputs_required: 0,
         commander_timed_traits: &mut Vec::new(),
         commander_timed_traits_len: 0,
-        side_units: crate::walk::Buffer::Count,
+        side_units: engine_native_memory::walk::Buffer::Count,
         side_units_len: 0,
         side_units_required: 0,
         summary_countries: &mut Vec::new(),
         summary_countries_len: 0,
-        custom_sea: crate::walk::Buffer::Growing(&mut vec![0; 64]),
+        custom_sea: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
         custom_sea_len: 0,
         custom_sea_required: 0,
-        damage_sources: crate::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
+        damage_sources: engine_native_memory::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
         damage_sources_len: 0,
         damage_sources_required: 0,
-        wing_types: crate::walk::Buffer::Growing(&mut vec![0; 512]),
+        wing_types: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 512]),
         wing_types_len: 0,
         wing_types_required: 0,
-        plane_wings: crate::walk::Buffer::Growing(&mut vec![0; 1024]),
+        plane_wings: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 1024]),
         plane_wings_len: 0,
         plane_wings_required: 0,
     };
@@ -435,7 +443,7 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         &memory,
         IMAGE,
         GS,
-        crate::walk::Buffer::Growing(&mut details),
+        engine_native_memory::walk::Buffer::Growing(&mut details),
         &mut ships,
         &mut vec![0; 4],
         &mut buffers,
@@ -529,7 +537,7 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     world.array(MEMBER_A + cfex_member::DAMAGE_ENTRIES, 0xa800, 1, 1);
     world.u64(
         0xa800,
-        (IMAGE + crate::cfex_damage_entry::VTABLE_RVA.0) as u64,
+        (IMAGE + engine_native::cfex_damage_entry::VTABLE_RVA.0) as u64,
     );
     world.u64(0xa818, i64::MAX as u64);
     world.array(GROUP_A + 0x70, MEMBERS_A, 1, 1);
@@ -544,13 +552,13 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     world.u64(0xaa08, 0xab00);
     world.u64(
         0xab00,
-        (IMAGE + crate::cequipment_variant::VTABLE_RVA.0) as u64,
+        (IMAGE + engine_native::cequipment_variant::VTABLE_RVA.0) as u64,
     );
     world.u64(0xab08, u64::MAX);
     world.array(MEMBER_A + 0x180, 0xa848, 1, 1);
     world.u64(0xa848, 0xac00);
     world.u64(0xac00, (IMAGE + crate::naval_combat_hit::VTABLE_RVA.0) as u64);
-    world.u64(0xac10 + crate::msvc_string::CAPACITY, 15);
+    world.u64(0xac10 + engine_native_memory::msvc_string::CAPACITY, 15);
     world.u64(0xac38, i64::MIN as u64);
     let run = |initial, fault| {
         let memory = Trace {
@@ -567,14 +575,14 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
             naval_hits: &mut vec![Default::default(); initial],
             lengths: [0; 3],
             required: [0; 3],
-            planes: crate::walk::Buffer::Count,
+            planes: engine_native_memory::walk::Buffer::Count,
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: crate::walk::Buffer::Count,
-            plane_naval_hits: crate::walk::Buffer::Count,
+            plane_air_hits: engine_native_memory::walk::Buffer::Count,
+            plane_naval_hits: engine_native_memory::walk::Buffer::Count,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: crate::walk::Buffer::Count,
+            plane_kills: engine_native_memory::walk::Buffer::Count,
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
@@ -584,26 +592,26 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
             doctrine_keys: Default::default(),
             term_metadata: Default::default(),
             source_memo: Default::default(),
-            commander_inputs: crate::walk::Buffer::Count,
+            commander_inputs: engine_native_memory::walk::Buffer::Count,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: crate::walk::Buffer::Count,
+            side_units: engine_native_memory::walk::Buffer::Count,
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: crate::walk::Buffer::Growing(&mut vec![0; 64]),
+            custom_sea: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: crate::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
+            damage_sources: engine_native_memory::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: crate::walk::Buffer::Growing(&mut vec![0; 512]),
+            wing_types: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: crate::walk::Buffer::Growing(&mut vec![0; 1024]),
+            plane_wings: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -671,9 +679,9 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
 fn side_external_planes_keep_their_first_group_owner() {
     const PLANE: usize = 0xa900;
     let mut world = detail_world();
-    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
+    world.u64(PLANE, (IMAGE + engine_native::cfex_air::VTABLE_RVA.0) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
-    world.u64(PLANE + 0x88 + crate::msvc_string::CAPACITY, 15);
+    world.u64(PLANE + 0x88 + engine_native_memory::msvc_string::CAPACITY, 15);
     world.u64(0xa880, PLANE as u64);
     world.array(GROUP_A + 0x58, 0xa880, 1, 1);
     world.array(ATTACKING + 0x100, 0xa880, 1, 1);
@@ -686,14 +694,14 @@ fn side_external_planes_keep_their_first_group_owner() {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: crate::walk::Buffer::Growing(planes),
+            planes: engine_native_memory::walk::Buffer::Growing(planes),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: crate::walk::Buffer::Count,
-            plane_naval_hits: crate::walk::Buffer::Count,
+            plane_air_hits: engine_native_memory::walk::Buffer::Count,
+            plane_naval_hits: engine_native_memory::walk::Buffer::Count,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: crate::walk::Buffer::Count,
+            plane_kills: engine_native_memory::walk::Buffer::Count,
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
@@ -703,26 +711,26 @@ fn side_external_planes_keep_their_first_group_owner() {
             doctrine_keys: Default::default(),
             term_metadata: Default::default(),
             source_memo: Default::default(),
-            commander_inputs: crate::walk::Buffer::Count,
+            commander_inputs: engine_native_memory::walk::Buffer::Count,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: crate::walk::Buffer::Count,
+            side_units: engine_native_memory::walk::Buffer::Count,
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: crate::walk::Buffer::Growing(&mut vec![0; 64]),
+            custom_sea: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: crate::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
+            damage_sources: engine_native_memory::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: crate::walk::Buffer::Growing(&mut vec![0; 512]),
+            wing_types: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: crate::walk::Buffer::Growing(&mut vec![0; 1024]),
+            plane_wings: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -1122,14 +1130,14 @@ fn a_registry_past_4096_combats_is_walked_whole_from_any_starting_storage() {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: crate::walk::Buffer::Count,
+            planes: engine_native_memory::walk::Buffer::Count,
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: crate::walk::Buffer::Count,
-            plane_naval_hits: crate::walk::Buffer::Count,
+            plane_air_hits: engine_native_memory::walk::Buffer::Count,
+            plane_naval_hits: engine_native_memory::walk::Buffer::Count,
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: crate::walk::Buffer::Count,
+            plane_kills: engine_native_memory::walk::Buffer::Count,
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
@@ -1139,26 +1147,26 @@ fn a_registry_past_4096_combats_is_walked_whole_from_any_starting_storage() {
             doctrine_keys: Default::default(),
             term_metadata: Default::default(),
             source_memo: Default::default(),
-            commander_inputs: crate::walk::Buffer::Count,
+            commander_inputs: engine_native_memory::walk::Buffer::Count,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: crate::walk::Buffer::Count,
+            side_units: engine_native_memory::walk::Buffer::Count,
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: crate::walk::Buffer::Growing(&mut vec![0; 64]),
+            custom_sea: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: crate::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
+            damage_sources: engine_native_memory::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: crate::walk::Buffer::Growing(&mut vec![0; 512]),
+            wing_types: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: crate::walk::Buffer::Growing(&mut vec![0; 1024]),
+            plane_wings: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -1215,17 +1223,17 @@ fn walk_whole_mode(
         lengths: [0; 3],
         required: [0; 3],
         planes: if growing {
-            crate::walk::Buffer::Growing(&mut plane_rows)
+            engine_native_memory::walk::Buffer::Growing(&mut plane_rows)
         } else {
-            crate::walk::Buffer::Growing(&mut plane_rows)
+            engine_native_memory::walk::Buffer::Growing(&mut plane_rows)
         },
         planes_len: 0,
         planes_required: 0,
-        plane_air_hits: crate::walk::Buffer::Count,
-        plane_naval_hits: crate::walk::Buffer::Count,
+        plane_air_hits: engine_native_memory::walk::Buffer::Count,
+        plane_naval_hits: engine_native_memory::walk::Buffer::Count,
         plane_hit_lengths: [0; 2],
         plane_hit_required: [0; 2],
-        plane_kills: crate::walk::Buffer::Count,
+        plane_kills: engine_native_memory::walk::Buffer::Count,
         plane_kills_len: 0,
         plane_kills_required: 0,
         weapon_sources: &mut Vec::new(),
@@ -1235,26 +1243,26 @@ fn walk_whole_mode(
         doctrine_keys: Default::default(),
         term_metadata: Default::default(),
         source_memo: Default::default(),
-        commander_inputs: crate::walk::Buffer::Count,
+        commander_inputs: engine_native_memory::walk::Buffer::Count,
         commander_inputs_len: 0,
         commander_inputs_required: 0,
         commander_timed_traits: &mut Vec::new(),
         commander_timed_traits_len: 0,
-        side_units: crate::walk::Buffer::Count,
+        side_units: engine_native_memory::walk::Buffer::Count,
         side_units_len: 0,
         side_units_required: 0,
         summary_countries: &mut Vec::new(),
         summary_countries_len: 0,
-        custom_sea: crate::walk::Buffer::Growing(&mut vec![0; 64]),
+        custom_sea: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]),
         custom_sea_len: 0,
         custom_sea_required: 0,
-        damage_sources: crate::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
+        damage_sources: engine_native_memory::walk::Buffer::Growing(&mut vec![(0, 0); 64]),
         damage_sources_len: 0,
         damage_sources_required: 0,
-        wing_types: crate::walk::Buffer::Growing(&mut vec![0; 512]),
+        wing_types: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 512]),
         wing_types_len: 0,
         wing_types_required: 0,
-        plane_wings: crate::walk::Buffer::Growing(&mut vec![0; 1024]),
+        plane_wings: engine_native_memory::walk::Buffer::Growing(&mut vec![0; 1024]),
         plane_wings_len: 0,
         plane_wings_required: 0,
     };
@@ -1263,9 +1271,9 @@ fn walk_whole_mode(
         IMAGE,
         GS,
         if growing {
-            crate::walk::Buffer::Growing(&mut rows)
+            engine_native_memory::walk::Buffer::Growing(&mut rows)
         } else {
-            crate::walk::Buffer::Growing(&mut rows)
+            engine_native_memory::walk::Buffer::Growing(&mut rows)
         },
         &mut ships,
         &mut Vec::new(),
@@ -1324,9 +1332,9 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     const PLANE: usize = 0xa900;
     let mut world = detail_world();
     world.0.resize(size, 0);
-    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
+    world.u64(PLANE, (IMAGE + engine_native::cfex_air::VTABLE_RVA.0) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
-    world.u64(PLANE + 0x88 + crate::msvc_string::CAPACITY, 15);
+    world.u64(PLANE + 0x88 + engine_native_memory::msvc_string::CAPACITY, 15);
     world.array(GROUP_A + 0x58, ARRAY, 16_385, 16_385);
     for index in 0..16_385 {
         world.u64(ARRAY + index * 8, PLANE as u64);
@@ -1344,7 +1352,7 @@ fn active_wing_vectors_exceed_256() {
     const ARRAY: usize = 0xc000;
     let mut world = World::new();
     world.0.resize(ARRAY + COUNT * 16 - GS, 0);
-    world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
+    world.u64(PLANE, (IMAGE + engine_native::cfex_air::VTABLE_RVA.0) as u64);
     world.u64(PLANE + 8, GROUP_A as u64);
     world.array(PLANE + 0x28, ARRAY, COUNT as u32, COUNT as u32);
     world.array(PLANE + 0x40, ARRAY + COUNT * 8, COUNT as u32, COUNT as u32);
@@ -1398,7 +1406,7 @@ fn member_damage_past_16384_grows_from_the_native_header() {
     );
     for index in 0..COUNT {
         let entry = ARRAY + index * 0x20;
-        world.u64(entry, (IMAGE + crate::cfex_damage_entry::VTABLE_RVA.0) as u64);
+        world.u64(entry, (IMAGE + engine_native::cfex_damage_entry::VTABLE_RVA.0) as u64);
         world.u64(entry + 0x18, i64::MIN as u64);
     }
     let (capture, _, ships, _, _) = walk_whole(&world, 0);
@@ -1548,7 +1556,7 @@ fn table_timing_partitions_the_whole_walk_including_a_failed_member_read() {
 
 #[test]
 fn healthy_read_accounting_partitions_naval_combat_without_changing_its_read_trace() {
-    use crate::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     use std::cell::RefCell;
 
     struct Traced<'a> {
@@ -1641,7 +1649,7 @@ fn cold_worker_reads_plane_populations_on_the_original_hour() {
     for count in [15, 50, 165] {
         let mut world = detail_world();
         world.0.resize(ARRAY + count * 8 - GS, 0);
-        world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA.0) as u64);
+        world.u64(PLANE, (IMAGE + engine_native::cfex_air::VTABLE_RVA.0) as u64);
         world.u64(PLANE + 8, GROUP_A as u64);
         world.array(GROUP_A + 0x58, ARRAY, count as u32, count as u32);
         for index in 0..count {

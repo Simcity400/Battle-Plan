@@ -130,21 +130,21 @@ fn naval_management_task_controls_keep_independent_refit_designs_and_target() {
     const TARGET: usize = 0x3000;
     const VARIANT: usize = 0x4000;
     let mut memory = Fixture::default();
-    memory.array(STATE + crate::cgame_state::PROVINCES, PROVINCES, 3);
+    memory.array(STATE + engine_native::cgame_state::PROVINCES, PROVINCES, 3);
     memory.word(PROVINCES + 2 * 8, TARGET as u64);
-    memory.word(TARGET, crate::cprovince::VTABLE_RVA.0 as u64);
-    memory.put(TARGET + crate::cprovince::ID, &2_u32.to_le_bytes());
-    memory.word(TASK + crate::ctask_force::REPAIR_TARGET, TARGET as u64);
-    let rejoin = u64::from(crate::ctask_force::DEFAULT_HANDLE_TYPE) | (8_u64 << 32);
+    memory.word(TARGET, engine_native::cprovince::VTABLE_RVA.0 as u64);
+    memory.put(TARGET + engine_native::cprovince::ID, &2_u32.to_le_bytes());
+    memory.word(TASK + engine_native::ctask_force::REPAIR_TARGET, TARGET as u64);
+    let rejoin = u64::from(engine_native::ctask_force::DEFAULT_HANDLE_TYPE) | (8_u64 << 32);
     memory.word(TASK + MERGE_AFTER_REPAIR, rejoin);
     memory.integer(TASK + REPAIR_MODE, -7);
     memory.put(TASK + REPAIR_SPLIT, &[3]);
     memory.put(TASK + AUTO_REINFORCEMENT, &[0]);
     memory.word(TASK + REFIT_VARIANT, 0);
     memory.word(TASK + REFIT_AFTER_REPAIR, VARIANT as u64);
-    memory.word(VARIANT, crate::cequipment_variant::VTABLE_RVA.0 as u64);
-    let design = u64::from(crate::cequipment_variant::REFERENCE_TYPE) | (u64::from(u32::MAX) << 32);
-    memory.word(VARIANT + crate::cequipment_variant::TYPE, design);
+    memory.word(VARIANT, engine_native::cequipment_variant::VTABLE_RVA.0 as u64);
+    let design = u64::from(engine_native::cequipment_variant::REFERENCE_TYPE) | (u64::from(u32::MAX) << 32);
+    memory.word(VARIANT + engine_native::cequipment_variant::TYPE, design);
     memory.put(TASK + COMPOSITION_TOKEN, &0xfedc_ba98_u32.to_le_bytes());
     let value = task_settings(&memory, 0, STATE, TASK).unwrap();
     assert_eq!(
@@ -191,7 +191,7 @@ fn naval_management_budgets_and_refit_absence_keep_native_signed_values() {
     assert_eq!(max_factories_for_repair(&memory, 0x1000).unwrap(), i32::MIN);
     assert_eq!(repair_dockyards(&memory, 0x2000).unwrap(), (-1, i32::MAX));
     let absent = u64::MAX;
-    memory.word(crate::creference_registry::INVALID_REFERENCE_RVA.0, absent);
+    memory.word(engine_native_parts::creference_registry::INVALID_REFERENCE_RVA.0, absent);
     memory.word(0x3000 + SHIP_REFIT_LINE, absent);
     assert_eq!(ship_refit_line(&memory, 0, 0x3000).unwrap(), 0);
     memory.word(0x3000 + SHIP_REFIT_LINE, 71 | (19 << 32));

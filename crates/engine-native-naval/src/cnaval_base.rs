@@ -8,12 +8,9 @@ pub const LEVEL: usize = 0x18;
 
 pub const COUNTRY_LIST: usize = 0x40;
 
-use crate::{
-    Memory, cgame_state,
-    cpdx_array::{Array, copy_u32s},
-    rail_anchor_selector as map, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::{Array, copy_u32s}, read, walk::Outcome};
+use engine_native::cgame_state;
+use engine_native_parts::rail_anchor_selector as map;
 
 pub fn country_text(
     memory: &impl Memory,
@@ -22,28 +19,28 @@ pub fn country_text(
     country: u32,
 ) -> Result<Vec<u8>, &'static str> {
     let array = if country == 0 {
-        engine_sites::at(base, crate::ccountry_database::SINGLETON_RVA)
+        engine_sites::at(base, engine_native_parts::ccountry_database::SINGLETON_RVA)
             .and_then(|address| read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|&pointer| pointer != 0)
             .and_then(|pointer| {
                 Array::read(
                     memory,
-                    pointer + crate::ccountry_database::TAGS,
-                    crate::msvc_string::STRIDE,
+                    pointer + engine_native_parts::ccountry_database::TAGS,
+                    engine_native_memory::msvc_string::STRIDE,
                 )
             })
     } else {
         game_state
             .checked_add(cgame_state::COUNTRY_TAGS)
-            .and_then(|address| Array::read(memory, address, crate::msvc_string::STRIDE))
+            .and_then(|address| Array::read(memory, address, engine_native_memory::msvc_string::STRIDE))
     }
     .ok_or("naval base raw country tag array unreadable")?;
     let address = array
-        .element(country, crate::msvc_string::STRIDE)
+        .element(country, engine_native_memory::msvc_string::STRIDE)
         .ok_or("naval base raw country tag is outside its string array")?;
     let mut bytes = Vec::new();
-    crate::msvc_string::append(memory, address, &mut bytes, &mut 0)?;
+    engine_native_memory::msvc_string::append(memory, address, &mut bytes, &mut 0)?;
     Ok(bytes)
 }
 
@@ -79,7 +76,7 @@ pub struct Walk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -93,8 +90,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(countries),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(countries),
     )
 }
 
@@ -102,8 +99,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: crate::walk::Buffer<'_, Row>,
-    countries: crate::walk::Buffer<'_, u32>,
+    rows: engine_native_memory::walk::Buffer<'_, Row>,
+    countries: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Walk {
     walk_buffer_observed(memory, base, game_state, rows, countries, |_, _| {})
 }
@@ -120,8 +117,8 @@ pub fn walk_observed(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(countries),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(countries),
         observe,
     )
 }
@@ -130,8 +127,8 @@ fn walk_buffer_observed(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut rows: crate::walk::Buffer<'_, Row>,
-    mut countries: crate::walk::Buffer<'_, u32>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
+    mut countries: engine_native_memory::walk::Buffer<'_, u32>,
     mut observe: impl FnMut(usize, &Row),
 ) -> Walk {
     let mut used = 0_usize;
@@ -327,7 +324,7 @@ mod naval_base_tests {
         struct Tags(Vec<u8>);
         impl Memory for Tags {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == crate::ccountry_database::SINGLETON_RVA.0 && output.len() == 8 {
+                if address == engine_native_parts::ccountry_database::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
                     return true;
                 }
@@ -341,7 +338,7 @@ mod naval_base_tests {
                 true
             }
         }
-        let mut memory = Tags(vec![0; TAGS + COUNT * crate::msvc_string::STRIDE]);
+        let mut memory = Tags(vec![0; TAGS + COUNT * engine_native_memory::msvc_string::STRIDE]);
         for (header, data, count) in [
             (STATE + cgame_state::COUNTRY_TAGS, TAGS, COUNT),
             (DATABASE, 0x4000, 1),
@@ -352,7 +349,7 @@ mod naval_base_tests {
         }
         for index in 0..COUNT {
             let tag = format!("RAW{index}");
-            let at = TAGS + index * crate::msvc_string::STRIDE;
+            let at = TAGS + index * engine_native_memory::msvc_string::STRIDE;
             memory.0[at..at + tag.len()].copy_from_slice(tag.as_bytes());
             memory.0[at + 16..at + 24].copy_from_slice(&(tag.len() as u64).to_le_bytes());
             memory.0[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
@@ -369,7 +366,7 @@ mod naval_base_tests {
         }
         assert!(country_text(&memory, 0, STATE, COUNT as u32).is_err());
     }
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const MAP: usize = 0x2000;

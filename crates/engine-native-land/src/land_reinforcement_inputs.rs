@@ -772,7 +772,8 @@ fn transport_owner(
     arena: &mut Vec<TransportEnemy>,
 ) -> Result<TransportOwner, &'static str> {
     use engine_native_intelligence::ccountry_intel;
-    use engine_native::{cdiplomacy_status, cstrategic_navy_manager};
+    use engine_native::cdiplomacy_status;
+    use engine_native_naval::cstrategic_navy_manager;
     cstrategic_navy_manager::authenticate(memory, base, game, owner)?;
     let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;
     auth(memory, base, owner_intel, ccountry_intel::VTABLE_RVA)?;
@@ -851,10 +852,8 @@ fn transport_context(
         cstrategic_region,
         modifier_definition as metadata,
     };
-    use engine_native::{
-        cstrategic_navy_manager,
-        cweather_manager::{self, region_weather as sweather_per_region},
-    };
+    use engine_native_naval::cstrategic_navy_manager;
+    use engine_native::cweather_manager::{self, region_weather as sweather_per_region};
     let mut row = ContextRow::default();
     row.flags[11] = 2;
     row.ids[0] = sources.field(memory, location, cprovince::ID, UNREADABLE)?;

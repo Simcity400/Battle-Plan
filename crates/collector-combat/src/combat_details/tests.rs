@@ -91,7 +91,7 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     side.anti_air_attack = 7_654_321;
     side.damage = [1, 2, 3, 4, 1_234_567, 89];
     side.commander_experience = 345_678_900;
-    side.next_skill = Some(engine_native::naval_commander_inputs::SkillDefinition {
+    side.next_skill = Some(engine_native_naval::naval_commander_inputs::SkillDefinition {
         present: 1,
         valid: 1,
         required_experience: 800,

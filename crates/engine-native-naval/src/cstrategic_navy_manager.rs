@@ -1,4 +1,6 @@
-use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccountry, cgame_state};
+use crate::cstrategic_navy;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_f9d0);

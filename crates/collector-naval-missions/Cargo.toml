@@ -14,6 +14,7 @@ default = []
 test-support = ["collector-extended-support/test-support"]
 
 [dependencies]
+engine-native-naval.workspace = true
 collector-certificates.workspace = true
 collector-extended-support.workspace = true
 collector-lifetime.workspace = true

@@ -41,7 +41,7 @@ pub(crate) fn patches() -> Vec<Patch> {
             len,
         })
     };
-    for (name, rva) in engine_native::naval_mine_inputs::WRITERS
+    for (name, rva) in engine_native_naval::naval_mine_inputs::WRITERS
         .into_iter()
         .enumerate()
         .filter(|(index, _)| *index != 5)

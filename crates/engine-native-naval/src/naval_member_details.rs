@@ -1,22 +1,49 @@
-use crate::{
-    Memory, capture_text::Value, cfex_member::{ARRIVAL_HOURS, ATTRIBUTION_NAME, BATTLE_SLOT, BUILD_COST_IC, CACHED_STRENGTH, CONVOY_HANDLE, DAMAGE_ENTRIES, DETECTION_STATE, ESCAPE_PROGRESS, EVACUATION_STATE, GROUP, OWNER, RECEIVED_CRITICALS, RECEIVED_DAMAGE, SHIP_HANDLE, STATE, EntryOutput, append_entries},
-    cnaval_combatant, cpdx_array::Array, creference_registry, cship, memory::{FieldBatch, Raw},
+use engine_native_memory::{
+    Memory,
+    capture_text::Value,
+    cpdx_array::Array,
+    memory::{FieldBatch, Raw},
 };
+use engine_native::{
+    cfex_member::{
+        ARRIVAL_HOURS,
+        ATTRIBUTION_NAME,
+        BATTLE_SLOT,
+        BUILD_COST_IC,
+        CACHED_STRENGTH,
+        CONVOY_HANDLE,
+        DAMAGE_ENTRIES,
+        DETECTION_STATE,
+        ESCAPE_PROGRESS,
+        EVACUATION_STATE,
+        GROUP,
+        OWNER,
+        RECEIVED_CRITICALS,
+        RECEIVED_DAMAGE,
+        SHIP_HANDLE,
+        STATE,
+        EntryOutput,
+        append_entries,
+    },
+    cnaval_combatant,
+    cship,
+};
+use engine_native_parts::creference_registry;
 
 pub struct DetailBuffers<'a> {
-    pub damage: &'a mut Vec<crate::cfex_damage_entry::Row>,
+    pub damage: &'a mut Vec<engine_native::cfex_damage_entry::Row>,
     pub air_hits: &'a mut Vec<crate::naval_combat_air_hit::Row>,
     pub naval_hits: &'a mut Vec<crate::naval_combat_hit::Row>,
     pub lengths: [usize; 3],
     pub required: [usize; 3],
-    pub planes: crate::walk::Buffer<'a, crate::cfex_air::Row>,
+    pub planes: engine_native_memory::walk::Buffer<'a, crate::naval_air_details::Row>,
     pub planes_len: usize,
     pub planes_required: usize,
-    pub plane_air_hits: crate::walk::Buffer<'a, crate::naval_combat_air_hit::Row>,
-    pub plane_naval_hits: crate::walk::Buffer<'a, crate::naval_combat_hit::Row>,
+    pub plane_air_hits: engine_native_memory::walk::Buffer<'a, crate::naval_combat_air_hit::Row>,
+    pub plane_naval_hits: engine_native_memory::walk::Buffer<'a, crate::naval_combat_hit::Row>,
     pub plane_hit_lengths: [usize; 2],
     pub plane_hit_required: [usize; 2],
-    pub plane_kills: crate::walk::Buffer<'a, crate::naval_air_efficiency_inputs::WingKill>,
+    pub plane_kills: engine_native_memory::walk::Buffer<'a, crate::naval_air_efficiency_inputs::WingKill>,
     pub plane_kills_len: usize,
     pub plane_kills_required: usize,
     pub weapon_sources: &'a mut Vec<crate::naval_ship_modifier_inputs::SourceRow>,
@@ -26,31 +53,31 @@ pub struct DetailBuffers<'a> {
     pub doctrine_keys: crate::naval_ship_modifier_inputs::DoctrineKeys,
     pub term_metadata: crate::naval_ship_modifier_inputs::TermMetadata,
     pub source_memo: Option<crate::naval_ship_modifier_inputs::SourceMemo>,
-    pub commander_inputs: crate::walk::Buffer<'a, crate::naval_commander_inputs::Row>,
+    pub commander_inputs: engine_native_memory::walk::Buffer<'a, crate::naval_commander_inputs::Row>,
     pub commander_inputs_len: usize,
     pub commander_inputs_required: usize,
-    pub commander_timed_traits: &'a mut Vec<crate::cunit_leader::TimedTrait>,
+    pub commander_timed_traits: &'a mut Vec<engine_native::cunit_leader::TimedTrait>,
     pub commander_timed_traits_len: usize,
-    pub side_units: crate::walk::Buffer<'a, u64>,
+    pub side_units: engine_native_memory::walk::Buffer<'a, u64>,
     pub side_units_len: usize,
     pub side_units_required: usize,
     pub summary_countries: &'a mut Vec<u32>,
     pub summary_countries_len: usize,
-    pub custom_sea: crate::walk::Buffer<'a, i16>,
+    pub custom_sea: engine_native_memory::walk::Buffer<'a, i16>,
     pub custom_sea_len: usize,
     pub custom_sea_required: usize,
-    pub damage_sources: crate::walk::Buffer<'a, (u32, i64)>,
+    pub damage_sources: engine_native_memory::walk::Buffer<'a, (u32, i64)>,
     pub damage_sources_len: usize,
     pub damage_sources_required: usize,
-    pub wing_types: crate::walk::Buffer<'a, u32>,
+    pub wing_types: engine_native_memory::walk::Buffer<'a, u32>,
     pub wing_types_len: usize,
     pub wing_types_required: usize,
-    pub plane_wings: crate::walk::Buffer<'a, u64>,
+    pub plane_wings: engine_native_memory::walk::Buffer<'a, u64>,
     pub plane_wings_len: usize,
     pub plane_wings_required: usize,
 }
 
-pub const DETAIL_ARENA_CAPACITY: &str = "naval detail nested arena capacity exceeded";
+pub use engine_native::cfex_member::DETAIL_ARENA_CAPACITY;
 
 const MEMBER_FIELDS: [(usize, usize); 17] = [
     (DAMAGE_ENTRIES, 16),
@@ -133,10 +160,10 @@ pub struct DetailsRow {
     pub cached_strength_ratio: i64,
     pub pride: u8,
     pub is_convoy: u8,
-    pub name: crate::capture_text::Owned,
-    pub type_name: crate::capture_text::Owned,
-    pub sprite: crate::capture_text::Owned,
-    pub sunk_by: crate::capture_text::Owned,
+    pub name: engine_native_memory::capture_text::Owned,
+    pub type_name: engine_native_memory::capture_text::Owned,
+    pub sprite: engine_native_memory::capture_text::Owned,
+    pub sunk_by: engine_native_memory::capture_text::Owned,
     pub variant: u64,
     pub arrival_hours: i32,
     pub received_criticals: i32,
@@ -172,7 +199,7 @@ const COMBAT_SHIP_FIELDS: [(usize, usize); 18] = [
     (0, 16),
     (cship::EQUIPMENT_POOL, 8),
     (
-        cship::EQUIPMENT_POOL + crate::cequipment_variant::pool::ITEMS,
+        cship::EQUIPMENT_POOL + engine_native::cequipment_variant::pool::ITEMS,
         16,
     ),
     (0x88, 4),
@@ -206,13 +233,13 @@ pub(crate) fn details(
     game_state: usize,
     buffers: &mut DetailBuffers<'_>,
 ) -> Result<DetailsRow, &'static str> {
-    let started = crate::clock::qpc();
+    let started = engine_native_memory::clock::qpc();
     let row = details_timed(
         memory, base, pointer, group, combat, side, game_state, buffers,
     );
     MEMBER_PHASES[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     MEMBER_PHASES[3].fetch_add(
-        crate::clock::since(started),
+        engine_native_memory::clock::since(started),
         std::sync::atomic::Ordering::Relaxed,
     );
     row
@@ -232,7 +259,7 @@ fn details_timed(
     use cnaval_combatant::field;
     let record = cship::GatheredObject::gather(memory, pointer, MEMBER_RECORD);
     if !record.complete() {
-        crate::batch_fallback::record(crate::batch_fallback::Batch::NavalMemberRecords);
+        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::NavalMemberRecords);
     }
     let source = memory;
     let memory = &record.memory(source);
@@ -269,7 +296,7 @@ fn details_timed(
             .ok_or("naval detail required capacity overflow")?;
     }
     let text = |offset| {
-        crate::capture_text::Owned::read(
+        engine_native_memory::capture_text::Owned::read(
             memory,
             pointer
                 .checked_add(offset)
@@ -324,7 +351,7 @@ fn details_timed(
         0x20,
         EntryOutput::Owned(buffers.damage),
         &mut buffers.lengths[0],
-        |memory, p| crate::cfex_damage_entry::read(memory, base, p),
+        |memory, p| engine_native::cfex_damage_entry::read(memory, base, p),
         None,
     )?;
     for (index, array) in arrays[1..3].iter().copied().enumerate() {
@@ -348,7 +375,7 @@ fn details_timed(
         Some(&crate::naval_combat_hit::RECORD),
     )?;
     if let Some(ship) = creference_registry::resolve(memory, base, member.ship)? {
-        let fields = crate::cship::GatheredObject::gather(memory, ship, COMBAT_SHIP_FIELDS);
+        let fields = engine_native::cship::GatheredObject::gather(memory, ship, COMBAT_SHIP_FIELDS);
         let memory = &fields.memory(memory);
         if Some(field::<u64>(memory, ship, 0)?)
             != engine_sites::at(base, cship::VTABLE_RVA).map(|address| address as u64)
@@ -365,13 +392,13 @@ fn details_timed(
         row.base_organisation = field(memory, ship, 0x300)?;
         row.maximum_hit_points = field(memory, ship, 0x308)?;
         row.formation_flags = field(memory, ship, cship::FORMATION_FLAGS)?;
-        let side = field::<u64>(memory, group, crate::cfex_group::SIDE)? as usize;
-        let started = crate::clock::qpc();
+        let side = field::<u64>(memory, group, engine_native_parts::cfex_group::SIDE)? as usize;
+        let started = engine_native_memory::clock::qpc();
         let context =
             crate::naval_ship_modifier_inputs::read(memory, base, game_state, ship, side, buffers);
         MEMBER_PHASES[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         MEMBER_PHASES[2].fetch_add(
-            crate::clock::since(started),
+            engine_native_memory::clock::since(started),
             std::sync::atomic::Ordering::Relaxed,
         );
         row.weapon_context = context?;
@@ -380,7 +407,7 @@ fn details_timed(
         && let Some(convoy) = creference_registry::resolve(memory, base, row.convoy)?
     {
         let values =
-            crate::cconvoy_ship::read(memory, base, convoy, row.convoy, row.member.state == 8)?;
+            engine_native::cconvoy_ship::read(memory, base, convoy, row.convoy, row.member.state == 8)?;
         row.live_convoy = 1;
         row.escape_speed_base = values.speed;
         row.strength = values.strength;

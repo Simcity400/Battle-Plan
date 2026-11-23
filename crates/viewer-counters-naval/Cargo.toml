@@ -13,6 +13,7 @@ doctest = false
 test-support = ["viewer-counter-kit/test-support", "viewer-engagements/test-support", "viewer-foundation/test-support", "viewer-unit-reads/test-support"]
 
 [dependencies]
+engine-native-naval.workspace = true
 content-reader-defines.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true

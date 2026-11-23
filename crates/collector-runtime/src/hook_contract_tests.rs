@@ -337,7 +337,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
     match family {
         Family::Missions => {
             sites.extend(
-                engine_native::naval_mine_inputs::WRITERS
+                engine_native_naval::naval_mine_inputs::WRITERS
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| *i != 5)

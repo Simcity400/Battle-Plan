@@ -16,6 +16,7 @@ country_input_changes = []
 visibility_changes = ["country_input_changes"]
 
 [dependencies]
+engine-native-naval.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true

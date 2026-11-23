@@ -151,8 +151,8 @@ pub fn settled<T>(
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test_images {
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_images {
     use super::*;
     use std::cell::Cell;
 
@@ -172,7 +172,7 @@ pub(crate) mod test_images {
         }
     }
 
-    pub(crate) fn set(array: usize, image: Option<HolderImage<'static>>) {
+    pub fn set(array: usize, image: Option<HolderImage<'static>>) {
         install(&ThreadImages);
         IMAGE.set(image.map(|image| (array, image)));
     }

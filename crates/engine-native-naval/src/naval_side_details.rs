@@ -1,4 +1,15 @@
-use crate::{Memory, cnaval_combatant::{addresses, field, Side, COMMANDER, ENGAGED, SCREENING, POSITIONING, ANTI_AIR, UNITS}, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::cnaval_combatant::{
+    addresses,
+    field,
+    Side,
+    COMMANDER,
+    ENGAGED,
+    SCREENING,
+    POSITIONING,
+    ANTI_AIR,
+    UNITS,
+};
 use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -23,7 +34,7 @@ pub struct DetailsRow {
 fn damage_by_type(
     memory: &impl Memory,
     side: usize,
-    output: crate::walk::Buffer<'_, (u32, i64)>,
+    output: engine_native_memory::walk::Buffer<'_, (u32, i64)>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
@@ -39,7 +50,7 @@ pub fn damage_source_demand(memory: &impl Memory, side: usize) -> Result<usize, 
 fn walk_damage_by_type(
     memory: &impl Memory,
     side: usize,
-    mut output: Option<crate::walk::Buffer<'_, (u32, i64)>>,
+    mut output: Option<engine_native_memory::walk::Buffer<'_, (u32, i64)>>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
@@ -89,10 +100,10 @@ fn walk_damage_by_type(
 pub(crate) struct SideArenas<'a> {
     pub countries: &'a mut Vec<u32>,
     pub countries_len: &'a mut usize,
-    pub units: crate::walk::Buffer<'a, u64>,
+    pub units: engine_native_memory::walk::Buffer<'a, u64>,
     pub units_len: &'a mut usize,
     pub units_required: &'a mut usize,
-    pub damage_sources: crate::walk::Buffer<'a, (u32, i64)>,
+    pub damage_sources: engine_native_memory::walk::Buffer<'a, (u32, i64)>,
     pub damage_sources_len: &'a mut usize,
     pub damage_sources_required: &'a mut usize,
 }
@@ -101,7 +112,7 @@ fn units(
     memory: &impl Memory,
     base: usize,
     side: &Side,
-    mut arena: crate::walk::Buffer<'_, u64>,
+    mut arena: engine_native_memory::walk::Buffer<'_, u64>,
     len: &mut usize,
     required: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
@@ -120,8 +131,8 @@ fn units(
             .ok_or("naval side unit vtable overflow")
     };
     let (primary, secondary) = (
-        module(crate::ctask_force::VTABLE_RVA)?,
-        module(crate::ctask_force::SECONDARY_VTABLE_RVA)?,
+        module(engine_native::ctask_force::VTABLE_RVA)?,
+        module(engine_native::ctask_force::SECONDARY_VTABLE_RVA)?,
     );
     let start = *len;
     let count = array.count as usize;
@@ -136,14 +147,14 @@ fn units(
         let address = array
             .element(first, 8)
             .ok_or("naval side unit slot unreadable")?;
-        if !crate::read_slice(memory, address, &mut slots[..n * 8]) {
+        if !engine_native_memory::read_slice(memory, address, &mut slots[..n * 8]) {
             return Err("naval side unit slot unreadable");
         }
         for (offset, word) in slots[..n * 8].chunks_exact(8).enumerate() {
             let pointer = u64::from_le_bytes(word.try_into().expect("eight bytes")) as usize;
             let (mut vtable, mut reference) = ([0u8; 8], [0u8; 16]);
             if memory.copy_scattered(
-                addresses(pointer, [0, crate::ctask_force::SECONDARY_BASE])?,
+                addresses(pointer, [0, engine_native::ctask_force::SECONDARY_BASE])?,
                 &mut [&mut vtable, &mut reference],
             ) != 2
             {
@@ -185,13 +196,13 @@ pub(crate) fn details(
         0
     } else {
         if field::<u64>(memory, leader, 0)?
-            != engine_sites::at(base, crate::cnavy_leader::VTABLE_RVA)
+            != engine_sites::at(base, engine_native_parts::cnavy_leader::VTABLE_RVA)
                 .ok_or("naval leader vtable overflow")? as u64
         {
             return Err("naval commander vtable mismatch");
         }
-        let handle = field::<u64>(memory, leader, crate::cunit_leader::TYPE)?;
-        if handle == 0 || crate::creference_registry::resolve(memory, base, handle)? != Some(leader)
+        let handle = field::<u64>(memory, leader, engine_native::cunit_leader::TYPE)?;
+        if handle == 0 || engine_native_parts::creference_registry::resolve(memory, base, handle)? != Some(leader)
         {
             return Err("naval commander reference mismatch");
         }
@@ -249,7 +260,7 @@ pub(crate) fn details(
 #[cfg(test)]
 mod damage_source_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn ordered_source_map_keeps_native_occurrences_and_refuses_short_list() {
@@ -282,7 +293,7 @@ mod damage_source_tests {
             damage_by_type(
                 &memory,
                 side,
-                crate::walk::Buffer::Growing(&mut output),
+                engine_native_memory::walk::Buffer::Growing(&mut output),
                 &mut used,
                 &mut required
             ),
@@ -300,7 +311,7 @@ mod damage_source_tests {
             damage_by_type(
                 &memory,
                 side,
-                crate::walk::Buffer::Growing(&mut output),
+                engine_native_memory::walk::Buffer::Growing(&mut output),
                 &mut used,
                 &mut required
             ),
@@ -378,15 +389,15 @@ mod damage_source_tests {
                 SIDE + UNITS + 8,
                 ((count as u64) << 32) | count as u64,
             );
-            put(&mut bytes, FORCE, crate::ctask_force::VTABLE_RVA.0 as u64);
+            put(&mut bytes, FORCE, engine_native::ctask_force::VTABLE_RVA.0 as u64);
             put(
                 &mut bytes,
-                FORCE + crate::ctask_force::SECONDARY_BASE,
-                crate::ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
+                FORCE + engine_native::ctask_force::SECONDARY_BASE,
+                engine_native::ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
             );
             put(
                 &mut bytes,
-                FORCE + crate::ctask_force::SECONDARY_BASE + 8,
+                FORCE + engine_native::ctask_force::SECONDARY_BASE + 8,
                 0xfeed_beef_0000_0046,
             );
             for index in 0..count {
@@ -421,7 +432,7 @@ mod damage_source_tests {
                 damage_by_type(
                     &memory,
                     SIDE,
-                    crate::walk::Buffer::Growing(&mut damage),
+                    engine_native_memory::walk::Buffer::Growing(&mut damage),
                     &mut 0,
                     &mut 0
                 ),
@@ -442,7 +453,7 @@ mod damage_source_tests {
                     &memory,
                     0,
                     &side,
-                    crate::walk::Buffer::Growing(&mut handles),
+                    engine_native_memory::walk::Buffer::Growing(&mut handles),
                     &mut 0,
                     &mut 0
                 ),
@@ -453,7 +464,7 @@ mod damage_source_tests {
                 damage_by_type(
                     &memory,
                     SIDE,
-                    crate::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
                     &mut 0,
                     &mut 0
                 )
@@ -464,7 +475,7 @@ mod damage_source_tests {
                     &memory,
                     0,
                     &side,
-                    crate::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
                     &mut 0,
                     &mut 0
                 )

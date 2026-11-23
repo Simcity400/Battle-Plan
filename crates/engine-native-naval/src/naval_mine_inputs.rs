@@ -1,4 +1,5 @@
-use crate::{Memory, cgame_state, cpdx_array::Array, read, read_slice, walk::Buffer};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Buffer};
+use engine_native::cgame_state;
 use engine_sites::Rva;
 use std::ops::Range;
 
@@ -39,7 +40,7 @@ pub fn region_slice(count: u32, region: u32) -> Option<usize> {
 pub fn event_count(memory: &impl Memory, navy: usize) -> Option<u32> {
     let count: i32 = read(
         memory,
-        navy.checked_add(REGIONAL_MINES + crate::cpdx_array::COUNT)?,
+        navy.checked_add(REGIONAL_MINES + engine_native_memory::cpdx_array::COUNT)?,
     )?;
     u32::try_from(count).ok()
 }
@@ -88,7 +89,7 @@ pub fn capture_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     #[test]
     fn native_slice_partition_is_complete_disjoint_and_has_no_chosen_cap() {
         for count in [0, 1, 23, 24, 25, 300, 5000, i32::MAX as u32] {

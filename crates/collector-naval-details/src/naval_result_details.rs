@@ -5,9 +5,12 @@ use crate::{
     table_conversion::table,
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec, reserve_map, resize_default};
-use engine_native::{
-    Memory, naval_combat_air_hit, naval_combat_hit, naval_commander_inputs as commander,
-    naval_ship_modifier_inputs as influence, walk::Outcome,
+use engine_native::{Memory, walk::Outcome};
+use engine_native_naval::{
+    naval_combat_air_hit,
+    naval_combat_hit,
+    naval_commander_inputs as commander,
+    naval_ship_modifier_inputs as influence,
 };
 use engine_naval_history::{
     cnaval_combat_air_entry as plane, cnaval_combat_result_side as side,

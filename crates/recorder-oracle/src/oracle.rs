@@ -357,8 +357,8 @@ fn bind_raiding_save_fields(
     let lexical = frame.complete::<tables::LexicalTokens>()?;
     let mut keys = [b"".as_slice(); 2];
     for (key, token) in keys.iter_mut().zip([
-        engine_native::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
-        engine_native::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
+        engine_native_naval::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
+        engine_native_naval::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
     ]) {
         let mut rows = lexical.iter().filter(|row| row.token == token);
         *key = rows

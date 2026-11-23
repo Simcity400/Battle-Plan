@@ -1,4 +1,3 @@
-pub use crate::naval_member_details::{DETAIL_ARENA_CAPACITY, DetailBuffers, DetailsRow, MEMBER_PHASES};
 
 use engine_sites::Rva;
 use crate::{
@@ -17,6 +16,8 @@ pub const EVACUATION_STATE: usize = 0x128;
 pub const DETECTION_STATE: usize = 0x12c;
 pub const ESCAPE_PROGRESS: usize = 0x130;
 pub const RECEIVED_DAMAGE: usize = 0x198;
+
+pub const DETAIL_ARENA_CAPACITY: &str = "naval detail nested arena capacity exceeded";
 
 pub enum EntryOutput<'a, T> {
     Owned(&'a mut Vec<T>),

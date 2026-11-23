@@ -1,7 +1,8 @@
 use collector_certificates::watch_registry::WatchRegistry;
 use collector_hooks::hook::Hook;
 use engine_mutations::navy_ledger_mutations::MUTATIONS as LEDGER_WRITERS;
-use engine_native::{Memory, naval_mine_inputs as mines};
+use engine_native::Memory;
+use engine_native_naval::naval_mine_inputs as mines;
 use engine_sites::Rva;
 use std::{
     ops::Range,

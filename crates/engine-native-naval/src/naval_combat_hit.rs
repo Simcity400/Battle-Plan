@@ -1,5 +1,6 @@
-use crate::capture_text::Value;
-use crate::{Memory, cnaval_combatant::field};
+use engine_native_memory::capture_text::Value;
+use engine_native_memory::Memory;
+use engine_native::cnaval_combatant::field;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a5_6f88);
@@ -7,7 +8,7 @@ pub const VTABLE_RVA: Rva = Rva(0x02a5_6f88);
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
     pub target_slot: u32,
-    pub target_name: crate::capture_text::Owned,
+    pub target_name: engine_native_memory::capture_text::Owned,
     pub convoy: u8,
     pub damage: i64,
     pub denominator: i64,
@@ -19,8 +20,8 @@ impl Row {
     }
 }
 
-pub const RECORD: [crate::memory::RecordField; 5] = {
-    use crate::memory::RecordField;
+pub const RECORD: [engine_native_memory::memory::RecordField; 5] = {
+    use engine_native_memory::memory::RecordField;
     [
         RecordField {
             source_offset: 0,
@@ -30,7 +31,7 @@ pub const RECORD: [crate::memory::RecordField; 5] = {
         RecordField {
             source_offset: 0x10,
             destination_offset: 12,
-            len: crate::msvc_string::STRIDE,
+            len: engine_native_memory::msvc_string::STRIDE,
         },
         RecordField {
             source_offset: 0x30,
@@ -58,7 +59,7 @@ pub fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
     }
     Ok(Row {
         target_slot: field(memory, pointer, 8)?,
-        target_name: crate::capture_text::Owned::read(
+        target_name: engine_native_memory::capture_text::Owned::read(
             memory,
             pointer.checked_add(0x10).ok_or("naval hit text overflow")?,
             false,

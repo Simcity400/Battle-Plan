@@ -1,4 +1,3 @@
-pub use crate::naval_combat_details::{DetailsRow, walk_details_timed};
 
 use engine_sites::Rva;
 use crate::{

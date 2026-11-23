@@ -1,11 +1,9 @@
-use crate::{
-    Memory,
-    allocation,
-    cconvoys,
+use engine_native_memory::{Memory, read};
+use engine_allocation as allocation;
+use engine_native_parts::{cconvoys, equipment_entry};
+use engine_native::{
     ccountry,
     cequipment_variant::{self, pool as cequipment_variant_pool},
-    equipment_entry,
-    read,
 };
 
 const TRADE_COUNTRY: usize = 0x18;
@@ -165,7 +163,7 @@ fn first_design(
     })
 }
 
-fn word<T: crate::memory::Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Option<T> {
+fn word<T: engine_native_memory::memory::Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Option<T> {
     pointer
         .checked_add(offset)
         .filter(|_| pointer != 0)
@@ -367,7 +365,7 @@ mod tests {
         let (mut memory, entries, _) = fixture(&[1]);
         let state = memory.world.game_state();
         let links =
-            read::<u64>(&memory, state + crate::cgame_state::COUNTRY_LINKS).unwrap() as usize;
+            read::<u64>(&memory, state + engine_native::cgame_state::COUNTRY_LINKS).unwrap() as usize;
         memory.world.u32(links + 8, 1);
         let countries = ccountry::Reader::new(&memory, 0, state).unwrap();
         let mut memo = ConvoyDesigns::default();

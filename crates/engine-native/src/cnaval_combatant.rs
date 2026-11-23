@@ -1,4 +1,3 @@
-pub use crate::naval_side_details::{DetailsRow, damage_source_demand};
 
 use engine_sites::Rva;
 use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};

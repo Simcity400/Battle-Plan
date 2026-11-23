@@ -1,7 +1,6 @@
 use super::*;
-use engine_native::{
-    cgame_state, cnaval_base, cprovince, cstrategic_navy, cstrategic_navy_manager,
-};
+use engine_native::{cgame_state, cprovince};
+use engine_native_naval::{cnaval_base, cstrategic_navy, cstrategic_navy_manager};
 use std::cell::RefCell;
 
 mod launch;
@@ -14,7 +13,7 @@ const NAVY: usize = 0xb000;
 const FOREIGN_NAVY: usize = 0xb800;
 const NEAREST_BASES: usize = 0x30;
 const FOREIGN_NAVY_SLOTS: usize = 0x48;
-const SUPPLY_HUBS: usize = engine_native::naval_mission_inputs::HUBS;
+const SUPPLY_HUBS: usize = engine_native_naval::naval_mission_inputs::HUBS;
 const PROVINCES: [usize; 3] = [0xe000, 0xe200, 0xe400];
 
 struct TestMemory {
