@@ -372,16 +372,22 @@ fn capacity_and_allocated_bytes_observe_spilled_records_without_popping_or_losin
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset_for_tests();
     grow(1, MINIMUM_LANE_BYTES).unwrap();
+    let bytes_before = allocated_bytes();
     let seq = spill(current(), 1, 1, 1, b"spilled".len(), |writer| {
         writer.put(b"spilled");
         Ok(())
     })
     .unwrap();
     assert_eq!(seq, 1);
-    let (cap, bytes) =
+    let (cap, bytes_after) =
         collector_test_support::with_allocations_denied(|| (capacity(), allocated_bytes()));
     assert_eq!(cap.spill_pending, 1);
-    assert!(bytes >= b"spilled".len());
+    let payload_capacity = current().pushed_bytes.load(Ordering::Acquire);
+    assert!(payload_capacity >= b"spilled".len());
+    assert_eq!(
+        bytes_after - bytes_before,
+        SpillStack::<Spilled>::node_size() + payload_capacity
+    );
     assert_eq!(current().pushed.len(), 1);
     assert_eq!(drained(seal()), vec![(1, 1, 1, b"spilled".to_vec())]);
     assert_eq!(capacity().spill_pending, 0);

@@ -2869,21 +2869,11 @@ pub fn refusals() -> impl serde::Serialize {
         "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
     })
 }
-pub fn status() -> impl serde::Serialize {
-    let counters = COUNTERS
-        .each_ref()
-        .map(|value| value.load(Ordering::Relaxed));
-    let (
-        events,
-        spill_pending,
-        required_entries_per_lane,
-        staging_entries_per_lane,
-        staging_entries,
-        staging_threads,
-        shared_lane_entries,
-        required_shared_lane_entries,
-        staging_key_stride,
-    ) = {
+struct Status {
+    counters: [u64; 13],
+}
+impl serde::Serialize for Status {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let retained = LOGS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2892,48 +2882,40 @@ pub fn status() -> impl serde::Serialize {
             .iter()
             .flat_map(|batch| batch.iter())
             .find(|log| std::ptr::eq(*log, pointer));
-        (
-            active.map(Log::frontier),
-            active.map(Log::spill_pending),
-            active.map(|log| {
-                log.lanes
-                    .iter()
-                    .map(|lane| lane.required_entries.load(Ordering::Relaxed))
-                    .collect::<Vec<_>>()
-            }),
-            active.map(|log| log.lanes.iter().map(|lane| lane.slots.len()).collect::<Vec<_>>()),
-            active.map(|log| log.entries),
-            active.map(|log| log.lanes.len()),
-            active.map(|log| log.shared.len()),
-            active.map(|log| log.shared.required_entries()),
-            active.map(|log| log.key_stride),
-        )
-    };
-    crate::status::status!({
-        "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
-        "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
-        "epoch": EPOCH.load(Ordering::SeqCst), "events": events,
-        "spilled_records": counters[1], "sentinel_failures": counters[2],
-        "spill_pending": spill_pending,
-        "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
-        "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
-        "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
-        "failed_native_reads": counters[3], "missing_item_identities": counters[4],
-        "required_entries_per_lane": required_entries_per_lane,
-        "staging_entries_per_lane": staging_entries_per_lane,
-        "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
-        "staging_entries": staging_entries,
-        "staging_threads": staging_threads,
-        "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
-        "shared_lane_entries": shared_lane_entries,
-        "required_shared_lane_entries": required_shared_lane_entries,
-        "staging_key_stride": staging_key_stride,
-        "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
-        "staging_allocation_failures": counters[10],
-        "staging_error": (counters[10] != 0).then_some("politics staging allocation failed"),
-        "short_handoffs": counters[6], "daily_decomposition_failures":counters[7],
-        "conservation": conservation_status(), "government_endpoint_mismatches":counters[5],
-    })
+        let counters = self.counters;
+        crate::status::status!({
+            "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
+            "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
+            "epoch": EPOCH.load(Ordering::SeqCst), "events": active.map(Log::frontier),
+            "spilled_records": counters[1], "sentinel_failures": counters[2],
+            "spill_pending": active.map(Log::spill_pending),
+            "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
+            "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
+            "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
+            "failed_native_reads": counters[3], "missing_item_identities": counters[4],
+            "required_entries_per_lane": active.map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.required_entries.load(Ordering::Relaxed)))),
+            "staging_entries_per_lane": active.map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.slots.len()))),
+            "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
+            "staging_entries": active.map(|log| log.entries),
+            "staging_threads": active.map(|log| log.lanes.len()),
+            "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
+            "shared_lane_entries": active.map(|log| log.shared.len()),
+            "required_shared_lane_entries": active.map(|log| log.shared.required_entries()),
+            "staging_key_stride": active.map(|log| log.key_stride),
+            "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
+            "staging_allocation_failures": counters[10],
+            "staging_error": (counters[10] != 0).then_some("politics staging allocation failed"),
+            "short_handoffs": counters[6], "daily_decomposition_failures":counters[7],
+            "conservation": conservation_status(), "government_endpoint_mismatches":counters[5],
+        })
+        .serialize(serializer)
+    }
+}
+pub fn status() -> impl serde::Serialize {
+    let counters = COUNTERS
+        .each_ref()
+        .map(|value| value.load(Ordering::Relaxed));
+    Status { counters }
 }
 #[derive(Clone, Copy)]
 struct ConservationExample {
@@ -4889,5 +4871,40 @@ mod tests {
             assert_eq!(&bytes[key.address..key.address + key.len], &name);
         }
         assert!(log.held().is_empty());
+    }
+
+    #[test]
+    fn status_reads_active_log_without_allocating_or_popping_spilled_records() {
+        let _guard = staging_test();
+        // SAFETY: Unit test owns politics staging with no concurrent teardown.
+        unsafe { resize(8, 16) };
+        let active = log().unwrap();
+        active
+            .pushed
+            .push((Record::default(), Vec::new()))
+            .unwrap();
+        let epoch_before = EPOCH.load(Ordering::SeqCst);
+        let failures_before = COUNTERS[10].load(Ordering::Relaxed);
+        let mut scratch = [0u8; 8192];
+        let written = collector_test_support::with_allocations_denied(|| {
+            let mut cursor = std::io::Cursor::new(&mut scratch[..]);
+            serde_json::to_writer(&mut cursor, &status()).unwrap();
+            cursor.position() as usize
+        });
+        assert_eq!(active.pushed.len(), 1);
+        assert_eq!(EPOCH.load(Ordering::SeqCst), epoch_before);
+        assert_eq!(COUNTERS[10].load(Ordering::Relaxed), failures_before);
+        let parsed: serde_json::Value = serde_json::from_slice(&scratch[..written]).unwrap();
+        assert_eq!(parsed["spill_pending"], 1);
+        assert_eq!(
+            parsed["staging_entries_per_lane"].as_array().unwrap().len(),
+            active.lanes.len()
+        );
+        assert_eq!(
+            parsed["required_entries_per_lane"].as_array().unwrap().len(),
+            active.lanes.len()
+        );
+        // SAFETY: Unit test owns politics staging cleanup with hooks disabled.
+        unsafe { release() };
     }
 }

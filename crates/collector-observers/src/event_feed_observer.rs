@@ -1354,7 +1354,8 @@ fn input_failure(owner: &Owner) -> Option<&'static str> {
 
 /// # Safety
 /// Caller must run on the admitted hourly observer boundary as the sole consumer preparing the
-/// event-feed interval while event-feed hooks and storage stay live and teardown is excluded.
+/// event-feed interval with teardown excluded; a stable absent owner (hooks disabled) is permitted
+/// and returns unavailable.
 pub unsafe fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
     let generation = crate::world_lifetime::generation();
     let owner =
@@ -2378,16 +2379,18 @@ mod tests {
             .collect();
         assert!(packs.iter().all(|pack| pack.row().failure.is_none()));
         assert_eq!(ledger(&owner).cells.len(), 64);
-        // SAFETY: Unit test holds `test_globals()` and exercises receipt resolution in isolation.
+        // SAFETY: Unit test holds `test_globals()` and resolves each receipt once in isolation.
         unsafe {
             discarded(packs[9].publication());
-            for pack in &packs {
-                accepted(pack).unwrap();
+            for (index, pack) in packs.iter().enumerate() {
+                if index != 9 {
+                    accepted(pack).unwrap();
+                }
             }
-            discarded(packs[20].publication());
-            accepted(&packs[9]).unwrap();
-            discarded(packs[63].publication() + 1000);
         }
+        resolve(packs[9].publication(), true);
+        resolve(packs[20].publication(), false);
+        resolve(packs[63].publication() + 1000, false);
         assert!(ledger(&owner).cells.iter().all(|cell| cell.1.is_some()));
         let next = seal_unwritten(&owner, &mut output, 65, &|| {});
         assert_eq!(next.row().coverage, EventFeedCoverage::Unavailable);

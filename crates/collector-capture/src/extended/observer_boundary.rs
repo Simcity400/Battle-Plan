@@ -105,7 +105,8 @@ impl ObserverBoundaryRequest {
         self.finished[0] = true;
         report.ticks[0] = elapsed(boundaries);
         let begin = qpc();
-        // SAFETY: Runs on the admitted hour's sole observer boundary while event-feed storage lives.
+        // SAFETY: Runs on the admitted hour's sole observer boundary with teardown excluded
+        // (event-feed hooks may be stably disabled/absent).
         unsafe {
             self.feed
                 .drain(self.hour, !self.continuous || self.recovery);

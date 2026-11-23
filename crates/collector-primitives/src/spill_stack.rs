@@ -33,6 +33,10 @@ impl<T> SpillStack<T> {
         }
     }
 
+    pub const fn node_size() -> usize {
+        size_of::<Node<T>>()
+    }
+
     pub fn push(&self, value: T) -> io::Result<()> {
         self.reserve(value).map(Reserved::push)
     }

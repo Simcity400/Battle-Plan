@@ -62,7 +62,8 @@ impl Captured {
     }
     /// # Safety
     /// Caller must run on the admitted hourly observer boundary as the sole consumer preparing the
-    /// event-feed interval (or own an isolated test fixture).
+    /// event-feed interval with teardown excluded (or own an isolated test fixture); a stable
+    /// absent owner when event-feed hooks are disabled is permitted.
     pub unsafe fn drain(&mut self, hour: i32, partial: bool) {
         self.prepared = None;
         // SAFETY: Caller holds hourly observer-boundary ownership for event-feed preparation.

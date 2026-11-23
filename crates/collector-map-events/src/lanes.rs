@@ -155,7 +155,7 @@ impl Log {
                         .iter()
                         .map(|spilled| spilled.payload.capacity())
                         .sum::<usize>()
-                    + self.pushed.len() * size_of::<Spilled>()
+                    + self.pushed.len() * SpillStack::<Spilled>::node_size()
                     + self.pushed_bytes.load(Ordering::Acquire)
             }
     }
@@ -810,19 +810,20 @@ pub struct Capacity {
 }
 
 pub fn capacity() -> Capacity {
-    let retained = LOGS
+    let _retained = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut capacity = Capacity {
-        generations: retained.len(),
+        generations: generations().count(),
         required_lanes: REQUIRED_LANES.load(Ordering::Relaxed),
         sequence: SEQUENCE.load(Ordering::Relaxed),
         published: PUBLISHED.load(Ordering::Relaxed),
         spilled: SPILLED.load(Ordering::Relaxed),
-        spill_pending: retained.iter().map(|log| log.spill_pending()).sum(),
+        spill_pending: generations().map(Log::spill_pending).sum(),
         ..Default::default()
     };
-    if let Some(log) = retained.last() {
+    // SAFETY: `_retained` pins every generation reachable from `CURRENT` against `release`.
+    if let Some(log) = unsafe { CURRENT.load(Ordering::SeqCst).as_ref() } {
         capacity.lanes = log.lanes.len();
         capacity.lane_bytes = log.lanes.iter().map(Lane::capacity).max().unwrap_or(0);
         capacity.registered = log.registered.load(Ordering::Relaxed);
