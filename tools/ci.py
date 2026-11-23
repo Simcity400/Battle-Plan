@@ -729,7 +729,12 @@ def report(outcomes, title):
 def pipeline_at(base):
     """The base's pipeline, or None when it has none that loads."""
     shown = subprocess.run(["git", "show", f"{base}:{PIPELINE_PATH}"], cwd=ROOT, capture_output=True)
-    return None if shown.returncode else base_pipeline(shown.stdout.decode("utf-8", errors="replace"))
+    if shown.returncode:
+        return None
+    try:
+        return base_pipeline(shown.stdout.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
 
 
 def base_pipeline(text):
