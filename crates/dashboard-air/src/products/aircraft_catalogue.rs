@@ -279,6 +279,7 @@ fn built(
 
 pub struct Content {
     pub roster: Arc<content_reader_mesh::mesh::Roster>,
+    pub recorded: Option<(ResolvedLayers, Arc<content_reader_mesh::mesh::Roster>)>,
     pub equipment: Arc<content_reader_key_names::equipment::Database>,
     pub pools: equipment_graphics::Content,
     pub warnings: Vec<String>,
@@ -287,11 +288,13 @@ pub struct Content {
 impl Content {
     pub fn read(catalogue: &Arc<Catalogue>) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
-        let roster = layers.descriptor_roster()?;
+        let shown = layers.presentation();
+        let roster = shown.descriptor_roster()?;
+        let recorded = shown.without_overlays().zip(shown.recorded_descriptor_roster()?);
         let mut warnings = Vec::new();
         let equipment = dashboard_base::catalogue::equipment_units(catalogue).unwrap_or_else(|why| {
             warnings.push(format!(
-                "Which names are aircraft cannot be told from equipment: the equipment database is refused ({why}); every entity and mesh is still listed"
+                "Which names are aircraft cannot be told from equipment: the equipment database is refused ({why}), so no aircraft is listed"
             ));
             Arc::new(content_reader_key_names::equipment::Database::default())
         });
@@ -308,6 +311,7 @@ impl Content {
         });
         Ok(Self {
             roster,
+            recorded,
             equipment,
             pools,
             warnings,
@@ -418,8 +422,11 @@ impl Built {
                 .flatten()
                 .filter(|text| !text.trim().is_empty())
         };
-        let suppliers = Suppliers::new(&catalogue.content.layers, mods);
-        let descriptors = &content.roster.descriptors;
+        let suppliers = Suppliers::new(catalogue.content.layers.presentation(), mods);
+        let below = content
+            .recorded
+            .as_ref()
+            .map(|(layers, roster)| (roster, Suppliers::new(layers, mods)));
         let mut entries: Vec<Listed> = listing
             .entries
             .into_iter()
@@ -447,39 +454,64 @@ impl Built {
                         | aircraft::Reference::ClonedBy { .. } => {}
                     }
                 }
-                let files: Vec<&str> = match descriptors.inherit(&entry.name) {
+                let recorded = below.as_ref().filter(|(roster, _)| {
+                    let entity = roster.descriptors.entities.contains_key(&entry.name);
+                    let registered = match entry.refusal.as_ref().map(|refusal| refusal.kind) {
+                        Some(aircraft::RefusalKind::Declaration) => entity,
+                        Some(aircraft::RefusalKind::Unregistered) => {
+                            entity || roster.descriptors.meshes.contains_key(&entry.name)
+                        }
+                        Some(aircraft::RefusalKind::NoGeometry) | None => false,
+                    };
+                    registered && aircraft::refusal(roster, &entry.name).is_none()
+                });
+                let (descriptors, suppliers) = match recorded {
+                    Some((roster, suppliers)) => (&roster.descriptors, suppliers),
+                    None => (&content.roster.descriptors, &suppliers),
+                };
+                let files: Vec<&[u8]> = match descriptors.inherit(&entry.name) {
                     Some(entity) => entity
                         .sources
                         .first()
                         .copied()
-                        .and_then(|path| path.to_str())
+                        .map(|path| path.as_bytes())
                         .into_iter()
                         .chain(
                             entity
                                 .mesh
                                 .and_then(|mesh| descriptors.meshes.get(mesh))
-                                .map(|mesh| mesh.file.as_str()),
+                                .map(|mesh| mesh.file.as_bytes()),
                         )
                         .collect(),
                     None => descriptors
                         .meshes
                         .get(&entry.name)
-                        .map(|mesh| mesh.file.as_str())
+                        .map(|mesh| mesh.file.as_bytes())
                         .into_iter()
                         .collect(),
                 };
                 let entry = AircraftEntry {
                     kind: match entry.kind {
+                        _ if recorded.is_some_and(|(roster, _)| {
+                            roster.descriptors.entities.contains_key(&entry.name)
+                        }) =>
+                        {
+                            AircraftKind::Entity
+                        }
+                        _ if recorded.is_some() => AircraftKind::Mesh,
                         aircraft::Kind::Entity => AircraftKind::Entity,
                         aircraft::Kind::Mesh => AircraftKind::Mesh,
                         aircraft::Kind::Unregistered => AircraftKind::Unregistered,
                     },
                     titles,
                     references: entry.references.into_iter().map(reference).collect(),
-                    refusal: entry.refusal.map(|refusal| AircraftRefusal {
-                        kind: refusal_kind(refusal.kind),
-                        reason: refusal.reason,
-                    }),
+                    refusal: entry
+                        .refusal
+                        .filter(|_| recorded.is_none())
+                        .map(|refusal| AircraftRefusal {
+                            kind: refusal_kind(refusal.kind),
+                            reason: refusal.reason,
+                        }),
                     origin: suppliers.origin(&files),
                     name: entry.name,
                 };
@@ -611,7 +643,7 @@ impl<'a> Suppliers<'a> {
         Self { layers, origins }
     }
 
-    fn origin(&self, files: &[&str]) -> Option<AircraftOrigin> {
+    fn origin(&self, files: &[&[u8]]) -> Option<AircraftOrigin> {
         let found: Vec<&AircraftOrigin> = files
             .iter()
             .filter_map(|file| self.origins.get(self.layers.layer_index(file)?))

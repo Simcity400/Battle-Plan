@@ -61,9 +61,10 @@ test('the catalogue lists titles, countries and where each aircraft comes from, 
     assert.match(markup, /data-origin="mod"><span class="aircraft-tile" aria-hidden="true"><svg[^]*?<span class="aircraft-row-name">Jet<\/span><small class="aircraft-badge">No animation<\/small><\/span><small class="aircraft-row-detail"><span class="aircraft-row-source">Modern Wings<\/span><\/small>/);
     assert.match(markup, /data-tooltip="1 with a missing 3D model\n1 that BattlePlan can’t read" data-detail="1: no geometry to draw\n1: a declaration it uses cannot be played">Can’t be flown · 2<\/p>/);
     assert.ok(markup.indexOf('Can’t be flown · 2') < markup.indexOf('Ghost plane'), 'the heading leads the refused rows');
-    assert.match(markup, /<button type="button" class="aircraft-row" disabled="" aria-pressed="false" data-origin="game">[^]*?<span class="aircraft-row-name">Ghost plane<\/span><\/span><small class="aircraft-row-refusal" data-detail="it names no pdxmesh">Can’t be flown: its 3D model is missing\.<\/small>/);
+    assert.match(markup, /<button type="button" class="aircraft-row" disabled="" aria-pressed="false" data-origin="game">[^]*?<span class="aircraft-row-name">Ghost plane<\/span><\/span><small class="aircraft-row-detail"><span class="aircraft-row-source" data-tooltip="From the By Blood Alone DLC">Vanilla<\/span><\/small><small class="aircraft-row-refusal" data-detail="it names no pdxmesh">Can’t be flown: its 3D model is missing\.<\/small>/,
+      'a refused row still says where it comes from');
     assert.ok(!markup.replace(/<[^>]*>/g, '').includes('pdxmesh'), 'the raw engine reason is detail only');
-    assert.match(markup, /data-origin="unknown">[^]*?<span class="aircraft-row-name">Odd plane<\/span><\/span><small class="aircraft-row-refusal" data-detail="its animation list does not parse">Can’t be flown: BattlePlan can’t read this model\.<\/small>/);
+    assert.match(markup, /data-origin="unknown">[^]*?<span class="aircraft-row-name">Odd plane<\/span><\/span><small class="aircraft-row-detail"><span class="aircraft-row-source" data-tooltip="No game or mod file registers this model">Source unknown<\/span><\/small><small class="aircraft-row-refusal" data-detail="its animation list does not parse">Can’t be flown: BattlePlan can’t read this model\.<\/small>/);
     assert.match(markup, /data-detail="1 descriptor files do not parse even when closed">Some game files couldn’t be read, so this list may be incomplete\.</);
     for (const gone of ['Choose none', 'All models', 'Flying Spitfire', 'aircraft-picker-hint'])
       assert.ok(!markup.includes(gone), `${gone} is no longer part of the list`);
@@ -149,6 +150,10 @@ test('the docked aircraft list is no popover, so the map stays shown while plane
     assert.doesNotMatch(markup, /\spopover(target)?=/);
     assert.match(markup, /^<section id="panel" class="aircraft-picker" aria-label="Aircraft">/);
     assert.match(markup, /aria-label="Close the aircraft list"/);
+    assert.doesNotMatch(markup, /free camera/, 'with nothing flown there is no camera to go back to');
+    const flying = renderToStaticMarkup(createElement(module.AircraftPanel, { id: 'panel', onClose: () => {}, onFreeCamera: () => {}, children: 'list' }));
+    assert.match(flying, /<button type="button" class="icon-button ui-popover-action" aria-label="Go back to the free camera" data-tooltip="Back to the free camera"><svg/,
+      'a flown aircraft can always be left, even when its row is refused or no longer listed');
     const picker = renderToStaticMarkup(createElement(module.default, { client: {} as never, source: { id: 's', revision: '1' } as never,
       chosen: null, status: null, onChoose: () => {}, host: null }));
     assert.doesNotMatch(picker, /\spopover(target)?=/, 'the trigger opens the docked list, not a popover');

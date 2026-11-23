@@ -326,6 +326,31 @@ fn queries_match_names_titles_and_references_without_case_and_pages_slice_them()
     assert_eq!(page(&built, "no such plane", 0, 3, None).matching, 0);
 }
 
+fn base_planes() -> Vec<(&'static str, &'static str)> {
+    vec![
+        PLANES[0],
+        PLANES[1],
+        PLANES[2],
+        PLANES[6],
+        (
+            "gfx/models/planes.gfx",
+            r#"objectTypes = {
+                pdxmesh = { name = "fighter_mesh" file = "gfx/models/fighter.mesh" }
+                pdxmesh = { name = "bomber_mesh" file = "gfx/models/bomber.mesh" }
+            }"#,
+        ),
+        ("gfx/models/fighter.mesh", "mesh"),
+        ("gfx/models/bomber.mesh", "mesh"),
+        (
+            "gfx/entities/planes.asset",
+            r#"
+            entity = { name = "vanilla_plane_entity" pdxmesh = "fighter_mesh" }
+            entity = { name = "reskinned_plane_entity" pdxmesh = "bomber_mesh" }
+            "#,
+        ),
+    ]
+}
+
 #[test]
 fn origins_name_the_mod_or_dlc_supplying_a_declaration_or_its_geometry() {
     let folder = |name: &str, base: bool, files: &[(&str, &str)]| {
@@ -344,32 +369,7 @@ fn origins_name_the_mod_or_dlc_supplying_a_declaration_or_its_geometry() {
         }
         dashboard_base::catalogue::tests::Folder(root)
     };
-    let vanilla = folder(
-        "vanilla",
-        true,
-        &[
-            PLANES[0],
-            PLANES[1],
-            PLANES[2],
-            PLANES[6],
-            (
-                "gfx/models/planes.gfx",
-                r#"objectTypes = {
-                    pdxmesh = { name = "fighter_mesh" file = "gfx/models/fighter.mesh" }
-                    pdxmesh = { name = "bomber_mesh" file = "gfx/models/bomber.mesh" }
-                }"#,
-            ),
-            ("gfx/models/fighter.mesh", "mesh"),
-            ("gfx/models/bomber.mesh", "mesh"),
-            (
-                "gfx/entities/planes.asset",
-                r#"
-                entity = { name = "vanilla_plane_entity" pdxmesh = "fighter_mesh" }
-                entity = { name = "reskinned_plane_entity" pdxmesh = "bomber_mesh" }
-                "#,
-            ),
-        ],
-    );
+    let vanilla = folder("vanilla", true, &base_planes());
     let dlc = folder(
         "dlc",
         false,
@@ -491,6 +491,79 @@ fn origins_name_the_mod_or_dlc_supplying_a_declaration_or_its_geometry() {
             .collect::<Vec<_>>(),
         [0, 1],
         "every origin stays listed, counting what matches the query"
+    );
+}
+
+#[test]
+fn a_visual_mod_reskinning_a_plane_names_it_as_the_viewer_draws_it() {
+    use dashboard_base::test_fixtures::visual_mods::{Machine, select};
+    let machine = Machine::new("aircraft_origins");
+    for (path, text) in base_planes() {
+        machine.write(path, text.as_bytes());
+    }
+    machine.write_mod("Wings", "gfx/models/bomber.mesh", b"reskinned mesh");
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["Wings"]);
+    let catalogue = dashboard_base::catalogue::catalogue(&source, &options).unwrap();
+    let designs = ["vanilla_plane_entity", "reskinned_plane_entity"]
+        .map(|model| ("fighter_equipment_1".to_owned(), model.to_owned()));
+    let reply = page(&Built::new(&catalogue, &designs, &BTreeMap::new()), "", 0, 100, None);
+    let origin = |name: &str| {
+        reply
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap()
+            .origin
+            .clone()
+    };
+    assert_eq!(origin("vanilla_plane_entity"), Some(AircraftOrigin::Game { dlc: None }));
+    assert!(
+        matches!(origin("reskinned_plane_entity"), Some(AircraftOrigin::Mod { name, .. }) if name == "Wings"),
+        "the shown visual mod draws this plane: {:?}",
+        origin("reskinned_plane_entity")
+    );
+}
+
+#[test]
+fn a_plane_a_visual_mod_breaks_is_flown_from_the_recording_as_the_viewer_does() {
+    use dashboard_base::test_fixtures::visual_mods::{Machine, select};
+    let machine = Machine::new("aircraft_recorded_fallback");
+    for (path, text) in base_planes() {
+        machine.write(path, text.as_bytes());
+    }
+    machine.write_mod(
+        "Broken",
+        "gfx/entities/planes.asset",
+        br#"
+        entity = { name = "vanilla_plane_entity" pdxmesh = "fighter_mesh" state = { name = idle animation_speed = 0 } }
+        entity = { name = "reskinned_plane_entity" }
+        entity = { name = "mod_plane_entity" pdxmesh = "fighter_mesh" }
+        "#,
+    );
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["Broken"]);
+    let catalogue = dashboard_base::catalogue::catalogue(&source, &options).unwrap();
+    let designs = ["vanilla_plane_entity", "reskinned_plane_entity", "mod_plane_entity"]
+        .map(|model| ("fighter_equipment_1".to_owned(), model.to_owned()));
+    let reply = page(&Built::new(&catalogue, &designs, &BTreeMap::new()), "", 0, 100, None);
+    let entry = |name: &str| reply.entries.iter().find(|entry| entry.name == name).unwrap();
+    let broken = |model: &str| matches!(&entry(model).origin, Some(AircraftOrigin::Mod { name, .. }) if name == "Broken");
+    assert_eq!(
+        (&entry("vanilla_plane_entity").refusal, &entry("vanilla_plane_entity").origin),
+        (&None, &Some(AircraftOrigin::Game { dlc: None })),
+        "the viewer flies the recorded declaration the mod's refused one shadows"
+    );
+    assert_eq!(
+        entry("reskinned_plane_entity").refusal.as_ref().map(|refusal| refusal.kind),
+        Some(AircraftRefusalKind::NoGeometry),
+        "the viewer loads the mod's meshless entity and refuses to fly it, so no recorded fallback applies"
+    );
+    assert!(broken("reskinned_plane_entity"), "{:?}", entry("reskinned_plane_entity").origin);
+    assert!(entry("mod_plane_entity").refusal.is_none() && broken("mod_plane_entity"));
+    assert_eq!(
+        reply.refusals.iter().map(|refusal| (refusal.kind, refusal.count)).collect::<Vec<_>>(),
+        [(AircraftRefusalKind::NoGeometry, 1)]
     );
 }
 

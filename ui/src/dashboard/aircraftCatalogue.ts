@@ -106,14 +106,14 @@ export function refusalText(kind: AircraftRefusalKind): string {
   return unreadable(kind) ? 'Can’t be flown: BattlePlan can’t read this model.' : 'Can’t be flown: its 3D model is missing.';
 }
 
-export function refusalLine(refusals: readonly AircraftRefusalCount[]): { text: string; tooltip: string; detail: string } | null {
+export function refusalLine(refusals: readonly AircraftRefusalCount[]): { tooltip: string; detail: string } | null {
   const counted = refusals.filter(refusal => refusal.count > 0);
   const total = counted.reduce((sum, refusal) => sum + refusal.count, 0);
   if (!total) return null;
   const missing = counted.filter(refusal => !unreadable(refusal.kind)).reduce((sum, refusal) => sum + refusal.count, 0);
   const tooltip = [missing ? `${missing.toLocaleString()} with a missing 3D model` : '',
     total - missing ? `${(total - missing).toLocaleString()} that BattlePlan can’t read` : ''].filter(Boolean).join('\n');
-  return { text: `${total.toLocaleString()} ${total === 1 ? 'model' : 'models'} can’t be flown`, tooltip,
+  return { tooltip,
     detail: counted.map(refusal => `${refusal.count.toLocaleString()}: ${refusal.label}`).join('\n') };
 }
 

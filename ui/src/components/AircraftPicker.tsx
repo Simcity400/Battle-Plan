@@ -62,9 +62,9 @@ function Row({ index, pages, chosen, status, onChoose, request, retry }: {
     <span className="aircraft-tile" aria-hidden="true">{tag ?? <Icon name="plane" />}</span>
     <span className="aircraft-row-text">
       <span className="aircraft-row-title"><span className="aircraft-row-name">{title}</span>{entry.kind === 'mesh' && <small className="aircraft-badge">No animation</small>}</span>
-      {refused ? <small className="aircraft-row-refusal" data-detail={refused.reason}>{refusalText(refused.kind)}</small>
-        : <small className="aircraft-row-detail"><span className="aircraft-row-source" data-tooltip={from.tooltip}>{from.text}</span>
-          {others && <span className="aircraft-row-also" data-tooltip={`Also ${others}`}>Also {others}</span>}</small>}
+      <small className="aircraft-row-detail"><span className="aircraft-row-source" data-tooltip={from.tooltip}>{from.text}</span>
+        {others && <span className="aircraft-row-also" data-tooltip={`Also ${others}`}>Also {others}</span>}</small>
+      {refused && <small className="aircraft-row-refusal" data-detail={refused.reason}>{refusalText(refused.kind)}</small>}
     </span>
     {picked && <ChosenState chosen={chosen} status={status} />}
   </button>;
@@ -133,11 +133,13 @@ export function AircraftCatalogueView({ pages, version, origin, onOrigin, query,
   </>;
 }
 
-export function AircraftPanel({ id, onClose, children }: { id?: string; onClose: () => void; children: ReactNode }) {
+export function AircraftPanel({ id, onClose, onFreeCamera, children }: { id?: string; onClose: () => void; onFreeCamera?: () => void; children: ReactNode }) {
   return <section id={id} className="aircraft-picker" aria-label="Aircraft" onKeyDown={event => {
     if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
   }}>
     <div className="ui-popover-heading"><strong>Aircraft</strong><div className="ui-popover-actions">
+      {onFreeCamera && <button type="button" className="icon-button ui-popover-action" aria-label="Go back to the free camera" data-tooltip="Back to the free camera"
+        onClick={onFreeCamera}><Icon name="eject" /></button>}
       <button type="button" className="icon-button ui-popover-action" aria-label="Close the aircraft list" data-tooltip="Close" onClick={onClose}><Icon name="close" /></button>
     </div></div>
     {children}
@@ -165,7 +167,7 @@ export default function AircraftPicker({ client, source, chosen, status, onChoos
     <button ref={trigger} type="button" className={chosen ? 'icon-button aircraft-picker-trigger' : 'icon-button aircraft-picker-trigger is-unchosen'}
       aria-expanded={shown} aria-controls={shown ? id : undefined} disabled={!host} aria-label={`Aircraft: ${chosen ? chosen.title : 'none chosen'}`}
       data-tooltip={line?.text ?? 'Choose the aircraft to fly'} data-detail={line?.detail} onClick={() => setOpen(value => !value)}><Icon name="plane" /><span>{label}</span></button>
-    {shown && createPortal(<AircraftPanel id={id} onClose={close}>
+    {shown && createPortal(<AircraftPanel id={id} onClose={close} onFreeCamera={chosen ? () => onChoose(null) : undefined}>
       <AircraftCatalogueView pages={pages} version={version} origin={origin} onOrigin={setOrigin} query={query} onQuery={setQuery}
         chosen={chosen} status={status} onChoose={onChoose} request={request} retry={retry} />
     </AircraftPanel>, host)}

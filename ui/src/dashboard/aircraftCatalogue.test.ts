@@ -64,16 +64,16 @@ test('a page answered for other rows is refused, and a failed page waits for a r
   assert.ok(!pages.loading());
 });
 
-test('counted refusals read as one plain total, a plain tooltip by consequence, and the raw reasons only as detail', () => {
+test('counted refusals read as a plain tooltip by consequence, and the raw reasons only as detail', () => {
   assert.equal(refusalLine([]), null);
   assert.equal(refusalLine([{ kind: 'noGeometry', label: 'no geometry to draw', count: 0 }]), null);
   assert.deepEqual(refusalLine([{ kind: 'noGeometry', label: 'no geometry to draw', count: 1 }]),
-    { text: '1 model can’t be flown', tooltip: '1 with a missing 3D model', detail: '1: no geometry to draw' });
+    { tooltip: '1 with a missing 3D model', detail: '1: no geometry to draw' });
   assert.deepEqual(refusalLine([
     { kind: 'unregistered', label: 'not registered by any descriptor', count: 1200 },
     { kind: 'declaration', label: 'a declaration it uses cannot be played', count: 2 },
     { kind: 'noGeometry', label: 'no geometry to draw', count: 3 },
-  ]), { text: `${(1205).toLocaleString()} models can’t be flown`, tooltip: `${(1203).toLocaleString()} with a missing 3D model\n2 that BattlePlan can’t read`,
+  ]), { tooltip: `${(1203).toLocaleString()} with a missing 3D model\n2 that BattlePlan can’t read`,
     detail: `${(1200).toLocaleString()}: not registered by any descriptor\n2: a declaration it uses cannot be played\n3: no geometry to draw` });
   assert.equal(refusalText('unregistered'), 'Can’t be flown: its 3D model is missing.');
   assert.equal(refusalText('noGeometry'), 'Can’t be flown: its 3D model is missing.');
