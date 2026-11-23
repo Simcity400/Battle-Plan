@@ -2991,7 +2991,7 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
 #[test]
 fn taking_a_playing_seeks_reset_notifies_control_watchers_with_clock_unlocked() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 48)]);
-    let playhead = Arc::new(Playhead::new(Arc::clone(&pages), Timeline::single(0, 0, 47), settings(), None).unwrap());
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap());
     let reader = playhead.declare(every(&[0]), None).unwrap();
     let mut consumer = playhead.consumer(reader);
     consumer.set_blocking(true);
@@ -3027,7 +3027,7 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 24);
     let gated = gated(bytes);
     let pages = Arc::new(Runs { extents: vec![gated], runs: vec![run], kinds: vec![LOG.to_vec()] });
-    let playhead = Arc::new(Playhead::new(Arc::clone(&pages), Timeline::single(0, 0, 23), settings(), None).unwrap());
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap());
     let reader = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }], None).unwrap();
     let mut consumer = playhead.consumer(reader);
     consumer.set_blocking(true);
