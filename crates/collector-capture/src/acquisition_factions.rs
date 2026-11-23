@@ -149,24 +149,28 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
         });
         if let Some(store) = request.goal_store.as_mut() {
             let finish = qpc();
-            store.finish(complete, &changes, &mut request.goals);
+            // SAFETY: Admitted faction worker records goal demand for the active session.
+            unsafe { store.finish(complete, &changes, &mut request.goals) };
             goal_ticks = store.read_ticks + qpc().saturating_sub(finish).max(0) as u64;
         }
         if let Some(store) = request.companion_store.as_mut() {
             let read_ticks = store.ticks();
             let rest_started = qpc();
-            store.acquire_accounts(
-                &cached,
-                base,
-                game_state,
-                &companions,
-                if matches!(members.result, Outcome::Rows { .. }) {
-                    &request.members.payload
-                } else {
-                    &[]
-                },
-            );
-            store.finish(complete, &companions, &mut request.companions);
+            // SAFETY: Admitted faction worker records companion/account demand for the active session.
+            unsafe {
+                store.acquire_accounts(
+                    &cached,
+                    base,
+                    game_state,
+                    &companions,
+                    if matches!(members.result, Outcome::Rows { .. }) {
+                        &request.members.payload
+                    } else {
+                        &[]
+                    },
+                );
+                store.finish(complete, &companions, &mut request.companions);
+            }
             companion_ticks = read_ticks + qpc().saturating_sub(rest_started).max(0) as u64;
         }
         report
@@ -469,21 +473,22 @@ mod tests {
         for workers in [0, 2] {
             let bytes = fixture();
             let countries = snapshot(&bytes, 512);
-            let pool =
-            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-            unsafe { collector_workers::acquisition::Pool::start(
-                workers,
-                1,
-                move |request: &mut Request| {
-                    run(
-                        request,
-                        &SliceMemory {
-                            base: 0,
-                            bytes: &bytes,
-                        },
-                    )
-                },
-            ) }
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                collector_workers::acquisition::Pool::start(
+                    workers,
+                    1,
+                    move |request: &mut Request| {
+                        run(
+                            request,
+                            &SliceMemory {
+                                base: 0,
+                                bytes: &bytes,
+                            },
+                        )
+                    },
+                )
+            }
             .unwrap();
             let mut rows = vec![cfaction::Row::default(); 2];
             let mut names = vec![0; 16];
