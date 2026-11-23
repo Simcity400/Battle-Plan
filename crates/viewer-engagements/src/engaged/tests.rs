@@ -201,6 +201,11 @@ fn side_witness(lists: Lists) -> SideWitness {
     }
 }
 
+fn unused_zero() -> &'static ZeroVisibility {
+    static UNUSED: std::sync::OnceLock<ZeroVisibility> = std::sync::OnceLock::new();
+    UNUSED.get_or_init(|| ZeroVisibility::unavailable("unused"))
+}
+
 fn defended<'a>(
     links: &'a BTreeMap<u32, u32>,
     relations: &'a Relations,
@@ -210,11 +215,13 @@ fn defended<'a>(
 ) -> Sample<'a> {
     Sample {
         viewer: 1,
+        viewer_raw: None,
         alternate_viewer: None,
+        alternate_viewer_raw: None,
         recording: false,
         links,
         relations: Ok(relations),
-        zero_visibility: Err("unused"),
+        zero_visibility: unused_zero(),
         controllers: Some(Controllers::default()),
         refreshes: complete_witness(),
         sides: BTreeMap::from([
@@ -684,11 +691,12 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
 
     let zero_no = ZeroVisibility::for_tests([(2, Ok(false)), (5, Ok(false))]);
     let zero_yes = ZeroVisibility::for_tests([(2, Ok(true)), (5, Ok(false))]);
+    let zero_missing = ZeroVisibility::unavailable("missing");
     let mut local = History::default();
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_no),
+            zero_visibility: &zero_no,
             ..sample(&links, &apart, &[7], &[2])
         },
         Continuity::Load,
@@ -696,7 +704,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_no),
+            zero_visibility: &zero_no,
             ..sample(&links, &allied, &[7], &[2])
         },
         Continuity::Next,
@@ -705,7 +713,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_no),
+            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -719,7 +727,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_no),
+            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -733,7 +741,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_yes),
+            zero_visibility: &zero_yes,
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -747,7 +755,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_yes),
+            zero_visibility: &zero_yes,
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -761,7 +769,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Err("missing"),
+            zero_visibility: &zero_missing,
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),
@@ -775,7 +783,7 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: Ok(&zero_no),
+            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
                 sides: BTreeMap::new(),
                 controller_targets: Vec::new(),

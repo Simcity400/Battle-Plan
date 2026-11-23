@@ -1169,6 +1169,7 @@ fn a_side_whose_combat_ends_is_reported_once() {
     };
     let mut history = engaged::History::default();
     let (mut changed, mut ended) = (Vec::new(), Vec::new());
+    let zero = ZeroVisibility::unavailable("unused");
     for (hour, sides, expect_changed, expect_ended) in [
         (0, vec![(7, 0), (7, 1)], 2, 0),
         (1, vec![(7, 0), (7, 1)], 0, 0),
@@ -1177,11 +1178,13 @@ fn a_side_whose_combat_ends_is_reported_once() {
         history.advance_reporting(
             engaged::Sample {
                 viewer: 1,
+                viewer_raw: None,
                 alternate_viewer: None,
+                alternate_viewer_raw: None,
                 recording: false,
                 links: &links,
                 relations: Ok(&relations),
-                zero_visibility: Err("unused"),
+                zero_visibility: &zero,
                 controllers: Some(Default::default()),
                 refreshes: engaged::RefreshWitness::Unavailable,
                 sides: sides.into_iter().map(|key| (key, side())).collect(),

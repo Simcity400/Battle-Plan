@@ -78,7 +78,7 @@ enum Witness {
 struct Inputs {
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
-    zero_visibility: Result<ZeroVisibility, &'static str>,
+    zero_visibility: ZeroVisibility,
     controllers: Option<engaged::Controllers>,
     witness: Witness,
 }
@@ -185,7 +185,9 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
 
 struct Viewer {
     slot: u32,
+    raw: Option<u32>,
     alternate_slot: Option<u32>,
+    alternate_raw: Option<u32>,
     inputs: Arc<Inputs>,
 }
 
@@ -255,14 +257,43 @@ impl Viewer {
             tags.insert(*slot, String::new());
         }
         let (slot, _) = viewer_foundation::fold_tables::viewer(frame, &inputs.links, &tags, country)?;
-        Ok(Self { slot, alternate_slot: None, inputs: Arc::clone(inputs) })
+        Ok(Self {
+            slot,
+            raw: None,
+            alternate_slot: None,
+            alternate_raw: None,
+            inputs: Arc::clone(inputs),
+        })
     }
 
     fn recording<F: Tables + ?Sized>(frame: &F, inputs: &Arc<Inputs>) -> Option<(Self, bool)> {
-        let slot = viewer_foundation::fold_tables::perspective(frame, &inputs.links)?;
-        let observing = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
-            .is_some_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
-        Some((Self { slot, alternate_slot: None, inputs: Arc::clone(inputs) }, observing))
+        let [player] = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)?
+        else {
+            return None;
+        };
+        let observing = (player.country as i32) <= 0;
+        let raw = if (player.country as i32) > 0 {
+            player.country
+        } else if (player.observer_country as i32) > 0 {
+            player.observer_country
+        } else {
+            0
+        };
+        let slot = if raw == 0 {
+            0
+        } else {
+            inputs.links.get(&raw).copied()?
+        };
+        Some((
+            Self {
+                slot,
+                raw: Some(raw),
+                alternate_slot: None,
+                alternate_raw: None,
+                inputs: Arc::clone(inputs),
+            },
+            observing,
+        ))
     }
 
     fn sample(&self, kind: usize, recording: bool, sides: HourSides) -> engaged::Sample<'_> {
@@ -293,15 +324,13 @@ impl Viewer {
         };
         engaged::Sample {
             viewer: self.slot,
+            viewer_raw: self.raw,
             alternate_viewer: self.alternate_slot,
+            alternate_viewer_raw: self.alternate_raw,
             recording,
             links: &self.inputs.links,
             relations: self.inputs.relations.as_ref().map_err(|reason| *reason),
-            zero_visibility: self
-                .inputs
-                .zero_visibility
-                .as_ref()
-                .map_err(|reason| *reason),
+            zero_visibility: &self.inputs.zero_visibility,
             controllers: self.inputs.controllers.clone(),
             refreshes,
             sides: sides.sides,
@@ -391,7 +420,7 @@ struct Fold {
     last: Option<(Hour, bool)>,
     recording: Track,
     recording_last: Option<(Hour, bool)>,
-    client_view: Option<u32>,
+    client_view: Option<(u32, u32)>,
     icons: Vec<IconFold>,
     icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
     recording_icons: Vec<IconFold>,
@@ -609,12 +638,21 @@ impl Pass {
                 .collect::<io::Result<Vec<_>>>()
                 .ok()
         }));
-        let held = self.inputs.take().filter(|_| kept);
+        let held = self
+            .inputs
+            .take()
+            .filter(|inputs| kept && !inputs.zero_visibility.reverse_stale_at(hour));
         let inputs = sides.as_ref().and_then(|(frame, _)| held.or_else(|| Inputs::read(*frame).ok().map(Arc::new)));
         self.inputs.clone_from(&inputs);
         let held_viewer = self.viewer.take().filter(|viewer| kept && inputs.as_ref().is_some_and(|inputs| Arc::ptr_eq(&viewer.inputs, inputs)));
         let viewer = held_viewer.or_else(|| sides.as_ref().zip(inputs.as_ref()).and_then(|((frame, _), inputs)| Viewer::with(*frame, &self.country, inputs).ok()));
-        self.viewer = viewer.as_ref().map(|viewer| Viewer { slot: viewer.slot, alternate_slot: None, inputs: Arc::clone(&viewer.inputs) });
+        self.viewer = viewer.as_ref().map(|viewer| Viewer {
+            slot: viewer.slot,
+            raw: None,
+            alternate_slot: None,
+            alternate_raw: None,
+            inputs: Arc::clone(&viewer.inputs),
+        });
         let player = sides
             .as_ref()
             .zip(inputs.as_ref())
@@ -623,13 +661,15 @@ impl Pass {
             .client_view
             .filter(|_| recording_continuity == Continuity::Next);
         let player = player.map(|(mut viewer, observing)| {
-            let view = viewer.slot;
-            if let Some(slot) = previous_view
+            let view = (viewer.slot, viewer.raw.unwrap_or(0));
+            if let Some((slot, raw)) = previous_view
                 && observing
             {
                 viewer.slot = slot;
-                if slot != view {
-                    viewer.alternate_slot = Some(view);
+                viewer.raw = Some(raw);
+                if (slot, raw) != view {
+                    viewer.alternate_slot = Some(view.0);
+                    viewer.alternate_raw = Some(view.1);
                 }
             }
             (viewer, view)
@@ -729,7 +769,9 @@ impl Pass {
             {
                 covered.viewers.push((hour, slot));
             }
-            let player_slot = player.as_ref().map(|(_, view)| *view);
+            let player_slot = player
+                .as_ref()
+                .and_then(|(_, (view, _))| (*view != 0).then_some(*view));
             if covered
                 .players
                 .last()

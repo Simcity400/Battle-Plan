@@ -35,7 +35,7 @@ const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::NavalCombatShips, Some(&["ship", "member_source", "group_index", "live_ship", "live_convoy", "formation_flags"])),
     (TableId::TaskForces, Some(&["roster_owner", "logical_owner"])),
     (TableId::CountryCounterInputs, Some(&["forward_visibility", "zero_war", "zero_subject"])),
-    (TableId::ReservedCountryNaming, Some(&["faction"])),
+    (TableId::ReservedCountryNaming, Some(&["faction", "reverse_visibility"])),
     (TableId::CombatEngagementRefreshes, None),
 ];
 

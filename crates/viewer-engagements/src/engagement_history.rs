@@ -144,15 +144,18 @@ pub fn combats(
         None => Provenance::Unindexed,
     };
     let sides = SOURCES[kind].sides(frame)?;
+    let zero_visibility = viewer_foundation::visibility::ZeroVisibility::read_tables(frame, links);
     let mut history = engaged::History::default();
     history.advance(
         engaged::Sample {
             viewer,
+            viewer_raw: None,
             alternate_viewer: None,
+            alternate_viewer_raw: None,
             recording: false,
             links,
             relations,
-            zero_visibility: Err("zero visibility unused on load fallback"),
+            zero_visibility: &zero_visibility,
             controllers: None,
             refreshes: engaged::RefreshWitness::Unavailable,
             sides: sides.sides,

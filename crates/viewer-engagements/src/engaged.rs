@@ -81,6 +81,7 @@ impl Engaged {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn test(
     primary: &[u32],
     secondary: &[u32],
@@ -213,16 +214,38 @@ impl Controllers {
 
 pub struct Sample<'a> {
     pub viewer: u32,
+    pub viewer_raw: Option<u32>,
     pub alternate_viewer: Option<u32>,
+    pub alternate_viewer_raw: Option<u32>,
     pub recording: bool,
     pub links: &'a BTreeMap<u32, u32>,
     pub relations: Result<&'a Relations, &'static str>,
-    pub zero_visibility: Result<&'a ZeroVisibility, &'static str>,
+    pub zero_visibility: &'a ZeroVisibility,
     pub controllers: Option<Controllers>,
     pub refreshes: RefreshWitness,
     pub sides: BTreeMap<(u64, u8), Side>,
     pub complete: bool,
     pub removal: Removal,
+}
+
+impl Sample<'_> {
+    fn primary_viewer(&self) -> CandidateViewer {
+        match self.viewer_raw {
+            Some(raw) => CandidateViewer::RawLocal(raw),
+            None => CandidateViewer::Slot(self.viewer),
+        }
+    }
+
+    fn secondary_viewer(&self) -> Option<CandidateViewer> {
+        let alt_slot = self.alternate_viewer?;
+        if alt_slot == self.viewer && self.alternate_viewer_raw == self.viewer_raw {
+            return None;
+        }
+        Some(match self.alternate_viewer_raw {
+            Some(raw) => CandidateViewer::RawLocal(raw),
+            None => CandidateViewer::Slot(alt_slot),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,10 +282,11 @@ struct Kept {
 
 struct Previous {
     viewer: u32,
+    viewer_raw: Option<u32>,
     alternate_viewer_refreshed: Option<u32>,
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
-    zero_visibility: Result<ZeroVisibility, &'static str>,
+    zero_visibility: ZeroVisibility,
     controllers: Option<Controllers>,
     sides: BTreeMap<(u64, u8), Kept>,
     complete: bool,
@@ -302,7 +326,7 @@ impl Previous {
         let mut other_proven = false;
         let mut local_proven = false;
         let mut possible = false;
-        if self.viewer != sample.viewer
+        if (self.viewer, self.viewer_raw) != (sample.viewer, sample.viewer_raw)
             && !(sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }))
         {
             if self.alternate_viewer_refreshed == Some(sample.viewer) {
@@ -555,11 +579,13 @@ impl History {
                 RefreshWitness::Unavailable => (None, &[]),
             };
         let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
+        let primary_viewer = sample.primary_viewer();
+        let secondary_viewer = sample.secondary_viewer();
         let before = next.map(|p| {
             (
                 &p.links,
                 p.relations.as_ref().map_err(|reason| *reason),
-                p.zero_visibility.as_ref().map_err(|reason| *reason),
+                &p.zero_visibility,
             )
         });
         let mut evaluated = Vec::new();
@@ -577,63 +603,123 @@ impl History {
                 }?;
                 let (links, relations, zero_visibility) = snapshot?;
                 match viewer {
-                    CandidateViewer::RawLocal(0) => {
+                    CandidateViewer::RawLocal(viewer_raw) => {
                         let mut unknown = false;
+                        let target_slot = if viewer_raw == 0 {
+                            Some(0)
+                        } else {
+                            links.get(&viewer_raw).copied()
+                        };
                         for &raw in primary {
-                            if raw == 0 {
-                                return Some(true);
-                            }
-                            let Some(&member) = links.get(&raw) else {
+                            let owner = if raw == 0 {
+                                0
+                            } else if let Some(&slot) = links.get(&raw) {
+                                slot
+                            } else {
                                 unknown = true;
                                 continue;
                             };
-                            if member == 0 {
+                            if owner == 0 {
+                                if viewer_raw == 0 {
+                                    return Some(true);
+                                }
+                                let Some(target) = target_slot else {
+                                    unknown = true;
+                                    continue;
+                                };
+                                match zero_visibility.reverse_shared(target) {
+                                    Ok(true) => return Some(true),
+                                    Ok(false) => {}
+                                    Err(_) => unknown = true,
+                                }
+                            } else {
+                                let Some(target) = target_slot else {
+                                    unknown = true;
+                                    continue;
+                                };
+                                if target == 0 {
+                                    match zero_visibility.forward_shared(owner) {
+                                        Ok(true) => return Some(true),
+                                        Ok(false) => {}
+                                        Err(_) => unknown = true,
+                                    }
+                                } else if owner == target {
+                                    return Some(true);
+                                } else {
+                                    match relations.ok() {
+                                        Some(relations) if relations.shared(owner, target) => {
+                                            return Some(true);
+                                        }
+                                        Some(_) => {}
+                                        None => unknown = true,
+                                    }
+                                }
+                            }
+                        }
+                        for &raw in secondary {
+                            if raw == viewer_raw {
                                 return Some(true);
                             }
-                            match zero_visibility.ok().and_then(|zero| zero.shared(member).ok()) {
-                                Some(true) => return Some(true),
-                                Some(false) => {}
-                                None => unknown = true,
+                            if raw != 0 && viewer_raw != 0 {
+                                match (links.get(&raw).copied(), target_slot) {
+                                    (Some(owner), Some(target)) if owner == target => {
+                                        return Some(true);
+                                    }
+                                    (Some(_), Some(_)) => {}
+                                    _ => unknown = true,
+                                }
+                            }
+                        }
+                        (!unknown).then_some(false)
+                    }
+                    CandidateViewer::Slot(slot) => {
+                        let mut unknown = false;
+                        for &raw in primary {
+                            let owner = if raw == 0 {
+                                0
+                            } else if let Some(&member) = links.get(&raw) {
+                                member
+                            } else {
+                                unknown = true;
+                                continue;
+                            };
+                            if owner == 0 {
+                                match zero_visibility.reverse_shared(slot) {
+                                    Ok(true) => return Some(true),
+                                    Ok(false) => {}
+                                    Err(_) => unknown = true,
+                                }
+                            } else if owner == slot {
+                                return Some(true);
+                            } else {
+                                match relations.ok() {
+                                    Some(relations) if relations.shared(owner, slot) => {
+                                        return Some(true);
+                                    }
+                                    Some(_) => {}
+                                    None => unknown = true,
+                                }
                             }
                         }
                         for &raw in secondary {
                             if raw == 0 {
-                                return Some(true);
+                                continue;
                             }
                             let Some(&member) = links.get(&raw) else {
                                 unknown = true;
                                 continue;
                             };
-                            if member == 0 {
+                            if member == slot {
                                 return Some(true);
                             }
                         }
                         (!unknown).then_some(false)
                     }
-                    CandidateViewer::Slot(slot) => test(primary, secondary, |raw| {
-                        let member = *links.get(&raw)?;
-                        if member == slot {
-                            return Some((true, true));
-                        }
-                        Some((false, relations.ok()?.shared(member, slot)))
-                    }),
-                    CandidateViewer::RawLocal(raw) => {
-                        let slot = *links.get(&raw)?;
-                        test(primary, secondary, |raw| {
-                            let member = *links.get(&raw)?;
-                            if member == slot {
-                                return Some((true, true));
-                            }
-                            Some((false, relations.ok()?.shared(member, slot)))
-                        })
-                    }
                 }
             };
             let held_before = self.held.get(key).copied().unwrap_or(Engaged::Unknown);
             let value = match (continuity, next, every) {
-                (Continuity::Load, ..) => {
-                    Engaged::of(eval(Tested::Recorded, 0, CandidateViewer::Slot(sample.viewer)))
-                }
+                (Continuity::Load, ..) => Engaged::of(eval(Tested::Recorded, 0, primary_viewer)),
                 (_, Some(previous), Some(every)) => {
                     match previous.refresh(&sample, *key, side, every) {
                         None => Engaged::Unknown,
@@ -668,15 +754,9 @@ impl History {
                                                     );
                                                 }
                                             } else {
-                                                push_unique(
-                                                    &mut viewers,
-                                                    CandidateViewer::Slot(sample.viewer),
-                                                );
-                                                if let Some(alt) = alternate {
-                                                    push_unique(
-                                                        &mut viewers,
-                                                        CandidateViewer::Slot(alt),
-                                                    );
+                                                push_unique(&mut viewers, primary_viewer);
+                                                if let Some(alt) = secondary_viewer {
+                                                    push_unique(&mut viewers, alt);
                                                 }
                                             }
                                         }
@@ -685,15 +765,9 @@ impl History {
                                             push_unique(&mut viewers, CandidateViewer::RawLocal(raw));
                                         }
                                         if non_local_recorded || local_viewers.is_empty() {
-                                            push_unique(
-                                                &mut viewers,
-                                                CandidateViewer::Slot(sample.viewer),
-                                            );
-                                            if let Some(alt) = alternate {
-                                                push_unique(
-                                                    &mut viewers,
-                                                    CandidateViewer::Slot(alt),
-                                                );
+                                            push_unique(&mut viewers, primary_viewer);
+                                            if let Some(alt) = secondary_viewer {
+                                                push_unique(&mut viewers, alt);
                                             }
                                         }
                                     }
@@ -732,24 +806,15 @@ impl History {
                                             }
                                         }
                                         if viewers.is_empty() {
-                                            push_unique(
-                                                &mut viewers,
-                                                CandidateViewer::Slot(sample.viewer),
-                                            );
-                                            if let Some(alt) = alternate {
-                                                push_unique(
-                                                    &mut viewers,
-                                                    CandidateViewer::Slot(alt),
-                                                );
+                                            push_unique(&mut viewers, primary_viewer);
+                                            if let Some(alt) = secondary_viewer {
+                                                push_unique(&mut viewers, alt);
                                             }
                                         }
                                     } else {
-                                        push_unique(
-                                            &mut viewers,
-                                            CandidateViewer::Slot(sample.viewer),
-                                        );
-                                        if let Some(alt) = alternate {
-                                            push_unique(&mut viewers, CandidateViewer::Slot(alt));
+                                        push_unique(&mut viewers, primary_viewer);
+                                        if let Some(alt) = secondary_viewer {
+                                            push_unique(&mut viewers, alt);
                                         }
                                         for &raw in local_viewers {
                                             push_unique(
@@ -786,10 +851,11 @@ impl History {
         let mut earlier = previous.map(|previous| previous.sides).unwrap_or_default();
         self.previous = Some(Previous {
             viewer: sample.viewer,
+            viewer_raw: sample.viewer_raw,
             alternate_viewer_refreshed,
             links: sample.links.clone(),
             relations: sample.relations.cloned(),
-            zero_visibility: sample.zero_visibility.cloned(),
+            zero_visibility: sample.zero_visibility.clone(),
             controllers: sample.controllers,
             sides: sample
                 .sides
