@@ -156,7 +156,7 @@ impl Evaluator<'_, '_> {
                     )
                 },
             )),
-            engine_native::craid_instance::REFERENCE_TYPE_VALUE => Ok(super::refusal::reference(
+            engine_native_air::craid_instance::REFERENCE_TYPE_VALUE => Ok(super::refusal::reference(
                 table::<tables::Raids>(world.tables(), 0)?
                     .contains(u128::from(u64::from(id) << 32 | u64::from(kind)))
                     .then(|| Scope::Raid(u64::from(id) << 32 | u64::from(kind))),

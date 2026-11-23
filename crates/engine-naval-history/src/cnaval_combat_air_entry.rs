@@ -1,10 +1,8 @@
 use engine_sites::Rva;
-use crate::capture_text::Value;
-use crate::{
-    Memory,
-    cnaval_combat_ship_entry::{HitBuffers, capture_hits},
-    cnaval_combatant::field,
-};
+use engine_native_memory::capture_text::Value;
+use engine_native_memory::Memory;
+use crate::cnaval_combat_ship_entry::{HitBuffers, capture_hits};
+use engine_native::cnaval_combatant::field;
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_a5d0);
 pub const SIZE: usize = 0x88;
@@ -17,7 +15,7 @@ pub struct DetailsRow {
     pub current_planes: i32,
     pub lost_planes: i32,
     pub country: u32,
-    pub name: crate::capture_text::Owned,
+    pub name: engine_native_memory::capture_text::Owned,
     pub naval_hits: [usize; 2],
     pub air_hits: [[usize; 2]; 2],
 }
@@ -42,7 +40,7 @@ pub fn capture_details(
     let variant = field::<u64>(memory, pointer, 8)? as usize;
     if variant == 0
         || field::<u64>(memory, variant, 0)?
-            != engine_sites::at(base, crate::cequipment_variant::VTABLE_RVA)
+            != engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
                 .ok_or("naval result air variant module overflow")? as u64
     {
         return Err("naval result air variant identity mismatch");
@@ -62,7 +60,7 @@ pub fn capture_details(
         current_planes: field(memory, pointer, 0x14)?,
         lost_planes: field(memory, pointer, 0x18)?,
         country: field(memory, pointer, 0x1c)?,
-        name: crate::capture_text::Owned::read(
+        name: engine_native_memory::capture_text::Owned::read(
             memory,
             pointer
                 .checked_add(0x20)

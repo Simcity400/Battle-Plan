@@ -1,4 +1,5 @@
-use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::{ccountry, cgame_state};
 use engine_sites::Rva;
 
 pub const PENDING_STRIDE: usize = 0x38;
@@ -71,7 +72,7 @@ fn at(object: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("script registry address overflow")
 }
-fn word<T: crate::memory::Raw>(
+fn word<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,

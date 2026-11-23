@@ -3,12 +3,10 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::country_input_mutations as countries;
-use engine_native::{
-    Memory,
-    cwar_goal::{
-        inventory as input,
-        mutations::{self, Receiver},
-    },
+use engine_native_memory::Memory;
+use engine_native::cwar_relation::goals::{
+    inventory as input,
+    mutations::{self, Receiver},
 };
 use std::{
     ops::Range,
@@ -45,7 +43,7 @@ pub fn country_reset_forwarder(enabled: bool) {
     observe();
 }
 pub fn country_reset(country: usize) -> Guard {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mut id = None;
     let named = countries::countries(
         &memory,
@@ -147,10 +145,10 @@ static DAILY_UPDATE_FORWARDER: crate::occupation_changes::LegitimacyUpdateForwar
 
 fn expire_goals(diplomacy: usize) -> Option<Notification<'static>> {
     EXPIRY_CALLS.fetch_add(1, Ordering::Relaxed);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let unused = diplomacy
-        .checked_add(engine_native::cdiplomacy_status::OWNED_WARGOALS + 12)
-        .and_then(|p| engine_native::read::<u32>(&memory, p));
+        .checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS + 12)
+        .and_then(|p| engine_native_memory::read::<u32>(&memory, p));
     expiry_in(&WATCHES, unused, || {
         named(Receiver::Diplomacy, diplomacy, 0)
     })
@@ -165,7 +163,7 @@ fn expiry_in(
 }
 
 fn named(receiver: Receiver, first: usize, third: usize) -> Option<u32> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Acquire);
     let (receiver, first) = match receiver {
         Receiver::Diplomacy => (countries::Receiver::DiplomacyStatus, first),
@@ -180,7 +178,7 @@ fn named(receiver: Receiver, first: usize, third: usize) -> Option<u32> {
             };
             return p
                 .checked_add(offset)
-                .and_then(|p| engine_native::read::<u32>(&memory, p))
+                .and_then(|p| engine_native_memory::read::<u32>(&memory, p))
                 .and_then(|raw| countries::of_link(&memory, base, raw));
         }
     };
@@ -293,16 +291,16 @@ macro_rules! callback {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
             CALLS[$site].fetch_add(1, Ordering::Relaxed);
             let site = &mutations::SITES[$site];
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let interested = !matches!(site.receiver, Receiver::Activity)
-                || engine_native::read::<u64>(&memory, a).is_none_or(justification)
+                || engine_native_memory::read::<u64>(&memory, a).is_none_or(justification)
                 || site.name == "read_activity";
             let interested = interested
                 && (!matches!(site.receiver, Receiver::ActivityInsert)
-                    || engine_native::read::<u64>(&memory, b).is_none_or(justification))
+                    || engine_native_memory::read::<u64>(&memory, b).is_none_or(justification))
                 && (!matches!(site.receiver, Receiver::ActivityPrune)
                     || a.checked_add(input::ACTIVITIES + 12)
-                        .and_then(|p| engine_native::read::<u32>(&memory, p))
+                        .and_then(|p| engine_native_memory::read::<u32>(&memory, p))
                         != Some(0));
             let _guard = interested
                 .then(|| notify_country(named(site.receiver, a, c), site.receiver.part()));
@@ -372,7 +370,7 @@ mod tests {
     #[test]
     fn hook_verification_errors_name_family_site_and_cause() {
         let first = &mutations::SITES[0];
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

@@ -1,4 +1,5 @@
 import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
+import { formatDateTime, gameDate } from './calendar.ts';
 
 import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
 import { REQUEST_HOURS, REQUEST_PATHS } from '../generated/dashboard.ts';
@@ -134,11 +135,17 @@ export function refusedHours(product: string, params: unknown, branch: CoveredBr
 
 export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: number };
 export interface Region { widget: WidgetSpec; action: RegionAction }
-export interface Outside { message: string; detail: string | undefined }
+export interface Outside {
+  kind?: 'outside' | 'not-recorded';
+  message: string;
+  detail: string | undefined;
+  span?: { firstHour: number; lastHour: number };
+  pinned?: boolean;
+}
 export interface RegionTime { hour: TrackHour | null; window: HourWindow | null; follows: boolean; outside: Outside | null }
 
 export const OUTSIDE_MESSAGE = 'This time is outside the recording.';
-export const UNRECORDED_MESSAGE = 'This time was not recorded.';
+export const UNRECORDED_MESSAGE = 'Not recorded at this time.';
 export const SETTINGS_DETAIL = 'Choose another time in widget settings.';
 export const SPEC: RegionAction = { kind: 'spec' };
 export const FOLLOW: RegionAction = { kind: 'follow' };
@@ -173,12 +180,26 @@ export function gapAt(track: Branch, hour: number): RecordingGap | null {
   return null;
 }
 
+function gapDetail(gap: RecordingGap): string {
+  return gap.reason?.trim() ?? '';
+}
+
 export function coverageAt(track: Branch | undefined, hour: number | null | undefined): { hour: TrackHour } | { hour: null; outside: Outside } {
-  if (!track || hour === null || hour === undefined || !Number.isFinite(hour)) return { hour: null, outside: { message: OUTSIDE_MESSAGE, detail: undefined } };
+  const boundsDetail = track && gameDate(track.branch.firstHour) && gameDate(track.branch.lastHour)
+    ? `The recording covers ${formatDateTime(track.branch.firstHour)} to ${formatDateTime(track.branch.lastHour)}.`
+    : undefined;
+  const boundsSpan = track ? { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } : undefined;
+  if (!track || hour === null || hour === undefined || !Number.isFinite(hour)) {
+    return { hour: null, outside: { kind: 'outside', message: OUTSIDE_MESSAGE, detail: boundsDetail, span: boundsSpan } };
+  }
   const at = Math.floor(hour);
-  if (at < track.branch.firstHour || at > track.branch.lastHour) return { hour: null, outside: { message: OUTSIDE_MESSAGE, detail: undefined } };
+  if (at < track.branch.firstHour || at > track.branch.lastHour) {
+    return { hour: null, outside: { kind: 'outside', message: OUTSIDE_MESSAGE, detail: boundsDetail, span: boundsSpan } };
+  }
   const gap = gapAt(track, at);
-  return gap ? { hour: null, outside: { message: UNRECORDED_MESSAGE, detail: gap.reason } } : { hour: at as TrackHour };
+  return gap
+    ? { hour: null, outside: { kind: 'not-recorded', message: UNRECORDED_MESSAGE, detail: gapDetail(gap) || undefined, span: { firstHour: gap.firstHour, lastHour: gap.lastHour } } }
+    : { hour: at as TrackHour };
 }
 
 export function coverageSpan(track: Branch, hour: number): readonly [number, number] {
@@ -244,8 +265,7 @@ export function regionOutside(region: Region, track: BoundTrack | undefined, tra
   const covered = coverageAt(track, regionWindow(region, track, tracks, axis)?.lastHour);
   if (covered.hour !== null) return null;
   if (!ownTime(region)) return covered.outside;
-  const { message, detail } = covered.outside;
-  return { message, detail: detail ? `${detail} ${SETTINGS_DETAIL}` : SETTINGS_DETAIL };
+  return { ...covered.outside, pinned: true };
 }
 
 export function resolveRegion(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[], axis: AxisHour): RegionTime {

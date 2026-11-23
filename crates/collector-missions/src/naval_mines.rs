@@ -1,4 +1,5 @@
-use engine_native::{Memory, cpdx_array::Array, naval_mine_inputs as native};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native_naval::naval_mine_inputs as native;
 use replay_data::rows::NavalRegionalMineRow;
 use std::{collections::HashMap, sync::Mutex};
 

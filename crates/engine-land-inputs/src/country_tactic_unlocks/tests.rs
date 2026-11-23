@@ -1,5 +1,6 @@
 use super::*;
-use crate::{country_memory::Cache, memory::SliceMemory};
+use engine_native_intelligence::country_memory::Cache;
+use engine_native_memory::memory::SliceMemory;
 use std::{cell::RefCell, collections::BTreeMap};
 
 const GAME: usize = 0x1000;
@@ -158,7 +159,7 @@ impl Owned {
 }
 
 fn count(memory: &Fixture) -> Capture {
-    use crate::walk::Buffer;
+    use engine_native_memory::walk::Buffer;
     capture_buffer(memory, 0, GAME, Buffer::Count, Buffer::Count, Buffer::Count, Buffer::Count)
 }
 
@@ -443,7 +444,7 @@ impl<M: Memory> Memory for Counted<'_, M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.memory.authenticated_countries(base, game_state)
     }
 }

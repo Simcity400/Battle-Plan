@@ -1,8 +1,6 @@
 
-use crate::{
-    Memory, cpdx_array::Array, peace_action, peace_conference as conference,
-    peace_history_node as history, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::{peace_action, peace_conference as conference, peace_history_node as history};
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -13,7 +11,7 @@ pub struct Action {
     pub operands: peace_action::Row,
     pub name_len: usize,
     pub name_start: usize,
-    pub name_inline: [u8; crate::msvc_string::INLINE_CAPACITY as usize],
+    pub name_inline: [u8; engine_native_memory::msvc_string::INLINE_CAPACITY as usize],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,12 +42,12 @@ pub struct Snapshot {
 }
 
 pub struct Output<'a> {
-    pub winners: crate::walk::Buffer<'a, u32>,
-    pub losers: crate::walk::Buffer<'a, u32>,
-    pub actions: crate::walk::Buffer<'a, Action>,
-    pub transfers: crate::walk::Buffer<'a, Transfer>,
-    pub subjects: crate::walk::Buffer<'a, Subject>,
-    pub name_bytes: crate::walk::Buffer<'a, u8>,
+    pub winners: engine_native_memory::walk::Buffer<'a, u32>,
+    pub losers: engine_native_memory::walk::Buffer<'a, u32>,
+    pub actions: engine_native_memory::walk::Buffer<'a, Action>,
+    pub transfers: engine_native_memory::walk::Buffer<'a, Transfer>,
+    pub subjects: engine_native_memory::walk::Buffer<'a, Subject>,
+    pub name_bytes: engine_native_memory::walk::Buffer<'a, u8>,
 }
 fn array(
     memory: &impl Memory,
@@ -63,7 +61,7 @@ fn array(
         .ok_or("peace settlement array unreadable or invalid")
 }
 
-fn element<T: crate::memory::Raw>(
+fn element<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     array: Array,
     index: usize,
@@ -74,7 +72,7 @@ fn element<T: crate::memory::Raw>(
         .ok_or("peace settlement array element unreadable")
 }
 
-fn validate_last<T: crate::memory::Raw>(
+fn validate_last<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     array: Array,
 ) -> Result<(), &'static str> {
@@ -84,9 +82,9 @@ fn validate_last<T: crate::memory::Raw>(
     Ok(())
 }
 
-fn reserve<T: Default, E: crate::memory::Raw>(
+fn reserve<T: Default, E: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
-    destination: &mut crate::walk::Buffer<'_, T>,
+    destination: &mut engine_native_memory::walk::Buffer<'_, T>,
     required: usize,
     array: Array,
 ) -> Result<bool, &'static str> {
@@ -133,12 +131,12 @@ fn demand_advisory(memory: &impl Memory, base: usize, pointer: usize) -> Snapsho
         base,
         pointer,
         Output {
-            winners: crate::walk::Buffer::Count,
-            losers: crate::walk::Buffer::Count,
-            actions: crate::walk::Buffer::Count,
-            transfers: crate::walk::Buffer::Count,
-            subjects: crate::walk::Buffer::Count,
-            name_bytes: crate::walk::Buffer::Count,
+            winners: engine_native_memory::walk::Buffer::Count,
+            losers: engine_native_memory::walk::Buffer::Count,
+            actions: engine_native_memory::walk::Buffer::Count,
+            transfers: engine_native_memory::walk::Buffer::Count,
+            subjects: engine_native_memory::walk::Buffer::Count,
+            name_bytes: engine_native_memory::walk::Buffer::Count,
         },
         false,
         true,
@@ -215,11 +213,11 @@ fn copy_internal(
         let head = u64::from_le_bytes(tree[..8].try_into().unwrap()) as usize;
         let expected = u64::from_le_bytes(tree[8..].try_into().unwrap());
         if measuring {
-            let state = engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)
+            let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                 .and_then(|at| read::<u64>(memory, at))
                 .ok_or("peace demand country registry unreadable")?
                 as usize;
-            let countries = array(memory, state, crate::cgame_state::COUNTRIES, 8)?;
+            let countries = array(memory, state, engine_native::cgame_state::COUNTRIES, 8)?;
             validate_last::<u64>(memory, countries)?;
             if expected > u64::from(countries.count) {
                 return Err("peace history exceeds country registry");
@@ -266,7 +264,7 @@ fn copy_internal(
                     for ordinal in 0..actions.count as usize {
                         let pointer = element::<u64>(memory, actions, ordinal)? as usize;
                         let name = peace_action::cached_name(memory, pointer)?;
-                        if name.len > crate::msvc_string::INLINE_CAPACITY as usize {
+                        if name.len > engine_native_memory::msvc_string::INLINE_CAPACITY as usize {
                             add_count(&mut result.name_bytes, name.len)?;
                         }
                     }
@@ -476,13 +474,13 @@ fn copy_internal(
                         return Ok(());
                     }
                     let state = element::<u64>(memory, states, state_index)? as usize;
-                    let vtable = engine_sites::at(base, crate::cstate::VTABLE_RVA)
+                    let vtable = engine_sites::at(base, engine_native::cstate::VTABLE_RVA)
                         .ok_or("peace transfer state vtable mismatch")?;
                     if read::<u64>(memory, state) != Some(vtable as u64) {
                         return Err("peace transfer state vtable mismatch");
                     }
                     let id = state
-                        .checked_add(crate::cstate::ID)
+                        .checked_add(engine_native::cstate::ID)
                         .and_then(|at| read::<i32>(memory, at))
                         .ok_or("peace transfer state id unreadable")?;
                     output.transfers[result.transfers] = Transfer {

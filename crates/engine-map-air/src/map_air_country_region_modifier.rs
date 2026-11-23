@@ -1,5 +1,7 @@
 
-use crate::{Memory, ccountry, cstrategic_region, modifier_accumulator, read};
+use engine_native_memory::{Memory, read};
+use engine_native::ccountry;
+use engine_native_parts::{cstrategic_region, modifier_accumulator};
 use engine_sites::Rva;
 
 const COUNTRY_REGION_MAP: usize = 0x4d8;
@@ -35,7 +37,7 @@ impl Region {
     pub fn efficiency(
         self,
         memory: &impl Memory,
-    ) -> Result<modifier_accumulator::Value, &'static str> {
+    ) -> Result<engine_native_memory::modifier_cache::Value, &'static str> {
         let accumulator = self
             .object
             .checked_add(REGION_ACCUMULATOR)
@@ -148,9 +150,9 @@ impl CountryMap {
         memory: &impl Memory,
         base: usize,
         region: usize,
-    ) -> Result<modifier_accumulator::Value, &'static str> {
+    ) -> Result<engine_native_memory::modifier_cache::Value, &'static str> {
         self.region(memory, base, region)?
-            .map_or(Ok(modifier_accumulator::Value::default()), |object| {
+            .map_or(Ok(engine_native_memory::modifier_cache::Value::default()), |object| {
                 object.efficiency(memory)
             })
     }
@@ -291,7 +293,7 @@ fn hash(pointer: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const COUNTRY: usize = 0x1000;
     const REGION: usize = 0x2000;
@@ -354,7 +356,7 @@ mod tests {
     fn read_fixture(
         bytes: &[u8],
         region: usize,
-    ) -> Result<modifier_accumulator::Value, &'static str> {
+    ) -> Result<engine_native_memory::modifier_cache::Value, &'static str> {
         let memory = SliceMemory { base: 0, bytes };
         country_map(&memory, 0, COUNTRY)?.lookup(&memory, 0, region)
     }
@@ -407,12 +409,12 @@ mod tests {
         let mut bytes = fixture();
         assert_eq!(
             read_fixture(&bytes, REGION),
-            Ok(modifier_accumulator::Value::default())
+            Ok(engine_native_memory::modifier_cache::Value::default())
         );
         present(&mut bytes, REGION, -27_500);
         assert_eq!(
             read_fixture(&bytes, REGION),
-            Ok(modifier_accumulator::Value {
+            Ok(engine_native_memory::modifier_cache::Value {
                 raw: -27_500,
                 present: true
             })
@@ -420,7 +422,7 @@ mod tests {
         bytes[ENTRIES..ENTRIES + 4].copy_from_slice(&0x10_u32.to_le_bytes());
         assert_eq!(
             read_fixture(&bytes, REGION),
-            Ok(modifier_accumulator::Value::default())
+            Ok(engine_native_memory::modifier_cache::Value::default())
         );
     }
 
@@ -440,7 +442,7 @@ mod tests {
         );
         assert_eq!(
             read_fixture(&bytes, other),
-            Ok(modifier_accumulator::Value::default())
+            Ok(engine_native_memory::modifier_cache::Value::default())
         );
         put(&mut bytes, SENTINEL, NODE_B as u64);
         put(&mut bytes, SENTINEL + 8, NODE_A as u64);
@@ -452,7 +454,7 @@ mod tests {
         put(&mut bytes, NODE_B + NODE_VALUE, VALUE as u64);
         assert_eq!(
             read_fixture(&bytes, other),
-            Ok(modifier_accumulator::Value {
+            Ok(engine_native_memory::modifier_cache::Value {
                 raw: 123,
                 present: true
             })

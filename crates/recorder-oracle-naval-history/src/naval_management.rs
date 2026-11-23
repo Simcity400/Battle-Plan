@@ -216,7 +216,7 @@ fn tasks(
             None => missing(report, format!("{label}.ai_taskforce_composition")),
             Some(composition) => {
                 let selected = if row.composition_token
-                    == engine_native::naval_management::NO_AI_COMPOSITION_TOKEN
+                    == engine_native_naval::naval_management::NO_AI_COMPOSITION_TOKEN
                 {
                     None
                 } else {
@@ -411,7 +411,7 @@ fn progress(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> io::Resu
         for line in production
             .lines
             .iter()
-            .filter(|line| line.kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT)
+            .filter(|line| line.kind == engine_native::cproduction_status::equipment_line::KIND_SHIP_REFIT)
         {
             let expected = line.base.produced.as_ref().map_or(0, |value| value.raw);
             let label = format!("naval refit line {}.produced", line.base.id);
@@ -599,7 +599,7 @@ mod tests {
                     task_force: task,
                     repair_mode: 3,
                     repair_split: 1,
-                    composition_token: engine_native::naval_management::NO_AI_COMPOSITION_TOKEN,
+                    composition_token: engine_native_naval::naval_management::NO_AI_COMPOSITION_TOKEN,
                     ..Default::default()
                 },
             ]));
@@ -930,7 +930,7 @@ mod tests {
             refit_variant: 11,
             refit_after_repair: 12,
             merge_after_repair: destination,
-            composition_token: engine_native::naval_management::NO_AI_COMPOSITION_TOKEN,
+            composition_token: engine_native_naval::naval_management::NO_AI_COMPOSITION_TOKEN,
         };
         *frame.tables[TableId::NavalRepairTaskForces.index()] =
             TableView::Complete(TableRows::NavalRepairTaskForces(vec![
@@ -1078,7 +1078,7 @@ mod tests {
                     refit_variant: 11,
                     refit_after_repair: 12,
                     merge_after_repair: 0,
-                    composition_token: engine_native::naval_management::NO_AI_COMPOSITION_TOKEN,
+                    composition_token: engine_native_naval::naval_management::NO_AI_COMPOSITION_TOKEN,
                 },
             ]));
         let rows = [2, 5]

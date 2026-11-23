@@ -4,7 +4,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, default_vec, owned_vec, reserve_exact, vec};
-use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
 use engine_raid_inputs::raid_state_inputs as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows, rows::TableId, rows::tables,
@@ -511,7 +512,7 @@ mod tests {
     use replay_data::rows::TableRows;
 
     struct Traced<'a> {
-        memory: engine_native::memory::SliceMemory<'a>,
+        memory: engine_native_memory::memory::SliceMemory<'a>,
         copies: std::cell::RefCell<Vec<usize>>,
     }
 
@@ -692,7 +693,7 @@ mod tests {
         bytes[header..header + 8].copy_from_slice(&((base + 0x10_0000) as u64).to_le_bytes());
         bytes[header + 8..header + 12].copy_from_slice(&5_u32.to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&5_u32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base,
             bytes: &bytes,
         };

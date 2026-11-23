@@ -1,8 +1,12 @@
 
-use crate::{
-    Memory, ccountry, cdiplomacy_status, cevent_scope, cgame_state, cpdx_array::Array, crelation,
-    crelation_status, cwar_relation, memory::Raw, read,
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read};
+use engine_native::{
+    ccountry,
+    cgame_state,
+    crelation::{self, status as crelation_status},
+    cwar_relation,
 };
+use crate::cevent_scope;
 use engine_sites::Rva;
 
 #[derive(Debug, Clone, Copy)]
@@ -114,7 +118,7 @@ pub fn identity(
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
     reference: u32,
-) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
+) -> Result<(engine_native_memory::country_identity::Country, CountryIdentity), &'static str> {
     let country = if reference == 0 {
         let array = countries.arrays()[0];
         let address = array
@@ -125,7 +129,7 @@ pub fn identity(
         if value::<u32>(memory, pointer, ccountry::ID)? != 0 {
             return Err("event feed reserved country ID differs");
         }
-        ccountry::Country {
+        engine_native_memory::country_identity::Country {
             pointer,
             canonical_slot: 0,
             id: 0,
@@ -157,11 +161,11 @@ fn same(
 fn diplomacy(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let diplomacy = pointer(memory, country.pointer, ccountry::DIPLOMACY_STATUS)?;
-    verify_vtable(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-    if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != country.pointer {
+    verify_vtable(memory, base, diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    if pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)? != country.pointer {
         return Err("event feed diplomacy owner mismatch");
     }
     Ok(diplomacy)
@@ -171,12 +175,12 @@ fn status(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    owner: ccountry::Country,
-    target: ccountry::Country,
+    owner: engine_native_memory::country_identity::Country,
+    target: engine_native_memory::country_identity::Country,
     target_reference: u32,
 ) -> Result<usize, &'static str> {
     let diplomacy = diplomacy(memory, base, owner)?;
-    let matrix = Array::read(memory, at(diplomacy, cdiplomacy_status::RELATIONS)?, 8)
+    let matrix = Array::read(memory, at(diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS)?, 8)
         .ok_or("event feed relation matrix unreadable or invalid")?;
     let slot = matrix
         .element(target.canonical_slot, 8)
@@ -256,8 +260,8 @@ pub fn war_before(
     let pair = candidate(memory, base, frame.rdx)?;
     verify_vtable(memory, base, frame.rcx, crelation_status::VTABLE_RVA)?;
     let owner_diplomacy = pointer(memory, frame.rcx, crelation_status::DIPLOMACY_STATUS)?;
-    verify_vtable(memory, base, owner_diplomacy, cdiplomacy_status::VTABLE_RVA)?;
-    let owner = pointer(memory, owner_diplomacy, cdiplomacy_status::COUNTRY)?;
+    verify_vtable(memory, base, owner_diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)?;
+    let owner = pointer(memory, owner_diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?;
     let actor_reference = value(memory, owner, ccountry::ID)?;
     let target_reference = value(memory, frame.rcx, crelation_status::TARGET_COUNTRY)?;
     let state = state(memory, base)?;

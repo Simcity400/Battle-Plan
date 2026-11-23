@@ -1,5 +1,6 @@
 use super::*;
-use crate::{corders_group as group, memory::SliceMemory};
+use crate::corders_group as group;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::Cell;
 
 struct Fixture {
@@ -227,7 +228,8 @@ fn worker_portrait_paths_grow_source_rows_country_slot_memo_and_long_tag_bytes()
 
 #[test]
 fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty() {
-    use crate::{ccountry, cgame_state as gs, read_census::ReadCensus};
+    use crate::{ccountry, cgame_state as gs};
+    use engine_native_memory::read_census::ReadCensus;
     use std::cell::RefCell;
     const GS: usize = 0x4000;
     const COUNTRIES: usize = 0x4800;

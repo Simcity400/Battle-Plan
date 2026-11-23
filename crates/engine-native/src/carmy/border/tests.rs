@@ -1,5 +1,6 @@
 use super::*;
-use crate::{csub_unit_definition, memory::SliceMemory};
+use engine_native_parts::csub_unit_definition;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 struct Trace<'a> {
@@ -36,11 +37,11 @@ fn packet() -> StatusPacket {
         },
     ]);
     packet.maxima.extend([
-        crate::csub_unit_definition::DivisionMaxima {
+        engine_native_parts::csub_unit_definition::DivisionMaxima {
             pointer: 0x1000,
             ..Default::default()
         },
-        crate::csub_unit_definition::DivisionMaxima {
+        engine_native_parts::csub_unit_definition::DivisionMaxima {
             pointer: usize::MAX,
             ..Default::default()
         },

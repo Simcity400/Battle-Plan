@@ -822,7 +822,7 @@ mod census_tests {
         let private_active = ACTIVE.load(Ordering::SeqCst);
         let private_revision = REVISION.load(Ordering::Acquire);
         let watch_dirty = STORE.get().unwrap().lock().unwrap().watched[&sources[0].pointer()].dirty;
-        let traits = engine_native::read::<i32>(
+        let traits = engine_native_memory::read::<i32>(
             &space.memory(),
             sources[0].pointer() + native::DESIGN_TEAM_TRAITS,
         );

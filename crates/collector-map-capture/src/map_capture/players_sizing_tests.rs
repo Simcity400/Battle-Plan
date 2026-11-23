@@ -1,5 +1,7 @@
 use super::{MapCapacities, MapCaptured, PlayersCopyContext, PlayersJob, copy_players_refresh};
-use engine_native::{Memory, ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{ccountry, cgame_state};
+use engine_native_politics::chuman;
 use std::cell::RefCell;
 
 const GS: usize = 0x10000;
@@ -16,7 +18,7 @@ struct World {
 impl World {
     fn new(country_count: u32, player_count: u32, user_len: usize) -> Self {
         let slots = country_count as usize + 1;
-        let countries = ROSTER + player_count as usize * chuman::STRIDE;
+        let countries = ROSTER + player_count as usize * engine_native_parts::chuman_layout::STRIDE;
         let links = countries + slots * 8;
         let counts = links + slots * 4;
         let objects = (counts + slots + 7) & !7;
@@ -44,12 +46,12 @@ impl World {
             world.put(counts + slot as usize, &[slot as u8]);
         }
         for index in 0..player_count {
-            let address = ROSTER + index as usize * chuman::STRIDE;
+            let address = ROSTER + index as usize * engine_native_parts::chuman_layout::STRIDE;
             let text = heap + index as usize * (user_len + 20);
-            world.put(address, &(chuman::VTABLE_RVA.0 as u64).to_le_bytes());
+            world.put(address, &(engine_native_parts::chuman_layout::VTABLE_RVA.0 as u64).to_le_bytes());
             world.put(address + chuman::PLAYER_KEY, &(index as i32).to_le_bytes());
             world.put(
-                address + chuman::COUNTRY_TAG,
+                address + engine_native_parts::chuman_layout::COUNTRY_TAG,
                 &(index % country_count + 1).to_le_bytes(),
             );
             world.put(address + chuman::FLAGS, &[index as u8]);
@@ -128,7 +130,7 @@ fn player_raw_fault_prefix_matches_direct_and_keeps_independent_controllers() {
         (GS + cgame_state::PLAYER_RECORDS, 16),
         (first, 8),
         (first + chuman::PLAYER_KEY, 4),
-        (first + chuman::COUNTRY_TAG, 4),
+        (first + engine_native_parts::chuman_layout::COUNTRY_TAG, 4),
         (first + chuman::FLAGS, 1),
         (first + chuman::FIRST_STRING, 64),
         (world.heap + world.user_len, 1),
@@ -212,7 +214,7 @@ fn both_player_terminators_precede_payload_and_semantic_gates_stop_later_players
     assert!(user_terminator < name_terminator && name_terminator < user_payload);
     drop(reads);
     drop(memory);
-    for invalid in [0_u64, chuman::VTABLE_RVA.0 as u64] {
+    for invalid in [0_u64, engine_native_parts::chuman_layout::VTABLE_RVA.0 as u64] {
         world.put(ROSTER, &invalid.to_le_bytes());
         world.put(ROSTER + chuman::PLAYER_KEY, &(-1_i32).to_le_bytes());
         let memory = TraceMemory {
@@ -231,7 +233,7 @@ fn both_player_terminators_precede_payload_and_semantic_gates_stop_later_players
                 .reads
                 .borrow()
                 .iter()
-                .any(|&(address, _)| address == ROSTER + chuman::STRIDE)
+                .any(|&(address, _)| address == ROSTER + engine_native_parts::chuman_layout::STRIDE)
         );
     }
 }

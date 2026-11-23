@@ -450,7 +450,7 @@ fn decode_in(
                         .element(ordinal, native::NAMED_BONUS_STRIDE)
                         .ok_or("design source provider address overflow")?;
                     let handle =
-                        engine_native::read::<u32>(memory, pointer + native::NAMED_BONUS_HANDLE)
+                        engine_native_memory::read::<u32>(memory, pointer + native::NAMED_BONUS_HANDLE)
                             .ok_or("design source handle unreadable")?;
                     if sources.contains_key(&handle) {
                         continue;
@@ -581,7 +581,7 @@ mod tests {
         unrelated.provider = Some((4_998, 0x2000));
         let mut held = HashMap::from([(1, first), (2, alias), (3, unrelated)]);
         let bytes = direct(42);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: SOURCE,
             bytes: &bytes,
         };
@@ -606,7 +606,7 @@ mod tests {
         let mut output = Vec::new();
         for value in [42, 43] {
             let bytes = direct(value);
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: SOURCE,
                 bytes: &bytes,
             };
@@ -679,7 +679,7 @@ mod tests {
         alias.provider = Some((4_999, 0x1000));
         let mut held = HashMap::from([(1, one), (2, alias)]);
         let mut output = Vec::new();
-        let empty = engine_native::memory::SliceMemory {
+        let empty = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -711,7 +711,7 @@ mod tests {
         }
         bytes[0x1000 + native::NAMED_BONUS_HANDLE..0x1000 + native::NAMED_BONUS_HANDLE + 4]
             .copy_from_slice(&7_u32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

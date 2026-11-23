@@ -160,7 +160,7 @@ impl Index {
         Self::locate(&self.owners, pointer, |s| s.pointer)
             .is_ok_and(|at| self.is_certified(&self.owners[at]))
     }
-    pub(super) fn census(&mut self, country: engine_native::ccountry::Country) {
+    pub(super) fn census(&mut self, country: engine_native_memory::country_identity::Country) {
         let Ok(at) = Self::locate(&self.owners, country.pointer, |owner| owner.pointer) else {
             return;
         };
@@ -413,9 +413,9 @@ impl Index {
         let power = native_owner
             .politics
             .map(|status| {
-                engine_native::read::<i64>(
+                engine_native_memory::read::<i64>(
                     memory,
-                    status + engine_native::cpolitical_status::POLITICAL_POWER,
+                    status + engine_native_parts::cpolitical_status_layout::POLITICAL_POWER,
                 )
                 .ok_or("decision political balance baseline unreadable")
             })
@@ -478,7 +478,7 @@ impl Store {
         let mut value = fact(memory, identity, change, None);
         if change.operation == Operation::Rebuild {
             value.script.days = Some(
-                engine_native::read::<i32>(
+                engine_native_memory::read::<i32>(
                     memory,
                     world.state_pointer() + engine_native::cgame_state::CAMPAIGN_SEED,
                 )
@@ -486,7 +486,7 @@ impl Store {
             );
             value.script.lifecycle = Some(i32::from(
                 engine_sites::at(base, native::ADMISSION_OVERRIDE_RVA)
-                    .and_then(|at| engine_native::read::<u8>(memory, at))
+                    .and_then(|at| engine_native_memory::read::<u8>(memory, at))
                     .ok_or("decision rebuild admission override unreadable")?
                     != 0,
             ));
@@ -668,7 +668,7 @@ impl Store {
         generation: u64,
         state: usize,
         hour: i32,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
     ) {
         if self.failure.is_some() || self.observation(generation).is_err() {
             return;
@@ -695,7 +695,7 @@ impl Store {
         }
         let identity = pointer
             .checked_add(engine_native::ccountry::SURRENDER_TARGET)
-            .and_then(|at| engine_native::read::<u32>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u32>(memory, at))
             .map(|instance| CountryIdentity {
                 reference: country.id,
                 id: country.id,
@@ -791,7 +791,7 @@ impl Store {
         );
         change.ordinal = target;
         let mut value = fact(memory, world.country_object(country)?, change, None);
-        value.token = engine_native::msvc_string::Descriptor::read(
+        value.token = engine_native_memory::msvc_string::Descriptor::read(
             memory,
             definition
                 .checked_add(engine_decisions::cdecision::TOKEN)
@@ -807,7 +807,7 @@ impl Store {
         generation: u64,
         state: usize,
         hour: i32,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
     ) -> Result<(), &'static str> {
         self.observation(generation)?;
         self.decisions.reset(generation);
@@ -828,10 +828,10 @@ impl Store {
         let status = country
             .pointer
             .checked_add(engine_native::ccountry::DECISION_STATUS)
-            .and_then(|p| engine_native::read::<u64>(memory, p))
+            .and_then(|p| engine_native_memory::read::<u64>(memory, p))
             .ok_or("decision baseline status unreadable")? as usize;
         if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
-            .is_none_or(|vtable| engine_native::read::<u64>(memory, status) != Some(vtable as u64))
+            .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, status) != Some(vtable as u64))
         {
             return Err("decision baseline status identity differs");
         }
@@ -853,7 +853,7 @@ impl Store {
                 let at = array
                     .element(ordinal, 8)
                     .ok_or("decision baseline ordinal differs")?;
-                let pointer = engine_native::read::<u64>(memory, at)
+                let pointer = engine_native_memory::read::<u64>(memory, at)
                     .ok_or("decision baseline pointer unreadable")?
                     as usize;
                 let mut change = DecisionChange::new(Operation::Store, container);
@@ -874,7 +874,7 @@ impl Store {
                 return Err("decision baseline changed during acquisition");
             }
         }
-        let random = engine_native::cpdx_array::Array::read(
+        let random = engine_native_memory::cpdx_array::Array::read(
             memory,
             status + engine_decisions::cdecision_status::RANDOM_ITEMS,
             engine_decisions::cdecision_status::RANDOM_ITEM_STRIDE,
@@ -884,17 +884,17 @@ impl Store {
             let at = random
                 .element(n, engine_decisions::cdecision_status::RANDOM_ITEM_STRIDE)
                 .ok_or("decision random baseline ordinal differs")?;
-            let definition = engine_native::read::<u64>(
+            let definition = engine_native_memory::read::<u64>(
                 memory,
                 at + engine_decisions::cdecision_status::RANDOM_ITEM_DEFINITION,
             )
             .ok_or("decision random definition unreadable")? as usize;
-            let target = engine_native::read::<u32>(
+            let target = engine_native_memory::read::<u32>(
                 memory,
                 at + engine_decisions::cdecision_status::RANDOM_ITEM_TARGET,
             )
             .ok_or("decision random target unreadable")?;
-            let count = engine_native::read::<i32>(
+            let count = engine_native_memory::read::<i32>(
                 memory,
                 at + engine_decisions::cdecision_status::RANDOM_ITEM_SEED,
             )
@@ -910,7 +910,7 @@ impl Store {
                 Some(count),
             )?;
         }
-        if engine_native::cpdx_array::Array::read(
+        if engine_native_memory::cpdx_array::Array::read(
             memory,
             status + engine_decisions::cdecision_status::RANDOM_ITEMS,
             engine_decisions::cdecision_status::RANDOM_ITEM_STRIDE,
@@ -959,7 +959,7 @@ fn record_fact<M: Memory>(
         value.source = source;
         value.cause = crate::war_provenance::inside();
     }
-    value.token = engine_native::msvc_string::Descriptor::read(
+    value.token = engine_native_memory::msvc_string::Descriptor::read(
         memory,
         row.definition
             .checked_add(engine_decisions::cdecision::TOKEN)
@@ -1034,7 +1034,7 @@ impl Store {
         generation: u64,
         country: usize,
         change: DecisionChange,
-        token: engine_native::msvc_string::Descriptor,
+        token: engine_native_memory::msvc_string::Descriptor,
         root: Option<u32>,
     ) -> Result<(), &'static str> {
         let mut value = fact(memory, world.country_object(country)?, change, None);
@@ -1058,7 +1058,7 @@ impl Store {
         status: usize,
     ) -> Result<(), &'static str> {
         for (kind, offset) in native::CANDIDATE_HEADERS.into_iter().enumerate() {
-            let array = engine_native::cpdx_array::Array::read(
+            let array = engine_native_memory::cpdx_array::Array::read(
                 memory,
                 status + offset,
                 native::CANDIDATE_STRIDE,
@@ -1069,15 +1069,15 @@ impl Store {
                     .element(ordinal, native::CANDIDATE_STRIDE)
                     .ok_or("decision candidate baseline ordinal differs")?;
                 let definition =
-                    engine_native::read::<u64>(memory, at + native::CANDIDATE_DEFINITION)
+                    engine_native_memory::read::<u64>(memory, at + native::CANDIDATE_DEFINITION)
                         .ok_or("decision candidate definition unreadable")?
                         as usize;
-                let target = engine_native::read::<u32>(memory, at)
+                let target = engine_native_memory::read::<u32>(memory, at)
                     .ok_or("decision candidate target unreadable")?;
-                let root = engine_native::read::<u32>(memory, at + native::CANDIDATE_ROOT)
+                let root = engine_native_memory::read::<u32>(memory, at + native::CANDIDATE_ROOT)
                     .ok_or("decision candidate root unreadable")?;
                 world.country(root)?;
-                let token = engine_native::msvc_string::Descriptor::read(
+                let token = engine_native_memory::msvc_string::Descriptor::read(
                     memory,
                     definition + engine_decisions::cdecision::TOKEN,
                 )?;
@@ -1098,7 +1098,7 @@ impl Store {
                     Some(root),
                 )?;
             }
-            if engine_native::cpdx_array::Array::read(
+            if engine_native_memory::cpdx_array::Array::read(
                 memory,
                 status + offset,
                 native::CANDIDATE_STRIDE,
@@ -1108,7 +1108,7 @@ impl Store {
             }
         }
         let ignored =
-            engine_native::cpdx_array::Array::read(memory, country + native::IGNORED_TOKENS, 40)
+            engine_native_memory::cpdx_array::Array::read(memory, country + native::IGNORED_TOKENS, 40)
                 .ok_or("decision ignored-token baseline unreadable")?;
         for ordinal in 0..ignored.count {
             let at = ignored
@@ -1127,11 +1127,11 @@ impl Store {
                     ordinal: 0,
                     political_power: None,
                 },
-                engine_native::msvc_string::Descriptor::read(memory, at)?,
+                engine_native_memory::msvc_string::Descriptor::read(memory, at)?,
                 None,
             )?;
         }
-        if engine_native::cpdx_array::Array::read(memory, country + native::IGNORED_TOKENS, 40)
+        if engine_native_memory::cpdx_array::Array::read(memory, country + native::IGNORED_TOKENS, 40)
             != Some(ignored)
         {
             return Err("decision ignored-token baseline changed during acquisition");
@@ -1357,7 +1357,7 @@ mod tests {
         index.owner(200, changed).unwrap();
         index.refuse(200);
         assert_eq!(index.recovery(200), Recovery::Baseline);
-        index.census(engine_native::ccountry::Country {
+        index.census(engine_native_memory::country_identity::Country {
             pointer: 200,
             canonical_slot: 24,
             id: reused.id,

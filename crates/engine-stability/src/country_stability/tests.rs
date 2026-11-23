@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, msvc_string};
+use engine_native::cgame_state;
+use engine_native_memory::msvc_string;
 use std::collections::BTreeMap;
 
 mod reference;
@@ -307,19 +308,19 @@ fn world() -> World {
         w.vtable(country, ccountry::VTABLE_RVA.0);
         w.u32(country + ccountry::ID, slot as u32);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
-        w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
-        w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.vtable(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
+        w.u64(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
+        w.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 0, 0);
         w.u32(diplomacy + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 0);
         w.put(country + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[0]);
         w.i64(
-            country + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION,
+            country + engine_native_memory::country_identity::MANPOWER + engine_native_parts::ccountry_manpower::MOBILIZATION,
             250_000,
         );
-        w.u32(diplomacy + crate::ccountry_manpower::HOST, 0);
+        w.u32(diplomacy + engine_native_parts::ccountry_manpower::HOST, 0);
     }
     w.u32(D2 + DIPLOMACY_HOSTING, 0);
-    w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    w.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 1);
     w.u64(RELATIONS, R1 as u64);
     w.vtable(R1, cwar_relation::VTABLE_RVA.0);
     w.u32(R1 + crelation::TYPE_ID, cwar_relation::TYPE);
@@ -355,10 +356,10 @@ fn world() -> World {
         w.u32(data + index * 16 + 4, 0);
         w.i64(data + index * 16 + 8, value);
     }
-    w.array(C1 + ccountry::MODIFIER_ACCUMULATOR, data, 3);
+    w.array(C1 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, data, 3);
     w.u64(C1 + ccountry::POLITICAL_STATUS, STATUS as u64);
-    w.vtable(STATUS, cpolitical_status::VTABLE_RVA.0);
-    w.u64(STATUS + cpolitical_status::RULING_PARTY, PARTY as u64);
+    w.vtable(STATUS, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0);
+    w.u64(STATUS + engine_native_parts::cpolitical_status_layout::RULING_PARTY, PARTY as u64);
     w.array(STATUS + cpolitical_status::IDEAS, IDEAS, 2);
     for (index, (idea, token, entries)) in [
         (IDEA_A, b"idea_a".as_slice(), [(STABILITY_KEY, 10_000_i64)]),
@@ -372,13 +373,13 @@ fn world() -> World {
         w.string(idea + cidea::TOKEN, token);
         w.modifier(idea + IDEA_MODIFIER, &entries, b"built label");
     }
-    w.vtable(PARTY, cpolitical_party::VTABLE_RVA.0);
+    w.vtable(PARTY, engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0);
     w.i64(PARTY + cpolitical_party::POPULARITY, 4_500_000);
-    w.u64(PARTY + cpolitical_party::IDEOLOGY_GROUP, GROUP as u64);
-    w.array(PARTY + cpolitical_party::COUNTRY_LEADERS, LEADER - 0x100, 1);
+    w.u64(PARTY + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, GROUP as u64);
+    w.array(PARTY + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS, LEADER - 0x100, 1);
     w.u64(LEADER - 0x100, LEADER as u64);
-    w.vtable(LEADER, ccountry_leader::VTABLE_RVA.0);
-    w.u64(LEADER + ccountry_leader::CHARACTER, CHARACTER_77 as u64);
+    w.vtable(LEADER, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0);
+    w.u64(LEADER + engine_native_parts::ccountry_leader_layout::CHARACTER, CHARACTER_77 as u64);
     w.modifier(
         LEADER + LEADER_MODIFIER,
         &[(WAR_SUPPORT_KEY, 2_000)],
@@ -393,8 +394,8 @@ fn world() -> World {
         w.u32(character + ccharacter::ID, id);
     }
     w.u64(C1 + ccountry::CHARACTERS, CHARACTERS as u64);
-    w.vtable(CHARACTERS, ccountry_characters::VTABLE_RVA.0);
-    w.u64(CHARACTERS + ccountry_characters::OWNER, C1 as u64);
+    w.vtable(CHARACTERS, engine_native::ccountry::rosters::VTABLE_RVA.0);
+    w.u64(CHARACTERS + engine_native::ccountry::rosters::OWNER, C1 as u64);
     w.array(
         CHARACTERS + ccountry_characters::APPOINTED_ADVISORS,
         ADVISORS,
@@ -792,7 +793,7 @@ fn witnessed_conditional_statics_attribute_only_when_their_native_predicate_hold
         w.modifier(address, entries, display);
         w.string(address + STATIC_NAME, name);
     }
-    w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+    w.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 0, 0);
     w.children(&[
         (&[(WAR_SUPPORT_KEY, 4_000)], b"Attache"),
         (&[(STABILITY_KEY, 2_000)], b"At peace"),
@@ -815,7 +816,7 @@ fn witnessed_conditional_statics_attribute_only_when_their_native_predicate_hold
 
     w.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
     w.put(C1 + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
-    w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    w.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 1);
     w.u64(RELATIONS, ATTACHE_REL as u64);
     w.vtable(ATTACHE_REL, cattache_relation::VTABLE_RVA.0);
     w.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
@@ -904,7 +905,7 @@ fn failed_witness_reads_preserve_stability_and_leave_only_that_static_unpaired()
     assert_eq!(text(&walked, walked.lines[3].text), b"Pride sunk");
 
     let mut enemy_fault = fixture();
-    enemy_fault.array(D1 + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+    enemy_fault.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 0, 0);
     enemy_fault.put(C1 + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, &[1]);
     enemy_fault
         .bytes
@@ -925,7 +926,7 @@ fn failed_witness_reads_preserve_stability_and_leave_only_that_static_unpaired()
     for bad_link in [false, true] {
         let mut attache_fault = fixture();
         attache_fault.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
-        attache_fault.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+        attache_fault.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 1);
         attache_fault.u64(RELATIONS, ATTACHE_REL as u64);
         attache_fault.vtable(
             ATTACHE_REL,
@@ -953,7 +954,7 @@ fn failed_witness_reads_preserve_stability_and_leave_only_that_static_unpaired()
 
     let mut endpoint_fault = fixture();
     endpoint_fault.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
-    endpoint_fault.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    endpoint_fault.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 1);
     endpoint_fault.u64(RELATIONS, ATTACHE_REL as u64);
     endpoint_fault.vtable(ATTACHE_REL, cattache_relation::VTABLE_RVA.0);
     endpoint_fault.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
@@ -971,7 +972,7 @@ fn failed_witness_reads_preserve_stability_and_leave_only_that_static_unpaired()
 
     let mut withheld_site = fixture();
     withheld_site.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
-    withheld_site.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
+    withheld_site.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 1);
     withheld_site.u64(RELATIONS, ATTACHE_REL as u64);
     withheld_site.vtable(ATTACHE_REL, cattache_relation::VTABLE_RVA.0);
     withheld_site.u32(ATTACHE_REL + crelation::TYPE_ID, cattache_relation::TYPE);
@@ -1017,7 +1018,7 @@ fn verified_attache_sender_prevails_over_malformed_attache_relations_in_any_orde
                 w.modifier(ATTACHE, &[(WAR_SUPPORT_KEY, 4_000)], b"Attache");
                 w.string(ATTACHE + STATIC_NAME, b"attache_sent");
                 w.u32(D1 + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
-                w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 2);
+                w.array(D1 + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, RELATIONS, 2);
                 w.u64(RELATIONS, order[0] as u64);
                 w.u64(RELATIONS + 8, order[1] as u64);
 
@@ -1169,7 +1170,7 @@ fn every_short_read_fails_the_country() {
 fn child_heads_are_gathered_one_page_at_a_time() {
     let w = world();
     let walked = walk(&w, 16);
-    let census = crate::read_census::ReadCensus::new(&w);
+    let census = engine_native_memory::read_census::ReadCensus::new(&w);
     let countries = ccountry::Reader::new(&census, BASE, GS).unwrap();
     let country = countries.at(1).unwrap().unwrap();
     let context = Context::read(&w, BASE, GS, keys()).unwrap();
@@ -1185,7 +1186,7 @@ fn child_heads_are_gathered_one_page_at_a_time() {
     let mut w = world();
     w.bytes
         .remove(&(CHILD + 2 * 0x100 + cmodifier::ACCUMULATOR));
-    let census = crate::read_census::ReadCensus::new(&w);
+    let census = engine_native_memory::read_census::ReadCensus::new(&w);
     let mut scratch = Scratch::new();
     let mut local = Memo::default();
     let mut shared = Memo::default();
@@ -1778,7 +1779,7 @@ fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
         assert_same_walk(&old, &new);
         assert_eq!(
             new.input.manpower,
-            crate::ccountry_manpower::Row {
+            engine_native_parts::ccountry_manpower::Row {
                 ratio: Some(250_000),
                 host: Some(0),
                 ..Default::default()
@@ -1801,15 +1802,15 @@ fn manpower_refusals_preserve_stability_and_the_other_scalar() {
     let w = world();
     for (address, expected) in [
         (
-            C1 + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION,
-            crate::ccountry_manpower::Row {
+            C1 + engine_native_memory::country_identity::MANPOWER + engine_native_parts::ccountry_manpower::MOBILIZATION,
+            engine_native_parts::ccountry_manpower::Row {
                 host: Some(0),
                 ..Default::default()
             },
         ),
         (
-            D1 + crate::ccountry_manpower::HOST,
-            crate::ccountry_manpower::Row {
+            D1 + engine_native_parts::ccountry_manpower::HOST,
+            engine_native_parts::ccountry_manpower::Row {
                 ratio: Some(250_000),
                 ..Default::default()
             },
@@ -2004,14 +2005,14 @@ fn scaled_countries(count: u32) -> World {
         w.u32(COUNTRY_LINKS + id as usize * 4, id);
         w.u32(country + ccountry::ID, id);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-        w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
-        w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
-        w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.vtable(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
+        w.u64(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country as u64);
+        w.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 0, 0);
         w.u32(diplomacy + cdiplomacy_status::ENEMY_COUNTRY_COUNT, 1);
-        w.u32(diplomacy + crate::ccountry_manpower::HOST, 0);
+        w.u32(diplomacy + engine_native_parts::ccountry_manpower::HOST, 0);
         w.u64(country + ccountry::CHARACTERS, characters as u64);
-        w.vtable(characters, ccountry_characters::VTABLE_RVA.0);
-        w.u64(characters + ccountry_characters::OWNER, country as u64);
+        w.vtable(characters, engine_native::ccountry::rosters::VTABLE_RVA.0);
+        w.u64(characters + engine_native::ccountry::rosters::OWNER, country as u64);
         w.array(
             characters + ccountry_characters::APPOINTED_ADVISORS,
             ADVISORS,
@@ -2424,7 +2425,7 @@ fn manpower_without_certificate_preserves_stability_and_reads_no_new_words() {
         .at(1)
         .unwrap()
         .unwrap();
-    let ratio = country.pointer + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION;
+    let ratio = country.pointer + engine_native_memory::country_identity::MANPOWER + engine_native_parts::ccountry_manpower::MOBILIZATION;
     world.i64(ratio, 250_000);
     let mut context = Context::read(&world, BASE, GS, keys()).unwrap();
     context.manpower_enabled = false;

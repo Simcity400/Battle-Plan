@@ -1,9 +1,10 @@
 use super::*;
 use collector_division_parts::army_stat_changes::Watches;
-use engine_native::{
-    acclimatization_category as category, acclimatization_data as acclimatization,
-    corders_group as group,
+use engine_native_parts::{
+    acclimatization_category as category,
+    acclimatization_data as acclimatization,
 };
+use engine_native::corders_group as group;
 use replay_data::rows::Recorded;
 
 fn put(world: &mut scale_fixture::World, address: usize, value: &[u8]) {

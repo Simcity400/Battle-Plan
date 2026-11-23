@@ -1,4 +1,6 @@
-use engine_native::{Memory, ccountry, modifier_breakdown};
+use engine_native_memory::Memory;
+use engine_native::ccountry;
+use engine_native_politics::modifier_breakdown;
 use engine_raid_inputs::raid_intel_inputs::Row;
 use std::sync::{Arc, Mutex, TryLockError};
 
@@ -66,7 +68,7 @@ pub fn snapshot(
         }
         let tree = country
             .pointer
-            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+            .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
             .and_then(|root| {
                 modifier_breakdown::printed_nodes(
                     memory,

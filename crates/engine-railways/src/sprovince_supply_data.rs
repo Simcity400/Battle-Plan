@@ -1,10 +1,11 @@
 
-use crate::{
-    Memory, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    csupply_system, read_slice,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native::{cgame_state, ccountry_supply_system::world as csupply_system};
 
 pub const STRIDE: usize = 0x20;
 pub const CONTROLLER_INDEX: usize = 0x10;
@@ -108,7 +109,7 @@ fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
         bytes[at..at + value.len()].copy_from_slice(value);

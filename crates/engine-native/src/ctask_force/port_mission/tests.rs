@@ -1,5 +1,5 @@
 use super::*;
-use crate::creference_registry::test_support::Fixture;
+use engine_native_parts::creference_registry::test_support::Fixture;
 use std::cell::{Cell, RefCell};
 
 const TASK: usize = 0x5000;
@@ -50,8 +50,8 @@ fn world(class: u32, owner: u32, searching: &[u64]) -> Observed {
             super::super::SECONDARY_VTABLE_RVA.0,
         ),
         13 => (
-            crate::crailway_gun::VTABLE_RVA.0,
-            crate::crailway_gun::SECONDARY_VTABLE_RVA.0,
+            engine_native_parts::crailway_gun::VTABLE_RVA.0,
+            engine_native_parts::crailway_gun::SECONDARY_VTABLE_RVA.0,
         ),
         _ => (0, 0),
     };
@@ -71,7 +71,7 @@ fn world(class: u32, owner: u32, searching: &[u64]) -> Observed {
     memory.put(TASK + ENGAGEMENT_TARGET, &0_u64.to_le_bytes());
     memory.put(
         TASK + super::super::NAVAL_MISSION,
-        &(crate::cnaval_mission::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cnaval_mission::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     memory.put(
         TASK + super::super::NAVAL_MISSION + 8,
@@ -79,7 +79,7 @@ fn world(class: u32, owner: u32, searching: &[u64]) -> Observed {
     );
     memory.put(TASK + super::super::DETACHED_ACTIVITY, &0_i32.to_le_bytes());
     memory.put(
-        TASK + super::super::NAVAL_MISSION + crate::cnaval_mission::ENGAGEMENT_RULE,
+        TASK + super::super::NAVAL_MISSION + engine_native_parts::cnaval_mission::ENGAGEMENT_RULE,
         &2_i32.to_le_bytes(),
     );
     array(&mut memory, TASK + AVOIDED_SHIP_TYPES, STRINGS, 0);
@@ -213,7 +213,7 @@ fn bucket_fault_is_sticky_across_duplicate_references_and_target_liveness() {
     memory
         .memory
         .put(TASK + ENGAGEMENT_TARGET, &REFERENCE.to_le_bytes());
-    let bucket = 0x2000 + Fixture::index(REFERENCE) * crate::reference_bucket::STRIDE;
+    let bucket = 0x2000 + Fixture::index(REFERENCE) * engine_native_parts::reference_bucket::STRIDE;
     memory.fail_once.set(Some(bucket));
     let (mut searchers, mut avoided, mut bytes, mut answers) = (
         vec![Searcher::default(); 2],
@@ -515,7 +515,7 @@ fn growing_reference_rehash_preserves_the_original_failed_observation() {
     memory
         .memory
         .put(TASK + ENGAGEMENT_TARGET, &REFERENCE.to_le_bytes());
-    let bucket = 0x2000 + Fixture::index(REFERENCE) * crate::reference_bucket::STRIDE;
+    let bucket = 0x2000 + Fixture::index(REFERENCE) * engine_native_parts::reference_bucket::STRIDE;
     memory.fail_once.set(Some(bucket));
     let (mut searchers, mut avoided, mut bytes, mut answers) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());

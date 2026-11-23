@@ -1,9 +1,8 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cair_base, cair_wing, cair_wing_pool, ccountry_air_container, cpdx_array::Array,
-    creference_registry, read, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_air::{cair_base, ccountry_air_container};
+use engine_native_parts::{cair_wing_pool, creference_registry};
 use std::{
     collections::HashSet,
     hash::{BuildHasherDefault, Hasher},
@@ -110,8 +109,8 @@ pub fn walk(
         memory,
         module_base,
         base_handles,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(wings),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(wings),
     )
 }
 
@@ -119,14 +118,14 @@ fn walk_buffer(
     memory: &impl Memory,
     module_base: usize,
     base_handles: &UniqueHandles,
-    mut rows: crate::walk::Buffer<'_, Row>,
-    mut wings: crate::walk::Buffer<'_, u64>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
+    mut wings: engine_native_memory::walk::Buffer<'_, u64>,
 ) -> Walk {
     let mut state = State::default();
     let result = (|| {
         rows.ensure(base_handles.len())?;
         for &handle in base_handles.as_slice() {
-            if handle == 0 || handle as u32 != cair_base::TYPE {
+            if handle == 0 || handle as u32 != engine_native_parts::cair_base_layout::TYPE {
                 return Err("naval combat air base handle invalid");
             }
             let pointer = creference_registry::resolve(memory, module_base, handle)?
@@ -188,12 +187,12 @@ fn read_base(
     module_base: usize,
     handle: u64,
     pointer: usize,
-    wings: &mut crate::walk::Buffer<'_, u64>,
+    wings: &mut engine_native_memory::walk::Buffer<'_, u64>,
     store: bool,
     state: &mut State,
 ) -> Result<(), &'static str> {
-    vtable(memory, module_base, pointer, cair_base::VTABLE_RVA)?;
-    if field(memory, pointer, cair_base::HANDLE)? != handle {
+    vtable(memory, module_base, pointer, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
+    if field(memory, pointer, engine_native_parts::cair_base_layout::HANDLE)? != handle {
         return Err("naval combat air base registry identity mismatch");
     }
     let containers = array(memory, pointer, cair_base::REGISTERED_CONTAINERS)?;
@@ -229,16 +228,16 @@ fn read_base(
                 if wing == 0 {
                     return Err("dense air base wing pointer null");
                 }
-                vtable(memory, module_base, wing, cair_wing::VTABLE_RVA)?;
+                vtable(memory, module_base, wing, engine_native_parts::cair_wing_layout::VTABLE_RVA)?;
                 vtable(
                     memory,
                     module_base,
-                    wing.checked_add(cair_wing::SECONDARY)
+                    wing.checked_add(engine_native_parts::cair_wing_layout::SECONDARY)
                         .ok_or("dense air base wing pointer overflow")?,
-                    cair_wing::SECONDARY_VTABLE_RVA,
+                    engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA,
                 )?;
-                let id = field(memory, wing, cair_wing::REFERENCE_TYPE)?;
-                if id == 0 || id as u32 != cair_wing::TYPE {
+                let id = field(memory, wing, engine_native_parts::cair_wing_layout::REFERENCE_TYPE)?;
+                if id == 0 || id as u32 != engine_native_parts::cair_wing_layout::TYPE {
                     return Err("dense air base wing handle invalid");
                 }
                 state.required_wings = state
@@ -294,7 +293,7 @@ fn vtable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reference_bucket as bucket;
+    use engine_native_parts::reference_bucket as bucket;
     use std::collections::BTreeMap;
 
     const BASE: usize = 0x4000;
@@ -306,10 +305,10 @@ mod tests {
     const DENSE: usize = 0xa000;
     const POOLS: usize = 0xb000;
     const WINGS: usize = 0xc000;
-    const BASE_ID: u64 = (1 << 32) | cair_base::TYPE as u64;
-    const EMPTY_ID: u64 = (2 << 32) | cair_base::TYPE as u64;
-    const WING_A_ID: u64 = (3 << 32) | cair_wing::TYPE as u64;
-    const WING_B_ID: u64 = (4 << 32) | cair_wing::TYPE as u64;
+    const BASE_ID: u64 = (1 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
+    const EMPTY_ID: u64 = (2 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
+    const WING_A_ID: u64 = (3 << 32) | engine_native_parts::cair_wing_layout::TYPE as u64;
+    const WING_B_ID: u64 = (4 << 32) | engine_native_parts::cair_wing_layout::TYPE as u64;
 
     #[derive(Default)]
     struct Fixture(BTreeMap<usize, u8>);
@@ -344,7 +343,7 @@ mod tests {
         fn new() -> Self {
             let mut f = Self::default();
             f.word(
-                creference_registry::LOW_ROOTS_RVA.0 + cair_base::TYPE as usize * 8,
+                creference_registry::LOW_ROOTS_RVA.0 + engine_native_parts::cair_base_layout::TYPE as usize * 8,
                 0x1000,
             );
             f.word(0x1000 + creference_registry::ENTRIES, 0x2000);
@@ -356,13 +355,13 @@ mod tests {
             f.registry_entry(BASE_ID, BASE);
             f.registry_entry(EMPTY_ID, EMPTY_BASE);
 
-            f.word(BASE, cair_base::VTABLE_RVA.0 as u64);
-            f.word(BASE + cair_base::HANDLE, BASE_ID);
+            f.word(BASE, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+            f.word(BASE + engine_native_parts::cair_base_layout::HANDLE, BASE_ID);
             f.vector(BASE + cair_base::REGISTERED_CONTAINERS, DENSE, 2);
             f.word(DENSE, CONTAINER as u64);
             f.word(DENSE + 8, CONTAINER as u64);
-            f.word(EMPTY_BASE, cair_base::VTABLE_RVA.0 as u64);
-            f.word(EMPTY_BASE + cair_base::HANDLE, EMPTY_ID);
+            f.word(EMPTY_BASE, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+            f.word(EMPTY_BASE + engine_native_parts::cair_base_layout::HANDLE, EMPTY_ID);
             f.vector(EMPTY_BASE + cair_base::REGISTERED_CONTAINERS, 0, 0);
 
             f.word(CONTAINER, ccountry_air_container::VTABLE_RVA.0 as u64);
@@ -373,12 +372,12 @@ mod tests {
             f.word(WINGS, WING_A as u64);
             f.word(WINGS + 8, WING_B as u64);
             for (pointer, handle) in [(WING_A, WING_A_ID), (WING_B, WING_B_ID)] {
-                f.word(pointer, cair_wing::VTABLE_RVA.0 as u64);
+                f.word(pointer, engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64);
                 f.word(
-                    pointer + cair_wing::SECONDARY,
-                    cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
+                    pointer + engine_native_parts::cair_wing_layout::SECONDARY,
+                    engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0 as u64,
                 );
-                f.word(pointer + cair_wing::REFERENCE_TYPE, handle);
+                f.word(pointer + engine_native_parts::cair_wing_layout::REFERENCE_TYPE, handle);
             }
             f
         }
@@ -413,13 +412,13 @@ mod tests {
                 for country in 0..countries {
                     let index = (country * 7 + round) % countries;
                     unique
-                        .try_insert((index + 1) << 32 | u64::from(cair_base::TYPE))
+                        .try_insert((index + 1) << 32 | u64::from(engine_native_parts::cair_base_layout::TYPE))
                         .unwrap();
                 }
             }
             assert_eq!(unique.len(), countries as usize);
             let expected: Vec<u64> = (0..countries)
-                .map(|country| ((country * 7) % countries + 1) << 32 | u64::from(cair_base::TYPE))
+                .map(|country| ((country * 7) % countries + 1) << 32 | u64::from(engine_native_parts::cair_base_layout::TYPE))
                 .collect();
             assert_eq!(unique.as_slice(), expected);
             assert_eq!(unique.allocated_bytes(), reserved);

@@ -1,6 +1,6 @@
 use crate::hook::{Hook, Registers, Tap, TapSafety};
 use engine_mutations::world_lifetime_sites as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},

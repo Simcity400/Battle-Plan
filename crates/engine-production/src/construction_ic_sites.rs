@@ -1,8 +1,12 @@
 
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use crate::{
-    Memory, cbuilding_production_line, cbuilding_status, cgame_state, cgeneral_production_line,
-    cpdx_array::Array, cproduction_line, crailway_production_line, read,
+    cbuilding_production_line,
+    cgeneral_production_line,
+    crailway_production_line,
 };
+use engine_native::{cprovince::buildings as cbuilding_status, cgame_state};
+use engine_native_parts::cproduction_line;
 use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -97,7 +101,7 @@ pub fn events_per_pass(
     base: usize,
     game_state: usize,
 ) -> Result<usize, &'static str> {
-    let countries = crate::ccountry::Reader::new(memory, base, game_state)?;
+    let countries = engine_native::ccountry::Reader::new(memory, base, game_state)?;
     let mut events = 0_usize;
     let expected = |rva| {
         engine_sites::at(base, rva)
@@ -111,10 +115,10 @@ pub fn events_per_pass(
         let Some(country) = countries.at(slot)? else {
             continue;
         };
-        let status = crate::cproduction_status::manager(memory, base, country)?;
+        let status = engine_native::cproduction_status::manager(memory, base, country)?;
         let lines = status
-            .checked_add(crate::cproduction_status::CONSTRUCTION_LINES)
-            .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
+            .checked_add(engine_native::cproduction_status::CONSTRUCTION_LINES)
+            .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
             .ok_or("construction output sizing queue unreadable or invalid")?;
         for ordinal in 0..lines.count {
             let pointer = lines
@@ -239,13 +243,13 @@ pub fn completion(
     if handle == 0 {
         return Err("construction completion line handle is null");
     }
-    let state = engine_sites::at(base, crate::cgame_state::SINGLETON_RVA)
+    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .filter(|p| *p != 0)
         .ok_or("construction completion game state unreadable")?;
     let hour = state
-        .checked_add(crate::cgame_state::CURRENT_HOUR)
+        .checked_add(engine_native::cgame_state::CURRENT_HOUR)
         .and_then(|p| read::<i32>(memory, p))
         .ok_or("construction completion hour unreadable")?;
     Ok(Completion {
@@ -288,28 +292,28 @@ pub fn linked_completion(
     if int(cproduction_line::AMOUNT) != 0 {
         return Err("linked construction completion amount is not zero");
     }
-    let mut owner = [0; crate::cproduction_status::CONSTRUCTION_LINES_COUNT + 4];
+    let mut owner = [0; engine_native::cproduction_status::CONSTRUCTION_LINES_COUNT + 4];
     if !memory.copy(status, &mut owner) {
         return Err("linked construction completion owner unreadable");
     }
     let owner_word = |offset| u64::from_le_bytes(owner[offset..offset + 8].try_into().unwrap());
-    if engine_sites::at(base, crate::cproduction_status::VTABLE_RVA) != Some(owner_word(0) as usize)
+    if engine_sites::at(base, engine_native::cproduction_status::VTABLE_RVA) != Some(owner_word(0) as usize)
     {
         return Err("linked construction completion owner vtable unsupported");
     }
     let owner_int = |offset| i32::from_le_bytes(owner[offset..offset + 4].try_into().unwrap());
-    let count = owner_int(crate::cproduction_status::CONSTRUCTION_LINES_COUNT);
-    let capacity = owner_int(crate::cproduction_status::CONSTRUCTION_LINES_CAPACITY);
+    let count = owner_int(engine_native::cproduction_status::CONSTRUCTION_LINES_COUNT);
+    let capacity = owner_int(engine_native::cproduction_status::CONSTRUCTION_LINES_CAPACITY);
     let index = int(cproduction_line::PRIORITY);
     if index < 0 || index >= count || count > capacity {
         return Err("linked construction completion roster index invalid");
     }
-    let slot = usize::try_from(owner_word(crate::cproduction_status::CONSTRUCTION_LINES))
+    let slot = usize::try_from(owner_word(engine_native::cproduction_status::CONSTRUCTION_LINES))
         .ok()
         .filter(|p| *p != 0)
         .and_then(|p| {
             (index as usize)
-                .checked_mul(crate::cproduction_status::CONSTRUCTION_POINTER_STRIDE)
+                .checked_mul(engine_native::cproduction_status::CONSTRUCTION_POINTER_STRIDE)
                 .and_then(|offset| p.checked_add(offset))
         })
         .and_then(|p| read::<u64>(memory, p))
@@ -489,7 +493,8 @@ pub fn operands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cbuilding, memory::SliceMemory};
+    use engine_native_parts::cbuilding;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x140000000;
     const LINE: usize = 0x1000;
@@ -526,19 +531,19 @@ mod tests {
         );
         add(
             status,
-            &((BASE + crate::cproduction_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native::cproduction_status::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         add(
-            status + crate::cproduction_status::COUNTRY,
+            status + engine_native::cproduction_status::COUNTRY,
             &(TARGET_COUNTRY as u64).to_le_bytes(),
         );
         let mut country = [0; 12];
         country[..8]
-            .copy_from_slice(&((BASE + crate::ccountry::VTABLE_RVA.0) as u64).to_le_bytes());
+            .copy_from_slice(&((BASE + engine_native::ccountry::VTABLE_RVA.0) as u64).to_le_bytes());
         country[8..].copy_from_slice(&7_u32.to_le_bytes());
         add(TARGET_COUNTRY, &country);
         add(
-            TARGET_COUNTRY + crate::ccountry::PRODUCTION_STATUS,
+            TARGET_COUNTRY + engine_native::ccountry::PRODUCTION_STATUS,
             &(status as u64).to_le_bytes(),
         );
         add(
@@ -546,7 +551,7 @@ mod tests {
             &((BASE + cbuilding::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         add(TARGET + cbuilding::TYPE_ID, &9_u32.to_le_bytes());
-        let building_status = TARGET_STATE + crate::cstate::BUILDING_STATUS;
+        let building_status = TARGET_STATE + engine_native::cstate::BUILDING_STATUS;
         add(
             TARGET + cbuilding::BUILDING_STATUS,
             &(building_status as u64).to_le_bytes(),
@@ -564,9 +569,9 @@ mod tests {
         add(building_status + cbuilding_status::FLAGS, &fields);
         add(
             TARGET_STATE,
-            &((BASE + crate::cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native::cstate::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
-        add(TARGET_STATE + crate::cstate::ID, &1_u32.to_le_bytes());
+        add(TARGET_STATE + engine_native::cstate::ID, &1_u32.to_le_bytes());
         let header = [
             0x50000_u64.to_le_bytes().to_vec(),
             2_u32.to_le_bytes().repeat(2),
@@ -638,7 +643,7 @@ mod tests {
         const STATUS: usize = 0x3000;
         struct LinkedMemory {
             line: [u8; cbuilding_production_line::BUILDING + 8],
-            owner: [u8; crate::cproduction_status::CONSTRUCTION_LINES_COUNT + 4],
+            owner: [u8; engine_native::cproduction_status::CONSTRUCTION_LINES_COUNT + 4],
             slot: usize,
             date: bool,
         }
@@ -655,10 +660,10 @@ mod tests {
                 } else if address == 0x4000 {
                     out.copy_from_slice(&self.slot.to_le_bytes());
                     return true;
-                } else if address == BASE + crate::cgame_state::SINGLETON_RVA.0 {
+                } else if address == BASE + engine_native::cgame_state::SINGLETON_RVA.0 {
                     out.copy_from_slice(&0x2000_usize.to_le_bytes());
                     return true;
-                } else if address == 0x2000 + crate::cgame_state::CURRENT_HOUR {
+                } else if address == 0x2000 + engine_native::cgame_state::CURRENT_HOUR {
                     if !self.date {
                         return false;
                     }
@@ -676,7 +681,7 @@ mod tests {
         }
         let mut memory = LinkedMemory {
             line: [0; cbuilding_production_line::BUILDING + 8],
-            owner: [0; crate::cproduction_status::CONSTRUCTION_LINES_COUNT + 4],
+            owner: [0; engine_native::cproduction_status::CONSTRUCTION_LINES_COUNT + 4],
             slot: LINE,
             date: true,
         };
@@ -689,14 +694,14 @@ mod tests {
             memory.line[offset..offset + 8].copy_from_slice(&word.to_le_bytes());
         }
         for (offset, word) in [
-            (0, (BASE + crate::cproduction_status::VTABLE_RVA.0) as u64),
-            (crate::cproduction_status::CONSTRUCTION_LINES, 0x4000),
+            (0, (BASE + engine_native::cproduction_status::VTABLE_RVA.0) as u64),
+            (engine_native::cproduction_status::CONSTRUCTION_LINES, 0x4000),
         ] {
             memory.owner[offset..offset + 8].copy_from_slice(&word.to_le_bytes());
         }
         for offset in [
-            crate::cproduction_status::CONSTRUCTION_LINES_COUNT,
-            crate::cproduction_status::CONSTRUCTION_LINES_CAPACITY,
+            engine_native::cproduction_status::CONSTRUCTION_LINES_COUNT,
+            engine_native::cproduction_status::CONSTRUCTION_LINES_CAPACITY,
         ] {
             memory.owner[offset..offset + 4].copy_from_slice(&1_i32.to_le_bytes());
         }
@@ -775,11 +780,11 @@ mod tests {
                     }
                     .copy(address, out);
                 }
-                if address == BASE + crate::cgame_state::SINGLETON_RVA.0 {
+                if address == BASE + engine_native::cgame_state::SINGLETON_RVA.0 {
                     out.copy_from_slice(&0x2000_usize.to_le_bytes());
                     return true;
                 }
-                if address == 0x2000 + crate::cgame_state::CURRENT_HOUR {
+                if address == 0x2000 + engine_native::cgame_state::CURRENT_HOUR {
                     out.copy_from_slice(&120_i32.to_le_bytes());
                     return true;
                 }
@@ -923,8 +928,8 @@ mod tests {
         );
         for missing in [
             TARGET + cbuilding::TYPE_ID,
-            TARGET_COUNTRY + crate::ccountry::PRODUCTION_STATUS,
-            TARGET_STATE + crate::cstate::ID,
+            TARGET_COUNTRY + engine_native::ccountry::PRODUCTION_STATUS,
+            TARGET_STATE + engine_native::cstate::ID,
         ] {
             let mut memory = target_regions(STATUS);
             memory.0.retain(|(at, _)| *at != missing);
@@ -1011,27 +1016,27 @@ mod tests {
             cproduction_line::PRODUCTION_STATUS,
             &(STATUS as u64).to_le_bytes(),
         );
-        let mut status = vec![0; crate::cproduction_status::COUNTRY + 8];
+        let mut status = vec![0; engine_native::cproduction_status::COUNTRY + 8];
         put(
             &mut status,
             0,
-            &((BASE + crate::cproduction_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native::cproduction_status::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut status,
-            crate::cproduction_status::COUNTRY,
+            engine_native::cproduction_status::COUNTRY,
             &(COUNTRY as u64).to_le_bytes(),
         );
-        let mut country = vec![0; crate::ccountry::PRODUCTION_STATUS + 8];
+        let mut country = vec![0; engine_native::ccountry::PRODUCTION_STATUS + 8];
         put(
             &mut country,
             0,
-            &((BASE + crate::ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native::ccountry::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
-        put(&mut country, crate::ccountry::ID, &5_u32.to_le_bytes());
+        put(&mut country, engine_native::ccountry::ID, &5_u32.to_le_bytes());
         put(
             &mut country,
-            crate::ccountry::PRODUCTION_STATUS,
+            engine_native::ccountry::PRODUCTION_STATUS,
             &(STATUS as u64).to_le_bytes(),
         );
         let mut state = vec![0; cgame_state::LOCAL_PLAYER_COUNTRY + 8];

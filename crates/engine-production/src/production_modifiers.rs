@@ -1,9 +1,12 @@
 
-use crate::{
-    Memory, attrition_modifier_breakdown::Request, ccountry, cequipment_production_line as line,
-    cequipment_variant, cpdx_array::Array, cproduction_line, cproduction_status,
-    read,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::attrition_modifier_breakdown::Request;
+use engine_native::{
+    ccountry,
+    cproduction_status::{equipment_line as line, self},
+    cequipment_variant,
 };
+use engine_native_parts::cproduction_line;
 use engine_sites::Rva;
 
 pub use engine_executable::native_values::production_modifiers::KEYS;
@@ -120,38 +123,38 @@ pub struct Buffers<'a> {
 }
 
 pub struct BuffersBuffer<'a> {
-    pub countries: crate::walk::Buffer<'a, Country>,
+    pub countries: engine_native_memory::walk::Buffer<'a, Country>,
     pub country_len: usize,
     pub country_required: usize,
-    pub lines: crate::walk::Buffer<'a, Line>,
+    pub lines: engine_native_memory::walk::Buffer<'a, Line>,
     pub line_len: usize,
     pub line_required: usize,
-    pub efficiencies: crate::walk::Buffer<'a, i64>,
+    pub efficiencies: engine_native_memory::walk::Buffer<'a, i64>,
     pub efficiency_len: usize,
     pub efficiency_required: usize,
-    pub requests: crate::walk::Buffer<'a, Request>,
+    pub requests: engine_native_memory::walk::Buffer<'a, Request>,
     pub request_len: usize,
     pub request_required: usize,
-    pub archetypes: crate::walk::Buffer<'a, usize>,
+    pub archetypes: engine_native_memory::walk::Buffer<'a, usize>,
     pub archetype_required: usize,
 }
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
     fn from(value: Buffers<'a>) -> Self {
         Self {
-            countries: crate::walk::Buffer::Growing(value.countries),
+            countries: engine_native_memory::walk::Buffer::Growing(value.countries),
             country_len: value.country_len,
             country_required: value.country_required,
-            lines: crate::walk::Buffer::Growing(value.lines),
+            lines: engine_native_memory::walk::Buffer::Growing(value.lines),
             line_len: value.line_len,
             line_required: value.line_required,
-            efficiencies: crate::walk::Buffer::Growing(value.efficiencies),
+            efficiencies: engine_native_memory::walk::Buffer::Growing(value.efficiencies),
             efficiency_len: value.efficiency_len,
             efficiency_required: value.efficiency_required,
-            requests: crate::walk::Buffer::Growing(value.requests),
+            requests: engine_native_memory::walk::Buffer::Growing(value.requests),
             request_len: value.request_len,
             request_required: value.request_required,
-            archetypes: crate::walk::Buffer::Growing(value.archetypes),
+            archetypes: engine_native_memory::walk::Buffer::Growing(value.archetypes),
             archetype_required: value.archetype_required,
         }
     }
@@ -168,7 +171,7 @@ fn module_at(base: usize, key: Rva) -> Result<usize, &'static str> {
 }
 
 pub fn conversion_target(memory: &impl Memory, variant: usize) -> Result<bool, &'static str> {
-    fn operand<T: crate::memory::Raw>(
+    fn operand<T: engine_native_memory::memory::Raw>(
         memory: &impl Memory,
         pointer: usize,
         offset: usize,
@@ -189,7 +192,7 @@ pub fn conversion_target(memory: &impl Memory, variant: usize) -> Result<bool, &
     .ok()
     .filter(|&pointer| pointer != 0)
     .ok_or("conversion target equipment type null")?;
-    use crate::cequipment_type::{CONVERSION_FAMILY, CONVERT_FROM_COUNT};
+    use engine_native_parts::cequipment_type::{CONVERSION_FAMILY, CONVERT_FROM_COUNT};
     Ok(
         (operand::<u64>(memory, variant, cequipment_variant::PARENT)? != 0
             || operand::<u8>(memory, definition, CONVERSION_FAMILY)? != 0)
@@ -198,14 +201,14 @@ pub fn conversion_target(memory: &impl Memory, variant: usize) -> Result<bool, &
     )
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
 ) -> Result<T, &'static str> {
     read(memory, at(pointer, offset)?).ok_or("production modifier operand unreadable")
 }
-fn global<T: crate::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -219,7 +222,7 @@ fn add(value: &mut usize, amount: usize) -> Result<(), &'static str> {
     Ok(())
 }
 fn normalized(mut flags: u64) -> u64 {
-    use crate::cequipment_type as ty;
+    use engine_native_parts::cequipment_type as ty;
     if flags & ty::SHIP_MASK != 0 {
         if flags & ty::NORMALIZE_FIRST_SELECTOR != 0 {
             flags &= !ty::NORMALIZE_FIRST_CLEAR;
@@ -238,7 +241,7 @@ fn naval(
     mut pointer: usize,
     out: &mut BuffersBuffer<'_>,
 ) -> Result<bool, &'static str> {
-    use crate::cequipment_type as ty;
+    use engine_native_parts::cequipment_type as ty;
     let mut depth = 0;
     loop {
         if pointer == 0 || out.archetypes[..depth].contains(&pointer) {
@@ -356,19 +359,19 @@ pub fn capture_slots(
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
     let mut buffer = BuffersBuffer {
-        countries: crate::walk::Buffer::Growing(&mut *out.countries),
+        countries: engine_native_memory::walk::Buffer::Growing(&mut *out.countries),
         country_len: out.country_len,
         country_required: out.country_required,
-        lines: crate::walk::Buffer::Growing(&mut *out.lines),
+        lines: engine_native_memory::walk::Buffer::Growing(&mut *out.lines),
         line_len: out.line_len,
         line_required: out.line_required,
-        efficiencies: crate::walk::Buffer::Growing(&mut *out.efficiencies),
+        efficiencies: engine_native_memory::walk::Buffer::Growing(&mut *out.efficiencies),
         efficiency_len: out.efficiency_len,
         efficiency_required: out.efficiency_required,
-        requests: crate::walk::Buffer::Growing(&mut *out.requests),
+        requests: engine_native_memory::walk::Buffer::Growing(&mut *out.requests),
         request_len: out.request_len,
         request_required: out.request_required,
-        archetypes: crate::walk::Buffer::Growing(&mut *out.archetypes),
+        archetypes: engine_native_memory::walk::Buffer::Growing(&mut *out.archetypes),
         archetype_required: out.archetype_required,
     };
     let result = capture_buffer(memory, base, state, slots, provided, context, &mut buffer);
@@ -411,7 +414,7 @@ fn capture_buffer(
             });
         }
         let context = context.as_ref().expect("nonempty production context");
-        let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
+        let accumulator = at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?;
         add(&mut out.country_required, 1)?;
         out.countries.ensure(out.country_required)?;
         if let Some(row) = out.countries.get_mut(out.country_len) {
@@ -444,9 +447,11 @@ fn capture_buffer(
             let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
             let address =
                 usize::try_from(vtable).map_err(|_| "production modifier line vtable mismatch")?;
-            use crate::{
-                cmilitary_production_line as military, cnaval_production_line as naval_line,
-                crailway_gun_production_line as railway_gun, cship_refit_production_line as refit,
+            use engine_native_parts::{
+                cmilitary_production_line as military,
+                cnaval_production_line as naval_line,
+                crailway_gun_production_line as railway_gun,
+                cship_refit_production_line as refit,
             };
             let candidates = [
                 military::VTABLE_RVA,
@@ -482,7 +487,7 @@ fn capture_buffer(
                     .element(index as u32, 8)
                     .ok_or("production modifier factory efficiency address overflow")?;
                 let mut bytes = [0_u8; 256 * 8];
-                if !crate::read_slice(memory, address, &mut bytes[..count * 8]) {
+                if !engine_native_memory::read_slice(memory, address, &mut bytes[..count * 8]) {
                     return Err("production modifier factory efficiency unreadable");
                 }
                 for (offset, bytes) in bytes[..count * 8].chunks_exact(8).enumerate() {
@@ -517,7 +522,7 @@ fn capture_buffer(
             let variant_pointer = field::<u64>(memory, pointer, line::EQUIPMENT_VARIANT)?;
             let variant_pointer = usize::try_from(variant_pointer)
                 .map_err(|_| "production modifier variant pointer overflow")?;
-            let variant = cequipment_variant::identity(memory, base, variant_pointer)?;
+            let variant = engine_native_parts::equipment_variant_identity::identity(memory, base, variant_pointer)?;
             let definition = field::<u64>(memory, variant_pointer, cequipment_variant::DEFINITION)?;
             let definition = usize::try_from(definition)
                 .map_err(|_| "production modifier equipment type pointer overflow")?;
@@ -526,28 +531,28 @@ fn capture_buffer(
                 memory,
                 variant_pointer,
                 cequipment_variant::CLASSIFIER_FLAGS,
-            )? & crate::cequipment_type::SHIP_MASK
+            )? & engine_native_parts::cequipment_type::SHIP_MASK
                 != 0;
             let conversion = field::<u8>(memory, pointer, line::CONVERSION)? != 0;
             let licensed =
                 field::<i32>(memory, variant_pointer, cequipment_variant::ORIGIN_LINK)? > 0;
             let mut conversion_output = conversion && conversion_target(memory, variant_pointer)?;
             if conversion_output
-                && field::<i32>(memory, definition, crate::cequipment_type::SLOTS_COUNT)? != 0
+                && field::<i32>(memory, definition, engine_native_parts::cequipment_type::SLOTS_COUNT)? != 0
             {
                 let mut primary = field::<u64>(
                     memory,
                     definition,
-                    crate::cequipment_type::PRIMARY_CATEGORY_FLAGS,
+                    engine_native_parts::cequipment_type::PRIMARY_CATEGORY_FLAGS,
                 )?;
                 if primary == 0 {
                     let parent =
-                        field::<u64>(memory, definition, crate::cequipment_type::ARCHETYPE)?
+                        field::<u64>(memory, definition, engine_native_parts::cequipment_type::ARCHETYPE)?
                             as usize;
                     primary = field(
                         memory,
                         parent,
-                        crate::cequipment_type::PRIMARY_CATEGORY_FLAGS,
+                        engine_native_parts::cequipment_type::PRIMARY_CATEGORY_FLAGS,
                     )?;
                 }
                 conversion_output = normalized(
@@ -555,7 +560,7 @@ fn capture_buffer(
                         | field::<u64>(
                             memory,
                             definition,
-                            crate::cequipment_type::SECONDARY_CATEGORY_FLAGS,
+                            engine_native_parts::cequipment_type::SECONDARY_CATEGORY_FLAGS,
                         )?,
                 ) & context.module_mask
                     == 0;

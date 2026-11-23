@@ -1,6 +1,6 @@
 use super::*;
 use collector_division_parts::army_stat_changes::Watches;
-use engine_native::cunit_supply_inputs as supply;
+use engine_native_parts::cunit_supply_inputs as supply;
 
 struct NoFooter<'a, M> {
     memory: &'a M,
@@ -290,7 +290,7 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
         })
         .collect();
     let changes = Watches::enabled(2 * rows.len());
-    let unreadable = engine_native::memory::SliceMemory {
+    let unreadable = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };

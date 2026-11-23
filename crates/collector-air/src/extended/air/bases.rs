@@ -296,8 +296,8 @@ pub struct AirBasesMemo {
     pub(super) registrations: super::fog::RegistrationsMemo,
     pub(super) carrier: carrier::Memo,
     pub(super) decoded: super::DecodedRegistrations,
-    pub(super) roster: Vec<Option<ccountry::Country>>,
-    pub(super) roster_context: Option<([Array; 2], Option<ccountry::ReservedCountryObservation>)>,
+    pub(super) roster: Vec<Option<engine_native_memory::country_identity::Country>>,
+    pub(super) roster_context: Option<([Array; 2], Option<engine_native_memory::country_identity::ReservedCountryObservation>)>,
     pub(super) capacity_charge: collector_primitives::raw_memory::Charge,
 }
 
@@ -655,12 +655,12 @@ pub(super) fn bases_pool_u32(log: &RawLog<AIR_BASES_N>, start: usize) -> u32 {
 
 fn base_identity(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> (bool, u64) {
     let identity = bspan(log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-    match (identity, engine_sites::at(base, cair_base::VTABLE_RVA)) {
+    match (identity, engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA)) {
         (Some(start), Some(expected)) => {
             let handle = bases_pool_u64(log, start + 8);
             (
@@ -674,7 +674,7 @@ fn base_identity(
 
 pub(super) fn bspan(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     addr: Option<usize>,
     len: usize,
     mask: u32,
@@ -684,7 +684,7 @@ pub(super) fn bspan(
 
 fn bases_link(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     links: &Array,
     countries: u32,
     raw: u32,
@@ -705,7 +705,7 @@ fn bases_link(
 #[allow(clippy::too_many_arguments)]
 fn copy_air_bases_census(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     census: &mut Vec<(usize, u32)>,
@@ -845,7 +845,7 @@ fn copy_air_bases_census(
 
 fn stage_reserved_country(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     countries: &Array,
     vtable: u64,
     mask: u32,
@@ -869,7 +869,7 @@ fn stage_reserved_country(
 
 pub(super) fn resolve_link(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     links: &Array,
     seen: &mut Vec<(u32, u32)>,
     index: &mut [usize],
@@ -925,7 +925,7 @@ fn block_word(log: &RawLog<AIR_BASES_N>, start: usize, index: usize) -> Option<u
 
 fn copy_air_base_row(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
     state_slot: Option<u32>,
@@ -934,7 +934,7 @@ fn copy_air_base_row(
     let host = bspan(
         log,
         memory,
-        pointer.checked_add(cair_base::HOST_REFERENCE),
+        pointer.checked_add(engine_native_parts::cair_base_layout::HOST_REFERENCE),
         32,
         BASES_MASK,
     )?;
@@ -1012,7 +1012,7 @@ fn copy_air_base_row(
 
 fn copy_air_aces_country(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
     slot: u32,
@@ -1046,7 +1046,7 @@ fn copy_air_aces_country(
 
 fn copy_air_ace(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     country_pointer: usize,
     slot: u32,
@@ -1183,7 +1183,7 @@ fn copy_air_ace(
         if let Ok(names) = cace::portrait_sources(
             &staged,
             base,
-            ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 pointer: country_pointer,
                 canonical_slot: slot,
                 id: slot,
@@ -1225,7 +1225,7 @@ impl<M: Memory> Memory for AcePresentationMemory<'_, M> {
 
 fn copy_ace_name(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     head: usize,
 ) -> bool {
     let header = &log.bytes[head..head + 32];
@@ -1305,7 +1305,7 @@ struct DenseSnapshot {
 #[allow(clippy::too_many_arguments)]
 fn copy_dense_plan(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     image: usize,
     pointer: usize,
     containers: &Array,
@@ -1509,7 +1509,7 @@ const SLOT_BATCH: usize = 64;
 
 fn take_slots(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     slots: Array,
 ) -> usize {
     let mut copied = 0;
@@ -1534,7 +1534,7 @@ fn take_slots(
 #[allow(clippy::too_many_arguments)]
 fn registrations(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     handle: u64,
     certificate: Option<(u64, u64)>,
@@ -1616,8 +1616,8 @@ fn registrations(
         return false;
     }
     let pools_name_base = carry.reached.pools.iter().all(|&pool| {
-        pool.checked_add(engine_native::cair_wing_pool::AIR_BASE_REFERENCE)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+        pool.checked_add(engine_native_parts::cair_wing_pool::AIR_BASE_REFERENCE)
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             == Some(handle)
     });
     let certificate = certificate.filter(|_| pools_name_base);
@@ -1652,7 +1652,7 @@ fn registrations(
 #[allow(clippy::too_many_arguments)]
 fn copy_air_base_registrations(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
     dense_snapshot: &mut DenseSnapshot,
@@ -1688,11 +1688,11 @@ fn copy_air_base_registrations(
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_primary = match engine_sites::at(base, engine_native::cair_wing::VTABLE_RVA) {
+    let expected_primary = match engine_sites::at(base, engine_native_parts::cair_wing_layout::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
     };
-    let expected_secondary = match engine_sites::at(base, engine_native::cair_wing::SECONDARY_VTABLE_RVA)
+    let expected_secondary = match engine_sites::at(base, engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA)
     {
         Some(expected) => expected as u64,
         None => return false,
@@ -1886,7 +1886,7 @@ fn copy_air_base_registrations(
                     let wings = match bspan(
                         log,
                         memory,
-                        pointer.checked_add(engine_native::cair_wing_pool::WINGS),
+                        pointer.checked_add(engine_native_parts::cair_wing_pool::WINGS),
                         16,
                         AIR_REGISTRATIONS_MASK,
                     ) {
@@ -1951,7 +1951,7 @@ fn copy_air_base_registrations(
                             let backlink = match bspan(
                                 log,
                                 memory,
-                                wing.checked_add(engine_native::cair_wing::POOL),
+                                wing.checked_add(engine_native_parts::cair_wing_layout::POOL),
                                 8,
                                 AIR_REGISTRATIONS_MASK,
                             ) {
@@ -2009,7 +2009,7 @@ fn copy_air_base_registrations(
 #[cfg(test)]
 pub(super) fn copy_air_bases_pass(
     job: &mut AirBasesJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     aces_active: bool,
@@ -2020,7 +2020,7 @@ pub(super) fn copy_air_bases_pass(
 
 fn copy_air_bases_pass_with_context(
     job: &mut AirBasesJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     aces_active: bool,
@@ -2081,7 +2081,7 @@ fn copy_air_bases_pass_with_context(
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn copy_air_bases_vectors(
     job: &mut AirBasesJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     census: Option<(&Array, u32)>,
     ticks: &mut [u64; AIR_BASES_N],

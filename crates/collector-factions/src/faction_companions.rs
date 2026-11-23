@@ -1,6 +1,6 @@
 use crate::faction_companion_changes::Changes;
 use engine_allocation as allocation;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use replay_data::{
     rows, rows::RowCodec, rows::TableId, rows::TableRows, rows::TableSchema, rows::tables,
 };
@@ -86,7 +86,7 @@ impl List for Rules {
     type Value = u32;
     type Schema = tables::FactionRules;
     const KIND: usize = 0;
-    const OFFSET: usize = engine_native::cfaction_rule_status::STATUS;
+    const OFFSET: usize = engine_native_politics::cfaction_rule_status::STATUS;
     fn read(
         &mut self,
         memory: &impl Memory,
@@ -94,7 +94,7 @@ impl List for Rules {
         faction: usize,
         output: &mut Vec<u32>,
     ) -> Result<(), &'static str> {
-        engine_native::cfaction_rule_status::read_into(memory, base, faction, output)
+        engine_native_politics::cfaction_rule_status::read_into(memory, base, faction, output)
     }
     fn row(faction: u64, ordinal: u32, token: &u32) -> Result<rows::FactionRuleRow, &'static str> {
         Ok(rows::FactionRuleRow {
@@ -110,7 +110,7 @@ impl List for Programmes {
     type Value = u64;
     type Schema = tables::FactionPrograms;
     const KIND: usize = 1;
-    const OFFSET: usize = engine_native::cfaction_program_status::STATUS;
+    const OFFSET: usize = engine_native_politics::cfaction_program_status::STATUS;
     fn read(
         &mut self,
         memory: &impl Memory,
@@ -118,7 +118,7 @@ impl List for Programmes {
         faction: usize,
         output: &mut Vec<u64>,
     ) -> Result<(), &'static str> {
-        engine_native::cfaction_program_status::read_into(memory, base, faction, output)
+        engine_native_politics::cfaction_program_status::read_into(memory, base, faction, output)
     }
     fn row(
         faction: u64,
@@ -179,7 +179,7 @@ impl List for Unlocks {
             .checked_add(engine_native::cfaction::RESEARCH_UNLOCKED)
             .ok_or("faction unlock address overflow")?;
         let value =
-            engine_native::read(memory, address).ok_or("faction unlock bytes unreadable")?;
+            engine_native_memory::read(memory, address).ok_or("faction unlock bytes unreadable")?;
         allocation::resize_default(output, 1).map_err(|_| "faction unlock allocation failed")?;
         output[0] = value;
         Ok(())
@@ -242,13 +242,13 @@ impl List for Variables {
             &mut self.entries,
             &mut self.names,
         );
-        let engine_native::walk::Outcome::Rows { len } = walk.outcome else {
+        let engine_native_memory::walk::Outcome::Rows { len } = walk.outcome else {
             return Err(match walk.outcome {
-                engine_native::walk::Outcome::Unavailable { reason } => reason,
+                engine_native_memory::walk::Outcome::Unavailable { reason } => reason,
                 _ => "faction variables incomplete",
             });
         };
-        let seed = engine_native::read(memory, store + engine_scripts::cvariables::SEED)
+        let seed = engine_native_memory::read(memory, store + engine_scripts::cvariables::SEED)
             .ok_or("faction variable seed unreadable")?;
         let count = len
             .checked_add(1)
@@ -290,7 +290,7 @@ impl List for Variables {
 }
 #[derive(Default)]
 struct Research {
-    scratch: engine_native::ctechnology_sharing_faction::Snapshot,
+    scratch: engine_native_politics::ctechnology_sharing_faction::Snapshot,
 }
 impl List for Research {
     type Value = rows::FactionResearchRow;
@@ -361,7 +361,7 @@ impl List for Research {
 #[derive(Default)]
 struct Minimum;
 impl List for Minimum {
-    type Value = engine_native::cfaction_member_status::Upgrade;
+    type Value = engine_native_parts::cfaction_member_status::Upgrade;
     type Schema = tables::FactionMinimumUpgrades;
     const KIND: usize = 7;
     const OFFSET: usize = engine_stability::cfaction_upgrade_status::STATUS;
@@ -689,7 +689,7 @@ impl Store {
         base: usize,
         state: usize,
         changes: &impl Changes,
-        members: &[engine_native::cfaction_system::MemberRow],
+        members: &[engine_native::cfaction::system::MemberRow],
     ) {
         // SAFETY: Caller upholds the hourly capture admission contract.
         unsafe {
@@ -779,7 +779,7 @@ impl Store {
 mod tests {
     use super::*;
     use collector_certificates::watch_registry::WatchRegistry;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::Cell;
     const FIRST: usize = 0x1000;
     const STRIDE: usize = 0x1000;
@@ -821,7 +821,7 @@ mod tests {
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
                         + engine_stability::cfaction_upgrade_status::DOCTRINE_SHARING,
-                    engine_native::cdoctrine_sharing_status::VTABLE_RVA.0,
+                    engine_native_politics::cdoctrine_sharing_status::VTABLE_RVA.0,
                 ),
                 (
                     engine_stability::cfaction_upgrade_status::STATUS,
@@ -835,12 +835,12 @@ mod tests {
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
                         + engine_stability::cfaction_upgrade_status::RESEARCH_SHARING,
-                    engine_native::ctechnology_sharing_faction::VTABLE_RVA.0,
+                    engine_native_politics::ctechnology_sharing_faction::VTABLE_RVA.0,
                 ),
                 (
                     engine_stability::cfaction_upgrade_status::STATUS
                         + engine_stability::cfaction_upgrade_status::RESEARCH_SHARING
-                        + engine_native::ctechnology_sharing_faction::OWNER,
+                        + engine_native_politics::ctechnology_sharing_faction::OWNER,
                     faction,
                 ),
                 (
@@ -852,21 +852,21 @@ mod tests {
                     engine_scripts::cvariables::EMPTY_STORAGE_RVA.0,
                 ),
                 (
-                    engine_native::cfaction_rule_status::STATUS,
-                    engine_native::cfaction_rule_status::VTABLE_RVA.0,
+                    engine_native_politics::cfaction_rule_status::STATUS,
+                    engine_native_politics::cfaction_rule_status::VTABLE_RVA.0,
                 ),
                 (
-                    engine_native::cfaction_rule_status::STATUS
-                        + engine_native::cfaction_rule_status::OWNER,
+                    engine_native_politics::cfaction_rule_status::STATUS
+                        + engine_native_politics::cfaction_rule_status::OWNER,
                     faction,
                 ),
                 (
-                    engine_native::cfaction_program_status::STATUS,
-                    engine_native::cfaction_program_status::VTABLE_RVA.0,
+                    engine_native_politics::cfaction_program_status::STATUS,
+                    engine_native_politics::cfaction_program_status::VTABLE_RVA.0,
                 ),
                 (
                     engine_native::cfaction::MANPOWER_POOL,
-                    engine_native::carmy_manpower_values::VTABLE_RVA.0,
+                    engine_native_parts::carmy_manpower_values::VTABLE_RVA.0,
                 ),
             ] {
                 bytes[faction + offset..faction + offset + 8]
@@ -921,7 +921,7 @@ mod tests {
         });
         assert_eq!(memory.reads.get(), first);
         drop(
-            changes.0[0].notify(FIRST + 39 * STRIDE + engine_native::cfaction_rule_status::STATUS),
+            changes.0[0].notify(FIRST + 39 * STRIDE + engine_native_politics::cfaction_rule_status::STATUS),
         );
         acquire(&mut store, &mut output, &memory, &changes, 40);
         assert_eq!(output.failure, [None; N]);
@@ -935,7 +935,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut bytes = fixture(1);
-        bytes[FIRST + engine_native::cfaction_rule_status::STATUS] ^= 1;
+        bytes[FIRST + engine_native_politics::cfaction_rule_status::STATUS] ^= 1;
         let memory = Counted {
             bytes: &bytes,
             reads: Cell::new(0),

@@ -1,16 +1,23 @@
 
-use crate::{
-    Memory, cadvisor,
-    ccharacter::{self, at},
-    ccharacter_manager::Roster,
-    ccountry_leader, character_advisor_node, character_leader_node,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    creference_registry, cscientist, cunit_leader, cunit_leader_skill, cunit_leader_trait,
     memory::{RecordField, RecordLayout, RecordSources},
     msvc_tree_node::Cursor as RoleTree,
-    null_unit_leader_skill, read, read_slice,
+    read,
+    read_slice,
     walk::Outcome,
 };
+use engine_native::{cadvisor, ccharacter::{self, at, manager::Roster}, cunit_leader};
+use engine_native_politics::{ccountry_leader, character_leader_node};
+use engine_native_parts::{
+    character_advisor_node,
+    creference_registry,
+    cunit_leader_skill,
+    cunit_leader_trait,
+    null_unit_leader_skill,
+};
+use crate::cscientist;
 
 fn site(base: usize, key: engine_sites::Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("character address overflow")
@@ -52,8 +59,8 @@ pub struct OperativeRow {
     pub leader: Option<Leader>,
     pub start: usize,
     pub len: usize,
-    pub name: Option<crate::cname_group_member::Span>,
-    pub codename: Option<crate::cname_group_member::Inputs>,
+    pub name: Option<engine_native::cname_group_member::Span>,
+    pub codename: Option<engine_native::cname_group_member::Inputs>,
     pub name_reason: Option<&'static str>,
     pub codename_reason: Option<&'static str>,
     pub codename_heap: [bool; 2],
@@ -67,14 +74,14 @@ pub struct Buffers<'a> {
     pub bytes: &'a mut Vec<u8>,
 }
 struct Storage<'a> {
-    traits: crate::walk::Buffer<'a, TraitRow>,
-    trait_values: crate::walk::Buffer<'a, Trait>,
-    operatives: crate::walk::Buffer<'a, OperativeRow>,
-    definitions: crate::walk::Buffer<'a, u32>,
-    bytes: crate::walk::Buffer<'a, u8>,
+    traits: engine_native_memory::walk::Buffer<'a, TraitRow>,
+    trait_values: engine_native_memory::walk::Buffer<'a, Trait>,
+    operatives: engine_native_memory::walk::Buffer<'a, OperativeRow>,
+    definitions: engine_native_memory::walk::Buffer<'a, u32>,
+    bytes: engine_native_memory::walk::Buffer<'a, u8>,
 }
 struct Names<'a> {
-    bytes: crate::walk::Buffer<'a, u8>,
+    bytes: engine_native_memory::walk::Buffer<'a, u8>,
     len: usize,
     required: usize,
 }
@@ -132,8 +139,8 @@ const SENTINEL_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&SENTINEL
 };
 
 struct Table<'a, R, V> {
-    rows: crate::walk::Buffer<'a, R>,
-    values: crate::walk::Buffer<'a, V>,
+    rows: engine_native_memory::walk::Buffer<'a, R>,
+    values: engine_native_memory::walk::Buffer<'a, V>,
     len: usize,
     values_len: usize,
     required: usize,
@@ -142,7 +149,7 @@ struct Table<'a, R, V> {
 }
 
 impl<'a, R: Default, V: Default> Table<'a, R, V> {
-    fn new(rows: crate::walk::Buffer<'a, R>, values: crate::walk::Buffer<'a, V>) -> Self {
+    fn new(rows: engine_native_memory::walk::Buffer<'a, R>, values: engine_native_memory::walk::Buffer<'a, V>) -> Self {
         Self {
             rows,
             values,
@@ -220,11 +227,11 @@ pub fn walk(
         base,
         game_state,
         Storage {
-            traits: crate::walk::Buffer::Growing(buffers.traits),
-            trait_values: crate::walk::Buffer::Growing(buffers.trait_values),
-            operatives: crate::walk::Buffer::Growing(buffers.operatives),
-            definitions: crate::walk::Buffer::Growing(buffers.definitions),
-            bytes: crate::walk::Buffer::Growing(buffers.bytes),
+            traits: engine_native_memory::walk::Buffer::Growing(buffers.traits),
+            trait_values: engine_native_memory::walk::Buffer::Growing(buffers.trait_values),
+            operatives: engine_native_memory::walk::Buffer::Growing(buffers.operatives),
+            definitions: engine_native_memory::walk::Buffer::Growing(buffers.definitions),
+            bytes: engine_native_memory::walk::Buffer::Growing(buffers.bytes),
         },
     )
 }
@@ -234,11 +241,11 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
         base,
         game_state,
         Storage {
-            traits: crate::walk::Buffer::Count,
-            trait_values: crate::walk::Buffer::Count,
-            operatives: crate::walk::Buffer::Count,
-            definitions: crate::walk::Buffer::Count,
-            bytes: crate::walk::Buffer::Count,
+            traits: engine_native_memory::walk::Buffer::Count,
+            trait_values: engine_native_memory::walk::Buffer::Count,
+            operatives: engine_native_memory::walk::Buffer::Count,
+            definitions: engine_native_memory::walk::Buffer::Count,
+            bytes: engine_native_memory::walk::Buffer::Count,
         },
     )
 }
@@ -365,11 +372,11 @@ pub struct CensusWalk<'a> {
 impl<'a> CensusWalk<'a> {
     pub fn new(buffers: Buffers<'a>) -> Self {
         Self::storage(Storage {
-            traits: crate::walk::Buffer::Growing(buffers.traits),
-            trait_values: crate::walk::Buffer::Growing(buffers.trait_values),
-            operatives: crate::walk::Buffer::Growing(buffers.operatives),
-            definitions: crate::walk::Buffer::Growing(buffers.definitions),
-            bytes: crate::walk::Buffer::Growing(buffers.bytes),
+            traits: engine_native_memory::walk::Buffer::Growing(buffers.traits),
+            trait_values: engine_native_memory::walk::Buffer::Growing(buffers.trait_values),
+            operatives: engine_native_memory::walk::Buffer::Growing(buffers.operatives),
+            definitions: engine_native_memory::walk::Buffer::Growing(buffers.definitions),
+            bytes: engine_native_memory::walk::Buffer::Growing(buffers.bytes),
         })
     }
 
@@ -525,7 +532,7 @@ impl<'a> CensusWalk<'a> {
         );
         text.clear();
         crate::allocation::reserve(text, spans.map(|(_, len)| len).sum()).ok()?;
-        let mut take = |(at, len): crate::cname_group_member::Span| {
+        let mut take = |(at, len): engine_native::cname_group_member::Span| {
             let moved = text.len();
             text.extend_from_slice(bytes.get(at..at + len)?);
             Some((moved, len))
@@ -537,7 +544,7 @@ impl<'a> CensusWalk<'a> {
         let codename = match row.codename {
             Some(mut inputs) => {
                 inputs.group = take(inputs.group)?;
-                if crate::cname_group_member::custom_copied(&inputs) {
+                if engine_native::cname_group_member::custom_copied(&inputs) {
                     inputs.custom = take(inputs.custom)?;
                 }
                 Some(inputs)
@@ -560,7 +567,7 @@ impl<'a> CensusWalk<'a> {
             operatives, names, ..
         } = self;
         operatives.run(|table| {
-            let held = |(at, len): crate::cname_group_member::Span| {
+            let held = |(at, len): engine_native::cname_group_member::Span| {
                 text.get(at..at + len)
                     .ok_or("carried operative text out of range")
             };
@@ -578,7 +585,7 @@ impl<'a> CensusWalk<'a> {
                 };
             }
             if let Some(inputs) = row.codename {
-                use crate::cname_group_member::{self as naming, Naming};
+                use engine_native::cname_group_member::{self as naming, Naming};
                 let codename_start = pending.len;
                 let group = held(inputs.group)?;
                 let custom = if naming::custom_copied(&inputs) {
@@ -677,7 +684,7 @@ fn map_role_traits(
     let mut leaders = RoleTree::from_parts(leaders.0, leaders.1)?;
     let mut advisors = RoleTree::from_parts(advisors.0, advisors.1)?;
     if leaders.count() != 0 {
-        let vtable = site(base, ccountry_leader::VTABLE_RVA)? as u64;
+        let vtable = site(base, engine_native_parts::ccountry_leader_layout::VTABLE_RVA)? as u64;
         while let Some(node) = leaders.next(memory)? {
             let value = read::<[u8; 16]>(memory, at(node, character_leader_node::IDEOLOGY)?)
                 .ok_or("country leader ideology unreadable")?;
@@ -686,7 +693,7 @@ fn map_role_traits(
             let header =
                 read::<[u8; 16]>(memory, role).ok_or("country leader role header unreadable")?;
             if u64_at(&header, 0) != vtable
-                || u64_at(&header, ccountry_leader::CHARACTER) != pointer as u64
+                || u64_at(&header, engine_native_parts::ccountry_leader_layout::CHARACTER) != pointer as u64
             {
                 return Err("country leader role vtable or character parent mismatch");
             }
@@ -956,8 +963,8 @@ fn operative(
             &mut pending.required,
             &mut codename_heap,
         ) {
-            Ok(crate::cname_group_member::Naming::Row(row)) => (Some(row), None),
-            Ok(crate::cname_group_member::Naming::DoesNotFit) => {
+            Ok(engine_native::cname_group_member::Naming::Row(row)) => (Some(row), None),
+            Ok(engine_native::cname_group_member::Naming::DoesNotFit) => {
                 pending.len = codename_start;
                 (None, Some("operative codename byte capacity exceeded"))
             }
@@ -1023,7 +1030,7 @@ fn copy_pointers(
     let source = array
         .slice(0, output.len() as u32, 8)
         .map_err(|_| "character roster pointers unreadable")?;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         source,
         "character roster pointers unreadable",
@@ -1048,10 +1055,9 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ccharacter_manager, cgame_state, coperative_leader, msvc_tree_node as node,
-        reference_bucket as bucket,
-    };
+    use engine_native::{ccharacter::manager as ccharacter_manager, cgame_state};
+        use engine_native_memory::msvc_tree_node as node;
+    use engine_native_parts::reference_bucket as bucket;
     use std::collections::BTreeMap;
 
     const GS: usize = 0x1000;
@@ -1167,7 +1173,7 @@ mod tests {
         m.one_node(A, ccharacter::LEADER_MAP_HEAD, 0x4000, 0x4040);
         m.u64(0x4040 + character_leader_node::IDEOLOGY, 5);
         m.u64(0x4040 + character_leader_node::LEADER, 0x5000);
-        m.object(0x5000, ccountry_leader::VTABLE_RVA.0, A as u64);
+        m.object(0x5000, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0, A as u64);
         m.array(0x5000 + ccountry_leader::TRAITS, 0x5100, &[0x6000, 0x6100]);
         m.one_node(A, ccharacter::ADVISOR_MAP_HEAD, 0x4100, 0x4140);
         m.u64(0x4140 + character_advisor_node::ADVISOR, 0x5200);
@@ -1187,7 +1193,7 @@ mod tests {
         m.put(ENTRIES, &[0; 14 * bucket::STRIDE]);
         m.put(ENTRIES + 13 * bucket::STRIDE + bucket::DISTANCE, &[255]);
         m.bucket(RESOLVED, OPERATIVE);
-        m.u64(OPERATIVE, coperative_leader::VTABLE_RVA.0 as u64);
+        m.u64(OPERATIVE, engine_native_parts::coperative_leader_layout::VTABLE_RVA.0 as u64);
         m.u32(OPERATIVE + cunit_leader::TYPE, cunit_leader::REFERENCE_TYPE);
         m.u32(OPERATIVE + cunit_leader::ID, 77);
         m.u32(OPERATIVE + cunit_leader::OWNER, 9);
@@ -1198,10 +1204,10 @@ mod tests {
         m.put(OPERATIVE + cunit_leader::NAME, b"Alias");
         m.u64(OPERATIVE + cunit_leader::NAME + 16, 5);
         m.u64(OPERATIVE + cunit_leader::NAME + 24, 15);
-        let member = OPERATIVE + coperative_leader::CODENAME;
-        m.put(member, &[0; crate::cname_group_member::INPUT_SPAN]);
-        m.u64(member, crate::cname_group_member::VTABLE_RVA.0 as u64);
-        m.u32(member + crate::cname_group_member::TYPE, 2);
+        let member = OPERATIVE + engine_native_parts::coperative_leader_layout::CODENAME;
+        m.put(member, &[0; engine_native::cname_group_member::INPUT_SPAN]);
+        m.u64(member, engine_native::cname_group_member::VTABLE_RVA.0 as u64);
+        m.u32(member + engine_native::cname_group_member::TYPE, 2);
         m.put(member + 0x10, b"GROUP");
         m.u64(member + 0x20, 5);
         m.u64(member + 0x28, 15);
@@ -1459,13 +1465,13 @@ mod tests {
         assert_eq!(&bytes[5..], b"GROUP");
         assert_eq!((rows[1].name, rows[1].codename), (None, None));
         let before = rows.clone();
-        memory.put(OPERATIVE + coperative_leader::CODENAME + 0x60, &[b'Z'; 32]);
+        memory.put(OPERATIVE + engine_native_parts::coperative_leader_layout::CODENAME + 0x60, &[b'Z'; 32]);
         capture(&memory, &mut rows, &mut definitions, &mut bytes);
         assert_eq!(rows, before);
         memory.u32(OPERATIVE + cunit_leader::CATEGORY, 0);
         capture(&memory, &mut rows, &mut definitions, &mut bytes);
         assert!(rows[0].codename.is_some());
-        memory.u32(OPERATIVE + coperative_leader::CODENAME + 8, 1);
+        memory.u32(OPERATIVE + engine_native_parts::coperative_leader_layout::CODENAME + 8, 1);
         let wrong_kind = capture(&memory, &mut rows, &mut definitions, &mut bytes);
         assert_eq!(wrong_kind.operatives, Outcome::Rows { len: 2 });
         assert_eq!(rows[0].codename, None);
@@ -1473,8 +1479,8 @@ mod tests {
             rows[0].codename_reason,
             Some("operative codename member is not type two")
         );
-        memory.u32(OPERATIVE + coperative_leader::CODENAME + 8, 2);
-        memory.u64(OPERATIVE + coperative_leader::CODENAME, 0);
+        memory.u32(OPERATIVE + engine_native_parts::coperative_leader_layout::CODENAME + 8, 2);
+        memory.u64(OPERATIVE + engine_native_parts::coperative_leader_layout::CODENAME, 0);
         assert_eq!(
             capture(&memory, &mut rows, &mut definitions, &mut bytes).operatives,
             Outcome::Rows { len: 2 }
@@ -1487,7 +1493,7 @@ mod tests {
 
     #[test]
     fn a_carried_operative_stores_exactly_what_a_fresh_read_stores() {
-        use crate::cname_group_member::{FLAG_B, OVERRIDE_NAME};
+        use engine_native::cname_group_member::{FLAG_B, OVERRIDE_NAME};
         let mut memory = world();
         let occupant = Occupant {
             pointer: B,
@@ -1497,7 +1503,7 @@ mod tests {
             scientist: 0,
             operative: RESOLVED,
         };
-        let member = OPERATIVE + coperative_leader::CODENAME;
+        let member = OPERATIVE + engine_native_parts::coperative_leader_layout::CODENAME;
         let (group_header, custom_header) = (member + 0x10, member + OVERRIDE_NAME);
         let string = |memory: &mut Sparse, header: usize, text: &[u8], heap: Option<usize>| {
             match heap {

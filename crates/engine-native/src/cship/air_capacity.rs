@@ -48,11 +48,11 @@ fn has_air_capacity_module(
             .and_then(|p| usize::try_from(p).ok())
             .filter(|p| *p != 0)
             .ok_or("carrier capacity variant unreadable or null")?;
-        cequipment_variant::identity(memory, base, variant)?;
+        engine_native_parts::equipment_variant_identity::identity(memory, base, variant)?;
         let modules_at = variant
             .checked_add(cequipment_variant::MODULES + 8)
             .ok_or("carrier capacity modules address overflow")?;
-        let modules = crate::cpdx_array::Array::read(memory, modules_at, 16)
+        let modules = engine_native_memory::cpdx_array::Array::read(memory, modules_at, 16)
             .ok_or("carrier capacity modules unreadable or invalid")?;
         for index in 0..modules.count {
             let entry = modules
@@ -63,12 +63,12 @@ fn has_air_capacity_module(
                 .filter(|p| *p != 0)
                 .ok_or("carrier capacity module unreadable or null")?;
             if read::<u64>(memory, module)
-                != engine_sites::at(base, crate::cequipment_module::VTABLE_RVA).map(|p| p as u64)
+                != engine_sites::at(base, engine_native_parts::cequipment_module::VTABLE_RVA).map(|p| p as u64)
             {
                 return Err("carrier capacity module identity mismatch");
             }
             let flag = module
-                .checked_add(crate::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE)
+                .checked_add(engine_native_parts::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE)
                 .and_then(|at| read::<u8>(memory, at))
                 .ok_or("carrier capacity module flag unreadable")?;
             if flag != 0 {
@@ -83,7 +83,7 @@ fn has_air_capacity_module(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     const HOST: usize = 0x1000;
     const ENTRIES: usize = 0x2000;
     const VARIANT: usize = 0x3000;
@@ -110,7 +110,7 @@ mod tests {
             1 | (1 << 32),
         );
         put(&mut bytes, ENTRIES, VARIANT as u64);
-        put(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
+        put(&mut bytes, VARIANT, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
             VARIANT + cequipment_variant::TYPE,
@@ -130,9 +130,9 @@ mod tests {
         put(
             &mut bytes,
             MODULE,
-            crate::cequipment_module::VTABLE_RVA.0 as u64,
+            engine_native_parts::cequipment_module::VTABLE_RVA.0 as u64,
         );
-        bytes[MODULE + crate::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE] = 1;
+        bytes[MODULE + engine_native_parts::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE] = 1;
         bytes
     }
     fn kind(bytes: &[u8], flags: u64) -> Result<u32, &'static str> {
@@ -145,7 +145,7 @@ mod tests {
         bytes[HOST + MODULE_PREDICATE + 1] = 1;
         assert_eq!(kind(&bytes, 0), Ok(1));
         bytes[HOST + MODULE_PREDICATE] = 1;
-        bytes[MODULE + crate::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE] = 0;
+        bytes[MODULE + engine_native_parts::cequipment_module::CARRIER_CACHE_FLAG_CANDIDATE] = 0;
         assert_eq!(kind(&bytes, 0), Ok(2));
         bytes[HOST + MODULE_PREDICATE + 1] = 0;
         assert_eq!(kind(&bytes, 0), Ok(1));

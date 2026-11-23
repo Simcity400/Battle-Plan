@@ -4,7 +4,8 @@ use super::{
     program_outcome,
 };
 use crate::table_capture::CaptureRows;
-use engine_native::{ccountry, cgame_state, msvc_string};
+use engine_native::{ccountry, cgame_state};
+use engine_native_memory::msvc_string;
 use engine_projects::{
     nproject_breakthrough_node, nproject_cbreakthrough_progress, nproject_cprogram,
     nproject_cprogram_status, nproject_cproject, nproject_cproject_pool,
@@ -30,8 +31,8 @@ const BT_HEAD: usize = 0x9100;
 pub const BT_NODE: usize = 0x9200;
 pub const HEAP: usize = 0xA000;
 
-pub fn memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
-    engine_native::memory::SliceMemory {
+pub fn memory(bytes: &[u8]) -> engine_native_memory::memory::SliceMemory<'_> {
+    engine_native_memory::memory::SliceMemory {
         base: ADDRESS,
         bytes,
     }
@@ -412,7 +413,7 @@ pub fn add_reserved_alias(bytes: &mut [u8]) {
     put(bytes, RESERVED + ccountry::ID, 0_u32.to_le_bytes());
 }
 
-pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
+pub fn direct(memory: &impl engine_native_memory::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let first = nproject_cprogram::walk(
         memory,
@@ -427,7 +428,7 @@ pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> C
     captured.names.len = first.bytes_len;
     captured.names.required = first.required_bytes;
     captured.required_candidates = first.required_candidates;
-    let (projects, histories) = nproject_cproject::walk_with_history_buffer(memory, BASE, GAME_STATE, engine_native::walk::Buffer::Growing(&mut captured.projects.rows), engine_native::walk::Buffer::Growing(&mut captured.history.rows));
+    let (projects, histories) = nproject_cproject::walk_with_history_buffer(memory, BASE, GAME_STATE, engine_native_memory::walk::Buffer::Growing(&mut captured.projects.rows), engine_native_memory::walk::Buffer::Growing(&mut captured.history.rows));
     captured.projects.outcome = bounded(projects, captured.projects.rows.len());
     captured.history.outcome = bounded(histories, captured.history.rows.len());
     captured.breakthroughs.outcome = bounded(
@@ -454,7 +455,7 @@ pub fn job() -> ProjectsJob {
 }
 
 pub fn split(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     capacities: &Capacities,
 ) -> (Captured, ProjectsCopyReport, ProjectsJob) {
     let mut captured = Captured::with_capacities(capacities);

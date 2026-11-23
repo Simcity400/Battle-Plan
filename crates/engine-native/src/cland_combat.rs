@@ -1,23 +1,24 @@
 
 use engine_sites::Rva;
+use engine_native_memory::{Memory, cpdx_array::Array, memory::Raw, read, walk::Outcome};
 use crate::{
-    Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
-    cland_combatant, cnaval_combat, cpdx_array::Array, cprovince, crailway_gun, ctask_force, cunit,
-    memory::Raw, read, walk::Outcome,
+    carmy,
+    cgame_state,
+    cland_combatant,
+    cnaval_combat,
+    cprovince,
+    ctask_force,
+    cunit,
+};
+use engine_native_parts::{
+    cland_border_war_combat,
+    cland_border_war_combatant,
+    crailway_gun,
 };
 
 mod country_sets;
-mod demand;
-mod details;
-
 pub use country_sets::{
     CountrySetError, CountrySetsRow, read_country_sets_buffer,
-};
-pub use demand::{DetailDemand, detail_demand};
-pub use details::{
-    BorderWarInputs, CommanderLearningTrait, CommanderSource, CommanderTimedTrait, CommanderTrait,
-    Commanders, DetailArenas, DetailCounts, DetailsRow, Leaders, SKILL_HOVER_KEYS, SideDetails,
-    Span, commander_sources, read_details, read_details_sharing,
 };
 
 pub const VTABLE_RVA: Rva = Rva(0x02a2_37b8);
@@ -43,7 +44,7 @@ pub const TASK_FORCE_CLASS: u32 = 1;
 pub const RAILWAY_GUN_CLASS: u32 = 13;
 pub const MOVEMENT_MODIFIER: usize = 0xb8;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn movement_combat(
     memory: &impl Memory,
     base: usize,
@@ -108,7 +109,7 @@ pub fn movement_combat_side(
             .checked_add(cland_combatant::UNITS)
             .and_then(|address| Array::read(memory, address, 8))
             .ok_or("movement combat side units invalid")?;
-        crate::allocation::reserve(attackers, units.count as usize)
+        engine_allocation::reserve(attackers, units.count as usize)
             .map_err(|_| "movement combat allocation failed")?;
         for index in 0..units.count {
             let at = units
@@ -413,10 +414,10 @@ pub fn walk_with(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(participants),
-        crate::walk::Buffer::Count,
-        Some(crate::walk::Buffer::Growing(classes)),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(participants),
+        engine_native_memory::walk::Buffer::Count,
+        Some(engine_native_memory::walk::Buffer::Growing(classes)),
         |source, _| visit(source),
     )
 }
@@ -474,9 +475,9 @@ pub fn walk_members(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(participants),
-        crate::walk::Buffer::Growing(pointers),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(participants),
+        engine_native_memory::walk::Buffer::Growing(pointers),
         None,
         visit,
     )
@@ -490,10 +491,10 @@ fn walk_members_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut participants: crate::walk::Buffer<'_, u64>,
-    mut pointers: crate::walk::Buffer<'_, usize>,
-    mut classes: Option<crate::walk::Buffer<'_, u32>>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut participants: engine_native_memory::walk::Buffer<'_, u64>,
+    mut pointers: engine_native_memory::walk::Buffer<'_, usize>,
+    mut classes: Option<engine_native_memory::walk::Buffer<'_, u32>>,
     mut visit: impl FnMut(Source, Members<'_>),
 ) -> Walk {
     let keep = pointers.is_growing()
@@ -612,14 +613,14 @@ fn walk_members_buffer(
     })
 }
 
-struct Reader<'a, M> {
-    memory: &'a M,
-    base: usize,
-    provinces: Array,
+pub struct Reader<'a, M> {
+    pub memory: &'a M,
+    pub base: usize,
+    pub provinces: Array,
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn participant(
+    pub fn participant(
         &self,
         members: &Members<'_>,
         side: usize,
@@ -633,7 +634,7 @@ impl<M: Memory> Reader<'_, M> {
         Ok((unit, self.division(unit)?))
     }
 
-    fn known_unit(
+    pub fn known_unit(
         &self,
         members: &Members<'_>,
         side: usize,
@@ -646,14 +647,14 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn array(&self, pointer: usize, offset: usize, stride: usize) -> Result<Array, &'static str> {
+    pub fn array(&self, pointer: usize, offset: usize, stride: usize) -> Result<Array, &'static str> {
         pointer
             .checked_add(offset)
             .and_then(|address| Array::read(self.memory, address, stride))
             .ok_or("land detail array unreadable or invalid")
     }
 
-    fn province_id(&self, pointer: usize) -> Result<u32, &'static str> {
+    pub fn province_id(&self, pointer: usize) -> Result<u32, &'static str> {
         self.vtable(pointer, 0, cprovince::VTABLE_RVA)?;
         let id = self.field(pointer, cprovince::ID)?;
         if id == 0 || self.element(self.provinces, id)? != pointer {
@@ -661,19 +662,19 @@ impl<M: Memory> Reader<'_, M> {
         }
         Ok(id)
     }
-    fn field<T: Raw>(&self, pointer: usize, offset: usize) -> Result<T, &'static str> {
+    pub fn field<T: Raw>(&self, pointer: usize, offset: usize) -> Result<T, &'static str> {
         pointer
             .checked_add(offset)
             .and_then(|address| read(self.memory, address))
             .ok_or("land combat field unreadable or address overflow")
     }
 
-    fn pointer(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pub fn pointer(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
         usize::try_from(self.field::<u64>(pointer, offset)?)
             .map_err(|_| "land combat pointer overflow")
     }
 
-    fn element(&self, array: Array, index: u32) -> Result<usize, &'static str> {
+    pub fn element(&self, array: Array, index: u32) -> Result<usize, &'static str> {
         array
             .element(index, 8)
             .and_then(|address| read::<u64>(self.memory, address))
@@ -682,7 +683,7 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("combat roster pointer unreadable or null")
     }
 
-    fn vtable(&self, pointer: usize, offset: usize, key: Rva) -> Result<(), &'static str> {
+    pub fn vtable(&self, pointer: usize, offset: usize, key: Rva) -> Result<(), &'static str> {
         let expected = engine_sites::at(self.base, key).ok_or("module address overflow")?;
         if self.field::<u64>(pointer, offset)? == expected as u64 {
             Ok(())
@@ -691,7 +692,7 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn class(&self, pointer: usize) -> Result<Option<bool>, &'static str> {
+    pub fn class(&self, pointer: usize) -> Result<Option<bool>, &'static str> {
         let vtable = self.field::<u64>(pointer, 0)?;
         let vtable =
             usize::try_from(vtable).map_err(|_| "combat registry object vtable mismatch")?;
@@ -708,7 +709,7 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn header(
+    pub fn header(
         &self,
         pointer: usize,
         border_war: bool,
@@ -717,7 +718,7 @@ impl<M: Memory> Reader<'_, M> {
             .map(|(id, a, d, _)| (id, a, d))
     }
 
-    fn header_with_sides(
+    pub fn header_with_sides(
         &self,
         pointer: usize,
         border_war: bool,
@@ -756,7 +757,7 @@ impl<M: Memory> Reader<'_, M> {
         ))
     }
 
-    fn row(&self, pointer: usize, id: u64) -> Result<Row, &'static str> {
+    pub fn row(&self, pointer: usize, id: u64) -> Result<Row, &'static str> {
         let fields = self.field::<[u8; 16]>(pointer, PROVINCE)?;
         let province = usize::try_from(u64::from_le_bytes(fields[..8].try_into().unwrap()))
             .map_err(|_| "land combat pointer overflow")?;
@@ -774,7 +775,7 @@ impl<M: Memory> Reader<'_, M> {
         })
     }
 
-    fn side(
+    pub fn side(
         &self,
         pointer: usize,
         combat: usize,
@@ -840,13 +841,10 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn division(&self, pointer: usize) -> Result<u64, &'static str> {
+    pub fn division(&self, pointer: usize) -> Result<u64, &'static str> {
         match self.unit(pointer)? {
             (handle, DIVISION_CLASS) => Ok(handle),
             _ => Err("land combat participant is not a division"),
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

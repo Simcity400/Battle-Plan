@@ -1,7 +1,7 @@
 use collector_certificates::dirty_set::{Dirty, DirtySet};
 use collector_hooks::hook::Hook;
 use engine_mutations::province_unit_mutations::MUTATIONS;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -74,10 +74,10 @@ impl Changes for Observer {
 pub const CARRY: bool = cfg!(feature = "province_unit_changes");
 
 fn province_id(province: usize) -> Option<usize> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     province
         .checked_add(engine_native::cprovince::ID)
-        .and_then(|address| engine_native::read::<u32>(&memory, address))
+        .and_then(|address| engine_native_memory::read::<u32>(&memory, address))
         .filter(|&id| id != 0)
         .map(|id| id as usize)
 }

@@ -1,11 +1,19 @@
 
-use crate::{
-    Memory, cbuilding, ccountry, cgame_state, corders_group,
-    cpdx_array::Array,
-    cprovince, cprovince_railway_info as rail_info, crailway_gun, crailway_manager,
-    creference_registry, csub_unit_definition, cunit, province_definition, read,
-    walk::{Buffer, Outcome},
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use engine_native_parts::{
+    cbuilding,
+    crailway_gun,
+    creference_registry,
+    csub_unit_definition,
 };
+use engine_native::{
+    ccountry,
+    cgame_state,
+    corders_group,
+    cprovince::{self, definition as province_definition},
+    cunit,
+};
+use crate::{cprovince_railway_info as rail_info, crailway_manager};
 
 pub const NAME: usize = 0x258;
 
@@ -39,7 +47,7 @@ pub struct TooltipScratch<'a> {
     pub named: crate::railway_gun_speed::NamedBonuses<'a>,
     pub layout: &'a mut Option<crate::fixed_layout::Report>,
     pub layout_buffer: &'a mut [u8],
-    pub supply_origins: Buffer<'a, crate::cunit_supply_inputs::Origin>,
+    pub supply_origins: Buffer<'a, engine_native_parts::cunit_supply_inputs::Origin>,
     pub supply_origins_len: usize,
     pub required_supply_origins: usize,
 }
@@ -74,9 +82,9 @@ pub struct Row {
     pub alternate_len: usize,
     pub name: Option<(usize, usize)>,
     pub eta: Option<EtaOperands>,
-    pub supply: Option<crate::cunit_supply_inputs::Inputs>,
+    pub supply: Option<engine_native_parts::cunit_supply_inputs::Inputs>,
     pub supply_origins_start: usize,
-    pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
+    pub supply_failure: Option<engine_native_parts::cunit_supply_inputs::Failure>,
     pub withdrawal: Option<u8>,
     pub fresh: Option<FreshEta>,
     pub fresh_failure: Option<&'static str>,
@@ -103,8 +111,8 @@ pub struct NameArena<'a> {
 impl NameArena<'_> {
     fn capture(&mut self, memory: &impl Memory, gun: usize, keep: bool) -> Option<(usize, usize)> {
         let result = (|| {
-            let name = crate::raid_tooltip_operands::StoredString::read(memory, at(gun, NAME)?)
-                .map_err(crate::raid_tooltip_operands::NameReadError::reason)?;
+            let name = engine_native_air::raid_tooltip_operands::StoredString::read(memory, at(gun, NAME)?)
+                .map_err(engine_native_air::raid_tooltip_operands::NameReadError::reason)?;
             self.required = self
                 .required
                 .checked_add(name.len)
@@ -122,7 +130,7 @@ impl NameArena<'_> {
                 .get_mut(start..end)
                 .ok_or("railway gun name arena too short")?;
             name.copy(memory, output)
-                .map_err(crate::raid_tooltip_operands::NameReadError::reason)?;
+                .map_err(engine_native_air::raid_tooltip_operands::NameReadError::reason)?;
             self.used = end;
             Ok::<_, &'static str>(Some((start, name.len)))
         })();
@@ -171,8 +179,8 @@ pub fn name_demand(
             if countries.resolve(owner)?.canonical_slot != country.canonical_slot {
                 return Err("railway gun owner differs from country roster");
             }
-            let name = crate::raid_tooltip_operands::StoredString::read(memory, at(gun, NAME)?)
-                .map_err(crate::raid_tooltip_operands::NameReadError::reason)?;
+            let name = engine_native_air::raid_tooltip_operands::StoredString::read(memory, at(gun, NAME)?)
+                .map_err(engine_native_air::raid_tooltip_operands::NameReadError::reason)?;
             demand.rows = demand
                 .rows
                 .checked_add(1)
@@ -205,7 +213,7 @@ pub fn name_demand(
                     .checked_add(count)
                     .ok_or("railway gun combat-reference hint demand overflow")?;
             }
-            if let Ok(count) = crate::cunit_supply_inputs::origin_demand(memory, gun) {
+            if let Ok(count) = engine_native_parts::cunit_supply_inputs::origin_demand(memory, gun) {
                 demand.supply_origins = demand
                     .supply_origins
                     .checked_add(count)
@@ -731,7 +739,7 @@ fn walk_impl(
         scratch.required_supply_origins = 0;
         for (row, &(gun, _)) in output[..outcome.len()].iter_mut().zip(scratch.guns.iter()) {
             row.supply_origins_start = scratch.supply_origins_len;
-            match crate::cunit_supply_inputs::capture_buffer(
+            match engine_native_parts::cunit_supply_inputs::capture_buffer(
                 memory,
                 gun,
                 scratch.supply_origins.suffix(scratch.supply_origins_len),
@@ -742,7 +750,7 @@ fn walk_impl(
                             scratch.supply_origins_len += len;
                             len
                         }
-                        Err(crate::cunit_supply_inputs::Failure::OriginsCapacity { required }) => {
+                        Err(engine_native_parts::cunit_supply_inputs::Failure::OriginsCapacity { required }) => {
                             required
                         }
                         Err(_) => 0,

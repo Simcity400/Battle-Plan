@@ -4,10 +4,18 @@ use collector_primitives::table_capture::CaptureRows;
 use collector_projection::projection::Projection;
 use collector_projection::projection::project_table;
 use collector_projection::projection::scalar_table;
+use engine_native_air::cair_wing;
 use engine_native::{
-    cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant, corder_instance,
-    cship, ctask_force, walk::Outcome,
+    cfleet,
+    cland_combat,
+    cnaval_combat,
+    cnaval_combatant,
+    corder_instance,
+    cship,
+    ctask_force,
 };
+use engine_native_memory::walk::Outcome;
+use engine_native_politics::chuman;
 use replay_data::{
     rows::AirWingRow, rows::ArmyOrderRow, rows::FleetRow, rows::HumanControllerRow,
     rows::LandCombatRow, rows::NavalCombatParticipantRow, rows::NavalCombatRow, rows::PlayerRow,
@@ -1353,9 +1361,8 @@ mod tests {
 #[cfg(test)]
 mod ship_names_tests {
     use super::*;
-    use engine_native::{
-        cequipment_variant, cname_group_member as member, memory::SliceMemory, msvc_string,
-    };
+    use engine_native::{cequipment_variant, cname_group_member as member};
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
     use replay_data::rows::{Recorded, ShipNamingOperands};
     const SHIP: usize = 0x100;
     const MEMBER: usize = 0xb00;
@@ -1397,7 +1404,7 @@ mod ship_names_tests {
         word(
             &mut bytes,
             EQUIPMENT,
-            cequipment_variant::VTABLE_RVA.0 as u64,
+            engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
         );
         word(
             &mut bytes,

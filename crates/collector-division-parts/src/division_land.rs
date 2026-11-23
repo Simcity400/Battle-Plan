@@ -5,7 +5,8 @@ use crate::{
 use collector_projection::projection::{Projection, project_table};
 use engine_allocation as allocation;
 use engine_land_inputs::division_land_inputs as native;
-use engine_native::{Memory, carmy::DivisionSeed, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::carmy::DivisionSeed;
 use replay_data::{
     rows::DivisionLandInputsRow, rows::DivisionManpowerContributor, rows::RetiredI64, rows::tables,
 };
@@ -75,9 +76,9 @@ impl Captured {
         let start = qpc();
         let prepared = (|| {
             for buffer in [&mut self.pointers, &mut self.ordinals] {
-                engine_native::walk::Buffer::Growing(buffer).ensure(source.len())?;
+                engine_native_memory::walk::Buffer::Growing(buffer).ensure(source.len())?;
             }
-            engine_native::walk::Buffer::Growing(&mut self.first).ensure(source.len())?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.first).ensure(source.len())?;
             Ok::<_, &'static str>(())
         })();
         if let Err(reason) = prepared {

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{read_census::ReadCensus, reference_bucket as bucket};
+use engine_native_memory::read_census::ReadCensus;
+use engine_native_parts::reference_bucket as bucket;
 use std::collections::BTreeMap;
 
 const GS: usize = 0x1000;

@@ -7,7 +7,8 @@ pub const ROOT_ORDER_RVA: Rva = Rva(0x00c4_5310);
 pub const HOST_OFFSET: usize = crate::cunit::SCHEDULED_MEMBER;
 pub const UNIT_ACCESSOR_VTABLE_SLOT: usize = 0x20;
 
-use crate::{Memory, corder_instance as order, corders_group as group, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use crate::{corder_instance as order, corders_group as group};
 
 const CAPACITY_ERROR: &str = "membership packet capacity";
 const NONE: usize = usize::MAX;
@@ -136,8 +137,8 @@ impl MembershipPacket {
         roots: usize,
         chunks: usize,
     ) -> std::io::Result<Self> {
-        let group_index = groups.checked_mul(2).ok_or_else(crate::allocation::oom)?;
-        let order_index = roots.checked_mul(2).ok_or_else(crate::allocation::oom)?;
+        let group_index = groups.checked_mul(2).ok_or_else(engine_allocation::oom)?;
+        let order_index = roots.checked_mul(2).ok_or_else(engine_allocation::oom)?;
         Ok(Self {
             prepared: MembershipCapacity {
                 queries,
@@ -146,14 +147,14 @@ impl MembershipPacket {
                 chunks,
             },
             required: MembershipCapacity::default(),
-            queries: crate::allocation::vec(queries)?,
-            groups: crate::allocation::vec(groups)?,
-            roots: crate::allocation::vec(roots)?,
-            orders: crate::allocation::vec(roots)?,
-            chunks: crate::allocation::vec(chunks)?,
-            group_index: crate::allocation::filled(group_index, NONE)?,
-            order_index: crate::allocation::filled(order_index, NONE)?,
-            work: crate::allocation::vec(queries)?,
+            queries: engine_allocation::vec(queries)?,
+            groups: engine_allocation::vec(groups)?,
+            roots: engine_allocation::vec(roots)?,
+            orders: engine_allocation::vec(roots)?,
+            chunks: engine_allocation::vec(chunks)?,
+            group_index: engine_allocation::filled(group_index, NONE)?,
+            order_index: engine_allocation::filled(order_index, NONE)?,
+            work: engine_allocation::vec(queries)?,
             overflowed: false,
         })
     }
@@ -194,11 +195,11 @@ impl MembershipPacket {
     pub fn grow(&mut self, required: MembershipCapacity) -> std::io::Result<()> {
         let old = self.prepared;
         let next = old.grown(self.required).grown(required);
-        let groups = crate::allocation::mul(next.groups, 2)?;
-        let orders = crate::allocation::mul(next.roots, 2)?;
+        let groups = engine_allocation::mul(next.groups, 2)?;
+        let orders = engine_allocation::mul(next.roots, 2)?;
         fn retain<T>(rows: &mut Vec<T>, demand: usize) -> std::io::Result<()> {
             if demand > rows.capacity() {
-                crate::allocation::reserve_exact(rows, demand - rows.len())?;
+                engine_allocation::reserve_exact(rows, demand - rows.len())?;
             }
             Ok(())
         }
@@ -406,7 +407,7 @@ impl MembershipPacket {
             let address = at
                 .checked_add(root_offset(set))
                 .ok_or("membership order roots overflow")?;
-            let header = crate::read(memory, address);
+            let header = engine_native_memory::read(memory, address);
             header
                 .and_then(|h| Array::from_header(h, 8))
                 .ok_or("membership order roots invalid")
@@ -451,7 +452,7 @@ impl MembershipPacket {
         input.identity = (|| {
             let vtable = engine_sites::at(base, order::VTABLE_RVA)
                 .ok_or("membership order identity mismatch")? as u64;
-            if crate::read::<u64>(memory, at) != Some(vtable) {
+            if engine_native_memory::read::<u64>(memory, at) != Some(vtable) {
                 return Err("membership order identity mismatch");
             }
             input.owner = read_at(memory, at, order::OWNER);
@@ -473,7 +474,7 @@ impl MembershipPacket {
                 .pointer
                 .checked_add(order::ASSIGNED_MEMBER_DATA)
                 .ok_or("assigned members overflow")?;
-            let header = crate::read(memory, address);
+            let header = engine_native_memory::read(memory, address);
             header
                 .and_then(|h| Array::from_header(h, 8))
                 .ok_or("assigned members invalid")
@@ -519,7 +520,7 @@ impl MembershipPacket {
             let address = roots
                 .element(ordinal, 8)
                 .ok_or("membership root overflow")?;
-            let at = crate::read::<u64>(memory, address)
+            let at = engine_native_memory::read::<u64>(memory, address)
                 .ok_or("orders membership pointer unreadable")? as usize;
             if at == 0 {
                 return Err("membership order identity mismatch");
@@ -584,7 +585,7 @@ impl MembershipPacket {
                 len: count * 8,
                 next: None,
             };
-            if !crate::read_slice(memory, address, &mut chunk.bytes[..chunk.len]) {
+            if !engine_native_memory::read_slice(memory, address, &mut chunk.bytes[..chunk.len]) {
                 return Err("assigned members unreadable");
             }
             let index = self.chunks.len();
@@ -705,7 +706,7 @@ fn reserve<T>(
     overflowed: &mut bool,
 ) -> Result<(), &'static str> {
     if required > rows.capacity() {
-        crate::allocation::reserve(rows, required.saturating_sub(rows.len())).map_err(|_| {
+        engine_allocation::reserve(rows, required.saturating_sub(rows.len())).map_err(|_| {
             *overflowed = true;
             CAPACITY_ERROR
         })?;
@@ -719,7 +720,7 @@ fn reserve_index(
     overflowed: &mut bool,
 ) -> Result<bool, &'static str> {
     let required = capacity.checked_mul(2).ok_or_else(|| {
-        let _ = crate::allocation::oom();
+        let _ = engine_allocation::oom();
         *overflowed = true;
         CAPACITY_ERROR
     })?;
@@ -755,8 +756,8 @@ pub(crate) fn group_identity(
     base: usize,
     at: usize,
 ) -> Result<(), &'static str> {
-    let vtable = crate::read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
-    if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
+    let vtable = engine_native_memory::read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
+    if ![group::VTABLE_RVA, engine_native_parts::carmy_group::VTABLE_RVA]
         .iter()
         .any(|&key| engine_sites::at(base, key).map(|p| p as u64) == Some(vtable))
     {
@@ -775,14 +776,14 @@ fn root_offset(set: usize) -> usize {
     [group::PRIMARY_ORDER_DATA, group::SECONDARY_ORDER_DATA][set]
 }
 
-fn read_at<T: crate::memory::Raw>(
+fn read_at<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
 ) -> Option<T> {
     pointer
         .checked_add(offset)
-        .and_then(|address| crate::read(memory, address))
+        .and_then(|address| engine_native_memory::read(memory, address))
 }
 
 fn pointer(memory: &impl Memory, at: usize, offset: usize) -> Result<usize, &'static str> {
@@ -793,7 +794,7 @@ fn pointer(memory: &impl Memory, at: usize, offset: usize) -> Result<usize, &'st
 
 #[cfg(test)]
 fn contains_from(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     members: Array,
     member: usize,
     mut first: u32,
@@ -804,7 +805,7 @@ fn contains_from(
         let address = members
             .element(first, 8)
             .ok_or("assigned members overflow")?;
-        if !crate::read_slice(memory, address, &mut bytes[..count * 8]) {
+        if !engine_native_memory::read_slice(memory, address, &mut bytes[..count * 8]) {
             return Err("assigned members unreadable");
         }
         if bytes[..count * 8]
@@ -820,7 +821,8 @@ fn contains_from(
 
 #[cfg(test)]
 fn has_order(memory: &impl Memory, base: usize, member: usize) -> Result<bool, &'static str> {
-    use crate::{corder_instance as order, corders_group as group, cpdx_array::Array, read};
+    use crate::{corder_instance as order, corders_group as group};
+    use engine_native_memory::{cpdx_array::Array, read};
     let pointer = |at: usize, offset: usize| {
         at.checked_add(offset)
             .and_then(|p| read::<u64>(memory, p))
@@ -833,7 +835,7 @@ fn has_order(memory: &impl Memory, base: usize, member: usize) -> Result<bool, &
     }
     let authenticate = |at| -> Result<(), &'static str> {
         let vptr = read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
-        if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
+        if ![group::VTABLE_RVA, engine_native_parts::carmy_group::VTABLE_RVA]
             .iter()
             .any(|&key| engine_sites::at(base, key).map(|p| p as u64) == Some(vptr))
             || pointer(at, group::HANDLE)? as u32 != group::REFERENCE_TYPE

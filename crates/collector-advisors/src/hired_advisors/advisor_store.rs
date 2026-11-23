@@ -1,9 +1,7 @@
 use crate::advisor_pool_changes::{Changes, Counts, Table};
 use engine_allocation as allocation;
 use engine_characters::{advisor_tokens, advisor_tokens::TokenCarry};
-use engine_native::{
-    ccountry_characters::AvailableCarry, ccountry_characters::Pool, ccountry_characters::Row,
-};
+use engine_native_politics::ccountry_characters::{AvailableCarry, Pool, Row};
 use std::ops::Range;
 
 type Certified = (u64, u64);

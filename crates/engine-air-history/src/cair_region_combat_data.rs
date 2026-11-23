@@ -1,12 +1,12 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    cstrategic_air,
     memory::{RecordField, RecordLayout, RecordSources},
-    sair_wing_combat_data, sdamage_entry,
     walk::Outcome,
 };
+use engine_native_air::cstrategic_air;
+use crate::{sair_wing_combat_data, sdamage_entry};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_5288);
@@ -76,8 +76,8 @@ pub fn walk(
         memory,
         base,
         roots,
-        crate::walk::Buffer::Growing(records),
-        crate::walk::Buffer::Growing(damage),
+        engine_native_memory::walk::Buffer::Growing(records),
+        engine_native_memory::walk::Buffer::Growing(damage),
     )
 }
 
@@ -85,8 +85,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     roots: &[Root],
-    mut records: crate::walk::Buffer<'_, sair_wing_combat_data::Row>,
-    mut damage: crate::walk::Buffer<'_, sdamage_entry::Row>,
+    mut records: engine_native_memory::walk::Buffer<'_, sair_wing_combat_data::Row>,
+    mut damage: engine_native_memory::walk::Buffer<'_, sdamage_entry::Row>,
 ) -> Capture {
     let result = (|| {
         let mut record_len = 0_usize;
@@ -353,13 +353,13 @@ impl Reader {
             Ok(at) => return Ok(self.variants[at].1),
             Err(at) => at,
         };
-        let identity = match crate::read::<[u8; 16]>(memory, pointer) {
+        let identity = match engine_native_memory::read::<[u8; 16]>(memory, pointer) {
             None => Err(3),
             Some(bytes) => {
                 let expected =
-                    engine_sites::at(base, engine_native::cequipment_variant::VTABLE_RVA)
+                    engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
                         .ok_or("variant module address overflow")?;
-                engine_native::cequipment_variant::identity_from_header(expected, bytes)
+                engine_native_parts::equipment_variant_identity::identity_from_header(expected, bytes)
                     .map_err(|_| 4)
             }
         };
@@ -425,7 +425,7 @@ pub fn read_holder_into(
                     .ok_or("air combat record address overflow")?;
                 let date = record
                     .checked_add(sair_wing_combat_data::DATE)
-                    .and_then(|at| crate::read::<i32>(memory, at))
+                    .and_then(|at| engine_native_memory::read::<i32>(memory, at))
                     .ok_or("air combat record date unreadable")?;
                 if date < since {
                     break;
@@ -546,7 +546,8 @@ fn equipment(
     reader: &mut Reader,
     holder: &mut Holder,
 ) -> Result<Result<std::ops::Range<usize>, u8>, &'static str> {
-    use engine_native::{cequipment_variant_pool as pool, equipment_entry as entry};
+    use engine_native::cequipment_variant::pool as pool;
+    use engine_native_parts::equipment_entry as entry;
     let at = sair_wing_combat_data::EQUIPMENT_POOL;
     let expected =
         engine_sites::at(base, pool::VTABLE_RVA).ok_or("equipment pool vtable address overflow")?;
@@ -658,27 +659,27 @@ pub fn locate(
     owner: u32,
     holder: usize,
 ) -> Result<Option<Root>, &'static str> {
-    let canonical = crate::ccountry::Reader::new(memory, base, game_state)?
+    let canonical = engine_native::ccountry::Reader::new(memory, base, game_state)?
         .resolve(owner)?
         .canonical_slot;
     let manager = game_state
-        .checked_add(crate::cgame_state::STRATEGIC_AIR_MANAGER)
-        .and_then(|at| crate::read::<u64>(memory, at))
+        .checked_add(engine_native::cgame_state::STRATEGIC_AIR_MANAGER)
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .ok_or("strategic air manager pointer unreadable or address overflow")?;
-    let expected = engine_sites::at(base, crate::cstrategic_air_manager::VTABLE_RVA)
+    let expected = engine_sites::at(base, engine_native_air::cstrategic_air_manager::VTABLE_RVA)
         .ok_or("strategic air manager vtable address overflow")?;
-    if manager == 0 || crate::read::<u64>(memory, manager) != Some(expected as u64) {
+    if manager == 0 || engine_native_memory::read::<u64>(memory, manager) != Some(expected as u64) {
         return Err("strategic air manager vtable unreadable or mismatched");
     }
     let slots = manager
-        .checked_add(crate::cstrategic_air_manager::COUNTRY_AIR)
+        .checked_add(engine_native_air::cstrategic_air_manager::COUNTRY_AIR)
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("strategic air country roster unreadable or invalid")?;
     let Some(slot) = slots.element(canonical, 8) else {
         return Ok(None);
     };
-    let air = crate::read::<u64>(memory, slot)
+    let air = engine_native_memory::read::<u64>(memory, slot)
         .and_then(|pointer| usize::try_from(pointer).ok())
         .ok_or("strategic air country pointer unreadable or address overflow")?;
     if air == 0 {
@@ -686,12 +687,12 @@ pub fn locate(
     }
     let expected = engine_sites::at(base, cstrategic_air::VTABLE_RVA)
         .ok_or("strategic air country vtable address overflow")?;
-    if crate::read::<u64>(memory, air) != Some(expected as u64) {
+    if engine_native_memory::read::<u64>(memory, air) != Some(expected as u64) {
         return Err("strategic air country vtable unreadable or mismatched");
     }
     let country = air
         .checked_add(cstrategic_air::COUNTRY)
-        .and_then(|at| crate::read::<u32>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u32>(memory, at))
         .ok_or("strategic air country reference unreadable or address overflow")?;
     if country != owner {
         return Ok(None);
@@ -717,8 +718,9 @@ pub fn locate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
-    use crate::{ccountry, cgame_state, cstrategic_air_manager};
+    use engine_native_memory::memory::SliceMemory;
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_air::cstrategic_air_manager;
 
     const MEMORY_BASE: usize = 0x1000;
     const IMAGE_BASE: usize = 0x1_4000_0000;
@@ -1132,8 +1134,8 @@ mod tests {
                     &memory,
                     IMAGE_BASE,
                     &roots,
-                    crate::walk::Buffer::Count,
-                    crate::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
                 )
                 .records,
                 Outcome::Truncated {
@@ -1211,7 +1213,7 @@ mod tests {
 
     #[test]
     fn equipment_entries_are_read_once_and_variants_once_per_capture() {
-        use engine_native::{cequipment_variant as variant, cequipment_variant_pool as pool};
+        use engine_native::cequipment_variant::{self as variant, pool as pool};
         const ENTRIES: usize = 0x1900;
         const VARIANT: usize = 0x1a00;
         let mut bytes = fixture();
@@ -1234,7 +1236,7 @@ mod tests {
         put(
             &mut bytes,
             VARIANT,
-            &((IMAGE_BASE + variant::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((IMAGE_BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, VARIANT + 8, &handle.to_le_bytes());
         let memory = SliceMemory {

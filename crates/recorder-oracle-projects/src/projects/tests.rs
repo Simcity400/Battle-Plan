@@ -625,7 +625,7 @@ fn a_building_source_compares_template_and_location() {
 
 #[test]
 fn tooltip_operand_oracle_checks_references_ordinals_and_missing_census() {
-    use engine_native::raid_tooltip_operands::*;
+    use engine_native_air::raid_tooltip_operands::*;
     use replay_data::rows::RaidTooltipOperandRow;
     let (mut frame, pack, _) = raid_fixture();
     let raid = u64::from(u32::MAX) << 32 | 84;
@@ -673,7 +673,7 @@ fn tooltip_operand_oracle_checks_references_ordinals_and_missing_census() {
 
 #[test]
 fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures() {
-    use engine_native::raid_tooltip_operands::*;
+    use engine_native_air::raid_tooltip_operands::*;
     use replay_data::rows::RaidTooltipOperandRow;
     let (mut frame, mut pack, _) = raid_fixture();
     let raid = pack.raids.as_mut().unwrap()[0]

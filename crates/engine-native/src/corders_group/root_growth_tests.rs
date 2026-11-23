@@ -1,5 +1,6 @@
 use super::*;
-use crate::{memory::SliceMemory, reference_bucket};
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::reference_bucket;
 use std::cell::RefCell;
 
 struct World {
@@ -89,7 +90,7 @@ fn registry_and_counter_rows_grow_on_first_and_later_unchanged_country_populatio
         assert_eq!(source, Outcome::Rows { len: count });
         assert_eq!(*world.header_reads.borrow(), 1);
         assert_eq!(roots[count - 1].country, count as u32);
-        crate::allocation::resize_default(&mut counters, count).unwrap();
+        engine_allocation::resize_default(&mut counters, count).unwrap();
         let outcome = walk_counter_inputs(&world, 0, &roots[..count], source, &mut counters);
         assert_eq!(outcome, Outcome::Rows { len: count });
         assert_eq!(counters[count - 1].group, roots[count - 1].handle);
@@ -119,11 +120,11 @@ fn the_census_gathers_each_group_identity_and_country_once() {
         }
         fn copy_records(
             &self,
-            sources: crate::memory::RecordSources<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
             layout: &RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {
-            if let crate::memory::RecordSources::Pointers(pointers) = sources {
+            if let engine_native_memory::memory::RecordSources::Pointers(pointers) = sources {
                 self.1.borrow_mut().extend_from_slice(pointers);
             }
             self.0.copy_records(sources, layout, destination)
@@ -158,11 +159,11 @@ impl<M: Memory> Memory for Gathers<'_, M> {
     }
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        if let crate::memory::RecordSources::Pointers(pointers) = sources {
+        if let engine_native_memory::memory::RecordSources::Pointers(pointers) = sources {
             self.1.borrow_mut().push(pointers.to_vec());
         }
         self.0.copy_records(sources, layout, destination)
@@ -213,14 +214,14 @@ fn a_gather_fault_falls_back_to_the_single_reads_once() {
         spent: Default::default(),
     };
     let memory = Gathers(&one_shot, RefCell::default());
-    let before = crate::batch_fallback::count(crate::batch_fallback::Batch::OrderRoots);
+    let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::OrderRoots);
     let mut roots = Vec::new();
     assert_eq!(
         walk_roots(&memory, 0, &mut roots),
         Outcome::Rows { len: 200 }
     );
     assert_eq!(
-        crate::batch_fallback::count(crate::batch_fallback::Batch::OrderRoots),
+        engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::OrderRoots),
         before + 1
     );
     assert_eq!(roots[70].country, 71);

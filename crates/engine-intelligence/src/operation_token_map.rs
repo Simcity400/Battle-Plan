@@ -6,7 +6,7 @@ pub const MASK: usize = 0x14;
 pub const OVERFLOW: usize = 0x18;
 pub const EMPTY_TARGET_STORAGE_RVA: Rva = Rva(0x0312_b8c0);
 
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Header {

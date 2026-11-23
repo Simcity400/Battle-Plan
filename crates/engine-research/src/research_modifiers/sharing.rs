@@ -52,7 +52,7 @@ impl Country {
         memory: &M,
         base: usize,
         countries: &ccountry::Reader<'_, M>,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         status: usize,
     ) -> Result<Self, &'static str> {
         let roster = array_at(memory, at(status, 0x118)?, 8)?;
@@ -113,7 +113,7 @@ impl Country {
                     let diplomacy =
                         pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
                     let faction =
-                        read::<u64>(memory, at(diplomacy, crate::cdiplomacy_status::FACTION)?)
+                        read::<u64>(memory, at(diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?)
                             .ok_or("research sharing faction unreadable")?;
                     group.members = if faction == 0 {
                         Array { data: 0, count: 0 }
@@ -121,11 +121,11 @@ impl Country {
                         let faction = usize::try_from(faction)
                             .map_err(|_| "research faction address overflow")?;
                         if read::<u64>(memory, faction)
-                            != Some(site(base, crate::cfaction::VTABLE_RVA)? as u64)
+                            != Some(site(base, engine_native::cfaction::VTABLE_RVA)? as u64)
                         {
                             return Err("research sharing faction identity mismatch");
                         }
-                        array_at(memory, at(faction, crate::cfaction::MEMBERS)?, 8)?
+                        array_at(memory, at(faction, engine_native::cfaction::MEMBERS)?, 8)?
                     };
                     group.member_pointers = true;
                 }

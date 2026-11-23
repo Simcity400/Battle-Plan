@@ -1,9 +1,10 @@
 
 #[cfg(test)]
-use crate::Memory;
+use engine_native_memory::Memory;
+use engine_native_memory::memory::{RecordField, RecordLayout};
 use crate::{
-    memory::{RecordField, RecordLayout},
-    nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
+    nproject_cprototype_project_state as prototype,
+    nproject_csimple_project_state as simple,
 };
 use engine_sites::Rva;
 
@@ -124,7 +125,7 @@ pub fn phase_source(pointer: usize, fields: &[u8; FIELDS_SIZE]) -> usize {
 
 #[cfg(test)]
 fn read_state(memory: &impl Memory, base: usize, pointer: usize) -> Result<State, &'static str> {
-    use crate::memory::RecordSources;
+    use engine_native_memory::memory::RecordSources;
     let mut fields = [0; FIELDS_SIZE];
     let mut phase = [0; PHASE_SIZE];
     if memory.copy_records(RecordSources::Pointers(&[pointer]), &LAYOUT, &mut fields)
@@ -216,7 +217,7 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     fn machine() -> [u8; 0x268] {
         let mut bytes = [0; 0x268];
@@ -285,7 +286,7 @@ mod tests {
 
         fn copy_records(
             &self,
-            sources: crate::memory::RecordSources<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
             layout: &RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {

@@ -325,7 +325,7 @@ impl Cache {
                     &mut self.upgrade_currencies,
                     upgrade.definition_token as u32,
                     upgrade.definition_pointer,
-                    engine_native::cequipment_upgrade::COST_CURRENCY,
+                    engine_native_parts::cequipment_upgrade::COST_CURRENCY,
                 )
             })
             .transpose()?
@@ -338,16 +338,16 @@ impl Cache {
         });
         let flags = definition.identity.classifier_flags;
         engine_allocation::reserve(&mut keys, 1).map_err(|_| "design context allocation failed")?;
-        keys.push(if flags & engine_native::cequipment_type::SHIP_MASK != 0 {
+        keys.push(if flags & engine_native_parts::cequipment_type::SHIP_MASK != 0 {
             REFIT_IC_FACTOR
         } else {
             CONVERSION_SPEED_FACTOR
         });
-        let family = if flags & engine_native::cequipment_type::SHIP_MASK != 0 {
+        let family = if flags & engine_native_parts::cequipment_type::SHIP_MASK != 0 {
             Some(SHIP_COST_FACTOR)
-        } else if flags & engine_native::cequipment_type::TANK_MASK != 0 {
+        } else if flags & engine_native_parts::cequipment_type::TANK_MASK != 0 {
             Some(TANK_COST_FACTOR)
-        } else if flags & engine_native::cequipment_type::PLANE_MASK != 0 {
+        } else if flags & engine_native_parts::cequipment_type::PLANE_MASK != 0 {
             Some(AIR_COST_FACTOR)
         } else {
             None
@@ -366,7 +366,7 @@ impl Cache {
             &mut self.types,
             token,
             definition.archetype_pointer,
-            engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+            engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER,
         )?;
         engine_allocation::reserve(&mut keys, modules.len() + 1)
             .map_err(|_| "design context allocation failed")?;
@@ -377,7 +377,7 @@ impl Cache {
                 &mut self.modules,
                 module.definition_token,
                 module.definition_pointer,
-                engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                engine_native_parts::cequipment_module::DESIGN_COST_MODIFIER,
             )?);
         }
         keys.sort_unstable();
@@ -435,9 +435,9 @@ impl Cache {
                 let value = owner.as_ref().map_err(|e| *e).and_then(|owner| {
                     let address = owner
                         .pointer
-                        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                         .ok_or("design country accumulator address overflow")?;
-                    engine_native::modifier_accumulator::requested_effective_at(
+                    engine_native_parts::modifier_accumulator::requested_effective_at(
                         memory, base, address, *key,
                     )
                 });
@@ -545,11 +545,11 @@ fn template_row(
     memory: &impl Memory,
     base: usize,
     country: u32,
-    owner: Result<&ccountry::Country, &'static str>,
+    owner: Result<&engine_native_memory::country_identity::Country, &'static str>,
 ) -> rows::DesignCountryTemplatesRow {
     let _reads = read_accounting::table(TableId::DesignCountryTemplates);
     let entries = owner.and_then(|owner| {
-        let status = engine_native::read::<u64>(
+        let status = engine_native_memory::read::<u64>(
             memory,
             owner
                 .pointer
@@ -557,7 +557,7 @@ fn template_row(
                 .ok_or("design template production owner address overflow")?,
         )
         .ok_or("design template production owner unreadable")? as usize;
-        if engine_native::read::<u64>(
+        if engine_native_memory::read::<u64>(
             memory,
             status
                 .checked_add(cproduction_status::COUNTRY)
@@ -645,7 +645,7 @@ fn reseed_organisation_owner(
     {
         return Err("design organisation owner has wrong reference kind");
     }
-    let pointer = engine_native::creference_registry::resolve(memory, base, state.design_team)?;
+    let pointer = engine_native_parts::creference_registry::resolve(memory, base, state.design_team)?;
     pointer.map_or(Ok(None), |pointer| {
         organisation_owner_at(memory, base, state.design_team, pointer)
     })
@@ -662,8 +662,8 @@ fn organisation_owner_at(
     }
     let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
         .ok_or("design organisation owner identity mismatch")?;
-    if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64)
-        || engine_native::read::<u64>(
+    if engine_native_memory::read::<u64>(memory, pointer) != Some(vtable as u64)
+        || engine_native_memory::read::<u64>(
             memory,
             pointer
                 .checked_add(organisation::REFERENCE)
@@ -672,7 +672,7 @@ fn organisation_owner_at(
     {
         return Err("design organisation owner identity mismatch");
     }
-    engine_native::read::<u32>(
+    engine_native_memory::read::<u32>(
         memory,
         pointer
             .checked_add(organisation::OWNER)
@@ -687,7 +687,7 @@ fn country_reader<'a, M: Memory>(
     base: usize,
 ) -> Result<ccountry::Reader<'a, M>, &'static str> {
     let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
-        .and_then(|p| engine_native::read::<u64>(memory, p))
+        .and_then(|p| engine_native_memory::read::<u64>(memory, p))
         .ok_or("design context game state unreadable")? as usize;
     ccountry::Reader::new(memory, base, state)
 }
@@ -703,7 +703,7 @@ fn immutable_key(
     }
     let key = pointer
         .checked_add(offset)
-        .and_then(|p| engine_native::read(memory, p))
+        .and_then(|p| engine_native_memory::read(memory, p))
         .ok_or("design content modifier key unreadable")?;
     reserve(cache)?;
     cache.insert(token, key);
@@ -1066,13 +1066,13 @@ mod tests {
             if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x1000_u64.to_le_bytes());
                 true
-            } else if address == engine_native::modifier_definition::TABLE_RVA.0
+            } else if address == engine_native_parts::modifier_definition::TABLE_RVA.0
                 && output.len() == 8
             {
                 output.copy_from_slice(&0x14000_u64.to_le_bytes());
                 true
             } else {
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &self.bytes,
                 }
@@ -1157,7 +1157,7 @@ mod tests {
             }
             cache.seeded = true;
         }
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -1184,7 +1184,7 @@ mod tests {
             fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
                 assert_eq!(
                     address,
-                    engine_native::creference_registry::LOW_ROOTS_RVA.0
+                    engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
                         + organisation::REFERENCE_TYPE_ID as usize * 8
                 );
                 assert_eq!(bytes.len(), 8);
@@ -1258,18 +1258,18 @@ mod tests {
             Ok(())
         }
         for key in [
-            kit::EQUIPMENT_TYPE + engine_native::cequipment_type::DESIGN_COST_MODIFIER,
-            MODULE + engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+            kit::EQUIPMENT_TYPE + engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER,
+            MODULE + engine_native_parts::cequipment_module::DESIGN_COST_MODIFIER,
         ] {
             let mut bytes = kit::fixture();
             bytes.resize(0x16000, 0);
             for (address, value) in [
                 (
-                    kit::EQUIPMENT_TYPE + engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+                    kit::EQUIPMENT_TYPE + engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER,
                     777_u32,
                 ),
                 (
-                    MODULE + engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                    MODULE + engine_native_parts::cequipment_module::DESIGN_COST_MODIFIER,
                     778_u32,
                 ),
             ] {
@@ -1362,7 +1362,7 @@ mod tests {
         let put = |bytes: &mut [u8], address: usize, value: &[u8]| {
             bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
         };
-        let accumulator = 0x3000 + ccountry::MODIFIER_ACCUMULATOR;
+        let accumulator = 0x3000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         put(&mut bytes, accumulator, &0x13500_u64.to_le_bytes());
         put(&mut bytes, accumulator + 8, &1_u32.to_le_bytes());
         put(&mut bytes, accumulator + 12, &1_u32.to_le_bytes());
@@ -1417,9 +1417,9 @@ mod tests {
     #[test]
     fn variant_country_context_tracks_only_reached_upgrade_currency_and_revises_daily_demand() {
         let mut bytes = vec![0; 0x2000];
-        let modifier = engine_native::cequipment_type::DESIGN_COST_MODIFIER;
+        let modifier = engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER;
         bytes[modifier..modifier + 4].copy_from_slice(&777_u32.to_le_bytes());
-        let currency = 0x1000 + engine_native::cequipment_upgrade::COST_CURRENCY;
+        let currency = 0x1000 + engine_native_parts::cequipment_upgrade::COST_CURRENCY;
         bytes[currency..currency + 4].copy_from_slice(&2_u32.to_le_bytes());
         let world = World {
             bytes,
@@ -1473,14 +1473,14 @@ mod tests {
         );
         assert!(!cache.countries[&5_000].contains_key(&AIR_COST_FACTOR));
         let mut naval = definition.clone();
-        naval.identity.classifier_flags = engine_native::cequipment_type::SHIP_MASK;
+        naval.identity.classifier_flags = engine_native_parts::cequipment_type::SHIP_MASK;
         cache.track(&world, &naval, &[], None, None).unwrap();
         assert!(cache.countries[&5_000].contains_key(&REFIT_IC_FACTOR));
         assert!(!cache.countries[&5_000].contains_key(&CONVERSION_SPEED_FACTOR));
         let mut air = definition.clone();
-        air.identity.classifier_flags = engine_native::cequipment_type::PLANE_MASK
-            & !engine_native::cequipment_type::SHIP_MASK
-            & !engine_native::cequipment_type::TANK_MASK;
+        air.identity.classifier_flags = engine_native_parts::cequipment_type::PLANE_MASK
+            & !engine_native_parts::cequipment_type::SHIP_MASK
+            & !engine_native_parts::cequipment_type::TANK_MASK;
         cache.track(&world, &air, &[], None, None).unwrap();
         assert!(cache.countries[&5_000].contains_key(&AIR_EXPERIENCE_TRAINING_FACTOR));
         cache.track(&world, &definition, &[], None, None).unwrap();
@@ -1539,7 +1539,7 @@ mod tests {
     fn unchanged_fresh_variant_context_reuses_key_scratch_and_existing_demand() {
         use super::super::production_rest_test_kit as kit;
         let bytes = kit::fixture();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: kit::BASE,
             bytes: &bytes,
         };
@@ -1711,7 +1711,7 @@ fn seed_operands(cache: &mut Cache, parts: &mut [CountryPart], memory: &impl Mem
                             &mut seed.cache.upgrade_currencies,
                             upgrade.definition_token as u32,
                             upgrade.definition_pointer,
-                            engine_native::cequipment_upgrade::COST_CURRENCY,
+                            engine_native_parts::cequipment_upgrade::COST_CURRENCY,
                         )?;
                     }
                     seed_operand(
@@ -1720,7 +1720,7 @@ fn seed_operands(cache: &mut Cache, parts: &mut [CountryPart], memory: &impl Mem
                         &mut seed.cache.types,
                         input.definition.identity.archetype_token,
                         input.definition.archetype_pointer,
-                        engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+                        engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER,
                     )?;
                     for module in &seed.modules[input.modules.clone()] {
                         seed_operand(
@@ -1729,7 +1729,7 @@ fn seed_operands(cache: &mut Cache, parts: &mut [CountryPart], memory: &impl Mem
                             &mut seed.cache.modules,
                             module.definition_token,
                             module.definition_pointer,
-                            engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                            engine_native_parts::cequipment_module::DESIGN_COST_MODIFIER,
                         )?;
                     }
                     Ok(owner)
@@ -1974,9 +1974,9 @@ impl CountryPart {
                 let value = owner.as_ref().map_err(|e| *e).and_then(|owner| {
                     let address = owner
                         .pointer
-                        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                         .ok_or("design country accumulator address overflow")?;
-                    engine_native::modifier_accumulator::requested_effective_at(
+                    engine_native_parts::modifier_accumulator::requested_effective_at(
                         memory, base, address, *key,
                     )
                 });
@@ -2116,13 +2116,13 @@ mod partition_tests {
             if address == cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                 output.copy_from_slice(&0x1000_u64.to_le_bytes());
                 true
-            } else if address == engine_native::modifier_definition::TABLE_RVA.0
+            } else if address == engine_native_parts::modifier_definition::TABLE_RVA.0
                 && output.len() == 8
             {
                 output.copy_from_slice(&0x14000_u64.to_le_bytes());
                 true
             } else {
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &self.bytes,
                 }
@@ -2136,7 +2136,7 @@ mod partition_tests {
         let mut put = |at: usize, value: &[u8]| {
             bytes[at - 0x1000..at - 0x1000 + value.len()].copy_from_slice(value)
         };
-        let accumulator = 0x3000 + ccountry::MODIFIER_ACCUMULATOR;
+        let accumulator = 0x3000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         put(accumulator, &0x13500_u64.to_le_bytes());
         put(accumulator + 8, &1_u32.to_le_bytes());
         put(accumulator + 12, &1_u32.to_le_bytes());
@@ -2298,17 +2298,17 @@ mod cold_seed_tests {
         for (pointer, offset, value) in [
             (
                 0x1000,
-                engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+                engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER,
                 777u32,
             ),
             (
                 0x3000,
-                engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                engine_native_parts::cequipment_module::DESIGN_COST_MODIFIER,
                 778u32,
             ),
             (
                 0x4000,
-                engine_native::cequipment_upgrade::COST_CURRENCY,
+                engine_native_parts::cequipment_upgrade::COST_CURRENCY,
                 2u32,
             ),
         ] {
@@ -2360,7 +2360,7 @@ mod cold_seed_tests {
     #[test]
     fn cold_context_seed_parts_match_serial_for_uneven_and_fifteen_hundred_countries() {
         let bytes = bytes();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -2414,7 +2414,7 @@ mod cold_seed_tests {
     fn one_shot_seed_operands_keep_serial_first_occurrences_and_partial_demand() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct OneShot<'a> {
-            inner: engine_native::memory::SliceMemory<'a>,
+            inner: engine_native_memory::memory::SliceMemory<'a>,
             at: usize,
             reads: AtomicUsize,
         }
@@ -2437,17 +2437,17 @@ mod cold_seed_tests {
                 variants.definitions.rows[35].archetype_pointer = 0x2000;
             }
             let faults = if late {
-                vec![0x2000 + engine_native::cequipment_type::DESIGN_COST_MODIFIER]
+                vec![0x2000 + engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER]
             } else {
                 vec![
-                    0x1000 + engine_native::cequipment_type::DESIGN_COST_MODIFIER,
-                    0x3000 + engine_native::cequipment_module::DESIGN_COST_MODIFIER,
-                    0x4000 + engine_native::cequipment_upgrade::COST_CURRENCY,
+                    0x1000 + engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER,
+                    0x3000 + engine_native_parts::cequipment_module::DESIGN_COST_MODIFIER,
+                    0x4000 + engine_native_parts::cequipment_upgrade::COST_CURRENCY,
                 ]
             };
             for at in faults {
                 let memory = || OneShot {
-                    inner: engine_native::memory::SliceMemory {
+                    inner: engine_native_memory::memory::SliceMemory {
                         base: 0x1000,
                         bytes: &bytes,
                     },
@@ -2503,7 +2503,7 @@ mod cold_seed_tests {
             }
         }
         let bytes = bytes();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -2539,9 +2539,9 @@ mod cold_seed_tests {
     #[test]
     fn conflicting_tokens_use_the_serial_first_pointer_and_missing_parts_do_not_retry() {
         let mut bytes = bytes();
-        let key = engine_native::cequipment_type::DESIGN_COST_MODIFIER;
+        let key = engine_native_parts::cequipment_type::DESIGN_COST_MODIFIER;
         bytes[0x1000 + key..0x1000 + key + 4].copy_from_slice(&888u32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

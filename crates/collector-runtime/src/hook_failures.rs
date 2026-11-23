@@ -496,7 +496,7 @@ mod tests {
             assert_eq!(failure["stage"], "publication");
             assert!(!failure["site"].as_str().unwrap().is_empty());
             if family == Family::PlayerCommands {
-                let memory = engine_native::memory::SliceMemory {
+                let memory = engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
                 };

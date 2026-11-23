@@ -1,9 +1,8 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, operation_token_map::Header, operation_token_target_entry as entry, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{operation_token_map::Header, operation_token_target_entry as entry};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_9558);
 pub const COUNTRY: usize = 0x08;
@@ -25,7 +24,7 @@ pub struct Walk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -39,8 +38,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(tokens),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(tokens),
     )
 }
 
@@ -48,8 +47,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut tokens: crate::walk::Buffer<'_, u32>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut tokens: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Walk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -174,7 +173,9 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory, operation_token_map};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
+    use crate::operation_token_map;
 
     const BASE: usize = 0x0001_4000_0000;
     const GAME: usize = 0x1000;

@@ -361,7 +361,7 @@ fn project(frame: &DecodedFrame, slot: u32, catalogue: Option<&Arc<Catalogue>>, 
                 text(format!("Split for repair: {}; automatic reinforcement: {}", on(row.repair_split), on(row.auto_reinforcement))),
                 text(format!("Refit design: {}; after repair: {}", design(row.refit_variant), design(row.refit_after_repair))),
             ]);
-            if row.composition_token != engine_native::naval_management::NO_AI_COMPOSITION_TOKEN {
+            if row.composition_token != engine_native_naval::naval_management::NO_AI_COMPOSITION_TOKEN {
                 let template = lexical
                     .iter()
                     .find(|entry| entry.token == row.composition_token)

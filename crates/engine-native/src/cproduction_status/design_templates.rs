@@ -66,7 +66,7 @@ pub fn read_templates(
             if !memory.copy(address, &mut buffer[..count * 4]) {
                 return Err("design template equipment token unreadable");
             }
-            crate::allocation::reserve(&mut equipment, count)
+            engine_allocation::reserve(&mut equipment, count)
                 .map_err(|_| "design template allocation failed")?;
             equipment.extend(
                 buffer[..count * 4]
@@ -74,7 +74,7 @@ pub fn read_templates(
                     .map(|word| u32::from_le_bytes(word.try_into().unwrap())),
             );
         }
-        crate::allocation::reserve(&mut result, 1)
+        engine_allocation::reserve(&mut result, 1)
             .map_err(|_| "design template allocation failed")?;
         result.push(DesignTemplate {
             uses: i32::from_le_bytes(bytes[USES..USES + 4].try_into().unwrap()),
@@ -151,8 +151,8 @@ mod tests {
     fn design_templates_read_only_bounded_payload_and_preserve_known_empty() {
         let mut bytes = vec![0_u8; 0x800];
         bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
-        fn memory(bytes: &[u8]) -> crate::memory::SliceMemory<'_> {
-            crate::memory::SliceMemory {
+        fn memory(bytes: &[u8]) -> engine_native_memory::memory::SliceMemory<'_> {
+            engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes,
             }

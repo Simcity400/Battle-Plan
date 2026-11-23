@@ -1,10 +1,15 @@
 
 use engine_sites::Rva;
 use super::LEADER;
+use engine_native_memory::{Memory, cgame_date, fixed5, read};
 use crate::{
-    Memory, carmy_leader, cgame_date, cgame_state, corders_group,
-    creference_registry::HeaderResolver, creferenced_division_template, cunit_leader, fixed5, read,
+    carmy_leader,
+    cgame_state,
+    corders_group,
+    creferenced_division_template,
+    cunit_leader,
 };
+use engine_native_parts::creference_registry::HeaderResolver;
 
 const COOLDOWN_TYPE: usize = 0xe84;
 const COOLDOWN_END: usize = 0xea0;
@@ -26,7 +31,7 @@ fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("HQ cooldown address overflow")
 }
 
-fn define<T: crate::memory::Raw>(
+fn define<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -34,7 +39,7 @@ fn define<T: crate::memory::Raw>(
     field(memory, site(base, key)?, 0)
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,

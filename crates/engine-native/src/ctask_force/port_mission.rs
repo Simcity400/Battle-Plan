@@ -1,14 +1,13 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
-    cname_group_member::{Names, Span},
     cpdx_array::Array,
-    creference_registry::ScopedResolver,
-    cunit,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
     walk::Buffer,
 };
+use crate::{cname_group_member::{Names, Span}, cunit};
+use engine_native_parts::creference_registry::ScopedResolver;
 
 const SEARCHING: usize = 0x610;
 const ENGAGEMENT_TARGET: usize = super::NAVAL_MISSION + 0xa0;
@@ -184,7 +183,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Ok(());
         };
         let required = reference_slots(self.reference_required).ok_or_else(|| {
-            let _ = crate::allocation::oom();
+            let _ = engine_allocation::oom();
             "port reference scratch length overflow"
         })?;
         if required <= answers.len() && answers.len().is_power_of_two() {
@@ -193,7 +192,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         if required == 0 {
             return Ok(());
         }
-        let mut grown = crate::allocation::default_vec::<ReferenceAnswer>(required)
+        let mut grown = engine_allocation::default_vec::<ReferenceAnswer>(required)
             .map_err(|_| "port reference scratch allocation failed")?;
         for answer in answers.iter().filter(|answer| answer.resolution.is_some()) {
             let hash = answer
@@ -390,8 +389,8 @@ fn generic_owner(
         0 => (crate::carmy::VTABLE_RVA, crate::carmy::SECONDARY_VTABLE_RVA),
         1 => (super::VTABLE_RVA, super::SECONDARY_VTABLE_RVA),
         13 => (
-            crate::crailway_gun::VTABLE_RVA,
-            crate::crailway_gun::SECONDARY_VTABLE_RVA,
+            engine_native_parts::crailway_gun::VTABLE_RVA,
+            engine_native_parts::crailway_gun::SECONDARY_VTABLE_RVA,
         ),
         _ => return Err("port searcher CUnit class unsupported"),
     };
@@ -421,7 +420,7 @@ fn avoided(
 ) -> Option<Span> {
     let source = task
         .checked_add(AVOIDED_SHIP_TYPES)
-        .and_then(|at| Array::read(memory, at, crate::msvc_string::STRIDE))?;
+        .and_then(|at| Array::read(memory, at, engine_native_memory::msvc_string::STRIDE))?;
     let count = source.count as usize;
     arenas.avoided_required = arenas.avoided_required.saturating_add(count);
     let start = arenas.avoided_len;
@@ -476,7 +475,7 @@ fn avoided(
                 }
             } else {
                 let mut demand = Names {
-                    bytes: crate::walk::Buffer::Count,
+                    bytes: engine_native_memory::walk::Buffer::Count,
                     len: 0,
                     required: 0,
                 };
@@ -540,23 +539,23 @@ pub fn demand(memory: &impl Memory, base: usize, task: usize, mission_kind: u32)
         demand.references = demand.references.saturating_add(1);
         let rule = read::<i32>(
             memory,
-            at(super::NAVAL_MISSION + crate::cnaval_mission::ENGAGEMENT_RULE)?,
+            at(super::NAVAL_MISSION + engine_native_parts::cnaval_mission::ENGAGEMENT_RULE)?,
         )
         .ok_or("port sizing engagement rule unreadable")?;
         if rule == 4 {
             return Ok(());
         }
-        let avoided = Array::read(memory, at(AVOIDED_SHIP_TYPES)?, crate::msvc_string::STRIDE)
+        let avoided = Array::read(memory, at(AVOIDED_SHIP_TYPES)?, engine_native_memory::msvc_string::STRIDE)
             .ok_or("port sizing avoidance header unreadable or invalid")?;
         demand.avoided = avoided.count as usize;
         for index in 0..avoided.count {
             let one = || -> Result<usize, &'static str> {
                 let header = avoided
-                    .element(index, crate::msvc_string::STRIDE)
+                    .element(index, engine_native_memory::msvc_string::STRIDE)
                     .and_then(|at| read::<[u8; 32]>(memory, at))
                     .ok_or("port sizing avoided string header unreadable")?;
                 let mut names = Names {
-                    bytes: crate::walk::Buffer::Count,
+                    bytes: engine_native_memory::walk::Buffer::Count,
                     len: 0,
                     required: 0,
                 };

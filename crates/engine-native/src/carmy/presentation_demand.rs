@@ -1,6 +1,6 @@
 
 use super::{DivisionSeed, Row, capture_division_seeds, walk, walk_with};
-use crate::{Memory, msvc_string, read, walk::Outcome};
+use engine_native_memory::{Memory, msvc_string, read, walk::Outcome};
 use std::cell::RefCell;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +87,7 @@ pub fn presentation_demand(
     base: usize,
     state: usize,
 ) -> Result<PresentationDemand, &'static str> {
-    crate::allocation::advisory(|| presentation_demand_advisory(memory, base, state))
+    engine_allocation::advisory(|| presentation_demand_advisory(memory, base, state))
 }
 
 fn presentation_demand_advisory(
@@ -140,7 +140,7 @@ fn presentation_demand_advisory(
                 }
             }
         }
-        match crate::cunit_supply_inputs::origin_demand(&headers, seed.pointer) {
+        match engine_native_parts::cunit_supply_inputs::origin_demand(&headers, seed.pointer) {
             Ok(count) => add(&mut demand.supply_origins, count)?,
             Err(reason) => {
                 demand.failure.get_or_insert(reason.reason());

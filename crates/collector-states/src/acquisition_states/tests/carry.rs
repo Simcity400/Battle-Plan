@@ -11,7 +11,7 @@ fn store(domain: &'static Domain) -> Option<Box<StateStore>> {
 }
 
 fn named() -> Vec<u8> {
-    use engine_native::msvc_string::LENGTH;
+    use engine_native_memory::msvc_string::LENGTH;
     let mut bytes = fixture();
     for (at, text) in [
         (FIRST + cstate::PRIMARY_DISPLAY_NAME, b"Alpha".as_slice()),
@@ -255,7 +255,11 @@ fn a_carried_hour_names_categories_without_allocating() {
 
 mod infrastructure {
     use super::*;
-    use engine_native::{cbuilding, cbuilding_status, cstate::infrastructure_map::Infrastructure};
+    use engine_native_parts::cbuilding;
+    use engine_native::{
+        cprovince::buildings as cbuilding_status,
+        cstate::infrastructure_map::Infrastructure,
+    };
 
     const DEFINITION: usize = 0x3000;
     const DEFINITIONS: usize = 0x3600;

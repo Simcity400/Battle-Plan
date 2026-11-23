@@ -127,7 +127,7 @@ impl PreparationPart {
         }
         self.maxima_reads
             .resize(self.maxima_pointers.len(), Err("division maxima unstaged"));
-        engine_native::csub_unit_definition::stage_division_maxima(
+        engine_native_parts::csub_unit_definition::stage_division_maxima(
             memory,
             base,
             &self.maxima_pointers,
@@ -194,7 +194,7 @@ impl PreparationPart {
             let observations = store.observations.is_taken().then_some(&store.observations);
             let officer_receiver = seed
                 .pointer
-                .checked_add(engine_native::unit_history::OFFICER);
+                .checked_add(engine_native_land::unit_history::OFFICER);
             let experience_quiet = observations.and_then(|observations| {
                 store.experience.prefetch_quiet(
                     index,
@@ -278,7 +278,7 @@ impl PreparationPart {
                     experience_certificate,
                     &mut self.orders[0],
                     || {
-                        engine_native::read::<i64>(
+                        engine_native_memory::read::<i64>(
                             memory,
                             seed.pointer
                                 .checked_add(engine_native::carmy::EXPERIENCE)
@@ -307,7 +307,7 @@ impl PreparationPart {
                     seed,
                     officer_certificate,
                     &mut self.orders[2],
-                    || engine_native::unit_history::officer_experience(memory, base, seed.pointer),
+                    || engine_native_land::unit_history::officer_experience(memory, base, seed.pointer),
                 ),
             };
             let career = match career_quiet {
@@ -318,7 +318,7 @@ impl PreparationPart {
                     seed,
                     career_certificate,
                     &mut self.orders[3],
-                    || engine_native::unit_history::career_counter(memory, seed.pointer),
+                    || engine_native_land::unit_history::career_counter(memory, seed.pointer),
                 ),
             };
             self.rows.push(PreparedDivision {
@@ -408,7 +408,7 @@ mod tests {
     fn a_fresh_attach_registers_cold_receivers_across_the_ranges() {
         const COUNT: usize = 5_000;
         let seeds = seeds(COUNT);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -464,7 +464,7 @@ mod tests {
         }
         store.experience.finish(true);
         store.progression.finish(true);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

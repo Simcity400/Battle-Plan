@@ -5,9 +5,12 @@ use crate::{
     table_conversion::table,
 };
 use engine_allocation::{collect_vec, copy_vec, owned_vec, reserve_map, resize_default};
-use engine_native::{
-    Memory, naval_combat_air_hit, naval_combat_hit, naval_commander_inputs as commander,
-    naval_ship_modifier_inputs as influence, walk::Outcome,
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native_naval::{
+    naval_combat_air_hit,
+    naval_combat_hit,
+    naval_commander_inputs as commander,
+    naval_ship_modifier_inputs as influence,
 };
 use engine_naval_history::{
     cnaval_combat_air_entry as plane, cnaval_combat_result_side as side,
@@ -87,7 +90,7 @@ impl Capacities {
                             let at = entry
                                 .checked_add(offset)
                                 .ok_or("naval result hit demand overflow")?;
-                            let array = engine_native::cpdx_array::Array::read(memory, at, 8)
+                            let array = engine_native_memory::cpdx_array::Array::read(memory, at, 8)
                                 .ok_or("naval result hit demand invalid")?;
                             add(if index == 0 { 4 } else { 3 }, array.count as usize)?;
                         }
@@ -95,7 +98,7 @@ impl Capacities {
                     })?;
                 }
                 let field = |offset: usize| -> Result<u64, &'static str> {
-                    engine_native::read(
+                    engine_native_memory::read(
                         memory,
                         side_pointer
                             .checked_add(offset)
@@ -112,10 +115,10 @@ impl Capacities {
                     }
                     add(7, 1)?;
                     if let Some(commander) =
-                        engine_native::creference_registry::resolve(memory, base, handle)?
+                        engine_native_parts::creference_registry::resolve(memory, base, handle)?
                     {
                         hq_present |= handle == hq_leader;
-                        let timed = engine_native::cpdx_array::Array::read(
+                        let timed = engine_native_memory::cpdx_array::Array::read(
                             memory,
                             commander
                                 .checked_add(engine_native::cunit_leader::TIMED_TRAIT_DATA)
@@ -138,7 +141,7 @@ impl Capacities {
                         return Err("naval result HQ demand invalid");
                     }
                     for index in 0..bytes / 8 {
-                        let wrapper = engine_native::read::<u64>(memory, begin + index * 8)
+                        let wrapper = engine_native_memory::read::<u64>(memory, begin + index * 8)
                             .ok_or("naval result HQ demand wrapper unreadable")?
                             as usize;
                         let [sources, terms] = influence::influence_demand(memory, base, wrapper)?;
@@ -557,7 +560,7 @@ impl Pass<'_> {
         self.commanders_required = end;
         ensure(self.commanders, end)?;
         self.commanders[index] =
-            if engine_native::creference_registry::resolve(memory, base, handle)?.is_some() {
+            if engine_native_parts::creference_registry::resolve(memory, base, handle)?.is_some() {
                 commander::capture(
                     memory,
                     base,
@@ -638,7 +641,7 @@ impl Pass<'_> {
                     .checked_add(1)
                     .ok_or("naval result ship count overflow")?;
                 ensure(self.ships, self.required_arenas[0])?;
-                let handle = engine_native::read(
+                let handle = engine_native_memory::read(
                     memory,
                     entry
                         .checked_add(ship::HANDLE)
@@ -715,7 +718,7 @@ mod tests {
                 destination.fill(0xed);
                 return false;
             }
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: self.bytes,
             }
@@ -750,7 +753,7 @@ mod tests {
             commander_timed_traits: 0,
         };
         let mut captured = Captured::with_capacities(&c);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
@@ -763,8 +766,10 @@ mod tests {
 
     #[test]
     fn hq_fault_refuses_only_its_result_beside_good_rows() {
-        use engine_native::{
-            cgame_state, creference_registry as registry, reference_bucket as bucket,
+        use engine_native::cgame_state;
+        use engine_native_parts::{
+            creference_registry as registry,
+            reference_bucket as bucket,
         };
         const BASE: usize = 0x1000_0000;
         const STATE: usize = 0x1000;
@@ -776,7 +781,7 @@ mod tests {
                     out.copy_from_slice(&0x7000u64.to_le_bytes());
                     return true;
                 }
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &self.0,
                 }
@@ -935,8 +940,8 @@ mod tests {
         assert_eq!(
             *memory.0.borrow(),
             [
-                engine_native::creference_registry::HIGH_ROOT_RVA.0,
-                engine_native::creference_registry::LOW_ROOTS_RVA.0 + 17 * 8
+                engine_native_parts::creference_registry::HIGH_ROOT_RVA.0,
+                engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 17 * 8
             ]
         );
         pass.commanders_required = usize::MAX;
@@ -1101,7 +1106,7 @@ mod tests {
             (0x2208, 0x2400),
             (
                 0x2400,
-                (BASE + engine_native::cequipment_variant::VTABLE_RVA.0) as u64,
+                (BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
             ),
             (0x2408, 0x1234_5678_0000_0030),
             (0x26a0, i64::MIN as u64),
@@ -1117,8 +1122,8 @@ mod tests {
         for string in [0x2040, 0x2060, 0x2080, 0x20a0, 0x2220, 0x2810] {
             word(
                 &mut bytes,
-                string + engine_native::msvc_string::CAPACITY,
-                engine_native::msvc_string::INLINE_CAPACITY,
+                string + engine_native_memory::msvc_string::CAPACITY,
+                engine_native_memory::msvc_string::INLINE_CAPACITY,
             );
         }
         array(&mut bytes, 0x1018 + side::MEMBERS, 0x1800, 2);
@@ -1313,7 +1318,7 @@ mod tests {
                     put(&mut bytes, body + offset, (BASE + side::VTABLE_RVA.0) as u64);
                 }
             }
-            let memory = engine_native::memory::SliceMemory {
+            let memory = engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             };
@@ -1332,7 +1337,7 @@ mod tests {
         let floor = c;
         assert!(
             c.presize(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &[]
                 },

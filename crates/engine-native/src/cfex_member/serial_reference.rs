@@ -1,5 +1,5 @@
 use super::{DETAIL_ARENA_CAPACITY, EntryOutput};
-use crate::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 
 pub(crate) fn append_entries<T>(
     memory: &impl Memory,
@@ -18,7 +18,7 @@ pub(crate) fn append_entries<T>(
     match &mut output {
         EntryOutput::Owned(rows) => {
             rows.truncate(*length);
-            crate::allocation::reserve_push_batch(rows, count)
+            engine_allocation::reserve_push_batch(rows, count)
                 .map_err(|_| "naval detail allocation failed")?;
         }
         EntryOutput::Slice(rows) if end > rows.len() => return Err(DETAIL_ARENA_CAPACITY),

@@ -8,7 +8,7 @@ use dashboard_base::{
     },
 };
 use dashboard_core::config::LoadContext;
-use engine_native::{cdate::HOUR_EPOCH, cgame_date::NULL_RAW_HOUR};
+use engine_native_memory::{cdate::HOUR_EPOCH, cgame_date::NULL_RAW_HOUR};
 use content_reader_military::intelligence::Intelligence;
 use content_reader_key_names::unit_leader::{Leaders, Skills};
 use content_reader_localisation::localisation::{Argument, Localisation};

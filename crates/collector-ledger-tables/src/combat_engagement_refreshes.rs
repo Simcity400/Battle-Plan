@@ -5,7 +5,7 @@ use crate::{
 };
 use collector_observers::combat_engagement_refreshes::{self as producer, Entry};
 use engine_allocation as allocation;
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::rows::{CombatEngagementRefreshRow, RowCodec, TableId, TableRows};
 use replay_frame::frame::{TableInput, TableView};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn skipped_drain_via_fail_does_not_replay_stale_entries_into_next_hour() {
-        use engine_native::memory::SliceMemory;
+        use engine_native_memory::memory::SliceMemory;
         let clock = |hour: i32| engine_native::cgame_state::Clock {
             hour,
             campaign_id: 1,

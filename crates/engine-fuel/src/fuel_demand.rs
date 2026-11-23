@@ -1,5 +1,5 @@
 
-use crate::{Memory, memory::Raw, read};
+use engine_native_memory::{Memory, memory::Raw, read};
 use engine_sites::Rva;
 
 mod air;
@@ -78,7 +78,7 @@ pub struct Wing {
     pub reason: Option<&'static str>,
 }
 
-pub use crate::modifier_accumulator::RequestedOperand as Modifier;
+pub use engine_native_parts::modifier_accumulator::RequestedOperand as Modifier;
 
 pub use game_model::fuel_demand::{AirInputs, Weather};
 

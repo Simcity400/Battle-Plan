@@ -702,7 +702,7 @@ fn modifier_icon_tooltip(
     }
     if frame == 13 {
         let defines = defines?;
-        let amount = engine_native::csub_unit_definition::movement_air_defense_value(
+        let amount = engine_native_parts::csub_unit_definition::movement_air_defense_value(
             recorded(&unit)?.air_attack,
             defines.air_superiority[0],
             defines.air_superiority[1],

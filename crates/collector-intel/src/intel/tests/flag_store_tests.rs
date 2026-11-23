@@ -418,7 +418,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     watches.boundary(false);
     put(
         &mut bytes,
-        historical + engine_native::cpdx_array::COUNT,
+        historical + engine_native_memory::cpdx_array::COUNT,
         &2_u32.to_le_bytes(),
     );
     watches.roster_write();

@@ -8,4 +8,4 @@ A caller-owned snapshot prevents repeated full scans of one overlord's owned vec
 
 The serial test oracle reads each original field directly. Comparison fixtures sweep row and byte capacity, batch boundaries and persistent and one-shot faults. They include active and retired relations, unrelated types, empty or invalid roster slots and failing scalar payloads. This checks table outcomes, names, order and first failure.
 
-[Subject relation reader](../../crates/engine-native/src/csubject_relation.rs) · [Serial oracle](../../crates/engine-native/src/csubject_relation_cost_baseline.rs) · [Comparison fixtures](../../crates/engine-native/src/csubject_relation/tests.rs)
+[Subject relation reader](../../crates/engine-native/src/crelation/subject.rs) · [Serial oracle](../../crates/engine-native/src/crelation/csubject_relation_cost_baseline.rs) · [Comparison fixtures](../../crates/engine-native/src/crelation/subject/tests.rs)

@@ -14,4 +14,4 @@ Garrison allocation slots have no established enclosing native type. Read every 
 
 The subject and current-autonomy readers obtain the name string from definitions reached through their own relations. Treat those definitions as reference inputs without assigning an unverified native type.
 
-[Agency catalogue](../../crates/engine-native/src/agency_upgrade_levels.rs) · [Branch registry](../../crates/engine-native/src/agency_upgrade_branch_database.rs) · [Garrison allocation](../../crates/engine-native/src/allocation_equipment_row.rs) · [Autonomy definitions](../../crates/engine-native/src/autonomy_state_definition.rs)
+[Agency catalogue](../../crates/engine-native-intelligence/src/agency_upgrade_levels.rs) · [Branch registry](../../crates/engine-native-intelligence/src/agency_upgrade_branch_database.rs) · [Garrison allocation](../../crates/engine-native-parts/src/allocation_equipment_row.rs) · [Autonomy definitions](../../crates/engine-native-parts/src/autonomy_state_definition.rs)

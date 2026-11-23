@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 struct TracedMemory<'a> {
     bytes: &'a [u8],
@@ -62,7 +62,8 @@ impl Memory for TracedMemory<'_> {
 }
 
 fn put_movement(bytes: &mut [u8], province: usize, id: u32, definition: usize, terrain: usize) {
-    use crate::{cterrain_type, province_definition as definition_layout};
+    use engine_native_parts::cterrain_type;
+    use crate::cprovince::definition as definition_layout;
     put(
         bytes,
         province + DEFINITION,
@@ -634,13 +635,13 @@ fn the_walk_gathers_both_area_pointers_with_the_movement_fields() {
     assert_eq!(
         capture.areas[..2],
         [
-            crate::controller_areas::Pointers {
+            crate::cprovince::controller_areas::Pointers {
                 province: 0x1400,
                 definition: 0x1800,
                 controller: 0x5000,
                 owner: 0x6000,
             },
-            crate::controller_areas::Pointers {
+            crate::cprovince::controller_areas::Pointers {
                 province: 0x1600,
                 definition: 0x1900,
                 controller: 0,
@@ -817,7 +818,7 @@ fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
 
 #[test]
 fn movement_operands_sum_native_forts() {
-    use crate::{cbuilding, cbuilding_template};
+    use engine_native_parts::{cbuilding, cbuilding_template};
     let build = |first: i16, second: i16, weight: i32| {
         let mut bytes = provinces();
         bytes.resize(0x4000, 0);
@@ -869,7 +870,7 @@ fn movement_operands_sum_native_forts() {
 
 #[test]
 fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches() {
-    use crate::{cbuilding, cbuilding_template};
+    use engine_native_parts::{cbuilding, cbuilding_template};
     const POINTERS: usize = 0x2000;
     const BUILDINGS: usize = 0x4000;
     const TEMPLATE: usize = 0x18000;
@@ -1238,7 +1239,7 @@ struct ConflictMemory {
 }
 
 const REGISTRY_ROOT: usize =
-    crate::creference_registry::LOW_ROOTS_RVA.0 + crate::corders_group::REFERENCE_TYPE as usize * 8;
+    engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + crate::corders_group::REFERENCE_TYPE as usize * 8;
 
 impl Memory for ConflictMemory {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -1255,11 +1256,18 @@ impl Memory for ConflictMemory {
 }
 
 fn conflict_fixture() -> ConflictMemory {
-    use crate::{
-        cland_border_war_combat, cland_border_war_combatant, cland_combat, corders_group,
-        creference_registry as registry, msvc_tree_node as node, province_definition,
+    use engine_native_parts::{
+        cland_border_war_combat,
+        cland_border_war_combatant,
+        creference_registry as registry,
         reference_bucket as bucket,
     };
+    use crate::{
+        cland_combat,
+        corders_group,
+        cprovince::definition as province_definition,
+    };
+    use engine_native_memory::msvc_tree_node as node;
     let mut bytes = many_provinces(3);
     bytes.resize(0x1c000, 0);
     let at = |offset: usize| (offset + 0x1000) as u64;
@@ -1359,10 +1367,10 @@ fn conflict_walk(
     let mut output = vec![Row::default(); 4];
     let mut conflicts = vec![ConflictRow::default(); rows];
     let mut handles = vec![0; groups];
-    let (outcome, walk) = walk_with_conflicts_buffer(memory, 0, 0x1000, crate::walk::Buffer::Growing(&mut output), ConflictBuffers {
-            rows: crate::walk::Buffer::Growing(&mut conflicts),
-            groups: crate::walk::Buffer::Growing(&mut handles),
-        }, crate::walk::Buffer::Count, None);
+    let (outcome, walk) = walk_with_conflicts_buffer(memory, 0, 0x1000, engine_native_memory::walk::Buffer::Growing(&mut output), ConflictBuffers {
+            rows: engine_native_memory::walk::Buffer::Growing(&mut conflicts),
+            groups: engine_native_memory::walk::Buffer::Growing(&mut handles),
+        }, engine_native_memory::walk::Buffer::Count, None);
     (outcome, walk, output, conflicts, handles)
 }
 
@@ -1396,14 +1404,14 @@ fn border_conflicts_admit_only_resolved_groups_at_border_war() {
 fn a_broken_conflict_set_fails_its_table_without_the_provinces() {
     for (offset, value) in [
         (0x1200 + BORDER_CONFLICT_NONZERO_QWORD, 2_u64),
-        (0x10000 + crate::msvc_tree_node::NIL, 0),
+        (0x10000 + engine_native_memory::msvc_tree_node::NIL, 0),
         (0x10100, 0),
     ] {
         let mut memory = conflict_fixture();
         put(
             &mut memory.bytes,
             offset,
-            &value.to_le_bytes()[..if offset == 0x10000 + crate::msvc_tree_node::NIL {
+            &value.to_le_bytes()[..if offset == 0x10000 + engine_native_memory::msvc_tree_node::NIL {
                 1
             } else {
                 8
@@ -1455,9 +1463,9 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
             (0x2000, 8),
             (0x2000 + ID, 4),
             (0x2000 + DEFINITION, 8),
-            (0xb000 + crate::province_definition::ID, 4),
-            (0xb000 + crate::province_definition::TERRAIN_FLAGS, 1),
-            (0xb000 + crate::province_definition::NEIGHBOURS, 16),
+            (0xb000 + crate::cprovince::definition::ID, 4),
+            (0xb000 + crate::cprovince::definition::TERRAIN_FLAGS, 1),
+            (0xb000 + crate::cprovince::definition::NEIGHBOURS, 16),
         ]
     );
 
@@ -1749,7 +1757,7 @@ fn dense_records_preserve_invalid_source_prefix_without_retry() {
 fn allocation_capacity_overflow_owned_capture_buffers() {
     let oom = std::io::ErrorKind::OutOfMemory;
     assert_eq!(
-        crate::country_memory::Cache::try_with_capacity(usize::MAX)
+        engine_native_intelligence::country_memory::Cache::try_with_capacity(usize::MAX)
             .err()
             .unwrap()
             .kind(),
@@ -1770,14 +1778,14 @@ fn allocation_capacity_overflow_owned_capture_buffers() {
         oom
     );
     assert_eq!(
-        crate::ccountry_raid_status::TypeTokens::try_with_definitions(usize::MAX)
+        engine_native_air::ccountry_raid_status::TypeTokens::try_with_definitions(usize::MAX)
             .err()
             .unwrap()
             .kind(),
         oom
     );
     assert_eq!(
-        crate::ccharacter_manager::PortraitCensus::try_new(usize::MAX)
+        crate::ccharacter::manager::PortraitCensus::try_new(usize::MAX)
             .err()
             .unwrap()
             .kind(),
@@ -1952,7 +1960,7 @@ fn province_at(id: usize) -> usize {
 }
 
 fn carry_fixture() -> Vec<u8> {
-    use crate::{cbuilding, cbuilding_template};
+    use engine_native_parts::{cbuilding, cbuilding_template};
     let mut bytes = many_provinces(67);
     bytes.resize(0x20000, 0);
     let at = |offset: usize| (offset + 0x1000) as u64;
@@ -2242,8 +2250,8 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
     put(&mut bytes, PROVINCE + CONTROLLER_AREA, 0x5200);
     put(&mut bytes, PROVINCE + STRATEGIC_REGION, 0x5300);
     put(&mut bytes, PROVINCE + DEFINITION, DEFINITION_AT as u64);
-    bytes[DEFINITION_AT + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAND_FLAG;
+    bytes[DEFINITION_AT + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAND_FLAG;
     let provinces = Array {
         data: ARRAY,
         count: 3,
@@ -2256,10 +2264,10 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
         controller: Ok(7),
         controller_area: Ok(0x5200),
         strategic_region: Ok(0x5300),
-        terrain_flags: Ok(crate::province_definition::LAND_FLAG),
+        terrain_flags: Ok(crate::cprovince::definition::LAND_FLAG),
     };
     assert_eq!(read(&bytes, 2), Ok(land));
-    bytes[DEFINITION_AT + crate::province_definition::TERRAIN_FLAGS] = 0;
+    bytes[DEFINITION_AT + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
     assert_eq!(
         read(&bytes, 2),
         Ok(MovementProvince {
@@ -2271,7 +2279,7 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
         bytes: &'a [u8],
         at: usize,
     }
-    impl crate::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
             if at <= self.at && self.at < at.saturating_add(out.len()) {
                 return false;
@@ -2314,7 +2322,7 @@ fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
     const PROVINCES: usize = 0x4000;
     const DEFINITION_STRIDE: usize = 0x100;
     const DEFINITIONS: usize = PROVINCES + COUNT as usize * STRIDE;
-    const _: () = assert!(crate::province_definition::TERRAIN_FLAGS < DEFINITION_STRIDE);
+    const _: () = assert!(crate::cprovince::definition::TERRAIN_FLAGS < DEFINITION_STRIDE);
     let mut bytes = vec![0_u8; DEFINITIONS + COUNT as usize * DEFINITION_STRIDE];
     let put = |bytes: &mut [u8], at: usize, value: u64| {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -2346,7 +2354,7 @@ fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
         );
         let definition_word = if id % 10 == 6 { 0 } else { definition as u64 };
         put(&mut bytes, province + DEFINITION, definition_word);
-        bytes[definition + crate::province_definition::TERRAIN_FLAGS] = id as u8;
+        bytes[definition + crate::cprovince::definition::TERRAIN_FLAGS] = id as u8;
     }
     let provinces = Array {
         data: ARRAY,

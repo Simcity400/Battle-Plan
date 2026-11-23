@@ -1,11 +1,5 @@
 
-use engine_native::{
-    Memory, carmy, carmy_manpower_values, ccountry, cequipment_type, cequipment_variant,
-    cequipment_variant_pool, cname_group_member, cpdx_array, creferenced_division_template,
-    csub_unit_definition, equipment_entry, memory, msvc_string, read, read_slice, walk,
-};
-#[cfg(test)]
-use engine_native::{cgame_state, cunit};
+use engine_native::cequipment_variant::{self, pool as cequipment_variant_pool};
 
 pub mod army_upgrade_request_row;
 pub mod carmy_upgrades_requests;

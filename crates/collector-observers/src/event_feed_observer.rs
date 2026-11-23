@@ -7,7 +7,7 @@ use crate::{
     hook::{Hook, Tap, TapSafety},
 };
 use engine_events::event_feed_sites as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     cell::UnsafeCell,
     mem::{ManuallyDrop, MaybeUninit, size_of},
@@ -123,7 +123,7 @@ pub fn begin_delayed_census(
 pub fn baseline_delayed_country(
     memory: &impl Memory,
     context: DelayedCensus,
-    country: engine_native::ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
@@ -240,7 +240,7 @@ pub fn scheduled_delayed(country: usize) {
         let Some(generation) = observed(owner, store) else {
             return;
         };
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let result = (|| {
             let world = native::provenance::World::new(&memory, owner.base)?;
             let identity = world.country_object(country)?;
@@ -284,7 +284,7 @@ pub fn retired_delayed(pointer: usize, pass: Option<(usize, u64)>, visited: bool
         if pass.is_none() && !store.has_delayed(pointer) {
             return;
         }
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let result = native::provenance::World::new(&memory, owner.base).and_then(|world| {
             store.delayed_removed(
                 &world, &memory, owner.base, generation, pointer, pass, visited,
@@ -305,7 +305,7 @@ pub fn reset_delayed_country(pointer: usize) {
         let Some(generation) = observed(owner, store) else {
             return;
         };
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let result = (|| {
             let world = native::provenance::World::new(&memory, owner.base)?;
             let mut fact = crate::event_feed_history::registry::marker(
@@ -823,7 +823,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
             return Err(store.reject("Event feed world observation unavailable"));
         }
         let generation = generation.unwrap();
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let ticket = match frame.site {
             0 => store.war_before(
                 &memory,
@@ -861,8 +861,8 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
 
 pub fn record(
     observe: impl FnOnce(
-        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
-        &engine_native::memory::LiveMemory,
+        &native::provenance::World<'_, engine_native_memory::memory::LiveMemory>,
+        &engine_native_memory::memory::LiveMemory,
         usize,
     ) -> Result<Option<Fact>, &'static str>,
 ) {
@@ -873,7 +873,7 @@ pub fn record(
         let Some(generation) = observed(owner, store) else {
             return;
         };
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let fact = native::provenance::World::new(&memory, owner.base).and_then(|world| {
             let hour = world.hour()?;
             Ok(observe(&world, &memory, owner.base)?.map(|fact| (hour, fact)))
@@ -893,8 +893,8 @@ pub fn record(
 
 pub fn record_script(
     observe: impl FnOnce(
-        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
-        &engine_native::memory::LiveMemory,
+        &native::provenance::World<'_, engine_native_memory::memory::LiveMemory>,
+        &engine_native_memory::memory::LiveMemory,
         usize,
     ) -> Result<Option<ScriptFact>, &'static str>,
 ) {
@@ -905,7 +905,7 @@ pub fn record_script(
         let Some(generation) = observed(owner, store) else {
             return;
         };
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let fact = native::provenance::World::new(&memory, owner.base).and_then(|world| {
             let hour = world.hour()?;
             Ok(observe(&world, &memory, owner.base)?.map(|fact| (hour, fact)))
@@ -943,7 +943,7 @@ pub fn registered_script_instance(state: usize, event: usize, scope: usize, inst
                 return;
             };
             store.registered_instance(generation, scope, event, instance);
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let result = (|| {
                 let world = native::provenance::World::new(&memory, owner.base)?;
                 if world.state_pointer() != state {
@@ -1053,7 +1053,7 @@ unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
         if !crate::world_lifetime::current(Some(frame.generation)) {
             return store.world_returned(ticket);
         }
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         unsafe { store.normal_returned(ticket, frame.generation, &memory, owner.base) }
     })?;
     match result {
@@ -1372,10 +1372,10 @@ pub unsafe fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static s
                 failure,
             };
             let result = if failure.is_none() {
-                let memory = unsafe { engine_native::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
                 store.prepare_boundary(boundary, Some((&memory, owner.base)))
             } else {
-                store.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)
+                store.prepare_boundary::<engine_native_memory::memory::LiveMemory>(boundary, None)
             };
             if let Err(reason) = result {
                 store.invalidate(reason);
@@ -1689,7 +1689,7 @@ impl StagingTest {
     pub(crate) fn prepare(&self, hour: i32) {
         self._owner
             .worker(Role::BoundaryPrepare, |store| {
-                store.prepare_boundary::<engine_native::memory::LiveMemory>(
+                store.prepare_boundary::<engine_native_memory::memory::LiveMemory>(
                     crate::event_feed_history::OwnerBoundary {
                         generation: 1,
                         read_hour: hour,
@@ -1888,7 +1888,7 @@ mod tests {
         header[16..24].copy_from_slice(&9_u64.to_le_bytes());
         header[24..].copy_from_slice(&15_u64.to_le_bytes());
         fact.token =
-            engine_native::msvc_string::Descriptor::from_header(&NoReads, 0, header).unwrap();
+            engine_native_memory::msvc_string::Descriptor::from_header(&NoReads, 0, header).unwrap();
         store
             .script_known(&NoReads, 0, crate::world_lifetime::generation(), 2, fact)
             .unwrap();
@@ -2347,7 +2347,7 @@ mod tests {
         owner
             .worker(Role::BoundaryPrepare, |store| {
                 take_receipts(owner, store);
-                store.prepare_boundary::<engine_native::memory::LiveMemory>(
+                store.prepare_boundary::<engine_native_memory::memory::LiveMemory>(
                     crate::event_feed_history::OwnerBoundary {
                         generation: crate::world_lifetime::generation(),
                         read_hour: hour,

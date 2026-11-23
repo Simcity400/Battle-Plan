@@ -1,12 +1,15 @@
 
-use crate::{
-    Memory, cequipment_variant, cequipment_variant_pool as pool, cgame_state, corders_group,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    equipment_entry,
     memory::{RecordField, RecordLayout, RecordSources},
-    ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as logs, read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native::{cequipment_variant::{self, pool as pool}, cgame_state, corders_group};
+use engine_native_parts::equipment_entry;
+use crate::{ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as logs};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_a260);
@@ -366,7 +369,7 @@ fn for_each_manager<M: Memory, T>(
         group: relocate(logs::VTABLE_RVA)? as u64,
         entry: relocate(loss::VTABLE_RVA)? as u64,
         pool: relocate(pool::VTABLE_RVA)? as u64,
-        variant: relocate(cequipment_variant::VTABLE_RVA)?,
+        variant: relocate(engine_native_parts::equipment_variant_identity::VTABLE_RVA)?,
     };
     let managers = game_state
         .checked_add(cgame_state::COMBAT_LOGS)
@@ -666,7 +669,7 @@ fn read_pool(
             if copied < miss + 1 {
                 return Err("combat log pool variant unreadable");
             }
-            let handle = cequipment_variant::identity_from_header(
+            let handle = engine_native_parts::equipment_variant_identity::identity_from_header(
                 vtables.variant,
                 identities[miss * 16..miss * 16 + 16].try_into().unwrap(),
             )?;
@@ -707,7 +710,7 @@ pub fn countries_with_deleted_groups(
     game_state: usize,
     mut visit: impl FnMut(u32),
 ) -> Result<(), &'static str> {
-    let mut resolver = crate::creference_registry::HeaderResolver::default();
+    let mut resolver = engine_native_parts::creference_registry::HeaderResolver::default();
     for_each_manager(
         memory,
         base,
@@ -743,7 +746,7 @@ pub fn deleted_logs(
         group: relocate(logs::VTABLE_RVA)? as u64,
         entry: relocate(loss::VTABLE_RVA)? as u64,
         pool: relocate(pool::VTABLE_RVA)? as u64,
-        variant: relocate(cequipment_variant::VTABLE_RVA)?,
+        variant: relocate(engine_native_parts::equipment_variant_identity::VTABLE_RVA)?,
     };
     let mut header = [0_u8; SIZE];
     if !read_slice(memory, manager, &mut header) {
@@ -761,7 +764,7 @@ pub fn deleted_logs(
         unread_rows: 0,
         memo: None,
     };
-    let mut resolver = crate::creference_registry::HeaderResolver::default();
+    let mut resolver = engine_native_parts::creference_registry::HeaderResolver::default();
     for_each_group(memory, &vtables, groups, |_, _, bytes, reference| {
         if resolver.resolve(memory, base, reference)?.is_some() {
             return Ok(());

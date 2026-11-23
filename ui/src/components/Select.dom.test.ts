@@ -111,6 +111,19 @@ test('mounted Select preserves authored choices, focus and label layout', async 
         await act('replaceChoices([{value:"disabled",label:"Disabled",disabled:true},{value:"enabled",label:"Enabled"}])');
         assert.equal((await snapshot()).activeValue, 'enabled', 'a removed active value falls back to the first enabled choice');
         await press('Enter'); assert.equal((await snapshot()).chosen, 'enabled');
+        await act('mount()'); await act('open()');
+        await act('replaceChoices([{value:"first",label:"First"},{value:"explained",label:"Explained",disabled:true,reason:"Needs a loaded campaign"},{value:"last",label:"Last"}])');
+        await press('Home');
+        assert.equal((await snapshot()).activeValue, 'first');
+        await press('ArrowDown');
+        assert.equal((await snapshot()).activeValue, 'explained', 'ArrowDown focuses a disabled option that explains why');
+        await press('Enter');
+        assert.equal((await snapshot()).chosen, null, 'Enter does not choose a disabled option');
+        assert.equal((await snapshot()).open, true, 'menu stays open when pressing Enter on a disabled option');
+        await press('ArrowDown');
+        assert.equal((await snapshot()).activeValue, 'last');
+        await press('Enter');
+        assert.equal((await snapshot()).chosen, 'last');
       });
       await context.test('offscreen authored labels determine desktop width without horizontal scrolling', async () => {
         await act('mount(false, 5000)'); await act('open()');

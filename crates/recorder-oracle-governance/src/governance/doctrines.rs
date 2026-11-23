@@ -308,7 +308,7 @@ mod tests {
         use engine_land_inputs::doctrine_state as native;
 
         struct NativeLeader([u8; native::LEADER_STRIDE]);
-        impl engine_native::Memory for NativeLeader {
+        impl engine_native_memory::Memory for NativeLeader {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let Some(offset) = address.checked_sub(16) else {
                     return false;

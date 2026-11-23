@@ -1,5 +1,7 @@
 
-use crate::{Memory, cmilitary_deployment, cname_group_member, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::cmilitary_deployment;
+use engine_native::cname_group_member;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29da9b0);
@@ -56,7 +58,7 @@ pub(crate) fn read_row_buffer(
     country: u32,
     ordinal: u32,
     pointer: usize,
-    custom_names: &mut crate::walk::Buffer<'_, u8>,
+    custom_names: &mut engine_native_memory::walk::Buffer<'_, u8>,
     custom_used: usize,
 ) -> Result<Read, &'static str> {
     let expected =

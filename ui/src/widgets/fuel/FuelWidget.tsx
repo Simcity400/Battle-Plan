@@ -38,7 +38,7 @@ import { FollowedText } from '../../dashboard/follow/FollowedText.tsx';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { isMember } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -110,6 +110,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
   const refused = followRefusal(fuelFollowed, capacityFollowed);
+  const followErr = followFailure(fuelFollowed, capacityFollowed);
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const drillOnClock = drillControl.following;
   const clockHour = usePlaybackHour(runtime.clock, active && drillOnClock && !playing);
@@ -242,7 +243,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || saved.id === 'consumption' && !!options.fuelConsumptionLevel && !savedLevel);
 
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
-    : refused ? <WidgetState kind="unavailable" message={refused} />
+    : refused ? <WidgetState kind="unavailable" technical={refused} />
+    : followErr ? <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />
     : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour) ? <WidgetState kind="outside" />
       : groupError ? <WidgetState kind="error" failure={groupError} onRetry={retryGroups} />
         : countries.reason ? <WidgetState kind="empty" message={countries.reason} />

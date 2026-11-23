@@ -318,8 +318,8 @@ fn entries(
             let total = totals.get(&kind).copied().unwrap_or(0);
             if total == 0
                 && ![
-                    engine_native::naval_mission_inputs::RAIDING,
-                    engine_native::naval_mission_inputs::ESCORT,
+                    engine_native_naval::naval_mission_inputs::RAIDING,
+                    engine_native_naval::naval_mission_inputs::ESCORT,
                 ]
                 .contains(&kind)
             {

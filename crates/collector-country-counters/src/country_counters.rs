@@ -4,10 +4,14 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, table_iter, unavailable},
 };
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::{
-    Memory, ccountry, cname_group_member, creference_registry, crelation_status, cship,
-    walk::Outcome,
+    ccountry,
+    cname_group_member,
+    crelation::status as crelation_status,
+    cship,
 };
+use engine_native_parts::creference_registry;
 use replay_data::rows::{
     CountryAttackModifiers, CountryCivilWarRow, CountryCounterInputRow, CountryMovementModifiers,
     ManpowerReferences, Recorded, Retired, TableId, Witnessed, tables,
@@ -279,15 +283,15 @@ impl Captured {
                     cfg!(any(test, feature = "test-support")),
                     CounterStore::has_certificate,
                 ),
-                states: engine_native::walk::Buffer::Growing(&mut self.states.first),
-                leaders: engine_native::walk::Buffer::Growing(&mut self.leaders.first),
+                states: engine_native_memory::walk::Buffer::Growing(&mut self.states.first),
+                leaders: engine_native_memory::walk::Buffer::Growing(&mut self.leaders.first),
                 state_len: 0,
                 leader_len: 0,
                 required: Default::default(),
             };
             let mut effects = ccountry::EffectRosters {
-                neighbors: engine_native::walk::Buffer::Growing(&mut self.neighbors.first),
-                policies: engine_native::walk::Buffer::Growing(&mut self.policies.first),
+                neighbors: engine_native_memory::walk::Buffer::Growing(&mut self.neighbors.first),
+                policies: engine_native_memory::walk::Buffer::Growing(&mut self.policies.first),
                 neighbor_len: 0,
                 policy_len: 0,
                 required: Default::default(),
@@ -302,7 +306,7 @@ impl Captured {
                     &mut rosters,
                     &mut effects,
                     &mut prefix_reader,
-                    &mut |country: ccountry::Country,
+                    &mut |country: engine_native_memory::country_identity::Country,
                           rosters: &mut ccountry::CounterRosters<'_>,
                           effects: &mut ccountry::EffectRosters<'_>| {
                         store.offer(memory, country, rosters, effects)
@@ -369,7 +373,7 @@ impl Captured {
         let len = self.rows.outcome.len();
         self.relations.required = len;
         if let Err(reason) =
-            engine_native::walk::Buffer::Growing(&mut self.relations.first).ensure(len)
+            engine_native_memory::walk::Buffer::Growing(&mut self.relations.first).ensure(len)
         {
             self.rows.outcome = Outcome::Unavailable { reason };
             return 0;
@@ -435,7 +439,7 @@ impl Captured {
                 store.and_then(|store| store.carried_relation(index, len, prefix.country))
             {
                 let start = self.co_belligerents.len;
-                let mut output = engine_native::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start);
+                let mut output = engine_native_memory::walk::Buffer::GrowingFrom(&mut self.co_belligerents.first, start);
                 if output.ensure(targets.len()) == Ok(true) && targets.len() <= output.len() {
                     output[..targets.len()].copy_from_slice(targets);
                     *row = RelationRow {
@@ -466,7 +470,7 @@ impl Captured {
             }
             let mut forward = crelation_status::ForwardZeroObservation::default();
             let targets = {
-                engine_native::walk::Buffer::GrowingFrom(
+                engine_native_memory::walk::Buffer::GrowingFrom(
                     &mut self.co_belligerents.first,
                     self.co_belligerents.len,
                 )
@@ -833,7 +837,7 @@ pub fn co_belligerent_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const PRIDE_HANDLE: u64 = (91_u64 << 32) | cship::HANDLE_TYPE as u64;
     const PRIDE_SHIP: usize = 0x17000;
@@ -881,7 +885,7 @@ mod tests {
     }
 
     fn pride_world(text: &[u8]) -> Vec<u8> {
-        use engine_native::reference_bucket as bucket;
+        use engine_native_parts::reference_bucket as bucket;
         let mut bytes = co_world();
         co_put64(&mut bytes, PRIDE_SHIP, cship::VTABLE_RVA.0 as u64);
         co_put64(&mut bytes, PRIDE_SHIP + cship::HANDLE, PRIDE_HANDLE);
@@ -1048,7 +1052,7 @@ mod tests {
         co_put32(bytes, at + 12, count);
     }
     fn co_world() -> Vec<u8> {
-        use engine_native::{cdiplomacy_status as diplomacy, cgame_state};
+                use engine_native::cgame_state;
         let mut bytes = vec![0_u8; 0x20000];
         co_header(&mut bytes, CO_STATE + cgame_state::COUNTRIES, 0x3000, 3);
         co_put64(&mut bytes, 0x3000, u64::MAX);
@@ -1068,14 +1072,14 @@ mod tests {
         }
         for owner in 0..2 {
             let root = CO_DIPLOMACY[owner];
-            co_put64(&mut bytes, root, diplomacy::VTABLE_RVA.0 as u64);
+            co_put64(&mut bytes, root, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
             co_put64(
                 &mut bytes,
-                root + diplomacy::COUNTRY,
+                root + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 CO_COUNTRIES[owner] as u64,
             );
             let matrix = 0x3200 + owner * 0x40;
-            co_header(&mut bytes, root + diplomacy::RELATIONS, matrix, 3);
+            co_header(&mut bytes, root + engine_native_parts::cdiplomacy_status_layout::RELATIONS, matrix, 3);
             for target in 0..3 {
                 let status = co_status(owner, target);
                 co_put64(&mut bytes, matrix + target * 8, status as u64);
@@ -1095,7 +1099,7 @@ mod tests {
         }
         co_header(
             &mut bytes,
-            CO_DIPLOMACY[0] + diplomacy::WARTIME_ALLIES,
+            CO_DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
             0x3300,
             2,
         );
@@ -1282,7 +1286,7 @@ mod tests {
 
     #[test]
     fn zero_subject_known_zero_survives_first_fault_and_counts_only_attempted_refusal() {
-        use engine_native::{crelation, csubject_relation};
+        use engine_native::crelation::{self, subject as csubject_relation};
 
         let subject = 0x18000;
         for (first, fault_offset, expected, attempts, reason) in [

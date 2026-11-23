@@ -1,7 +1,11 @@
 
-use crate::{
-    Memory, cair_wing, cair_wing_pool, cbuilding, cbuilding_status, cbuilding_template,
-    cgame_state, cpdx_array::Array, cprovince, cstate, cstrategic_air, read,
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_air::{cair_wing, cstrategic_air};
+use engine_native_parts::{cair_wing_pool, cbuilding, cbuilding_template};
+use engine_native::{
+    cprovince::{buildings as cbuilding_status, self},
+    cgame_state,
+    cstate,
 };
 use engine_sites::Rva;
 
@@ -62,7 +66,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("building damage address overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -356,7 +360,7 @@ fn attacker(
         memory,
         base,
         wing,
-        cair_wing::VTABLE_RVA,
+        engine_native_parts::cair_wing_layout::VTABLE_RVA,
         "building damage wing vtable mismatch",
     )?;
     if field::<u32>(
@@ -380,7 +384,7 @@ fn attacker(
     let pool = pointer(
         memory,
         wing,
-        cair_wing::POOL,
+        engine_native_parts::cair_wing_layout::POOL,
         "building damage wing pool unreadable",
     )?;
     authenticate(

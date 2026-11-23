@@ -1,8 +1,12 @@
 
-use crate::{
-    Memory, ccharacter, ccharacter_manager, ccountry, cgame_state, cpdx_array::Array, cstate, read,
-    read_slice, variable_hash_node, walk::Outcome,
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use engine_native::{
+    ccharacter::{self, manager as ccharacter_manager},
+    ccountry,
+    cgame_state,
+    cstate,
 };
+use crate::variable_hash_node;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x0285_3318);
@@ -80,7 +84,7 @@ impl VariableCarry for Fresh {
 }
 
 pub fn count_scopes(memory: &impl Memory, base: usize, game_state: usize) -> ScopeWalk {
-    walk_scopes_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_scopes_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_scopes(
@@ -95,9 +99,9 @@ pub fn walk_scopes(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(entries),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -105,9 +109,9 @@ pub fn walk_scopes_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, ScopeRow>,
-    entries: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, ScopeRow>,
+    entries: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> ScopeWalk {
     walk_scopes_carried(memory, base, game_state, output, entries, names, &mut Fresh)
 }
@@ -116,9 +120,9 @@ pub fn walk_scopes_carried(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, ScopeRow>,
-    mut entries: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, ScopeRow>,
+    mut entries: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     carry: &mut impl VariableCarry,
 ) -> ScopeWalk {
     let result = (|| {
@@ -154,8 +158,8 @@ pub fn walk_scopes_carried(
                     memory,
                     base,
                     head,
-                    crate::walk::Buffer::Count,
-                    crate::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
+                    engine_native_memory::walk::Buffer::Count,
                 )
             };
             let (count, omitted) = match captured.outcome {
@@ -333,8 +337,8 @@ fn store_rows(
     scope: Scope,
     container: usize,
     head: Head,
-    mut entries: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut entries: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     carry: &mut impl VariableCarry,
 ) -> Result<NameWalk, &'static str> {
     let plan = head
@@ -369,8 +373,8 @@ pub fn read_store_carried(
     base: usize,
     scope: Scope,
     container: usize,
-    entries: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
+    entries: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
     carry: &mut impl VariableCarry,
 ) -> Result<(NameWalk, Option<u32>), &'static str> {
     if container == 0 {
@@ -392,8 +396,8 @@ pub fn walk(
         memory,
         base,
         container,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -401,8 +405,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     container: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     walk_head_buffer(memory, base, read_head(memory, container), output, names)
 }
@@ -454,8 +458,8 @@ fn walk_head_buffer(
     memory: &impl Memory,
     base: usize,
     head: Head,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
         let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;

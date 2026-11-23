@@ -1,10 +1,9 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cgame_state, cland_border_war_combat, cland_combat, cnaval_combat,
-    cnaval_unit_transfer, cpdx_array::Array, creference_registry::HeaderResolver, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::{cgame_state, cland_combat, cnaval_combat};
+use engine_native_parts::{cland_border_war_combat, creference_registry::HeaderResolver};
+use crate::cnaval_unit_transfer;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CombatTransfers {
@@ -48,7 +47,7 @@ fn for_each_handle(
         let address = array
             .element(first, 8)
             .ok_or("naval transfer slot unreadable")?;
-        if !crate::read_slice(memory, address, &mut bytes[..n as usize * 8]) {
+        if !engine_native_memory::read_slice(memory, address, &mut bytes[..n as usize * 8]) {
             return Err("naval transfer slot unreadable");
         }
         for (index, word) in bytes[..n as usize * 8].chunks_exact(8).enumerate() {
@@ -90,10 +89,10 @@ pub fn walk(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(buffers.combats),
-        crate::walk::Buffer::Growing(buffers.transfer_handles),
-        crate::walk::Buffer::Growing(buffers.transfers),
-        crate::walk::Buffer::Growing(buffers.unit_handles),
+        engine_native_memory::walk::Buffer::Growing(buffers.combats),
+        engine_native_memory::walk::Buffer::Growing(buffers.transfer_handles),
+        engine_native_memory::walk::Buffer::Growing(buffers.transfers),
+        engine_native_memory::walk::Buffer::Growing(buffers.unit_handles),
     )
 }
 
@@ -101,10 +100,10 @@ fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut combats: crate::walk::Buffer<'_, CombatTransfers>,
-    mut transfer_handles: crate::walk::Buffer<'_, u64>,
-    mut transfers: crate::walk::Buffer<'_, TransferUnits>,
-    mut unit_handles: crate::walk::Buffer<'_, u64>,
+    mut combats: engine_native_memory::walk::Buffer<'_, CombatTransfers>,
+    mut transfer_handles: engine_native_memory::walk::Buffer<'_, u64>,
+    mut transfers: engine_native_memory::walk::Buffer<'_, TransferUnits>,
+    mut unit_handles: engine_native_memory::walk::Buffer<'_, u64>,
 ) -> Walk {
     let (mut combat_len, mut combat_missing, mut transfer_used) = (0usize, 0usize, 0usize);
     let (mut transfer_len, mut transfer_missing, mut unit_used) = (0usize, 0usize, 0usize);
@@ -281,7 +280,11 @@ fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{creference_registry as registry, memory::SliceMemory, reference_bucket as bucket};
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
+    use engine_native_memory::memory::SliceMemory;
 
     const STATE: usize = 0x1000;
     const LAND: usize = 0x2400;
@@ -610,7 +613,7 @@ mod tests {
                 base: 0,
                 bytes: &fixture.bytes,
             });
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             let n = count as usize;
             let started = std::time::Instant::now();
             let (walked, _, _, rows, _) = fixture.walk_on(&census, [2, 2 * n, 2 * n, n]);

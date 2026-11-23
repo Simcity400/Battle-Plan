@@ -1,5 +1,5 @@
 use super::*;
-use crate::{cpdx_array, memory::SliceMemory};
+use engine_native_memory::{cpdx_array, memory::SliceMemory};
 
 struct IdMemory<'a> {
     memory: SliceMemory<'a>,
@@ -166,7 +166,7 @@ impl MapMemory {
 }
 
 fn put_string(memory: &mut MapMemory, at: usize, heap: usize, text: &[u8]) {
-    use crate::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH};
+    use engine_native_memory::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH};
     let mut header = [0_u8; 32];
     if text.len() as u64 <= INLINE_CAPACITY {
         header[..text.len()].copy_from_slice(text);
@@ -424,7 +424,7 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
 
 #[test]
 fn movement_infrastructure_is_read_per_state_over_the_census() {
-    use crate::{cbuilding_database, cbuilding_template};
+    use engine_native_parts::{cbuilding_database, cbuilding_template};
     let mut memory = MapMemory(std::collections::BTreeMap::new());
     memory.put(cgame_state::STATES, &0x2000_u64.to_le_bytes());
     memory.put(
@@ -492,7 +492,8 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
 
 #[test]
 fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
-    use crate::{cbuilding_database, cbuilding_status, cbuilding_template};
+    use engine_native_parts::{cbuilding_database, cbuilding_template};
+    use crate::cprovince::buildings as cbuilding_status;
     use std::cell::RefCell;
     struct Traced<'a> {
         memory: &'a MapMemory,
@@ -627,7 +628,7 @@ fn state_slots_and_native_country_tags_are_preserved() {
         ]
     );
     assert_eq!(
-        walk_with_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count, |_| {}),
+        walk_with_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Count, |_| {}),
         Outcome::Truncated {
             len: 0,
             unread_rows: 2,
@@ -1087,10 +1088,10 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     put(state + TEMPLATE, &(template as u64).to_le_bytes());
     put(
         template,
-        &(crate::cstate_template::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cstate_template::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
-        template + crate::cstate_template::CONTINENT,
+        template + engine_native_parts::cstate_template::CONTINENT,
         &(continent as u64).to_le_bytes(),
     );
     put(continents, &(null as u64).to_le_bytes());
@@ -1114,13 +1115,13 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     };
     read_rows(&bytes, &mut rows);
     assert_eq!(rows[0].continent, Some(991));
-    bytes[template + crate::cstate_template::CONTINENT
-        ..template + crate::cstate_template::CONTINENT + 8]
+    bytes[template + engine_native_parts::cstate_template::CONTINENT
+        ..template + engine_native_parts::cstate_template::CONTINENT + 8]
         .copy_from_slice(&(null as u64).to_le_bytes());
     read_rows(&bytes, &mut rows);
     assert_eq!(rows[0].continent, Some(0));
-    bytes[template + crate::cstate_template::CONTINENT
-        ..template + crate::cstate_template::CONTINENT + 8]
+    bytes[template + engine_native_parts::cstate_template::CONTINENT
+        ..template + engine_native_parts::cstate_template::CONTINENT + 8]
         .copy_from_slice(&0_u64.to_le_bytes());
     read_rows(&bytes, &mut rows);
     assert_eq!(rows[0].continent, None);

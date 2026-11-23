@@ -13,6 +13,8 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-land.workspace = true
 content-reader-defines.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true
@@ -85,6 +87,7 @@ content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
@@ -93,6 +96,7 @@ replay-capture-spool = { workspace = true, features = ["journal", "test-support"
 replay-identity = { workspace = true, features = ["test-support"] }
 replay-tools = { workspace = true, features = ["default", "journal"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

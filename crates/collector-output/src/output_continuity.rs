@@ -4,7 +4,7 @@ use crate::{
     table_conversion::unavailable,
 };
 use engine_allocation::{collect_vec, default_vec, owned_vec};
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use replay_data::BranchId;
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::{collections::HashMap, io, marker::PhantomData, ops::Range};

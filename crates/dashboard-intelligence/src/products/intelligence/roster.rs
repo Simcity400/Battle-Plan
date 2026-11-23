@@ -192,7 +192,7 @@ impl RosterOperative {
             },
             captured,
             capturer: captured.then(|| country(row.capturer_country)),
-            captured_hour: (captured && row.captured_hour != engine_native::cgame_date::NULL_RAW_HOUR).then_some(row.captured_hour),
+            captured_hour: (captured && row.captured_hour != engine_native_memory::cgame_date::NULL_RAW_HOUR).then_some(row.captured_hour),
         }
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 
 impl Destination<'_> {
     fn forget_shares(&mut self) {
-        self.commanders = cland_combat::Commanders::default();
+        self.commanders = engine_native_land::land_combat_details::Commanders::default();
     }
 
     pub(super) fn visit_reference(
@@ -13,7 +13,7 @@ impl Destination<'_> {
         source: cland_combat::Source,
         members: cland_combat::Members<'_>,
     ) {
-        self.commanders = cland_combat::Commanders::default();
+        self.commanders = engine_native_land::land_combat_details::Commanders::default();
         let _ = members;
         let members = cland_combat::Members::none();
         self.forget_shares();
@@ -104,7 +104,7 @@ impl Destination<'_> {
                                 DivisionOutputs {
                                     name_groups: self.name_groups,
                                     names: &mut self.names,
-                                    exile_tags: engine_native::walk::Buffer::GrowingFrom(
+                                    exile_tags: engine_native_memory::walk::Buffer::GrowingFrom(
                                         self.exile_tags,
                                         exile_start,
                                     ),
@@ -185,15 +185,15 @@ impl Destination<'_> {
         self.forget_shares();
         let at = self.detail_used;
         let roster = self.arenas[0].len;
-        let mut arenas = cland_combat::DetailArenas::with_buffers(
-            engine_native::walk::Buffer::GrowingFrom(self.rosters, roster),
-            engine_native::walk::Buffer::GrowingFrom(self.air_counts, at.air),
-            engine_native::walk::Buffer::GrowingFrom(self.detail_text, at.text),
-            engine_native::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
-            engine_native::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
-            engine_native::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
+        let mut arenas = engine_native_land::land_combat_details::DetailArenas::with_buffers(
+            engine_native_memory::walk::Buffer::GrowingFrom(self.rosters, roster),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.air_counts, at.air),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.detail_text, at.text),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
+            engine_native_memory::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
-        let result = cland_combat::read_details(
+        let result = engine_native_land::land_combat_details::read_details(
             memory,
             base,
             source,

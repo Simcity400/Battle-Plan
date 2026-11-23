@@ -306,7 +306,7 @@ fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
         TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
             index: keys::NAVAL_COORDINATION,
             token: 19,
-            flags: engine_native::modifier_definition::CLAMP_MAXIMUM,
+            flags: engine_native_parts::modifier_definition::CLAMP_MAXIMUM,
             ..Default::default()
         }]),
     );

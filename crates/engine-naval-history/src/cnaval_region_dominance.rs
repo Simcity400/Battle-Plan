@@ -5,10 +5,10 @@ pub const REGION: usize = 0x08;
 pub const ENTRIES: usize = 0x40;
 pub const ENTRY_COUNT: usize = 0x4c;
 
-use crate::{
-    Memory, cdominance_values as values, cgame_state, cpdx_array::Array, cstrategic_region,
-    naval_dominance_entry as entry, read, read_slice, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use crate::{cdominance_values as values, naval_dominance_entry as entry};
+use engine_native::cgame_state;
+use engine_native_parts::cstrategic_region;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -30,7 +30,7 @@ impl Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -43,7 +43,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -51,7 +51,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     match walk_inner(memory, base, game_state, output) {
         Ok(outcome) => outcome,
@@ -63,7 +63,7 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let regions = game_state
         .checked_add(cgame_state::STRATEGIC_REGIONS)
@@ -193,7 +193,7 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const ROOT: usize = 0x1000;
     const REGION_OBJECT: usize = 0x1500;

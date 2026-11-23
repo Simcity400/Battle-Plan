@@ -116,11 +116,11 @@ pub fn store(receiver: Receiver, first: usize, second: usize) -> usize {
 }
 
 pub fn context_store(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     context: usize,
 ) -> Result<Option<usize>, &'static str> {
     let bytes =
-        crate::read::<[u8; 16]>(memory, context).ok_or("scripted variable context unreadable")?;
+        engine_native_memory::read::<[u8; 16]>(memory, context).ok_or("scripted variable context unreadable")?;
     if bytes[CONTEXT_ACTIVE] == 0 || bytes[CONTEXT_CHANGE_SEED] == 0 {
         return Ok(None);
     }
@@ -174,7 +174,7 @@ mod tests {
             bytes
         };
         let at = |bytes: &[u8]| {
-            let memory = crate::memory::SliceMemory { base: 0, bytes };
+            let memory = engine_native_memory::memory::SliceMemory { base: 0, bytes };
             context_store(&memory, 0x10)
         };
         assert_eq!(at(&context(1, 1, 0x9000)), Ok(Some(0x9000)));

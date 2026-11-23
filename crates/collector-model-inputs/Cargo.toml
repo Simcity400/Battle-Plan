@@ -15,6 +15,7 @@ default = ["local_subunit_changes"]
 local_subunit_changes = []
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-allocation.workspace = true
 engine-deployment.workspace = true
 engine-mutations.workspace = true
@@ -33,6 +34,7 @@ collector-status.workspace = true
 collector-timing.workspace = true
 
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
@@ -52,6 +54,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-model-inputs = { workspace = true, features = ["default", "local_subunit_changes", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

@@ -13,14 +13,17 @@
 .settings-country > span { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .settings-country small { color: var(--muted); font-size: 0.6875rem; }
 .settings-country .country-flag { width: 24px; height: 15px; flex: none; }
-:is(.widget-settings-menu, .widget-countries-menu) { --control-h: var(--control-h-sm); padding: 8px; }
+:is(.widget-settings-menu, .widget-countries-menu, .widget-time-menu) { --control-h: var(--control-h-sm); padding: 8px; }
 .widget-settings-content { gap: 6px; }
 .widget-settings-content .settings-section { gap: 5px; padding-top: 6px; }
-:is(.widget-settings-menu, .widget-countries-menu) .setting-row { min-height: 28px; gap: 8px; }
-:is(.widget-settings-menu, .widget-countries-menu) .setting-row.setting-row-stacked { gap: 4px; }
-:is(.widget-settings-menu, .widget-countries-menu) .segmented > button { height: 22px; padding: 0 7px; font-size: 0.75rem; }
-:is(.widget-settings-menu, .widget-countries-menu) .field-hint { font-size: 0.6875rem; line-height: 1.4; }
-.widget-countries-menu { display: flex; flex-direction: column; gap: 6px; }
+:is(.widget-settings-menu, .widget-countries-menu, .widget-time-menu) .setting-row { min-height: 28px; gap: 8px; }
+:is(.widget-settings-menu, .widget-countries-menu, .widget-time-menu) .setting-row.setting-row-stacked { gap: 4px; }
+:is(.widget-settings-menu, .widget-countries-menu, .widget-time-menu) .segmented > button { height: 22px; padding: 0 7px; font-size: 0.75rem; }
+:is(.widget-settings-menu, .widget-countries-menu, .widget-time-menu) .field-hint { font-size: 0.6875rem; line-height: 1.4; }
+.widget-countries-menu, .widget-time-menu { display: flex; flex-direction: column; gap: 6px; }
+.map-settings-section { display: flex; flex-direction: column; gap: 6px; }
+.map-settings-section .map-menu-section { padding: 6px 0 0; }
+.map-settings-section .map-menu-section:first-child { border-top: 0; padding-top: 0; }
 .setting-label.setting-label { flex-direction: row; align-items: center; align-self: center; justify-content: flex-start; gap: 4px; min-width: 0; }
 .setting-row-stacked > .setting-label.setting-label { align-self: flex-start; }
 .setting-label-info { width: 12px; height: 12px; flex: none; color: var(--quiet); }

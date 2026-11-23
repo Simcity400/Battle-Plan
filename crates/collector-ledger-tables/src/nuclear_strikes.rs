@@ -6,7 +6,7 @@ use crate::{
 use collector_observers::nuclear_strikes::{self as producer, Entry, Item, Phase};
 use engine_allocation as allocation;
 use engine_events::{event_feed_sites::CountryIdentity, nuclear_strike_sites::Unit};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{
     rows::NuclearBuildingDamage, rows::NuclearEquipmentLoss, rows::NuclearStrikePart,
     rows::NuclearStrikeRefusal, rows::NuclearStrikeRow, rows::NuclearUnitDamage,

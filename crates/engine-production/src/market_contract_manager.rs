@@ -1,5 +1,6 @@
 
-use crate::{Memory, cgame_state, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::cgame_state;
 
 pub const OWNED_CONTRACTS: usize = 0;
 

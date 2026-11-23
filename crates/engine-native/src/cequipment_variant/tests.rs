@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::Cell;
 
 struct CountedFields<'a> {
@@ -402,7 +402,7 @@ fn design_state_preserves_ancestry_attribution_role_and_raw_flags() {
     struct StaleReference<'a>(SliceMemory<'a>);
     impl Memory for StaleReference<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == crate::creference_registry::LOW_ROOTS_RVA.0 + 8 && output.len() == 8 {
+            if address == engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 8 && output.len() == 8 {
                 output.fill(0);
                 true
             } else {
@@ -1148,7 +1148,7 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
                 output.copy_from_slice(&factor.to_le_bytes());
                 return true;
             }
-            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
             {
                 let Some(mask) = self.dlc_mask else {
                     return false;
@@ -1346,7 +1346,7 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
                     true
                 });
             }
-            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
             {
                 return self.dlc_mask.is_some_and(|value| {
                     output.copy_from_slice(&value.to_le_bytes());
@@ -1543,15 +1543,15 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
     modified[mod_entry_off + 8..mod_entry_off + 16]
         .copy_from_slice(&((m_base + mod_obj_off) as u64).to_le_bytes());
     modified[mod_obj_off..mod_obj_off + 8]
-        .copy_from_slice(&(crate::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
-    modified[mod_obj_off + crate::cequipment_module::ADD_STATS
-        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 8]
+        .copy_from_slice(&(engine_native_parts::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
+    modified[mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS
+        ..mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 8]
         .copy_from_slice(&((m_base + mod_add_off) as u64).to_le_bytes());
-    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 8
-        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 12]
+    modified[mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 8
+        ..mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 12]
         .copy_from_slice(&1_u32.to_le_bytes());
-    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 12
-        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 16]
+    modified[mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 12
+        ..mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 16]
         .copy_from_slice(&1_u32.to_le_bytes());
     modified[mod_add_off..mod_add_off + 4].copy_from_slice(&62_i32.to_le_bytes());
     modified[mod_add_off + 8..mod_add_off + 16].copy_from_slice(&5_000_000_i64.to_le_bytes());
@@ -1665,7 +1665,7 @@ fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_relia
                 output.copy_from_slice(&50_000_i64.to_le_bytes());
                 return true;
             }
-            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
             {
                 output.copy_from_slice(&0x100_u32.to_le_bytes());
                 return true;
@@ -1753,15 +1753,15 @@ fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_relia
     modified[mod_entry_off + 8..mod_entry_off + 16]
         .copy_from_slice(&((m_base + mod_obj_off) as u64).to_le_bytes());
     modified[mod_obj_off..mod_obj_off + 8]
-        .copy_from_slice(&(crate::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
-    modified[mod_obj_off + crate::cequipment_module::ADD_STATS
-        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 8]
+        .copy_from_slice(&(engine_native_parts::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
+    modified[mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS
+        ..mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 8]
         .copy_from_slice(&((m_base + mod_add_off) as u64).to_le_bytes());
-    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 8
-        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 12]
+    modified[mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 8
+        ..mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 12]
         .copy_from_slice(&1_u32.to_le_bytes());
-    modified[mod_obj_off + crate::cequipment_module::ADD_STATS + 12
-        ..mod_obj_off + crate::cequipment_module::ADD_STATS + 16]
+    modified[mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 12
+        ..mod_obj_off + engine_native_parts::cequipment_module::ADD_STATS + 16]
         .copy_from_slice(&1_u32.to_le_bytes());
     modified[mod_add_off..mod_add_off + 4].copy_from_slice(&62_i32.to_le_bytes());
     modified[mod_add_off + 8..mod_add_off + 16].copy_from_slice(&5_000_000_i64.to_le_bytes());
@@ -1922,7 +1922,7 @@ fn walk_stats_carried_refreshes_thrust_factor_after_rejected_batch() {
                 }
                 return true;
             }
-            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
             {
                 output.copy_from_slice(&BY_BLOOD_ALONE_MASK.to_le_bytes());
                 return true;
@@ -2034,7 +2034,7 @@ fn partial_read_keeps_unrelated_lanes_when_reliability_bonus_or_disabled_bba_ope
             {
                 return false;
             }
-            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            if address == engine_native_parts::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
             {
                 output.copy_from_slice(&self.dlc_mask.to_le_bytes());
                 return true;

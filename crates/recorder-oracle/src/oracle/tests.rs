@@ -4167,31 +4167,31 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
     let (frame, mut save, _, _) = relation_fixture();
     let names: TokenNames<'static> = [
         (
-            engine_native::cattache_relation::TYPE,
+            engine_native_parts::cattache_relation::TYPE,
             b"attache".as_slice(),
         ),
         (
-            engine_native::cair_base_access_relation::TYPE,
+            engine_native_parts::cair_base_access_relation::TYPE,
             b"air_base_access",
         ),
         (
-            engine_native::coffer_air_base_access_relation::TYPE,
+            engine_native_parts::coffer_air_base_access_relation::TYPE,
             b"offer_air_base_access",
         ),
         (
-            engine_native::cmilitary_access_relation::TYPE,
+            engine_native_parts::cmilitary_access_relation::TYPE,
             b"military_access",
         ),
         (
-            engine_native::coffer_military_access_relation::TYPE,
+            engine_native_parts::coffer_military_access_relation::TYPE,
             b"offer_military_access",
         ),
         (
-            engine_native::cdocking_rights_relation::TYPE,
+            engine_native_parts::cdocking_rights_relation::TYPE,
             b"docking_rights",
         ),
         (
-            engine_native::coffer_docking_rights_relation::TYPE,
+            engine_native_parts::coffer_docking_rights_relation::TYPE,
             b"offer_docking_rights",
         ),
     ]
@@ -4238,31 +4238,31 @@ fn relation_links_match_the_saved_military_access_relations() {
     let (frame, mut save, _, _) = relation_fixture();
     let names: TokenNames<'static> = [
         (
-            engine_native::cattache_relation::TYPE,
+            engine_native_parts::cattache_relation::TYPE,
             b"attache".as_slice(),
         ),
         (
-            engine_native::cair_base_access_relation::TYPE,
+            engine_native_parts::cair_base_access_relation::TYPE,
             b"air_base_access",
         ),
         (
-            engine_native::coffer_air_base_access_relation::TYPE,
+            engine_native_parts::coffer_air_base_access_relation::TYPE,
             b"offer_air_base_access",
         ),
         (
-            engine_native::cmilitary_access_relation::TYPE,
+            engine_native_parts::cmilitary_access_relation::TYPE,
             b"military_access",
         ),
         (
-            engine_native::coffer_military_access_relation::TYPE,
+            engine_native_parts::coffer_military_access_relation::TYPE,
             b"offer_military_access",
         ),
         (
-            engine_native::cdocking_rights_relation::TYPE,
+            engine_native_parts::cdocking_rights_relation::TYPE,
             b"docking_rights",
         ),
         (
-            engine_native::coffer_docking_rights_relation::TYPE,
+            engine_native_parts::coffer_docking_rights_relation::TYPE,
             b"offer_docking_rights",
         ),
     ]
@@ -4305,31 +4305,31 @@ fn relation_links_match_the_saved_air_access_offer() {
     let (frame, mut save, _, _) = relation_fixture();
     let names: TokenNames<'static> = [
         (
-            engine_native::cattache_relation::TYPE,
+            engine_native_parts::cattache_relation::TYPE,
             b"attache".as_slice(),
         ),
         (
-            engine_native::cair_base_access_relation::TYPE,
+            engine_native_parts::cair_base_access_relation::TYPE,
             b"air_base_access",
         ),
         (
-            engine_native::coffer_air_base_access_relation::TYPE,
+            engine_native_parts::coffer_air_base_access_relation::TYPE,
             b"offer_air_base_access",
         ),
         (
-            engine_native::cmilitary_access_relation::TYPE,
+            engine_native_parts::cmilitary_access_relation::TYPE,
             b"military_access",
         ),
         (
-            engine_native::coffer_military_access_relation::TYPE,
+            engine_native_parts::coffer_military_access_relation::TYPE,
             b"offer_military_access",
         ),
         (
-            engine_native::cdocking_rights_relation::TYPE,
+            engine_native_parts::cdocking_rights_relation::TYPE,
             b"docking_rights",
         ),
         (
-            engine_native::coffer_docking_rights_relation::TYPE,
+            engine_native_parts::coffer_docking_rights_relation::TYPE,
             b"offer_docking_rights",
         ),
     ]

@@ -1,5 +1,6 @@
 
-use crate::{Memory, ccountry, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native::ccountry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_e0d8);
@@ -14,7 +15,7 @@ pub const BREAKTHROUGH: usize = 0x50;
 pub fn from_country(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     countries: &ccountry::Reader<'_, impl Memory>,
 ) -> Result<usize, &'static str> {
     let pointer = country
@@ -52,9 +53,13 @@ pub fn programs(memory: &impl Memory, status: usize) -> Result<Array, &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_native::cgame_state;
+    use engine_native_memory::{memory::SliceMemory, walk::Outcome};
     use crate::{
-        cgame_state, memory::SliceMemory, nproject_cbreakthrough_progress, nproject_cprogram,
-        nproject_cproject, nproject_sproject_history, walk::Outcome,
+        nproject_cbreakthrough_progress,
+        nproject_cprogram,
+        nproject_cproject,
+        nproject_sproject_history,
     };
 
     #[test]

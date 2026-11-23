@@ -10,13 +10,16 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 
 [dependencies]
+engine-allocation.workspace = true
+engine-native-memory.workspace = true
 engine-sites.workspace = true
 engine-native.workspace = true
 
 [dev-dependencies]
+engine-native-memory = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 
 [lints]

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{memory::SliceMemory, modifier_entry, msvc_string};
+use engine_native_memory::{memory::SliceMemory, msvc_string};
+use engine_native_parts::modifier_entry;
 use std::cell::RefCell;
 
 const FACTION: usize = 0x1000;

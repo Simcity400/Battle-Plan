@@ -19,7 +19,7 @@ impl Memory for Source<'_> {
             out.fill(0xff);
             return false;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: self.bytes,
         }
@@ -144,13 +144,13 @@ fn batched_core_province_persistent_faults_keep_serial_reason_and_prefix() {
 fn batched_core_province_one_shot_refuses_no_more_and_counts_fallback() {
     let (bytes, seeds) = world(65);
     for at in [seeds[20].location.unwrap() + cprovince::ID, SLOTS + 21 * 8] {
-        let before = engine_native::batch_fallback::count(
-            engine_native::batch_fallback::Batch::DivisionProvinces,
+        let before = engine_native_memory::batch_fallback::count(
+            engine_native_memory::batch_fallback::Batch::DivisionProvinces,
         );
         let actual = capture(&bytes, &seeds, true, Some(at), true).0;
         assert_eq!(
-            engine_native::batch_fallback::count(
-                engine_native::batch_fallback::Batch::DivisionProvinces
+            engine_native_memory::batch_fallback::count(
+                engine_native_memory::batch_fallback::Batch::DivisionProvinces
             ) - before,
             1
         );

@@ -7,8 +7,10 @@ use collector_production::production;
 use engine_deployment::{
     army_upgrade_request_row, carmy_upgrades_requests, carmy_upgrades_status, cupgrade_delivery,
 };
-use engine_native::{
-    Memory, cequipment_variant_pool, cequipment_variant_pool::DivisionSource, walk::Outcome,
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cequipment_variant::pool::{
+    self as cequipment_variant_pool,
+    DivisionSource,
 };
 use replay_data::rows::TableId;
 
@@ -203,7 +205,8 @@ fn install<R>(rows: &mut Vec<R>, outcome: Outcome, captured: &mut CaptureRows<R>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{carmy, memory::SliceMemory};
+    use engine_native::carmy;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::Cell;
 
     #[test]
@@ -305,7 +308,7 @@ mod tests {
             scalars: Cell<usize>,
         }
         impl Memory for Trace<'_> {
-            fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
+            fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
                 self.scalars.set(self.scalars.get() + 1);
                 self.reads
                     .borrow_mut()
@@ -419,9 +422,9 @@ mod tests {
 
     #[test]
     fn live_pool_and_delivery_headers_grow_before_first_capture_and_installation() {
-        use engine_native::{
-            ccountry, cequipment_variant, cgame_state, cpdx_array, equipment_entry,
-        };
+        use engine_native::{ccountry, cequipment_variant, cgame_state};
+        use engine_native_memory::cpdx_array;
+        use engine_native_parts::equipment_entry;
         let (mut bytes, sources) = fixture();
         let equipment_rows = 40_000_usize;
         let delivery_rows = 5_000_usize;
@@ -450,7 +453,7 @@ mod tests {
             pointers,
             delivery_rows,
         );
-        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        word(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         word(
             &mut bytes,
             variant + cequipment_variant::TYPE,

@@ -1,12 +1,24 @@
+#[cfg(test)]
+use crate::cequipment_variant;
+pub mod equipment_license;
+pub mod equipment_line;
 
-use crate::{
-    Memory, ccountry, cequipment_production_license, cequipment_variant, civ_factory_consumer,
-    clicensed_production_status,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    factory_group,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
+};
+use crate::{
+    ccountry,
+    cproduction_status::equipment_license as cequipment_production_license,
+};
+use engine_native_parts::{
+    civ_factory_consumer,
+    clicensed_production_status,
+    factory_group,
 };
 use engine_sites::Rva;
 
@@ -14,7 +26,7 @@ pub mod design_templates;
 
 pub use cequipment_production_license::Row as LicenseRecordRow;
 
-pub use crate::cequipment_production_line::Row as LineRow;
+pub use crate::cproduction_status::equipment_line::Row as LineRow;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LicenseRow {
@@ -58,7 +70,7 @@ pub const FACTORY_SPAN: usize = CONTRACT_PAYMENTS + civ_factory_consumer::SIZE -
 pub fn manager(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<usize, &'static str> {
     let pointer = pointer(memory, country.pointer)?;
     if country_pointer(memory, base, pointer)? != country.pointer {
@@ -103,7 +115,7 @@ pub fn country_pointer(
 pub fn policies_header(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<Option<Array>, &'static str> {
     let pointer = country
         .pointer
@@ -272,7 +284,7 @@ fn walk_factories_buffer(
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
-        let mut batch = [None::<ccountry::Country>; BATCH];
+        let mut batch = [None::<engine_native_memory::country_identity::Country>; BATCH];
         let mut pending = 0;
         for slot in 1..countries.count() {
             let country = match countries.at(slot) {
@@ -341,7 +353,7 @@ const STATUS_LAYOUT: RecordLayout<'static> =
 fn read_batch(
     memory: &impl Memory,
     vtables: &[usize; 6],
-    batch: &[Option<ccountry::Country>],
+    batch: &[Option<engine_native_memory::country_identity::Country>],
     output: &mut Buffer<'_, FactoryRow>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
@@ -390,7 +402,7 @@ fn read_batch(
         }
         return Ok(());
     }
-    crate::batch_fallback::record(crate::batch_fallback::Batch::CountryFactories);
+    engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::CountryFactories);
     for country in batch {
         output[*len] = read_factories(memory, vtables, country.expect("batched country"))?;
         *len += 1;
@@ -401,7 +413,7 @@ fn read_batch(
 fn read_factories(
     memory: &impl Memory,
     vtables: &[usize; 6],
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
 ) -> Result<FactoryRow, &'static str> {
     let status = country
         .pointer
@@ -426,7 +438,7 @@ fn read_factories(
 
 fn decode_factories(
     vtables: &[usize; 6],
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     vtable: [u8; 8],
     owner: [u8; 8],
     span: &[u8],
@@ -568,7 +580,7 @@ fn walk_available_equipment_buffer(
                             country: country.id,
                             roster_kind,
                             ordinal: (first + index) as u32,
-                            variant: cequipment_variant::identity(memory, base, pointer)?,
+                            variant: engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)?,
                         };
                         len += 1;
                     }
@@ -585,7 +597,7 @@ fn walk_available_equipment_buffer(
 }
 
 pub fn count_lines(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_lines_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_lines_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 
@@ -593,14 +605,14 @@ pub fn walk_lines_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, LineRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, LineRow>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
-        let mut defines = crate::cequipment_production_line::Defines::default();
+        let mut defines = crate::cproduction_status::equipment_line::Defines::default();
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -628,7 +640,7 @@ pub fn walk_lines_buffer(
                     .and_then(|pointer| usize::try_from(pointer).ok())
                     .filter(|&pointer| pointer != 0)
                     .ok_or("production line pointer unreadable or null")?;
-                output[len] = crate::cequipment_production_line::read_row(
+                output[len] = crate::cproduction_status::equipment_line::read_row(
                     memory,
                     base,
                     status,
@@ -651,7 +663,7 @@ pub fn walk_lines_buffer(
 }
 
 pub fn count_licenses(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_licenses_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_licenses_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 
@@ -659,7 +671,7 @@ pub fn walk_licenses_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, LicenseRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, LicenseRow>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -696,7 +708,7 @@ pub fn walk_licenses_buffer(
                 output[len] = LicenseRow {
                     country: country.id,
                     ordinal,
-                    variant: cequipment_variant::identity(memory, base, pointer)?,
+                    variant: engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)?,
                 };
                 len += 1;
             }
@@ -720,15 +732,15 @@ pub struct LicenseRecordOutcome {
 }
 
 pub fn count_license_records(memory: &impl Memory, base: usize, game_state: usize) -> LicenseRecordOutcome {
-    walk_license_records_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_license_records_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_license_records_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, LicenseRecordRow>,
-    mut handles: crate::walk::Buffer<'_, u64>,
+    mut output: engine_native_memory::walk::Buffer<'_, LicenseRecordRow>,
+    mut handles: engine_native_memory::walk::Buffer<'_, u64>,
 ) -> LicenseRecordOutcome {
     let mut len = 0_usize;
     let mut used = 0;
@@ -811,10 +823,13 @@ pub fn walk_license_records_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        cequipment_production_line as equipment, cgame_state, cmilitary_production_line,
-        cnaval_production_line, cproduction_line, memory::SliceMemory,
+    use crate::{cproduction_status::equipment_line as equipment, cgame_state};
+    use engine_native_parts::{
+        cmilitary_production_line,
+        cnaval_production_line,
+        cproduction_line,
     };
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1000;
     const COUNTRY_POINTER: usize = 0x3000;
@@ -858,7 +873,7 @@ mod tests {
             (STATUS + COUNTRY, COUNTRY_POINTER as u64),
             (0x6000, FIRST_LINE as u64),
             (0x6008, SECOND_LINE as u64),
-            (VARIANT, cequipment_variant::VTABLE_RVA.0 as u64),
+            (VARIANT, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64),
             (VARIANT + cequipment_variant::TYPE, 0xfedc_ba98_0000_0046),
         ] {
             put(&mut bytes, address, &value.to_le_bytes());
@@ -979,16 +994,16 @@ mod tests {
         put(
             &mut bytes,
             EQUIPMENT,
-            &(crate::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            EQUIPMENT + crate::cequipment_type::ARCHETYPE,
+            EQUIPMENT + engine_native_parts::cequipment_type::ARCHETYPE,
             &(EQUIPMENT as u64).to_le_bytes(),
         );
         for (offset, value) in [
-            (crate::cequipment_type::MAX_MIL_FACTORIES, 150_i32),
-            (crate::cequipment_type::MAX_NAV_FACTORIES, 15),
+            (engine_native_parts::cequipment_type::MAX_MIL_FACTORIES, 150_i32),
+            (engine_native_parts::cequipment_type::MAX_NAV_FACTORIES, 15),
         ] {
             put(&mut bytes, EQUIPMENT + offset, &value.to_le_bytes());
             put(&mut bytes, EQUIPMENT + offset + 4, &[1]);
@@ -1027,7 +1042,7 @@ mod tests {
             defines,
         };
         let mut rows = vec![LineRow::default(); 2];
-        match walk_lines_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows)) {
+        match walk_lines_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut rows)) {
             Outcome::Rows { len: 2 } => Ok(rows[0]),
             outcome => Err(outcome),
         }
@@ -1063,7 +1078,7 @@ mod tests {
         );
         put(
             &mut bytes,
-            EQUIPMENT + crate::cequipment_type::MAX_MIL_FACTORIES,
+            EQUIPMENT + engine_native_parts::cequipment_type::MAX_MIL_FACTORIES,
             &20_i32.to_le_bytes(),
         );
         let row = walk_first(&bytes, None).unwrap();
@@ -1089,30 +1104,30 @@ mod tests {
         let mut bytes = fixture();
         let archetype = BASE + bytes.len();
         bytes.resize(
-            bytes.len() + crate::cequipment_type::MAX_MIL_FACTORIES + 16,
+            bytes.len() + engine_native_parts::cequipment_type::MAX_MIL_FACTORIES + 16,
             0,
         );
         put(
             &mut bytes,
-            EQUIPMENT + crate::cequipment_type::ARCHETYPE,
+            EQUIPMENT + engine_native_parts::cequipment_type::ARCHETYPE,
             &(archetype as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
             archetype,
-            &(crate::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            archetype + crate::cequipment_type::MAX_MIL_FACTORIES,
+            archetype + engine_native_parts::cequipment_type::MAX_MIL_FACTORIES,
             &[99, 0, 0, 0, 1],
         );
         assert_eq!(walk_first(&bytes, None).unwrap().max_factories, 150);
-        clear_type_maximum(&mut bytes, crate::cequipment_type::MAX_MIL_FACTORIES);
+        clear_type_maximum(&mut bytes, engine_native_parts::cequipment_type::MAX_MIL_FACTORIES);
         assert_eq!(walk_first(&bytes, None).unwrap().max_factories, 99);
         put(
             &mut bytes,
-            archetype + crate::cequipment_type::MAX_MIL_FACTORIES + 4,
+            archetype + engine_native_parts::cequipment_type::MAX_MIL_FACTORIES + 4,
             &[0],
         );
         assert_eq!(
@@ -1125,17 +1140,17 @@ mod tests {
             walk_first(&bytes, Some(DEFINES)).unwrap().max_factories,
             150
         );
-        set_line_kind(&mut bytes, crate::crailway_gun_production_line::VTABLE_RVA);
+        set_line_kind(&mut bytes, engine_native_parts::crailway_gun_production_line::VTABLE_RVA);
         let row = walk_first(&bytes, Some(DEFINES)).unwrap();
         assert_eq!(row.max_factories, 1);
         assert_eq!(row.efficiency_raw, 53 * Q15);
         for vtable in [
             cnaval_production_line::VTABLE_RVA,
-            crate::cship_refit_production_line::VTABLE_RVA,
+            engine_native_parts::cship_refit_production_line::VTABLE_RVA,
         ] {
             set_line_kind(&mut bytes, vtable);
             assert_eq!(walk_first(&bytes, Some(DEFINES)).unwrap().max_factories, 15);
-            clear_type_maximum(&mut bytes, crate::cequipment_type::MAX_NAV_FACTORIES);
+            clear_type_maximum(&mut bytes, engine_native_parts::cequipment_type::MAX_NAV_FACTORIES);
             for (flags, expected) in [
                 (0_u64, 10),
                 (cequipment_variant::CAPITAL_SHIP_CLASSIFIER_MASK, 2),
@@ -1163,7 +1178,7 @@ mod tests {
             }
             put(
                 &mut bytes,
-                EQUIPMENT + crate::cequipment_type::MAX_NAV_FACTORIES + 4,
+                EQUIPMENT + engine_native_parts::cequipment_type::MAX_NAV_FACTORIES + 4,
                 &[1],
             );
         }
@@ -1225,7 +1240,7 @@ mod tests {
             walk_lines_buffer(&Blocked(SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }), 0, BASE, crate::walk::Buffer::Growing(&mut vec![LineRow::default(); 2])),
+                }), 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut vec![LineRow::default(); 2])),
             Outcome::Unavailable {
                 reason: "production line efficiency header unreadable"
             }
@@ -1241,7 +1256,7 @@ mod tests {
         };
         let mut rows = vec![LineRow::default(); 4];
         assert_eq!(
-            walk_lines_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows)),
+            walk_lines_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(
@@ -1265,7 +1280,7 @@ mod tests {
         );
         assert_eq!(rows[1].kind, equipment::KIND_NAVAL);
         assert_eq!(
-            walk_lines_buffer(&memory, 0, BASE, crate::walk::Buffer::Count),
+            walk_lines_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -1281,7 +1296,7 @@ mod tests {
             walk_lines_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }, 0, BASE, crate::walk::Buffer::Count),
+                }, 0, BASE, engine_native_memory::walk::Buffer::Count),
             Outcome::Rows { len: 0 }
         );
         for address in [
@@ -1301,7 +1316,7 @@ mod tests {
             let outcome = walk_lines_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes,
-                }, 0, BASE, crate::walk::Buffer::Growing(&mut output));
+                }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut output));
             assert!(
                 matches!(outcome, Outcome::Unavailable { .. }),
                 "{address:#x}: {outcome:?}"
@@ -1318,7 +1333,7 @@ mod tests {
             walk_lines_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }, 0, BASE, crate::walk::Buffer::Growing(&mut rows)),
+                }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut rows)),
             Outcome::Unavailable {
                 reason: "production line vtable mismatch"
             }
@@ -1358,7 +1373,7 @@ mod tests {
         };
         let mut rows = vec![LicenseRow::default(); 4];
         assert_eq!(
-            walk_licenses_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows)),
+            walk_licenses_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut rows)),
             Outcome::Rows { len: 2 }
         );
         assert_eq!(
@@ -1377,7 +1392,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            walk_licenses_buffer(&memory, 0, BASE, crate::walk::Buffer::Count),
+            walk_licenses_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
@@ -1394,7 +1409,7 @@ mod tests {
         };
         let mut rows = vec![LicenseRecordRow::default(); 4];
         let mut handles = vec![0_u64; 8];
-        let result = walk_license_records_buffer(&memory, 0, BASE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut handles));
+        let result = walk_license_records_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut handles));
         assert_eq!(
             result,
             LicenseRecordOutcome {
@@ -1420,7 +1435,7 @@ mod tests {
         );
         assert_eq!(&handles[..2], &[0xfedc_ba98_0000_0046; 2]);
         assert_eq!(
-            walk_license_records_buffer(&memory, 0, BASE, crate::walk::Buffer::Count, crate::walk::Buffer::Growing(&mut handles)).outcome,
+            walk_license_records_buffer(&memory, 0, BASE, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Growing(&mut handles)).outcome,
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 1
@@ -1436,7 +1451,7 @@ mod tests {
             walk_license_records_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }, 0, BASE, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+                }, 0, BASE, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
             .outcome,
             Outcome::Rows { len: 0 }
         );
@@ -1461,7 +1476,7 @@ mod tests {
                 walk_license_records_buffer(&SliceMemory {
                         base: BASE,
                         bytes: &bytes
-                    }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRecordRow::default(); 4]), crate::walk::Buffer::Growing(&mut vec![0; 8]))
+                    }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut vec![LicenseRecordRow::default(); 4]), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 8]))
                 .outcome,
                 Outcome::Unavailable { reason },
                 "{address:#x}"
@@ -1477,7 +1492,7 @@ mod tests {
             walk_license_records_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRecordRow::default(); 16]), crate::walk::Buffer::Growing(&mut vec![0; 64]))
+                }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut vec![LicenseRecordRow::default(); 16]), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 64]))
             .outcome,
             Outcome::Unavailable {
                 reason: "production licence record array unreadable or invalid"
@@ -1493,7 +1508,7 @@ mod tests {
             walk_licenses_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }, 0, BASE, crate::walk::Buffer::Count),
+                }, 0, BASE, engine_native_memory::walk::Buffer::Count),
             Outcome::Rows { len: 0 }
         );
         for (address, reason) in [
@@ -1506,7 +1521,7 @@ mod tests {
                 walk_licenses_buffer(&SliceMemory {
                         base: BASE,
                         bytes: &bytes
-                    }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRow::default(); 4])),
+                    }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut vec![LicenseRow::default(); 4])),
                 Outcome::Unavailable { reason },
                 "{address:#x}"
             );
@@ -1517,7 +1532,7 @@ mod tests {
             walk_licenses_buffer(&SliceMemory {
                     base: BASE,
                     bytes: &bytes
-                }, 0, BASE, crate::walk::Buffer::Growing(&mut vec![LicenseRow::default(); 16])),
+                }, 0, BASE, engine_native_memory::walk::Buffer::Growing(&mut vec![LicenseRow::default(); 16])),
             Outcome::Unavailable {
                 reason: "production licence array unreadable or invalid"
             }
@@ -1577,17 +1592,17 @@ impl WarFactoryTemplates {
 }
 
 pub fn war_overview_factories(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
-    countries: &crate::ccountry::Reader<'_, impl crate::Memory>,
-    country: crate::ccountry::Country,
+    countries: &crate::ccountry::Reader<'_, impl engine_native_memory::Memory>,
+    country: engine_native_memory::country_identity::Country,
     templates: &mut WarFactoryTemplates,
 ) -> Result<i32, &'static str> {
-    use crate::{
-        cbuilding, cbuilding_status, cbuilding_template, ccountry, cpdx_array::Array, cstate, read,
-    };
-    fn field<T: crate::memory::Raw>(
-        memory: &impl crate::Memory,
+    use engine_native_parts::{cbuilding, cbuilding_template};
+    use crate::{cprovince::buildings as cbuilding_status, ccountry, cstate};
+    use engine_native_memory::{cpdx_array::Array, read};
+    fn field<T: engine_native_memory::memory::Raw>(
+        memory: &impl engine_native_memory::Memory,
         pointer: usize,
         offset: usize,
     ) -> Result<T, &'static str> {
@@ -1597,7 +1612,7 @@ pub fn war_overview_factories(
             .ok_or("war factory field unreadable or address overflow")
     }
     fn authenticate(
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         pointer: usize,
         rva: Rva,
@@ -1647,12 +1662,12 @@ pub fn war_overview_factories(
         let buildings = buildings
             .and_then(|p| Array::read(memory, p, 8))
             .ok_or("war factory building array invalid or unreadable")?;
-        use crate::memory::{RecordLayout, RecordSources, packed_fields};
-        const BUILDING_FIELDS: [crate::memory::RecordField; 2] =
+        use engine_native_memory::memory::{RecordLayout, RecordSources, packed_fields};
+        const BUILDING_FIELDS: [engine_native_memory::memory::RecordField; 2] =
             packed_fields([(0, 8), (cbuilding::TEMPLATE, 8)]);
         const BUILDING_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&BUILDING_FIELDS, 16).unwrap();
-        const TEMPLATE_FIELDS: [crate::memory::RecordField; 5] = packed_fields([
+        const TEMPLATE_FIELDS: [engine_native_memory::memory::RecordField; 5] = packed_fields([
             (0, 8),
             (cbuilding_template::WAR_OVERVIEW_PRODUCTION[0], 4),
             (cbuilding_template::WAR_OVERVIEW_PRODUCTION[1], 4),
@@ -1661,13 +1676,13 @@ pub fn war_overview_factories(
         ]);
         const TEMPLATE_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&TEMPLATE_FIELDS, 24).unwrap();
-        const LEVEL_FIELDS: [crate::memory::RecordField; 1] =
+        const LEVEL_FIELDS: [engine_native_memory::memory::RecordField; 1] =
             packed_fields([(cbuilding::LEVEL, 2)]);
         const LEVEL_LAYOUT: RecordLayout<'static> = RecordLayout::new(&LEVEL_FIELDS, 2).unwrap();
         for first in (0..buildings.count).step_by(64) {
             let count = (buildings.count - first).min(64) as usize;
             let mut pointers = [0; 64 * 8];
-            if !crate::read_slice(
+            if !engine_native_memory::read_slice(
                 memory,
                 buildings
                     .element(first, 8)
@@ -1771,8 +1786,11 @@ pub fn war_overview_factories(
 #[cfg(test)]
 mod war_overview_tests {
     use super::*;
+    use engine_native_parts::{cbuilding, cbuilding_template};
     use crate::{
-        cbuilding, cbuilding_status, cbuilding_template, ccountry::synthetic::World, cstate,
+        cprovince::buildings as cbuilding_status,
+        ccountry::synthetic::World,
+        cstate,
     };
 
     #[test]
@@ -1851,7 +1869,7 @@ mod war_overview_tests {
 
     #[test]
     fn a_pass_reads_each_building_template_once() {
-        use crate::memory::{CountedMemory, ReadCounts};
+        use engine_native_memory::memory::{CountedMemory, ReadCounts};
         let mut w = World::new(0, 2, 0x1600);
         let counted = w.alloc(0x320);
         let skipped = w.alloc(0x320);
@@ -1907,7 +1925,7 @@ mod war_overview_tests {
 #[cfg(test)]
 mod policy_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use std::cell::Cell;
 
     const BASE: usize = 0x10_0000;

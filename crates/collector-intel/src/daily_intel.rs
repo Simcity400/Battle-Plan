@@ -1,7 +1,7 @@
 
 use crate::table_capture::{CaptureRows, grow_capacity};
 use engine_allocation::{SharedBox, filled, oom};
-use engine_native::country_intel_row::Row;
+use engine_native_intelligence::country_intel_row::Row;
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicUsize, Ordering},
@@ -169,7 +169,7 @@ impl Drop for Loan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::walk::Outcome;
+    use engine_native_memory::walk::Outcome;
 
     #[test]
     fn a_due_walk_never_waits_for_a_held_buffer_and_the_next_hour_walks_instead() {

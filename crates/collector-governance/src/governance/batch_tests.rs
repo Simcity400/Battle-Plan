@@ -39,7 +39,7 @@ fn full(world: &World, id: u32) -> Full {
         world,
         0,
         &countries,
-        ccountry::Country {
+        engine_native_memory::country_identity::Country {
             pointer: country,
             id,
             canonical_slot: id,
@@ -120,9 +120,9 @@ fn research(store: &drift::Store, memory: &Trace<'_, World>, id: u32) -> Researc
         0,
         id,
         World::country(id),
-        engine_native::walk::Buffer::Growing(&mut inputs),
-        engine_native::walk::Buffer::Growing(&mut bonuses),
-        engine_native::walk::Buffer::Growing(&mut modifiers),
+        engine_native_memory::walk::Buffer::Growing(&mut inputs),
+        engine_native_memory::walk::Buffer::Growing(&mut bonuses),
+        engine_native_memory::walk::Buffer::Growing(&mut modifiers),
     );
     let outcomes = match outcome {
         drift::Carried::Rows(lens) => lens.map(|len| Outcome::Rows { len }),
@@ -148,9 +148,9 @@ fn serial_research(store: &serial::Store, memory: &Trace<'_, World>, id: u32) ->
         0,
         id,
         World::country(id),
-        engine_native::walk::Buffer::Growing(&mut inputs),
-        engine_native::walk::Buffer::Growing(&mut bonuses),
-        engine_native::walk::Buffer::Growing(&mut modifiers),
+        engine_native_memory::walk::Buffer::Growing(&mut inputs),
+        engine_native_memory::walk::Buffer::Growing(&mut bonuses),
+        engine_native_memory::walk::Buffer::Growing(&mut modifiers),
     );
     let outcomes = match outcome {
         serial::Carried::Rows(lens) => lens.map(|len| Outcome::Rows { len }),
@@ -580,9 +580,9 @@ fn governance_batch_carried_research_aliased_technologies_do_not_reread_complete
         0,
         1,
         country,
-        engine_native::walk::Buffer::Growing(&mut inputs),
-        engine_native::walk::Buffer::Growing(&mut bonuses),
-        engine_native::walk::Buffer::Growing(&mut modifiers),
+        engine_native_memory::walk::Buffer::Growing(&mut inputs),
+        engine_native_memory::walk::Buffer::Growing(&mut bonuses),
+        engine_native_memory::walk::Buffer::Growing(&mut modifiers),
     );
     assert_eq!(engine_allocation::growths() - growths, 2);
     assert!(matches!(outcome, drift::Carried::Rows([3, 2, _])));
@@ -635,9 +635,9 @@ fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason(
         0,
         1,
         country,
-        engine_native::walk::Buffer::Growing(&mut inputs),
-        engine_native::walk::Buffer::Growing(&mut bonuses),
-        engine_native::walk::Buffer::Growing(&mut modifiers),
+        engine_native_memory::walk::Buffer::Growing(&mut inputs),
+        engine_native_memory::walk::Buffer::Growing(&mut bonuses),
+        engine_native_memory::walk::Buffer::Growing(&mut modifiers),
     );
     assert!(matches!(
         outcome,
@@ -649,9 +649,9 @@ fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason(
         0,
         1,
         country,
-        engine_native::walk::Buffer::Growing(&mut inputs),
-        engine_native::walk::Buffer::Growing(&mut bonuses),
-        engine_native::walk::Buffer::Growing(&mut modifiers),
+        engine_native_memory::walk::Buffer::Growing(&mut inputs),
+        engine_native_memory::walk::Buffer::Growing(&mut bonuses),
+        engine_native_memory::walk::Buffer::Growing(&mut modifiers),
     );
     assert!(matches!(
         original,
@@ -699,9 +699,9 @@ fn governance_batch_rehold_refills_storage_without_earlier_rows() {
         0,
         1,
         country,
-        engine_native::walk::Buffer::Growing(&mut Vec::new()),
-        engine_native::walk::Buffer::Growing(&mut Vec::new()),
-        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native_memory::walk::Buffer::Growing(&mut Vec::new()),
     );
     assert!(matches!(outcome, drift::Carried::Miss));
 }

@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{Memory, naval_management as native};
+use engine_native_memory::Memory;
+use engine_native_naval::naval_management as native;
 use replay_data::rows::*;
 use replay_frame::frame::{
     DecodedFrame, FrameDecoder, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableUpdate,
@@ -24,7 +25,7 @@ const FLEET_ID: u64 = 11 | (101 << 32);
 const TASK_ID: u64 = 13 | (103 << 32);
 const SHIP_ID: u64 = 37 | (107 << 32);
 const LINE_ID: u64 =
-    engine_native::cship_refit_production_line::REFERENCE_TYPE as u64 | (109 << 32);
+    engine_native_parts::cship_refit_production_line::REFERENCE_TYPE as u64 | (109 << 32);
 
 #[derive(Default)]
 struct Census {
@@ -59,7 +60,8 @@ impl Census {
         self.put(at + 12, &count.to_le_bytes());
     }
     fn populated(phase: i32) -> Self {
-        use engine_native::{ccountry, cgame_state, cstrategic_navy, cstrategic_navy_manager};
+        use engine_native::{ccountry, cgame_state};
+        use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
         let mut memory = Self::default();
         memory.array(STATE + cgame_state::COUNTRIES, LISTS, 8);
         memory.array(STATE + cgame_state::COUNTRY_LINKS, LISTS + 0x100, 8);
@@ -117,7 +119,7 @@ impl Census {
             memory.word(TASK + offset, pointer as u64);
             memory.word(
                 pointer,
-                engine_native::cequipment_variant::VTABLE_RVA.0 as u64,
+                engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
             );
             memory.word(
                 pointer + engine_native::cequipment_variant::TYPE,
@@ -154,16 +156,16 @@ impl Census {
         memory.word(SHIP + engine_native::cship::HANDLE, SHIP_ID);
         memory.word(SHIP + native::SHIP_REFIT_LINE, LINE_ID);
         memory.word(
-            engine_native::creference_registry::INVALID_REFERENCE_RVA.0,
+            engine_native_parts::creference_registry::INVALID_REFERENCE_RVA.0,
             0,
         );
         memory.refit_registry();
         memory.put(
-            LINE + engine_native::cproduction_line::PRODUCED,
+            LINE + engine_native_parts::cproduction_line::PRODUCED,
             &(12345_i64 + i64::from(phase)).to_le_bytes(),
         );
-        memory.word(BASE, engine_native::cnaval_base::VTABLE_RVA.0 as u64);
-        memory.integer(BASE + engine_native::cnaval_base::PROVINCE_ID, 17);
+        memory.word(BASE, engine_native_parts::cnaval_base_layout::VTABLE_RVA.0 as u64);
+        memory.integer(BASE + engine_native_parts::cnaval_base_layout::PROVINCE_ID, 17);
         memory.integer(BASE + native::BASE_REPAIR_PRIORITY, 2 + phase);
         memory.integer(BASE + native::BASE_REPAIR_DOCKYARDS, 3 + phase);
         memory.array(BASE + native::BASE_REPAIR_QUEUE, LISTS + 0x800, 2);
@@ -172,7 +174,10 @@ impl Census {
         memory
     }
     fn refit_registry(&mut self) {
-        use engine_native::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native_parts::{
+            creference_registry as registry,
+            reference_bucket as bucket,
+        };
         const TABLE: usize = LISTS + 0x1000;
         const BUCKETS: usize = LISTS + 0x1100;
         self.word(
@@ -195,27 +200,27 @@ impl Census {
         self.word(cell + bucket::OBJECT, LINE as u64);
         self.word(
             LINE,
-            engine_native::cship_refit_production_line::VTABLE_RVA.0 as u64,
+            engine_native_parts::cship_refit_production_line::VTABLE_RVA.0 as u64,
         );
         self.word(
-            LINE + engine_native::cproduction_line::REFERENCE_TYPE,
+            LINE + engine_native_parts::cproduction_line::REFERENCE_TYPE,
             LINE_ID,
         );
     }
     fn capture(&self) -> (forces::Captured, bases::Captured) {
         let mut forces = forces::Session::begin(self, 0, STATE);
-        forces.visit(native::CensusVisit::Country(
-            engine_native::ccountry::Country {
+        forces.visit(engine_native::cfleet::CensusVisit::Country(
+            engine_native_memory::country_identity::Country {
                 pointer: COUNTRY,
                 id: 7,
                 canonical_slot: 7,
             },
         ));
-        forces.visit(native::CensusVisit::Fleet {
+        forces.visit(engine_native::cfleet::CensusVisit::Fleet {
             pointer: FLEET,
             handle: FLEET_ID,
         });
-        forces.visit(native::CensusVisit::TaskForce {
+        forces.visit(engine_native::cfleet::CensusVisit::TaskForce {
             pointer: TASK,
             handle: TASK_ID,
         });
@@ -226,7 +231,7 @@ impl Census {
                 ..Default::default()
             },
         );
-        let rows = engine_native::walk::Outcome::Rows { len: 1 };
+        let rows = engine_native_memory::walk::Outcome::Rows { len: 1 };
         let forces = forces.finish(engine_native::cfleet::Capture {
             fleets: rows,
             task_forces: rows,
@@ -236,7 +241,7 @@ impl Census {
         let mut bases = unsafe { bases::Session::begin(self, 0) };
         bases.visit(
             BASE,
-            &engine_native::cnaval_base::Row {
+            &engine_native_naval::cnaval_base::Row {
                 province: 17,
                 ..Default::default()
             },
@@ -460,13 +465,13 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
         for index in 0..BASES {
             session.visit(
                 pointer(index),
-                &engine_native::cnaval_base::Row {
+                &engine_native_naval::cnaval_base::Row {
                     province: index + 1,
                     ..Default::default()
                 },
             );
         }
-        session.finish(engine_native::walk::Outcome::Rows { len: BASES as usize })
+        session.finish(engine_native_memory::walk::Outcome::Rows { len: BASES as usize })
     };
     for table in capture().tables {
         assert_eq!(table.err(), Some("naval repair base registration refused"));
@@ -494,7 +499,8 @@ impl Memory for Zeroed<'_> {
 
 #[test]
 fn naval_management_census_with_a_foreign_task_force_is_complete() {
-    use engine_native::{ccountry, cfleet, cship, cstrategic_navy, ctask_force, cunit};
+    use engine_native::{ccountry, cfleet, cship, ctask_force, cunit};
+    use engine_native_naval::cstrategic_navy;
     const FOREIGN: usize = 0xf0000;
     const FOREIGN_PRODUCTION: usize = 0xf1000;
     const FOREIGN_NAVY: usize = 0xf2000;

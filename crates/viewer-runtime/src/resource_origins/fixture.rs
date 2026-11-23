@@ -20,7 +20,7 @@ pub const OIL: u32 = 101;
 pub const STEEL: u32 = 102;
 pub const RUBBER: u32 = 103;
 pub const REFINERY: u32 = 104;
-pub const INFRASTRUCTURE: u32 = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
+pub const INFRASTRUCTURE: u32 = engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN;
 
 pub const MIXED: u32 = 1;
 pub const EMPTY: u32 = 2;

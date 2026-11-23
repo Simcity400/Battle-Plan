@@ -8,7 +8,8 @@ use crate::{
 };
 use engine_air_history::air_participant_vectors as native;
 use engine_allocation as allocation;
-use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
 use replay_data::{rows::AirCountryRelationRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 use std::sync::{Mutex, MutexGuard};

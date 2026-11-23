@@ -1,7 +1,11 @@
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
 use crate::{
-    Memory, allocation, cequipment_variant_pool as pool, cpdx_array::Array, equipment_entry,
-    ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as group, read, read_slice,
+    allocation,
+    ncombat_log_cequipment_loss as loss,
+    ncombat_log_corders_group_logs as group,
 };
+use engine_native::cequipment_variant::pool as pool;
+use engine_native_parts::equipment_entry;
 use engine_sites::Rva;
 
 pub const ENEMY_KIND: u8 = 5;
@@ -71,7 +75,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
 fn module(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("combat log history address overflow")
 }
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -112,7 +116,7 @@ fn pointers(
     offset: usize,
     mut visit: impl FnMut(usize) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         array(bytes, offset, 8)?,
         "combat log history pointer unreadable",
@@ -636,10 +640,10 @@ mod tests {
         let variant = f.alloc(16);
         f.u64(
             variant,
-            (BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64,
+            (BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
         );
         let handle =
-            u64::from(u32::MAX) << 32 | u64::from(crate::cequipment_variant::REFERENCE_TYPE);
+            u64::from(u32::MAX) << 32 | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
         f.u64(variant + 8, handle);
         let entries = f.alloc(3 * equipment_entry::STRIDE);
         f.array(month + loss::POOL + pool::ITEMS, entries, 3);

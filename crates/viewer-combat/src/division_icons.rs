@@ -191,7 +191,7 @@ pub(super) fn frames(
     if fuel_ratio([fuel, capacity, content.fuel_penalty_start_ratio]) < SCALE {
         out.push(16);
     }
-    match engine_native::csub_unit_definition::movement_air_defense_value(
+    match engine_native_parts::csub_unit_definition::movement_air_defense_value(
         values.air_attack,
         content.air_superiority[0],
         content.air_superiority[1],

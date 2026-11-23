@@ -297,7 +297,7 @@ fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, tag: String, sl
                 (entry.priority_name, entry.priority_missing) = refusals.keep(priority_name(content, settings.priority));
                 entry.locked = Some(settings.locked != 0);
                 entry.obsolete = Some(settings.obsolete != 0);
-                entry.obsolete_hour = (settings.obsolete != 0 && settings.obsolete_change_date != engine_native::cgame_date::NULL_RAW_HOUR).then_some(settings.obsolete_change_date);
+                entry.obsolete_hour = (settings.obsolete != 0 && settings.obsolete_change_date != engine_native_memory::cgame_date::NULL_RAW_HOUR).then_some(settings.obsolete_change_date);
                 entry.designer = Some(if settings.is_army_hq != 0 { DesignerKind::Headquarters } else { DesignerKind::Ordinary });
                 entry.force_recruiting = Some(settings.force_allow_recruiting != 0);
                 entry.new_equipment = Some(settings.allow_new_equipment != 0);

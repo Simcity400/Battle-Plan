@@ -1,5 +1,6 @@
 use crate::combat_log_history as layout;
-use crate::{Memory, cpdx_array::Array, equipment_entry, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_parts::equipment_entry;
 use crate::{ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as group};
 use engine_sites::Rva;
 
@@ -74,7 +75,7 @@ pub fn noncombat_writer_demand(
     base: usize,
     state: usize,
 ) -> Result<usize, &'static str> {
-    use crate::{carmy, ccountry, cequipment_variant_pool as pool};
+    use engine_native::{carmy, ccountry, cequipment_variant::pool as pool};
     let countries = ccountry::Reader::new(memory, base, state)?;
     let mut demand = 0usize;
     for slot in 1..countries.count() {
@@ -87,7 +88,7 @@ pub fn noncombat_writer_demand(
             .ok_or("combat log division sizing address overflow")?;
         let divisions =
             Array::read(memory, at, 8).ok_or("combat log division sizing roster invalid")?;
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             divisions,
             "combat log sizing division unreadable",
@@ -115,7 +116,7 @@ fn noncombat_division_demand(variants: usize) -> Result<usize, &'static str> {
         .ok_or("combat log writer sizing overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -206,7 +207,7 @@ pub fn month(
 ) -> Result<(), &'static str> {
     let bytes = header::<{ loss::SIZE }>(memory, base, pointer, loss::VTABLE_RVA)?;
     let p = loss::POOL;
-    if engine_sites::at(base, crate::cequipment_variant_pool::VTABLE_RVA).map(|p| p as u64)
+    if engine_sites::at(base, engine_native::cequipment_variant::pool::VTABLE_RVA).map(|p| p as u64)
         != Some(word(&bytes, p))
     {
         return Err("combat log event month pool class differs");
@@ -220,14 +221,14 @@ pub fn month(
             kind as u64,
             int(&bytes, loss::REASON),
             int(&bytes, loss::DATE),
-            bytes[p + crate::cequipment_variant_pool::ALLOW_ZERO] as u64,
+            bytes[p + engine_native::cequipment_variant::pool::ALLOW_ZERO] as u64,
             0,
         ],
     );
     if kind == layout::ENEMY_KIND {
         let items = array(
             &bytes,
-            p + crate::cequipment_variant_pool::ITEMS,
+            p + engine_native::cequipment_variant::pool::ITEMS,
             equipment_entry::STRIDE,
         )?;
         for ordinal in 0..items.count {
@@ -498,12 +499,12 @@ fn side_data_inner(
     .enumerate()
     {
         let p = &bytes[at..];
-        if engine_sites::at(base, crate::cequipment_variant_pool::VTABLE_RVA).map(|p| p as u64)
+        if engine_sites::at(base, engine_native::cequipment_variant::pool::VTABLE_RVA).map(|p| p as u64)
             != Some(word(p, 0))
         {
             return Err("combat log event side pool class differs");
         }
-        let allocations = array(p, crate::cequipment_variant_pool::ALLOCATIONS, 24)?;
+        let allocations = array(p, engine_native::cequipment_variant::pool::ALLOCATIONS, 24)?;
         let mut serialized = false;
         for ordinal in 0..allocations.count {
             if field::<i64>(memory, element(allocations, ordinal, 24)?, 16)? != 0 {
@@ -519,7 +520,7 @@ fn side_data_inner(
             key,
             [
                 u64::from(serialized),
-                p[crate::cequipment_variant_pool::ALLOW_ZERO] as u64,
+                p[engine_native::cequipment_variant::pool::ALLOW_ZERO] as u64,
                 0,
                 0,
                 0,
@@ -530,7 +531,7 @@ fn side_data_inner(
         }
         let items = array(
             p,
-            crate::cequipment_variant_pool::ITEMS,
+            engine_native::cequipment_variant::pool::ITEMS,
             equipment_entry::STRIDE,
         )?;
         for ordinal in 0..items.count {
@@ -597,7 +598,7 @@ pub fn observer(
     put: &mut impl FnMut(Fact),
 ) -> Result<(), &'static str> {
     let pointer = side
-        .checked_add(crate::cland_combatant::STATS_OBSERVER)
+        .checked_add(engine_native::cland_combatant::STATS_OBSERVER)
         .ok_or("combat log observer address overflow")?;
     let bytes = header::<OBSERVER_SIZE>(memory, base, pointer, crate::cstats_observer::VTABLE_RVA)?;
     emit(
@@ -709,14 +710,14 @@ pub fn observer(
             );
         }
         let pool_at = ACTIVITY_EQUIPMENT_POOL;
-        if engine_sites::at(base, crate::cequipment_variant_pool::VTABLE_RVA).map(|p| p as u64)
+        if engine_sites::at(base, engine_native::cequipment_variant::pool::VTABLE_RVA).map(|p| p as u64)
             != Some(word(&entry, pool_at))
         {
             return Err("combat log activity pool class differs");
         }
         let allocations = array(
             &entry,
-            pool_at + crate::cequipment_variant_pool::ALLOCATIONS,
+            pool_at + engine_native::cequipment_variant::pool::ALLOCATIONS,
             24,
         )?;
         let mut serialized = false;
@@ -734,7 +735,7 @@ pub fn observer(
             [
                 u64::MAX,
                 u64::from(serialized),
-                entry[pool_at + crate::cequipment_variant_pool::ALLOW_ZERO] as u64,
+                entry[pool_at + engine_native::cequipment_variant::pool::ALLOW_ZERO] as u64,
                 0,
                 0,
             ],
@@ -742,7 +743,7 @@ pub fn observer(
         if serialized {
             let items = array(
                 &entry,
-                pool_at + crate::cequipment_variant_pool::ITEMS,
+                pool_at + engine_native::cequipment_variant::pool::ITEMS,
                 equipment_entry::STRIDE,
             )?;
             for index in 0..items.count {

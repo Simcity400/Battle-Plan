@@ -32,7 +32,7 @@ pub trait Geography: SubUnitContent {
     fn terrain_flags(&self, province: u32) -> Option<u8>;
     fn land(&self, province: u32) -> Option<bool> {
         self.terrain_flags(province)
-            .map(|flags| flags & engine_native::province_definition::LAND_FLAG != 0)
+            .map(|flags| flags & engine_native::cprovince::definition::LAND_FLAG != 0)
     }
     fn terrain_movement(&self, index: i32) -> Option<i64>;
     fn crossing_kind(&self, from: u32, to: u32) -> Option<u8>;
@@ -741,7 +741,7 @@ impl<'a> FrameTerms<'a> {
             value.ok_or_else(|| format!("the {name} define was refused when recorded"))
         };
         let defense = if enemy > 0 {
-            engine_native::csub_unit_definition::movement_air_defense_value(
+            engine_native_parts::csub_unit_definition::movement_air_defense_value(
                 stats.air_defense,
                 define(recorded.air_defense_denominator, "air defense denominator")?,
                 define(recorded.air_defense_reduction, "air defense reduction")?,
@@ -1089,8 +1089,8 @@ impl<'a> FrameTerms<'a> {
         let invasion = geography
             .terrain_flags(division.province)
             .ok_or_else(|| format!("province {} has no content terrain", division.province))?
-            & (engine_native::province_definition::LAND_FLAG
-                | engine_native::province_definition::LAKE_FLAG)
+            & (engine_native::cprovince::definition::LAND_FLAG
+                | engine_native::cprovince::definition::LAKE_FLAG)
             == 0
             && movement
                 .path

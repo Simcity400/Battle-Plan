@@ -373,9 +373,9 @@ impl Published {
         rows: &mut Vec<ccharacter::Row>,
         bytes: &mut Vec<u8>,
     ) -> ReadResult {
-        let room = engine_native::walk::Buffer::Growing(rows)
+        let room = engine_native_memory::walk::Buffer::Growing(rows)
             .ensure(self.rows.len())
-            .and_then(|_| engine_native::walk::Buffer::Growing(bytes).ensure(self.bytes.len()));
+            .and_then(|_| engine_native_memory::walk::Buffer::Growing(bytes).ensure(self.bytes.len()));
         if let Err(reason) = room {
             return ReadResult::rows(Outcome::Unavailable { reason });
         }

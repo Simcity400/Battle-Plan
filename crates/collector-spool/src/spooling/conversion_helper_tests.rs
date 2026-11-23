@@ -1,6 +1,6 @@
 use super::captured;
 use super::*;
-use engine_native::msvc_string::Text;
+use engine_native_memory::msvc_string::Text;
 use replay_data::rows::TableId;
 
 const FIRST_HOUR: i32 = 100;
@@ -114,7 +114,7 @@ fn hour_frame(step: i32) -> Captured {
     source.faction_names[..3].copy_from_slice(b"Axs");
     source.faction_names_len = 3;
     source.factions_result = Outcome::Rows { len: 1 };
-    source.faction_members[0] = engine_native::cfaction_system::MemberRow {
+    source.faction_members[0] = engine_native::cfaction::system::MemberRow {
         country: 7,
         faction: 88,
         ordinal: 0,

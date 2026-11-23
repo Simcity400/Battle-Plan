@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 const STATE: usize = 0;
@@ -24,7 +24,7 @@ impl World {
     fn build(provinces: u32, regions: u32, budgets: (i32, i32), live: bool) -> Self {
         let accumulators = REGIONS + regions as usize * sweather_per_region::STRIDE;
         let province_data = (accumulators
-            + regions as usize * COMBAT_KEYS.len() * engine_native::modifier_entry::STRIDE
+            + regions as usize * COMBAT_KEYS.len() * engine_native_parts::modifier_entry::STRIDE
             + 0xff)
             & !0xff;
         let snow = province_data + provinces as usize * sweather_per_province::STRIDE;
@@ -80,7 +80,7 @@ impl World {
                 &(slot as i32 + 1).to_le_bytes(),
             );
             let entries = accumulators
-                + slot as usize * COMBAT_KEYS.len() * engine_native::modifier_entry::STRIDE;
+                + slot as usize * COMBAT_KEYS.len() * engine_native_parts::modifier_entry::STRIDE;
             world.put(
                 record + sweather_per_region::MODIFIERS,
                 &((world.base + entries) as u64).to_le_bytes(),
@@ -94,7 +94,7 @@ impl World {
                 &(COMBAT_KEYS.len() as u32).to_le_bytes(),
             );
             for (index, key) in COMBAT_KEYS.into_iter().enumerate() {
-                let entry = entries + index * engine_native::modifier_entry::STRIDE;
+                let entry = entries + index * engine_native_parts::modifier_entry::STRIDE;
                 world.put(entry, &key.to_le_bytes());
                 world.put(entry + 8, &(i64::from(slot) * 1000).to_le_bytes());
             }
@@ -154,7 +154,7 @@ impl World {
 
     fn combat_value(&self, slot: u32) -> usize {
         self.accumulators
-            + slot as usize * COMBAT_KEYS.len() * engine_native::modifier_entry::STRIDE
+            + slot as usize * COMBAT_KEYS.len() * engine_native_parts::modifier_entry::STRIDE
             + 8
     }
 
@@ -183,7 +183,7 @@ impl World {
     fn province_entry(&mut self, slot: u32, key: u32, value: i64) -> usize {
         let entry = (self.bytes.len() + 0xf) & !0xf;
         self.bytes
-            .resize(entry + engine_native::modifier_entry::STRIDE, 0);
+            .resize(entry + engine_native_parts::modifier_entry::STRIDE, 0);
         let header = self.province(slot) + sweather_per_province::MODIFIERS;
         self.put(header, &((self.base + entry) as u64).to_le_bytes());
         self.put(header + 8, &1_u32.to_le_bytes());
@@ -194,8 +194,8 @@ impl World {
     }
 
     fn province_statics(&mut self, slot: u32, entries: &[(&str, i32)]) -> usize {
-        let name = engine_native::cstatic_modifier::NAME;
-        let definition_bytes = name + engine_native::msvc_string::STRIDE;
+        let name = engine_native_parts::cstatic_modifier::NAME;
+        let definition_bytes = name + engine_native_memory::msvc_string::STRIDE;
         let list = (self.bytes.len() + 0xf) & !0xf;
         let stride = sweather_per_province::STATIC_MODIFIER_STRIDE;
         let first = list + entries.len() * stride;
@@ -206,16 +206,16 @@ impl World {
             let definition = first + index * definition_bytes;
             self.put(
                 definition,
-                &(engine_native::cstatic_modifier::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native_parts::cstatic_modifier::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             self.put(definition + name, text.as_bytes());
             self.put(
-                definition + name + engine_native::msvc_string::LENGTH,
+                definition + name + engine_native_memory::msvc_string::LENGTH,
                 &(text.len() as u64).to_le_bytes(),
             );
             self.put(
-                definition + name + engine_native::msvc_string::CAPACITY,
-                &engine_native::msvc_string::INLINE_CAPACITY.to_le_bytes(),
+                definition + name + engine_native_memory::msvc_string::CAPACITY,
+                &engine_native_memory::msvc_string::INLINE_CAPACITY.to_le_bytes(),
             );
             let entry = list + index * stride;
             self.put(entry, &((self.base + definition) as u64).to_le_bytes());
@@ -862,7 +862,7 @@ fn a_failed_window_custom_sea_read_is_refused_and_read_in_full_next_hour() {
 #[ignore = "synthetic guarded weather window timing"]
 fn weather_window_bench() {
     let mut world = World::build(13_414, 305, (584, 7), true);
-    let live = unsafe { engine_native::memory::LiveMemory::new() };
+    let live = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let state = world.base + STATE;
     let mut evict = vec![0_u8; 256 << 20];
     let mut jobs: [WeatherJob; 2] = std::array::from_fn(|_| WeatherJob::new());

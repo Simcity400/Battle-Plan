@@ -11,10 +11,10 @@ pub fn walk_country_buffer<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     walk_country_with_applied(
         memory,
@@ -37,12 +37,12 @@ pub fn walk_country_with_applied<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
     authenticated_status: usize,
     applied: &[research_inputs::BonusRow],
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     walk_country_with_applied_certified(
         memory,
@@ -66,12 +66,12 @@ pub fn walk_country_with_applied_certified<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     context: Result<Context, &'static str>,
     inputs: &[research_inputs::Row],
     authenticated_status: usize,
     applied: &[research_inputs::BonusRow],
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
     certificate_available: bool,
 ) -> Outcome {
     let modifiers = super::walk_country_buffer_certified(

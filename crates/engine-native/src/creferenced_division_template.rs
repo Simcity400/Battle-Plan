@@ -69,15 +69,17 @@ pub struct Settings {
     pub training_time: i32,
 }
 
-use crate::{
-    Memory, ccountry,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    csub_unit_definition as subunit,
     memory::{RecordField, RecordLayout, RecordSources},
     msvc_string::{self, Descriptor},
-    read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use crate::ccountry;
+use engine_native_parts::csub_unit_definition as subunit;
 
 pub const PRIORITY_UNIT: usize = COMPOSITION + 0x190;
 pub const CATEGORY_UNIT: usize = COMPOSITION + 0x198;
@@ -805,7 +807,7 @@ fn pointers(
     let source = array
         .slice(first, output.len() as u32, 8)
         .map_err(|_| "template pointer index invalid")?;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         source,
         "template pointers unreadable",
@@ -826,7 +828,7 @@ fn visit_templates(
     state: usize,
     layout: &RecordLayout<'_>,
     scope: Scope,
-    mut country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
+    mut country_visit: Option<&mut dyn FnMut(engine_native_memory::country_identity::Country)>,
     mut details: Option<(&mut dyn DetailPolicy, &RecordLayout<'_>)>,
     mut prepare: impl FnMut(&[u8], usize),
     mut visit: impl FnMut(
@@ -861,7 +863,7 @@ fn visit_templates(
             let deployment = country
                 .pointer
                 .checked_add(ccountry::DEPLOYMENT_MANAGER)
-                .and_then(|at| crate::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .and_then(|at| usize::try_from(at).ok())
                 .filter(|&at| at != 0);
             details.before_country(country.id, deployment);
@@ -1216,7 +1218,7 @@ pub fn walk_icons_with_selected_details(
     variants: &mut Vec<u64>,
     slots: DefinitionSlots<'_>,
     names: &mut Vec<u8>,
-    countries: &mut dyn FnMut(ccountry::Country),
+    countries: &mut dyn FnMut(engine_native_memory::country_identity::Country),
     details: &mut dyn DetailPolicy,
 ) -> IconWalk {
     walk_icons_inner(
@@ -1250,7 +1252,7 @@ pub fn walk_icons_range(
     variants: &mut Vec<u64>,
     slots: DefinitionSlots<'_>,
     names: &mut Vec<u8>,
-    countries: &mut dyn FnMut(ccountry::Country),
+    countries: &mut dyn FnMut(engine_native_memory::country_identity::Country),
     details: &mut dyn DetailPolicy,
 ) -> IconWalk {
     walk_icons_inner(
@@ -1451,7 +1453,7 @@ pub fn walk_icons_inner(
     slots: DefinitionSlots<'_>,
     display_bytes: Option<Buffer<'_, u8>>,
     range: Option<std::ops::Range<u32>>,
-    country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
+    country_visit: Option<&mut dyn FnMut(engine_native_memory::country_identity::Country)>,
     detail_policy: Option<&mut dyn DetailPolicy>,
 ) -> IconWalk {
     walk_icons_scoped(
@@ -1522,7 +1524,7 @@ fn walk_icons_scoped(
     slots: DefinitionSlots<'_>,
     mut display_bytes: Option<Buffer<'_, u8>>,
     scope: Scope,
-    country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
+    country_visit: Option<&mut dyn FnMut(engine_native_memory::country_identity::Country)>,
     detail_policy: Option<&mut dyn DetailPolicy>,
 ) -> IconWalk {
     let mut result = IconWalk {
@@ -2006,7 +2008,7 @@ fn walk_icons_scoped(
                     pointers(memory, exclusions, first, &mut excluded[..batch])?;
                     for &variant in &excluded[..batch] {
                         variants[result.variants_len] =
-                            crate::cequipment_variant::identity(memory, base, variant)?;
+                            engine_native_parts::equipment_variant_identity::identity(memory, base, variant)?;
                         result.variants_len += 1;
                     }
                 }
@@ -2088,8 +2090,8 @@ fn walk_icons_scoped(
                         let vtable = word(&identity, 0);
                         let is =
                             |rva| engine_sites::at(base, rva).map(|p| p as u64) == Some(vtable);
-                        if !is(crate::cequipment_type::VTABLE_RVA)
-                            && !is(crate::cequipment_type::NULL_VTABLE_RVA)
+                        if !is(engine_native_parts::cequipment_type::VTABLE_RVA)
+                            && !is(engine_native_parts::cequipment_type::NULL_VTABLE_RVA)
                         {
                             return Err("template forbidden equipment identity mismatch");
                         }

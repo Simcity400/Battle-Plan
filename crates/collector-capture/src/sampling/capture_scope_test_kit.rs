@@ -39,7 +39,7 @@ impl Memory for Traced<'_> {
                 .fault
                 .is_some_and(|fault| address <= fault && fault - address < output.len());
         let accepted = !refused
-            && engine_native::memory::SliceMemory {
+            && engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &self.world.bytes,
             }
@@ -88,7 +88,7 @@ pub unsafe fn capture(
         Fixture::Divisions => {
             let header = divisions_test_kit::A1
                 + engine_native::carmy::EQUIPMENT_POOL
-                + engine_native::cequipment_variant_pool::ITEMS;
+                + engine_native::cequipment_variant::pool::ITEMS;
             u64::from_le_bytes(bytes[header..header + 8].try_into().unwrap()) as usize + 8
         }
         Fixture::Wars => {

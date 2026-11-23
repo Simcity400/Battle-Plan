@@ -1,6 +1,8 @@
 use super::super::{Captured, CharactersCopyContext, CharactersJob, N, Roles, copy_characters};
 use super::*;
-use engine_native::{cgame_state, cunit_leader_trait, memory::SliceMemory, walk::Outcome};
+use engine_native::cgame_state;
+use engine_native_parts::cunit_leader_trait;
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 
 const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;
@@ -141,7 +143,7 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
     let mut job = CharactersJob::with_storage(0, 0, 0, false);
     job.portrait_census = Some(
         engine_allocation::shared(
-            engine_native::ccharacter_manager::PortraitCensus::try_new(0).unwrap(),
+            engine_native::ccharacter::manager::PortraitCensus::try_new(0).unwrap(),
         )
         .unwrap(),
     );

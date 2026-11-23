@@ -1,9 +1,9 @@
 use super::*;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn reserved_certificate_readiness_uses_only_the_projectable_naming_prefix() {
-    use engine_native::csubject_relation::Name;
+    use engine_native::crelation::subject::Name;
     let mut capture = Captured::vacant();
     assert!(!capture.reserved_land_certificate_ready());
     capture.reserved.outcome = Outcome::Rows { len: 1 };
@@ -51,7 +51,7 @@ fn reserved_certificate_readiness_uses_only_the_projectable_naming_prefix() {
 
 #[test]
 fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance() {
-    use engine_native::csubject_relation::Name;
+    use engine_native::crelation::subject::Name;
     let mut capacity = Capacities {
         rows: 1,
         subjects: 0,
@@ -165,7 +165,7 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
 
 #[test]
 fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
-    use engine_native::csubject_relation::Name;
+    use engine_native::crelation::subject::Name;
     assert_eq!(
         TABLES,
         [TableId::CountryAppearance, TableId::ReservedCountryNaming]
@@ -263,7 +263,7 @@ fn unreadable_census_is_unavailable_and_raw_colors_preserve_primary_values() {
 
 #[test]
 fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
-    use engine_native::{cpdx_array::Array, memory::CountedMemory, memory::ReadCounts};
+    use engine_native_memory::{cpdx_array::Array, memory::{CountedMemory, ReadCounts}};
     let bytes = [9_i32, -1, 9]
         .into_iter()
         .flat_map(i32::to_le_bytes)
@@ -302,7 +302,7 @@ fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
 
 #[test]
 fn positive_original_tag_projection_preserves_binary_absence_and_local_refusal() {
-    use engine_native::csubject_relation::Name;
+    use engine_native::crelation::subject::Name;
     let mut capture = Captured::with_capacities(&Capacities {
         rows: 1,
         subjects: 0,
@@ -357,7 +357,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
     capture.reserved.outcome = Outcome::Rows { len: 1 };
     capture.reserved.row.original_tag_reference = 7;
     capture.reserved.row.original_tag =
-        Some(engine_native::csubject_relation::Name { start: 0, len: 0 });
+        Some(engine_native::crelation::subject::Name { start: 0, len: 0 });
     capture.naming.len = 0;
     for (index, (start, len)) in [(0, 0), (0, 4), (4, 0)].into_iter().enumerate() {
         capture.original_tag_buckets.first[index].start = start;
@@ -503,7 +503,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
 
 #[test]
 fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries() {
-    use engine_native::cpdx_array::Array;
+    use engine_native_memory::cpdx_array::Array;
     let bytes = [9_i32, -1, 9, 17]
         .into_iter()
         .flat_map(i32::to_le_bytes)
@@ -586,7 +586,7 @@ fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries
 
 #[test]
 fn subject_arena_presizes_from_live_country_slots_without_a_cap() {
-    use engine_native::cpdx_array::Array;
+    use engine_native_memory::cpdx_array::Array;
     let slots = 5_001;
     let mut capacity = Capacities::default();
     capacity.raise_for_countries(slots);

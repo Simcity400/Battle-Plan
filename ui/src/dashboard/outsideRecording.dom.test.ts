@@ -4,8 +4,8 @@ import { withNativePage } from '../../../tools/native-page.ts';
 
 interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean; dated: boolean }
 interface Frame { hour: number; widgets: Record<string, { state: string; renders: number }> }
-const OUTSIDE = 'unavailable: This time is outside the recording.';
-const NOT_PLAYING = "isn't playing back yet";
+const OUTSIDE = 'outside: This time is outside the recording.';
+const NOT_PLAYING = 'isn’t playing back yet';
 
 test('every registered widget kind through the production host, half on a track ending at 100 and half on one starting at 101, playing at 1,440 h/s: frames between boundary crossings render nothing, and on the frame that crosses every widget playing back dated says outside for the track it leaves and clears it for the track it enters', async () => {
   await withNativePage('outside-recording', '/ui/src/dashboard/outsideRecording.dom.fixture.tsx', page => page.stage('outside recording', async () => {

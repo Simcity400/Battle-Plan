@@ -1,13 +1,14 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry,
-    ccountry::{Country, Reader},
-    ccountry_collaboration_data::{self, Row},
+use engine_native_memory::{
+    Memory,
+    country_identity::Country,
     cpdx_array::Array,
     read,
     walk::Outcome,
 };
+use engine_native::ccountry::{self, Reader};
+use crate::ccountry_collaboration_data::{self, Row};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_7748);
 pub const RELATIONS: usize = 0x28;
@@ -97,7 +98,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -105,7 +106,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     match walk_inner(memory, base, game_state, output) {
         Ok((len, 0)) => Outcome::Rows { len },
@@ -118,7 +119,7 @@ fn walk_inner<M: Memory>(
     memory: &M,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<(usize, u32), &'static str> {
     let countries = Reader::new(memory, base, game_state)?;
     let mut observed = false;
@@ -202,7 +203,8 @@ fn walk_inner<M: Memory>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, cpdx_array, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::{cpdx_array, memory::SliceMemory};
 
     fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
         let index = address - 0x1000;
@@ -307,7 +309,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            walk_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
+            walk_buffer(&memory, 0, 0x1000, engine_native_memory::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2

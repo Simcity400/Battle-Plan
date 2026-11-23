@@ -1,7 +1,7 @@
-use crate::{
-    Memory, cfront_section, corder_instance, cpdx_array::Array, creference_registry, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use crate::cfront_section;
+use engine_native::corder_instance;
+use engine_native_parts::creference_registry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_23b0);
@@ -193,7 +193,11 @@ fn grow_payload<T: Default>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cprovince, creference_registry as registry, reference_bucket as bucket};
+    use engine_native::cprovince;
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
     use std::collections::BTreeMap;
     #[derive(Default)]
     struct Image(BTreeMap<usize, u8>, std::cell::RefCell<Vec<(usize, usize)>>);

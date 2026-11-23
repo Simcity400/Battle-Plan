@@ -13,6 +13,8 @@ doctest = false
 test-support = ["replay-frame/test-support", "dashboard-core/test-support", "content-reader-abilities/test-support", "content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support", "content-reader-country-names/test-support", "content-reader-division-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-events/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-raids/test-support", "content-reader-regions/test-support", "content-reader-scripted-localisation/test-support", "content-reader-settings/test-support", "content-reader-state-categories/test-support", "content-reader-states/test-support", "content-reader-wargoals/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-air.workspace = true
 content-reader-defines.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true
@@ -103,16 +105,19 @@ content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }

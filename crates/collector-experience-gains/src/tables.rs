@@ -4,7 +4,7 @@ use crate::{
     table_capture::{CaptureRows, grow_vec},
     table_conversion::table,
 };
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use replay_data::{rows::CountryExperienceGainRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 

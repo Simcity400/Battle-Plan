@@ -71,7 +71,7 @@ export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime
   const at = useStockpileAt(runtime, widget, tag ?? null, active);
   const { view, hour } = useView(catalogue.data, at, track);
   return { track, tag, holders, included, catalogue: catalogue.data, data: view, hour, at, error: catalogue.error ?? at.error,
-    retry: () => { catalogue.retry(); at.retry(); } };
+    retry: () => { if (catalogue.error) catalogue.retry(); if (at.error) at.retry(); } };
 }
 
 export function useStockpileChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
@@ -111,5 +111,5 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const reason = (failure ? failureText(failure, 'Couldn’t load country.') : null) ?? (!history ? 'Loading country…'
     : !spans ? 'Choose a country again.' : !view ? 'Loading the selected stockpile history…' : null);
   return { data: selection ? view : undefined, hour: shownHour, at, catalogue: catalogue.data, holders, spans, reason, error: (history ? undefined : groups.error) ?? error,
-    retry: groups.error && !history ? groups.retry : () => { catalogue.retry(); at.retry(); }, identityError: history ? groups.error : undefined, identityRetry: groups.retry };
+    retry: groups.error && !history ? groups.retry : () => { if (catalogue.error) catalogue.retry(); if (at.error) at.retry(); }, identityError: history ? groups.error : undefined, identityRetry: groups.retry };
 }

@@ -1,5 +1,5 @@
 
-use crate::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 
 pub const COUNTRY: usize = 0x08;
 pub const STATES: usize = 0x18;

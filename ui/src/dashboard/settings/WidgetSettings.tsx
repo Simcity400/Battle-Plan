@@ -20,11 +20,15 @@ import { CountriesSection } from './CountriesSection';
 import { OptionFields } from './OptionFields';
 import { TimeSection } from './TimeSection';
 import { FactionColoursEditor } from '../FactionColours';
+import { MapSettingsSection } from '../../widgets/map/MapSettingsSection';
+import { DEFAULT_MAP_OPTIONS } from '../mapPicker';
+import type { MapOptions } from '../../shell/api';
 import './settings.css';
 
 export function WidgetSettings(props: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onChange: (widget: WidgetSpec, view?: boolean) => void;
+  mapOptions?: MapOptions; onMapOptions?: (options: MapOptions) => void;
 }) {
   const use = widgetDefinition(props.widget.kind)?.useOptionChoices;
   return use ? <WithChoices key={props.widget.kind} use={use} widget={resolveWidgetCampaign(props.widget, props.template, props.runtime.defaultRoleId)} runtime={props.runtime}>
@@ -37,9 +41,10 @@ function WithChoices({ use, widget, runtime, children }: {
   return <>{children(use(widget, runtime))}</>;
 }
 
-function SettingsBody({ widget, template, runtime, onChange, choices }: {
+function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions, onMapOptions }: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onChange: (widget: WidgetSpec, view?: boolean) => void; choices?: OptionChoices;
+  mapOptions?: MapOptions; onMapOptions?: (options: MapOptions) => void;
 }) {
   const definition = widgetDefinition(widget.kind);
   const values = resolveOptions(definition?.options, widget.options);
@@ -65,6 +70,8 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
       case 'time': return <>{definition?.data && <TimeSection widget={widget} effective={effective} reference={reference} runtime={runtime}
         modes={definition.timeModes} onChange={time => save({ ...widget, time })} />}{fields('time')}</>;
       case 'size': return <SizeStepper widget={widget} onChange={save} />;
+      case 'map': return <MapSettingsSection widget={widget} reference={reference} runtime={runtime}
+        mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} onMapOptions={onMapOptions ?? (() => {})} />;
       case 'factionColours': return reference ? <FactionColoursEditor key={`${reference.source.id}:${reference.source.revision}`} client={runtime.client} source={reference.source} />
         : <p className="field-hint">Load a campaign to edit its faction colours.</p>;
       case 'options': case 'axes': case 'interaction': return fields(section);

@@ -168,7 +168,7 @@ fn acquire_intel(
         memory,
         ctx.base,
         ctx.game_state,
-        engine_native::walk::Buffer::Growing(&mut job.rows),
+        engine_native_memory::walk::Buffer::Growing(&mut job.rows),
         divisions,
     );
     job.acquired = true;
@@ -259,10 +259,10 @@ impl Captured {
         let started = qpc();
         self.radar_provinces.required = job.required_provinces;
         let growth = {
-            engine_native::walk::Buffer::Growing(&mut self.radar.rows)
+            engine_native_memory::walk::Buffer::Growing(&mut self.radar.rows)
                 .ensure(job.outcome.len())
                 .and_then(|_| {
-                    engine_native::walk::Buffer::Growing(&mut self.radar_provinces.first)
+                    engine_native_memory::walk::Buffer::Growing(&mut self.radar_provinces.first)
                         .ensure(job.provinces_len)
                 })
         };
@@ -292,7 +292,7 @@ impl Captured {
 
     pub fn decode_intel_payload(&mut self, job: &IntelJob, decode_ticks: &mut [u64; INTEL_N]) {
         let started = qpc();
-        let growth = engine_native::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len());
+        let growth = engine_native_memory::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len());
         if let Err(reason) = growth {
             self.intel.outcome = job.outcome;
             self.intel.fail(Outcome::Unavailable { reason });

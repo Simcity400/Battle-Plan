@@ -4,12 +4,9 @@ pub const VTABLE_RVA: Rva = Rva(0x02aa_49b0);
 pub const TREE_HEADER: usize = 0x08;
 pub const TREE_SIZE: usize = 0x10;
 
-use crate::{
-    Memory, ccountry,
-    nproject_breakthrough_node::{self as node, Links},
-    nproject_cprogram_status, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{nproject_breakthrough_node::{self as node, Links}, nproject_cprogram_status};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -28,7 +25,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -36,7 +33,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -80,7 +77,7 @@ pub fn walk_status_buffer(
     base: usize,
     status: usize,
     owner: u32,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let Some(address) = status.checked_add(nproject_cprogram_status::BREAKTHROUGH) else {
         return Outcome::Unavailable {
@@ -95,7 +92,7 @@ pub fn walk_progress_buffer(
     base: usize,
     address: usize,
     owner: u32,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let expected = engine_sites::at(base, VTABLE_RVA).ok_or("breakthrough vtable overflow")?;
@@ -244,7 +241,7 @@ fn successor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const IMAGE: usize = 0x1000;
     const ADDRESS: usize = 0x2000;
@@ -307,7 +304,7 @@ mod tests {
         walk_progress_buffer(&SliceMemory {
                 base: ADDRESS,
                 bytes,
-            }, IMAGE, ADDRESS, 19, crate::walk::Buffer::Growing(output))
+            }, IMAGE, ADDRESS, 19, engine_native_memory::walk::Buffer::Growing(output))
     }
 
     #[test]
@@ -380,7 +377,7 @@ mod tests {
             }
         }
         assert_eq!(
-            walk_progress_buffer(&MissingRootPayload(&bytes), IMAGE, ADDRESS, 19, crate::walk::Buffer::Count),
+            walk_progress_buffer(&MissingRootPayload(&bytes), IMAGE, ADDRESS, 19, engine_native_memory::walk::Buffer::Count),
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 3

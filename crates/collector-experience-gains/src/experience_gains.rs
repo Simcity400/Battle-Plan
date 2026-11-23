@@ -1,7 +1,8 @@
 use crate::hook::{Hook, Registers, Tap};
 type Clock = engine_native::cgame_state::Clock<u64>;
 use engine_events::experience_gain_sites as native;
-use engine_native::{Memory, ccountry, read};
+use engine_native_memory::{Memory, read};
+use engine_native::ccountry;
 use replay_data::rows::CountryExperienceGainRow;
 use std::{
     ops::Range,
@@ -354,7 +355,7 @@ impl Store {
             memory,
             base,
             state,
-            engine_native::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(rows),
         )
     }
     fn snapshot_buffer(
@@ -362,7 +363,7 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        mut rows: engine_native::walk::Buffer<'_, CountryExperienceGainRow>,
+        mut rows: engine_native_memory::walk::Buffer<'_, CountryExperienceGainRow>,
     ) -> Result<usize, &'static str> {
         let countries = ccountry::Reader::new(memory, base, state)?;
         self.census = countries.count() as usize;
@@ -446,7 +447,7 @@ impl Store {
             memory,
             base,
             state,
-            engine_native::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(rows),
             refused,
         )
     }
@@ -455,7 +456,7 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        rows: engine_native::walk::Buffer<'_, CountryExperienceGainRow>,
+        rows: engine_native_memory::walk::Buffer<'_, CountryExperienceGainRow>,
         refused: bool,
     ) -> Result<usize, &'static str> {
         if refused {
@@ -572,7 +573,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     {
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if let Err(reason) = LIVE.record(&memory, BASE.load(Ordering::Relaxed), registers, site) {
         refuse(reason);
     }
@@ -604,7 +605,7 @@ pub fn drain(
         memory,
         base,
         state,
-        engine_native::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(rows),
         refused.is_some(),
     );
     if let Err(reason) = result {
@@ -724,7 +725,8 @@ impl Drop for Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{country_memory::Cache, memory::SliceMemory};
+    use engine_native_intelligence::country_memory::Cache;
+    use engine_native_memory::memory::SliceMemory;
 
     fn owner(pointer: usize, country: u32) -> native::Owner {
         native::Owner { pointer, country }
@@ -1227,7 +1229,7 @@ mod tests {
                         &cache.prepare(&initial_memory, 0, 0),
                         0,
                         0,
-                        engine_native::walk::Buffer::Growing(&mut growing_rows)
+                        engine_native_memory::walk::Buffer::Growing(&mut growing_rows)
                     )
                     .unwrap(),
                 LAST

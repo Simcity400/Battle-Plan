@@ -15,9 +15,9 @@ default = ["air_record_changes"]
 air_record_changes = []
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-air-history.workspace = true
 engine-allocation.workspace = true
-engine-native.workspace = true
 engine-sites.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
@@ -33,7 +33,6 @@ collector-status.workspace = true
 collector-timing.workspace = true
 
 [dev-dependencies]
-engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
 collector-extended-support = { workspace = true, features = ["test-support"] }
@@ -53,6 +52,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-air-records = { workspace = true, features = ["air_record_changes", "default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

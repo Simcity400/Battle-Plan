@@ -1,7 +1,7 @@
 
-use crate::{
-    Memory, cpdx_array::Array, cprovince_railway_info, crailway_manager, province_definition, read,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::{cprovince_railway_info, crailway_manager};
+use engine_native::cprovince::definition as province_definition;
 
 pub use crate::advisor_mutations::MutationSite;
 
@@ -103,7 +103,7 @@ pub fn info(memory: &impl Memory, manager: usize, province: i32) -> Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn sites_are_distinct() {

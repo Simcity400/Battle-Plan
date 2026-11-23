@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 fn member(text: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0; 0x100 + text.len() + 1];
@@ -22,7 +22,7 @@ fn read_name(
 ) -> (Result<Option<Span>, &'static str>, Vec<u8>, usize) {
     let mut owned = vec![0; capacity];
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(&mut owned),
+        bytes: engine_native_memory::walk::Buffer::Growing(&mut owned),
         len: 0,
         required: 0,
     };
@@ -41,7 +41,7 @@ fn read_name(
 
 fn count_name(bytes: &[u8]) -> (Result<Option<Span>, &'static str>, usize) {
     let mut names = Names {
-        bytes: crate::walk::Buffer::Count,
+        bytes: engine_native_memory::walk::Buffer::Count,
         len: 0,
         required: 0,
     };

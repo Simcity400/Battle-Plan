@@ -4,7 +4,7 @@ fn selected_fixture() -> EtaMemory {
     let mut memory = eta_fixture();
     put(
         &mut memory.bytes,
-        0x2100 + crate::province_definition::NEIGHBOUR_COUNT,
+        0x2100 + engine_native::cprovince::definition::NEIGHBOUR_COUNT,
         3_i32.to_le_bytes(),
     );
     array(
@@ -44,7 +44,7 @@ fn attach_sizing_reads_only_authenticated_level_headers_and_preserves_faults() {
     );
     put(
         &mut memory.bytes,
-        0x2100 + crate::province_definition::NEIGHBOUR_COUNT,
+        0x2100 + engine_native::cprovince::definition::NEIGHBOUR_COUNT,
         2_i32.to_le_bytes(),
     );
     assert_eq!(
@@ -53,7 +53,7 @@ fn attach_sizing_reads_only_authenticated_level_headers_and_preserves_faults() {
     );
     put(
         &mut memory.bytes,
-        0x2100 + crate::province_definition::NEIGHBOUR_COUNT,
+        0x2100 + engine_native::cprovince::definition::NEIGHBOUR_COUNT,
         3_i32.to_le_bytes(),
     );
     memory.refused = Some(0x2000 + info::PROVINCE_RECORD);
@@ -162,7 +162,7 @@ fn selected_railway_level_faults_retain_demand_and_independent_building() {
     memory.refused = None;
     put(
         &mut memory.bytes,
-        0x2100 + crate::province_definition::NEIGHBOUR_COUNT,
+        0x2100 + engine_native::cprovince::definition::NEIGHBOUR_COUNT,
         2_i32.to_le_bytes(),
     );
     let (_, rows, _, _, _) = selected(&memory, 3);
@@ -201,8 +201,8 @@ fn selected_railway_health_fault_does_not_hide_level_and_original_reads_are_sing
         }
     }
     for fault in [
-        crate::cbuilding::HEALTHY_LEVEL,
-        crate::cbuilding::PARTIAL_HEALTH,
+        engine_native_parts::cbuilding::HEALTHY_LEVEL,
+        engine_native_parts::cbuilding::PARTIAL_HEALTH,
     ] {
         let mut memory = selected_fixture();
         memory.refused = Some(0x4000 + fault);
@@ -215,7 +215,7 @@ fn selected_railway_health_fault_does_not_hide_level_and_original_reads_are_sing
         assert_eq!(rows[0].selection.unwrap().building_level, Ok(Some(Some(4))));
         for (address, width) in [
             (0x2000 + info::NEIGHBOR_PAIR_COUNT, 4),
-            (0x4000 + crate::cbuilding::LEVEL, 2),
+            (0x4000 + engine_native_parts::cbuilding::LEVEL, 2),
         ] {
             assert_eq!(
                 traced
@@ -290,12 +290,12 @@ fn sized_railways(count: usize, pair_count: usize, level_count: usize) -> Vec<u8
         );
         put(
             &mut bytes,
-            definition + crate::province_definition::ID,
+            definition + engine_native::cprovince::definition::ID,
             id.to_le_bytes(),
         );
         put(
             &mut bytes,
-            definition + crate::province_definition::NEIGHBOUR_COUNT,
+            definition + engine_native::cprovince::definition::NEIGHBOUR_COUNT,
             (level_count as i32).to_le_bytes(),
         );
         put(&mut bytes, node, (info::VTABLE_RVA.0 as u64).to_le_bytes());
@@ -423,7 +423,7 @@ fn growing_selected_railway_storage_keeps_reads_and_independent_faults() {
         Some(0x2000 + info::LEVELS_BY_NEIGHBOR_INDEX),
         Some(0x8500),
         Some(0x2200),
-        Some(0x4000 + crate::cbuilding::HEALTHY_LEVEL),
+        Some(0x4000 + engine_native_parts::cbuilding::HEALTHY_LEVEL),
     ] {
         let mut memory = selected_fixture();
         memory.refused = fault;

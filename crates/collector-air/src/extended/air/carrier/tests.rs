@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(test)]
-use engine_native::{cair_base::CarrierPoolFuel, cair_base::ContainerFuel};
+use engine_native_air::cair_base::{CarrierPoolFuel, ContainerFuel};
 
 #[cfg(test)]
 fn lengths() -> CarrierLengths {
@@ -374,7 +374,7 @@ fn inconsistent_output_lengths_cannot_certify_optional_prefixes() {
 }
 
 const COHERENT_HOST_BASE: usize = 0x42000;
-pub const COHERENT_HOST_HANDLE: u64 = (0x43_u64 << 32) | engine_native::cair_base::TYPE as u64;
+pub const COHERENT_HOST_HANDLE: u64 = (0x43_u64 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
 const COHERENT_INDEXED: usize = 0x74000;
 pub const COHERENT_DENSE: usize = 0x74400;
 const COHERENT_CONTAINER_A: usize = 0x74800;
@@ -406,15 +406,15 @@ impl<'a> CoherentCarrierMemory<'a> {
         let mut globals = std::collections::BTreeMap::new();
         for (address, pointer) in [
             (
-                engine_native::csub_unit_definition::DATABASE_RVA.0,
+                engine_native_parts::csub_unit_definition::DATABASE_RVA.0,
                 COHERENT_DATABASE,
             ),
             (
-                engine_native::csub_unit_definition::NULL_OBJECT_RVA.0,
+                engine_native_parts::csub_unit_definition::NULL_OBJECT_RVA.0,
                 COHERENT_NULL,
             ),
             (
-                engine_native::creference_registry::LOW_ROOTS_RVA.0
+                engine_native_parts::creference_registry::LOW_ROOTS_RVA.0
                     + engine_native::cship::HANDLE_TYPE as usize * 8,
                 COHERENT_REGISTRY,
             ),
@@ -443,7 +443,7 @@ impl<'a> CoherentCarrierMemory<'a> {
     }
 }
 
-impl engine_native::Memory for CoherentCarrierMemory<'_> {
+impl engine_native_memory::Memory for CoherentCarrierMemory<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if self.fault.is_some_and(|fault| {
             address <= fault
@@ -473,11 +473,18 @@ fn coherent_header(bytes: &mut [u8], address: usize, data: usize, count: u32) {
 
 pub fn coherent_carrier_fixture() -> Vec<u8> {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{
-        cair_base, cair_wing_pool, ccountry_air_container as container, cname_group_member,
-        creference_registry as registry, cship, cstrategic_air, csub_unit_definition as definition,
+    use engine_native_air::{
+        cair_base,
+        ccountry_air_container as container,
+        cstrategic_air,
+    };
+    use engine_native_parts::{
+        cair_wing_pool,
+        creference_registry as registry,
+        csub_unit_definition as definition,
         reference_bucket as bucket,
     };
+    use engine_native::{cname_group_member, cship};
     let mut bytes = kit::fixture();
     coherent_header(
         &mut bytes,
@@ -628,13 +635,13 @@ pub fn coherent_carrier_fixture() -> Vec<u8> {
     let text = COHERENT_NAME + cname_group_member::CACHED_NAME;
     kit::put64(
         &mut bytes,
-        text + engine_native::msvc_string::LENGTH,
+        text + engine_native_memory::msvc_string::LENGTH,
         COHERENT_NAME_BYTES.len() as u64,
     );
     kit::put64(
         &mut bytes,
-        text + engine_native::msvc_string::CAPACITY,
-        engine_native::msvc_string::INLINE_CAPACITY,
+        text + engine_native_memory::msvc_string::CAPACITY,
+        engine_native_memory::msvc_string::INLINE_CAPACITY,
     );
     bytes[text..text + COHERENT_NAME_BYTES.len()].copy_from_slice(COHERENT_NAME_BYTES);
     bytes
@@ -663,7 +670,8 @@ pub fn coherent_carrier_parts() -> (super::super::Captured, crate::extended::fog
 #[cfg(test)]
 fn coherent_carrier_scale_fixture(countries: usize) -> Vec<u8> {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{ccountry, ccountry_air_container as container, cgame_state};
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_air::ccountry_air_container as container;
     let mut bytes = coherent_carrier_fixture();
     let slots = countries + 1;
     let country_table = bytes.len();
@@ -746,7 +754,7 @@ struct ChangingCensus<'a> {
     reads: std::cell::Cell<usize>,
 }
 #[cfg(test)]
-impl engine_native::Memory for ChangingCensus<'_> {
+impl engine_native_memory::Memory for ChangingCensus<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if !self.memory.copy(address, output) {
             return false;
@@ -998,12 +1006,12 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
 
     kit::put64(
         &mut bytes,
-        COHERENT_CONTAINER_A + engine_native::ccountry_air_container::FUEL_DEMAND_RAW,
+        COHERENT_CONTAINER_A + engine_native_air::ccountry_air_container::FUEL_DEMAND_RAW,
         (-31_i64) as u64,
     );
     kit::put64(
         &mut bytes,
-        COHERENT_CONTAINER_A + engine_native::ccountry_air_container::FUEL_ALLOCATED_RAW,
+        COHERENT_CONTAINER_A + engine_native_air::ccountry_air_container::FUEL_ALLOCATED_RAW,
         (-37_i64) as u64,
     );
     coherent_carrier_stage(&mut job, &bytes);
@@ -1206,9 +1214,9 @@ pub fn coherent_assert_complete_carrier_packets(
 #[test]
 fn native_later_host_names_survive_an_earlier_registration_header_failure() {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{cair_base, cstrategic_air_manager};
+    use engine_native_air::{cair_base, cstrategic_air_manager};
     const SECOND_BASE: usize = 0x44000;
-    const SECOND_HANDLE: u64 = (0x45_u64 << 32) | cair_base::TYPE as u64;
+    const SECOND_HANDLE: u64 = (0x45_u64 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
     const HOST_VECTOR: usize = 0x32000;
     let mut bytes = coherent_carrier_fixture();
     coherent_header(
@@ -1218,19 +1226,19 @@ fn native_later_host_names_survive_an_earlier_registration_header_failure() {
         2,
     );
     kit::put64(&mut bytes, HOST_VECTOR + 8, SECOND_BASE as u64);
-    kit::put64(&mut bytes, SECOND_BASE, cair_base::VTABLE_RVA.0 as u64);
-    kit::put64(&mut bytes, SECOND_BASE + cair_base::HANDLE, SECOND_HANDLE);
+    kit::put64(&mut bytes, SECOND_BASE, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+    kit::put64(&mut bytes, SECOND_BASE + engine_native_parts::cair_base_layout::HANDLE, SECOND_HANDLE);
     kit::put64(
         &mut bytes,
-        SECOND_BASE + cair_base::HOST_REFERENCE,
+        SECOND_BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE,
         COHERENT_SHIP_HANDLE,
     );
     kit::put32(
         &mut bytes,
-        SECOND_BASE + cair_base::HOST_REFERENCE + 24,
+        SECOND_BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE + 24,
         (-19_i32) as u32,
     );
-    kit::put32(&mut bytes, SECOND_BASE + cair_base::HOST_REFERENCE + 28, 1);
+    kit::put32(&mut bytes, SECOND_BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE + 28, 1);
     let memory = CoherentCarrierMemory::with_fault(
         &bytes,
         COHERENT_HOST_BASE + cair_base::COUNTRY_CONTAINERS,
@@ -1307,7 +1315,8 @@ fn native_later_host_names_survive_an_earlier_registration_header_failure() {
 #[test]
 fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure() {
     use super::super::air_bases_test_kit as kit;
-    use engine_native::{cair_wing, cair_wing_pool};
+    use engine_native_air::cair_wing;
+    use engine_native_parts::cair_wing_pool;
     const HOST_WINGS: usize = 0x76000;
     let mut bytes = coherent_carrier_fixture();
     coherent_header(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS, 0, 0);
@@ -1320,7 +1329,7 @@ fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure(
     for (index, wing) in [kit::W0, kit::W1].into_iter().enumerate() {
         kit::put64(&mut bytes, HOST_WINGS + index * 8, wing as u64);
         kit::put64(&mut bytes, wing + 8, COHERENT_POOL as u64);
-        kit::put64(&mut bytes, wing + cair_wing::POOL, COHERENT_POOL as u64);
+        kit::put64(&mut bytes, wing + engine_native_parts::cair_wing_layout::POOL, COHERENT_POOL as u64);
     }
     let mut job = super::super::AirBasesJob::fixture();
     let memory = CoherentCarrierMemory::new(&bytes);
@@ -1334,7 +1343,7 @@ fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure(
     );
     assert_eq!(job.log.fault, [false; 3]);
     assert!(!job.grow_for_next());
-    let faulting = CoherentCarrierMemory::with_fault(&bytes, kit::W1 + cair_wing::POOL);
+    let faulting = CoherentCarrierMemory::with_fault(&bytes, kit::W1 + engine_native_parts::cair_wing_layout::POOL);
     super::super::copy_air_bases_pass(
         &mut job,
         &faulting,

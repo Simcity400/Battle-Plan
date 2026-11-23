@@ -1,12 +1,17 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cequipment_module, cequipment_type, cequipment_upgrade,
-    cequipment_upgrades_instance, cequipment_variant, cpdx_array::Array, cproduction_status,
-    equipment_module_entry, equipment_upgrade_entry, fixed5, modifier_entry, read, walk::Buffer,
+use engine_native_memory::{Memory, cpdx_array::Array, fixed5, read, walk::Buffer};
+use engine_native::{ccountry, cequipment_variant, cproduction_status};
+use engine_native_parts::{
+    cequipment_module,
+    cequipment_type,
+    cequipment_upgrade,
+    modifier_entry,
 };
+use crate::cequipment_upgrades_instance;
+use engine_native_politics::{equipment_module_entry, equipment_upgrade_entry};
 
-pub use crate::cpdx_lexer::MAXIMUM_SPEED_TOKEN;
+pub use engine_native_memory::cpdx_lexer::MAXIMUM_SPEED_TOKEN;
 const SPEED_STAT: u32 = 0x3e;
 
 const TYPE_STATS: usize = 0x148;
@@ -64,7 +69,7 @@ fn at(object: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("railway speed dependency address overflow")
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -244,7 +249,7 @@ pub fn variant_speed(
         ..Accumulator::default()
     };
     let direct = array(memory, variant, DIRECT_BONUSES, 8)?;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         direct,
         "railway speed bonus pointer unreadable",

@@ -6,16 +6,36 @@ use super::{
     Memo, PRIDE_OF_THE_FLEET_SUNK_ACTIVE, RING, RING_DATA, RING_SIZE, STATIC_DATABASE_RVA,
     STATIC_NAME, STATIC_SLOTS, Scratch, TRACKED, walk_country_memo,
 };
+use engine_native::{
+    cadvisor,
+    ccharacter,
+    ccountry,
+    cgame_state,
+    crelation,
+    cwar_relation,
+};
+use engine_native_parts::{
+    cattache_relation,
+    cdynamic_modifier,
+    cidea,
+    cideology_group,
+    cstatic_modifier,
+    modifier_definition,
+    modifier_entry,
+};
+use engine_native_politics::{ccountry_characters, cpolitical_party, cpolitical_status};
 use crate::{
-    cadvisor, cattache_relation, ccharacter, ccountry, ccountry_characters, ccountry_leader,
-    cdiplomacy_status, cdynamic_modifier, cdynamic_modifier_container, cgame_state, cidea,
-    cideology_group, cmodifier,
-    country_memory::{Cache, CountryMemory, SeedStatus},
+    cdynamic_modifier_container,
+    cmodifier,
+    cworld_threat,
+    dynamic_modifier_entry,
+    localization_root_layout,
+};
+use engine_native_intelligence::country_memory::{Cache, CountryMemory, SeedStatus};
+use engine_native_memory::{
     cpdx_array::Array,
-    cpolitical_party, cpolitical_status, crelation, cstatic_modifier, cwar_relation, cworld_threat,
-    dynamic_modifier_entry, localization_root_layout,
     memory::LiveMemory,
-    modifier_definition, modifier_entry, msvc_string,
+    msvc_string,
     read_counts::{CountedMemory, ReadCounts},
     walk::Outcome,
 };
@@ -180,7 +200,7 @@ struct Fixture {
     arena: FrozenArena,
     game_state: usize,
     keys: Keys,
-    countries: Vec<ccountry::Country>,
+    countries: Vec<engine_native_memory::country_identity::Country>,
 }
 
 impl Fixture {
@@ -252,17 +272,17 @@ impl Fixture {
             arena.i64(country + super::COASTAL_PROTECTION_STABILITY, 2500);
             arena.u8(country + PRIDE_OF_THE_FLEET_SUNK_ACTIVE, 1);
 
-            let diplomacy = arena.alloc(cdiplomacy_status::COUNTRY + 8);
+            let diplomacy = arena.alloc(engine_native_parts::cdiplomacy_status_layout::COUNTRY + 8);
             arena.pointer(country + ccountry::DIPLOMACY_STATUS, diplomacy);
-            arena.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA.0);
-            arena.pointer(diplomacy + cdiplomacy_status::COUNTRY, country);
+            arena.vtable(diplomacy, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0);
+            arena.pointer(diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY, country);
             arena.u32(diplomacy + DIPLOMACY_HOSTING, 0);
             let relation = arena.alloc(cwar_relation::FIRST_WAS_INSTIGATOR + 1);
             let attache = arena.alloc(0x18);
             let owned = arena.alloc(16);
             arena.pointer(owned, relation);
             arena.pointer(owned + 8, attache);
-            arena.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, owned, 2);
+            arena.array(diplomacy + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, owned, 2);
             arena.vtable(relation, cwar_relation::VTABLE_RVA.0);
             arena.u32(relation + crelation::TYPE_ID, cwar_relation::TYPE);
             arena.u32(relation + crelation::FIRST_COUNTRY, slot as u32);
@@ -294,11 +314,11 @@ impl Fixture {
             let party = arena.alloc(0x100);
             let ideas = arena.alloc(IDEAS * 8);
             arena.pointer(country + ccountry::POLITICAL_STATUS, status);
-            arena.vtable(status, cpolitical_status::VTABLE_RVA.0);
-            arena.pointer(status + cpolitical_status::COUNTRY, country);
-            arena.pointer(status + cpolitical_status::RULING_PARTY, party);
+            arena.vtable(status, engine_native_parts::cpolitical_status_layout::VTABLE_RVA.0);
+            arena.pointer(status + engine_native_parts::cpolitical_status_layout::COUNTRY, country);
+            arena.pointer(status + engine_native_parts::cpolitical_status_layout::RULING_PARTY, party);
             arena.array(status + cpolitical_status::IDEAS, ideas, IDEAS);
-            arena.vtable(party, cpolitical_party::VTABLE_RVA.0);
+            arena.vtable(party, engine_native_parts::cpolitical_party_layout::VTABLE_RVA.0);
             arena.i64(party + cpolitical_party::POPULARITY, 4_500_000);
             for index in 0..IDEAS {
                 let mut spec = ChildSpec::new(
@@ -321,17 +341,17 @@ impl Fixture {
             let leaders = arena.alloc(8);
             let character = arena.character(slot as u32 * 4);
             let spec = ChildSpec::new(16, format!("synthetic leader display {slot:04}"));
-            arena.vtable(leader, ccountry_leader::VTABLE_RVA.0);
-            arena.pointer(leader + ccountry_leader::CHARACTER, character);
+            arena.vtable(leader, engine_native_parts::ccountry_leader_layout::VTABLE_RVA.0);
+            arena.pointer(leader + engine_native_parts::ccountry_leader_layout::CHARACTER, character);
             arena.pointer(leaders, leader);
-            arena.array(party + cpolitical_party::COUNTRY_LEADERS, leaders, 1);
+            arena.array(party + engine_native_parts::cpolitical_party_layout::COUNTRY_LEADERS, leaders, 1);
             arena.modifier(leader + LEADER_MODIFIER, &spec);
             children.push(spec);
 
             let group = arena.alloc(IDEOLOGY_GROUP_MODIFIER + cmodifier::DISPLAY_NAME + 32);
             let spec = ChildSpec::new(17, format!("synthetic ideology display {slot:04}"));
             arena.vtable(group, cideology_group::VTABLE_RVA.0);
-            arena.pointer(party + cpolitical_party::IDEOLOGY_GROUP, group);
+            arena.pointer(party + engine_native_parts::cpolitical_party_layout::IDEOLOGY_GROUP, group);
             arena.string(
                 group + cideology_group::TOKEN,
                 format!("synthetic_ideology_{slot:04}").as_bytes(),
@@ -343,8 +363,8 @@ impl Fixture {
             let characters = arena.alloc(ccountry_characters::APPOINTED_ADVISORS + 16);
             let advisors = arena.alloc(ADVISORS * 8);
             arena.pointer(country + ccountry::CHARACTERS, characters);
-            arena.vtable(characters, ccountry_characters::VTABLE_RVA.0);
-            arena.pointer(characters + ccountry_characters::OWNER, country);
+            arena.vtable(characters, engine_native::ccountry::rosters::VTABLE_RVA.0);
+            arena.pointer(characters + engine_native::ccountry::rosters::OWNER, country);
             arena.array(
                 characters + ccountry_characters::APPOINTED_ADVISORS,
                 advisors,
@@ -431,11 +451,11 @@ impl Fixture {
             }
             let root_entries = arena.entries(&totals);
             arena.array(
-                country + ccountry::MODIFIER_ACCUMULATOR,
+                country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
                 root_entries,
                 totals.len(),
             );
-            countries.push(ccountry::Country {
+            countries.push(engine_native_memory::country_identity::Country {
                 pointer: country,
                 canonical_slot: slot as u32,
                 id: slot as u32,

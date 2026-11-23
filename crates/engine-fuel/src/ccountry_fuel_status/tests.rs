@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const MEMORY_BASE: usize = 0x1000;
 const STATUSES: [(usize, usize, usize); 2] = [(0x7000, 0x7400, 0x7800), (0x7200, 0x7480, 0x8000)];
@@ -216,8 +217,8 @@ fn the_count_probe_counts_whole_countries_without_reading_their_entries() {
             },
             0,
             MEMORY_BASE,
-            crate::walk::Buffer::Count,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
         ),
         Outcomes {
             fuel: Outcome::Truncated {

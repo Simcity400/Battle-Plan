@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 struct Fixture(Vec<u8>);
 impl Memory for Fixture {
@@ -53,8 +53,8 @@ const OTHER: u64 = 0xa100;
 
 fn fixture() -> Fixture {
     let mut memory = Fixture(vec![0; 0xc000]);
-    memory.array(0x1000 + crate::cgame_state::COUNTRIES, 0x2000, 2);
-    memory.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0x2100, 2);
+    memory.array(0x1000 + engine_native::cgame_state::COUNTRIES, 0x2000, 2);
+    memory.array(0x1000 + engine_native::cgame_state::COUNTRY_LINKS, 0x2100, 2);
     memory.word(0x2008, 0x3000);
     memory.put(0x2104, &1_u32.to_le_bytes());
     memory.word(0x3000, ccountry::VTABLE_RVA.0 as u64);
@@ -71,9 +71,9 @@ fn fixture() -> Fixture {
     memory.array(0x9800 + csub_unit_definition::DATABASE_VECTOR, 0x9900, 2);
     memory.word(0x9908, 0x4000);
     for (at, token) in [(ARCHETYPE as usize, 71_u32), (OTHER as usize, 72)] {
-        memory.word(at, crate::cequipment_type::VTABLE_RVA.0 as u64);
-        memory.put(at + crate::cequipment_type::TOKEN, &token.to_le_bytes());
-        memory.0[at + crate::cequipment_type::ACTIVE] = 1;
+        memory.word(at, engine_native_parts::cequipment_type::VTABLE_RVA.0 as u64);
+        memory.put(at + engine_native_parts::cequipment_type::TOKEN, &token.to_le_bytes());
+        memory.0[at + engine_native_parts::cequipment_type::ACTIVE] = 1;
     }
     memory
 }
@@ -155,7 +155,7 @@ fn held_row() -> (LocalSubunitRow, LocalRequirement) {
         LocalSubunitRow {
             country: 1,
             token: 9,
-            requirements: crate::creferenced_division_template::Span { start: 0, len: 1 },
+            requirements: engine_native::creferenced_division_template::Span { start: 0, len: 1 },
         },
         LocalRequirement {
             archetype_token: 72,

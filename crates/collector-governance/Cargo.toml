@@ -19,6 +19,9 @@ party_changes = []
 party_leader_changes = ["character_changes"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-politics.workspace = true
 game-model.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
@@ -44,6 +47,7 @@ collector-status.workspace = true
 collector-timing.workspace = true
 
 [dev-dependencies]
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
 engine-governance-tests = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
@@ -66,6 +70,7 @@ workspace = true
 collector-governance = { workspace = true, features = ["advisor_changes", "character_changes", "default", "party_changes", "party_leader_changes", "test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

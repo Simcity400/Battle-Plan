@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Memory, corder_instance as order, corders_group as group, memory::SliceMemory};
+use engine_native_memory::{Memory, memory::SliceMemory};
+use crate::{corder_instance as order, corders_group as group};
 
 #[test]
 fn allocation_capacity_overflow_preserves_membership_packet() {
@@ -35,7 +36,7 @@ impl Fixture {
         result.word(MEMBER + GROUP, OWN as u64);
         result.word(OWN, group::VTABLE_RVA.0 as u64);
         result.word(OWN + group::HANDLE, 0xffff_ffff_0000_0035);
-        result.word(PARENT, crate::carmy_group::VTABLE_RVA.0 as u64);
+        result.word(PARENT, engine_native_parts::carmy_group::VTABLE_RVA.0 as u64);
         result.word(PARENT + group::HANDLE, 0xffff_fffe_0000_0035);
         result
     }
@@ -590,8 +591,8 @@ fn has_order_reads_each_header_once_for_presence_and_absence() {
 #[test]
 fn prepared_membership_demand_never_recycles_spare_vec_capacity() {
     let mut packet = MembershipPacket::new(5_001, 5_001, 5_001, 5_001);
-    crate::allocation::reserve(&mut packet.queries, 20_000).unwrap();
-    crate::allocation::reserve(&mut packet.groups, 30_000).unwrap();
+    engine_allocation::reserve(&mut packet.queries, 20_000).unwrap();
+    engine_allocation::reserve(&mut packet.groups, 30_000).unwrap();
     assert!(packet.queries.capacity() > 5_001);
     assert_eq!(packet.capacity().queries, 5_001);
     assert_eq!(packet.capacity().groups, 5_001);

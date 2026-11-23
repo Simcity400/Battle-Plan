@@ -1,0 +1,13 @@
+pub const CHARACTER_UNIT_LEADER: usize = 0xa8;
+pub const CHARACTER_UNIT_LEADER_REFERENCE: usize = 0xc8;
+pub const COMMANDER_CHARACTER: usize = 0x08;
+pub const FUEL: usize = 0x4f8;
+pub const HEADQUARTERS_COMMANDER: usize = 0x40;
+pub const LEADER_MODIFIERS: usize = 0x418;
+pub const LOCAL_MODIFIERS: usize = 0x668;
+pub const REPLENISHMENT: usize = 0x478;
+pub const SOURCE_MODIFIERS: usize = 0xe0;
+pub const STAT_RANGE: usize = 0x1b0;
+pub const UNDERWAY: usize = 0x468;
+pub const UNIT_LEADER_KIND: usize = 0xe7c;
+pub const UNIT_LEADER_SOURCES: [usize; 4] = [0xf70, 0xf80, 0xfa0, 0xf90];

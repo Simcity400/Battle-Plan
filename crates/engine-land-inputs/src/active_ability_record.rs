@@ -12,10 +12,17 @@ pub const ACTIVE: u8 = 0;
 pub const COOLDOWN: u8 = 1;
 pub const ALLOCATED_COMMAND_POWER: usize = 0x50;
 
-use crate::{
-    Memory, cability, carmy_leader, cnavy_leader, coperative_leader, cpdx_array::Array,
-    cstrategic_region, cunit_leader, msvc_string, read, read_slice, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
 };
+use crate::cability;
+use engine_native::{carmy_leader, cunit_leader};
+use engine_native_parts::{cnavy_leader, cstrategic_region};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -48,8 +55,8 @@ pub fn walk_buffer(
     base: usize,
     country: u32,
     array_address: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut tokens: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> TokenWalk {
     let result = (|| {
         let array = Array::read(memory, array_address, STRIDE)
@@ -380,7 +387,7 @@ fn caster(memory: &impl Memory, base: usize, pointer: usize) -> Result<Option<u6
         cunit_leader::VTABLE_RVA,
         carmy_leader::VTABLE_RVA,
         cnavy_leader::VTABLE_RVA,
-        coperative_leader::VTABLE_RVA,
+        engine_native_parts::coperative_leader_layout::VTABLE_RVA,
     ];
     if engine_sites::which(base, vtable as usize, &known).is_none() {
         return Err("active ability caster vtable mismatch");
@@ -417,7 +424,7 @@ fn strategic_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const MEMORY_BASE: usize = 0x1000;
     const ARRAY: usize = 0x1100;
@@ -537,7 +544,7 @@ mod tests {
         walk_buffer(&SliceMemory {
                 base: MEMORY_BASE,
                 bytes,
-            }, 0, 42, ARRAY, crate::walk::Buffer::Growing(output), crate::walk::Buffer::Growing(tokens))
+            }, 0, 42, ARRAY, engine_native_memory::walk::Buffer::Growing(output), engine_native_memory::walk::Buffer::Growing(tokens))
     }
 
     #[test]
@@ -597,8 +604,8 @@ mod tests {
                 0,
                 42,
                 ARRAY,
-                crate::walk::Buffer::Count,
-                crate::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             ),
             TokenWalk {
                 outcome: Outcome::Truncated {
@@ -624,7 +631,7 @@ mod tests {
             Default::default(),
         );
         assert_eq!(
-            walk_buffer(&observed, 0, 42, ARRAY, crate::walk::Buffer::Count, crate::walk::Buffer::Count).required_bytes,
+            walk_buffer(&observed, 0, 42, ARRAY, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count).required_bytes,
             14
         );
         let mut expected = vec![ARRAY];
@@ -767,7 +774,7 @@ mod tests {
             },
             hole: phase..phase + 1,
         };
-        let result = walk_buffer(&fault, 0, 42, ARRAY, crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]), crate::walk::Buffer::Growing(&mut vec![0; 14]));
+        let result = walk_buffer(&fault, 0, 42, ARRAY, engine_native_memory::walk::Buffer::Growing(&mut vec![Row::default(); 2]), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 14]));
         assert_eq!(
             result.outcome,
             Outcome::Unavailable {
@@ -785,7 +792,7 @@ mod tests {
                     },
                     hole: address..address + length,
                 };
-                let result = walk_buffer(&fault, 0, 42, ARRAY, crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]), crate::walk::Buffer::Growing(&mut vec![0; 14]));
+                let result = walk_buffer(&fault, 0, 42, ARRAY, engine_native_memory::walk::Buffer::Growing(&mut vec![Row::default(); 2]), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 14]));
                 assert_eq!(
                     result.outcome,
                     Outcome::Unavailable {
@@ -812,7 +819,7 @@ mod tests {
             },
             hole: HEAP_TOKEN..HEAP_TOKEN + 7,
         };
-        let result = walk_buffer(&fault, 0, 42, ARRAY, crate::walk::Buffer::Growing(&mut vec![Row::default(); 2]), crate::walk::Buffer::Growing(&mut vec![0; 14]));
+        let result = walk_buffer(&fault, 0, 42, ARRAY, engine_native_memory::walk::Buffer::Growing(&mut vec![Row::default(); 2]), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 14]));
         assert_eq!(
             result.outcome,
             Outcome::Unavailable {

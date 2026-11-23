@@ -3,7 +3,7 @@ use std::cell::RefCell;
 
 fn store_field(job: &mut CharactersJob, view: &mut ViewCopy, field: usize, bytes: &[u8]) {
     assert_eq!(bytes.len(), VIEW_LENS[field]);
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes,
     };
@@ -231,7 +231,7 @@ fn character_heap_hints_cover_only_first_and_terminator_lines() {
 }
 
 struct TraceMemory<'a> {
-    memory: engine_native::memory::SliceMemory<'a>,
+    memory: engine_native_memory::memory::SliceMemory<'a>,
     failed_call: Option<usize>,
     calls: RefCell<Vec<(usize, usize)>>,
 }
@@ -266,7 +266,7 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
         Some(7),
     ] {
         let memory = TraceMemory {
-            memory: engine_native::memory::SliceMemory {
+            memory: engine_native_memory::memory::SliceMemory {
                 base: ADDRESS,
                 bytes: &bytes,
             },
@@ -337,7 +337,7 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
             }
         }
         let extension = [0xa5; 512];
-        let owned = engine_native::memory::SliceMemory {
+        let owned = engine_native_memory::memory::SliceMemory {
             base: 0x8000,
             bytes: &extension,
         };
@@ -354,7 +354,7 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
         [true, false, false, true, true, true],
         [false, true, false, false, false, false],
     ] {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: ADDRESS,
             bytes: &bytes,
         };
@@ -428,7 +428,7 @@ fn character_heap_hints_preserve_exact_observations_and_failure_prefix() {
                     if malformed_token { 64 } else { 65 },
                 ));
                 let memory = || TraceMemory {
-                    memory: engine_native::memory::SliceMemory {
+                    memory: engine_native_memory::memory::SliceMemory {
                         base: 0x2000,
                         bytes: &bytes,
                     },

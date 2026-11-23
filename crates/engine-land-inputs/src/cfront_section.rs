@@ -1,13 +1,19 @@
-use crate::{
+use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    cprovince,
     memory::{
-        Gathered, RecordField, RecordLayout, gather_records, packed_fields, packed_map,
+        Gathered,
+        RecordField,
+        RecordLayout,
+        gather_records,
+        packed_fields,
+        packed_map,
         packed_stride,
     },
-    read, read_slice,
+    read,
+    read_slice,
 };
+use engine_native::cprovince;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_2360);
@@ -38,11 +44,11 @@ pub(crate) fn header(
 ) -> Result<(u32, Array), &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("front section identity mismatch")?;
     if read::<u64>(memory, pointer) != Some(expected as u64)
-        || crate::corder_instance::plan_field::<u64>(memory, pointer, FRONT)? != front as u64
+        || engine_native::corder_instance::plan_field::<u64>(memory, pointer, FRONT)? != front as u64
     {
         return Err("front section identity mismatch");
     }
-    let id = crate::corder_instance::plan_field(memory, pointer, ID)?;
+    let id = engine_native::corder_instance::plan_field(memory, pointer, ID)?;
     let pairs = Array::read(
         memory,
         pointer.checked_add(PAIRS).ok_or("front section overflow")?,
@@ -118,7 +124,7 @@ pub(crate) fn copy_pairs(
                     return Err("front province identity mismatch");
                 }
                 *word =
-                    crate::corder_instance::gathered_field(memory, pointer, cprovince::ID, record)?;
+                    engine_native::corder_instance::gathered_field(memory, pointer, cprovince::ID, record)?;
                 if *word == 0 {
                     return Err("front province sentinel");
                 }

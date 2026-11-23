@@ -4,7 +4,8 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{collect_vec, copy_vec, default_vec, owned_vec};
-use engine_native::{Memory, cunit::FirstCombatMemo, walk::Buffer, walk::Outcome};
+use engine_native_memory::{Memory, walk::{Buffer, Outcome}};
+use engine_native::cunit::FirstCombatMemo;
 use engine_railways::railway_gun_counter_inputs;
 use replay_data::{
     rows::FreshRailwayCounterEta, rows::OwnerTransportSpeedRow, rows::RailwayGunCounterInputRow,
@@ -204,7 +205,7 @@ pub struct Captured {
     required_named_bonuses: usize,
     fixed_layout: Option<engine_fixed_layout::fixed_layout::Report>,
     fixed_layout_buffer: Vec<u8>,
-    supply_origins: Arena<engine_native::cunit_supply_inputs::Origin>,
+    supply_origins: Arena<engine_native_parts::cunit_supply_inputs::Origin>,
     combats: FirstCombatMemo,
     regions: Vec<engine_naval_history::cnaval_unit_transfer::TransportRegion>,
     owners: Vec<u32>,
@@ -656,7 +657,7 @@ impl Captured {
     fn supply_origins(
         &self,
         row: &railway_gun_counter_inputs::Row,
-    ) -> Option<&[engine_native::cunit_supply_inputs::Origin]> {
+    ) -> Option<&[engine_native_parts::cunit_supply_inputs::Origin]> {
         let len = row.supply?.origins_len.ok()?;
         let end = row.supply_origins_start.checked_add(len)?;
         self.supply_origins
@@ -780,7 +781,7 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use replay_data::rows::TableRows;
 
     #[test]
@@ -1108,9 +1109,7 @@ mod tests {
 
     #[test]
     fn supply_origin_refusals_preserve_exact_scalars_and_other_tooltip_suffixes() {
-        use engine_native::{
-            cunit_supply_inputs::Failure, cunit_supply_inputs::Inputs, cunit_supply_inputs::Origin,
-        };
+        use engine_native_parts::cunit_supply_inputs::{Failure, Inputs, Origin};
         let mut capture = Captured::with_capacities(&Capacities {
             rows: 1,
             paths: 3,

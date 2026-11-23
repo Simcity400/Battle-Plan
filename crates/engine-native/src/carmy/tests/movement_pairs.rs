@@ -25,7 +25,7 @@ impl<'a> Observed<'a> {
     }
 }
 
-impl crate::Memory for Observed<'_> {
+impl engine_native_memory::Memory for Observed<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let ordinal = self.reads.borrow().len();
         self.reads.borrow_mut().push((address, output.len()));
@@ -43,18 +43,18 @@ impl crate::Memory for Observed<'_> {
 
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         output: &mut [u8],
     ) -> usize {
         self.batches.set(self.batches.get() + 1);
         struct Scalar<'a, 'b>(&'a Observed<'b>);
-        impl crate::Memory for Scalar<'_, '_> {
+        impl engine_native_memory::Memory for Scalar<'_, '_> {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
                 self.0.copy(at, out)
             }
         }
-        crate::Memory::copy_records(&Scalar(self), sources, layout, output)
+        engine_native_memory::Memory::copy_records(&Scalar(self), sources, layout, output)
     }
 
     fn copy_scattered<const N: usize>(
@@ -64,24 +64,24 @@ impl crate::Memory for Observed<'_> {
     ) -> usize {
         self.batches.set(self.batches.get() + 1);
         struct Scalar<'a, 'b>(&'a Observed<'b>);
-        impl crate::Memory for Scalar<'_, '_> {
+        impl engine_native_memory::Memory for Scalar<'_, '_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 self.0.copy(address, output)
             }
         }
-        crate::Memory::copy_scattered(&Scalar(self), addresses, destinations)
+        engine_native_memory::Memory::copy_scattered(&Scalar(self), addresses, destinations)
     }
 }
 
 fn scalar_prefixes(
-    memory: &impl crate::Memory,
-    routes: [crate::cpdx_array::Array; 2],
+    memory: &impl engine_native_memory::Memory,
+    routes: [engine_native_memory::cpdx_array::Array; 2],
     outputs: [&mut [u32]; 2],
 ) -> Result<(), &'static str> {
     for (route, output) in routes.into_iter().zip(outputs) {
         let mut bytes = vec![0; output.len() * 4];
         let bytes = bytes.as_mut_slice();
-        if !crate::read_slice(memory, route.data, bytes) {
+        if !engine_native_memory::read_slice(memory, route.data, bytes) {
             return Err("movement route unreadable");
         }
         for (slot, word) in output.iter_mut().zip(bytes.chunks_exact(4)) {
@@ -93,7 +93,7 @@ fn scalar_prefixes(
 
 #[test]
 fn prefixes_preserve_empty_spans_order_duplicates_and_partial_failures() {
-    use crate::cpdx_array::Array;
+    use engine_native_memory::cpdx_array::Array;
     let source = shared_geometry_fixture();
     for lengths in [[0, 0], [0, 1], [1, 0], [1, 1], [3, 2], [256, 256]] {
         for addresses in [
@@ -141,8 +141,8 @@ fn prefixes_preserve_empty_spans_order_duplicates_and_partial_failures() {
 #[cfg(all(windows, target_env = "msvc"))]
 #[test]
 fn native_pairs_keep_ordered_failure_prefixes() {
-    use crate::cpdx_array::Array;
-    let memory = unsafe { crate::memory::LiveMemory::new() };
+    use engine_native_memory::cpdx_array::Array;
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let values = [3_u32, 9, 27];
     let route = Array {
         data: values.as_ptr() as usize,

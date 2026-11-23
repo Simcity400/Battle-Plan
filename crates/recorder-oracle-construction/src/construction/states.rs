@@ -137,7 +137,7 @@ pub fn resource_inputs(
     );
     let infrastructure = token(
         names,
-        engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN,
+        engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN,
     )
     .map_err(|reason| invalid(format!("the infrastructure building {reason}")))?;
     let controllers: BTreeMap<u32, u32> = states

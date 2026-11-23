@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::{cequipment_variant, memory::SliceMemory};
+use engine_native_memory::memory::SliceMemory;
 
 const HOLDER: usize = 0x100;
 const ITEMS: usize = 0x500;
@@ -28,7 +28,7 @@ fn memory(bytes: &[u8]) -> SliceMemory<'_> {
 
 #[test]
 fn market_automation_demand_never_reads_inventory_prices_or_subsidies() {
-    let native = ccountry::Country {
+    let native = engine_native_memory::country_identity::Country {
         pointer: 0x1000,
         id: 5000,
         canonical_slot: 5000,
@@ -96,7 +96,7 @@ fn market_empty_demand_reads_no_entity() {
             panic!("held market facts must not touch native entities");
         }
     }
-    let native = ccountry::Country {
+    let native = engine_native_memory::country_identity::Country {
         pointer: 0,
         id: 5000,
         canonical_slot: 5000,
@@ -114,7 +114,7 @@ fn market_empty_demand_reads_no_entity() {
 
 #[test]
 fn market_subsidy_demand_keeps_stored_total_independent_of_grant_sum() {
-    let native = ccountry::Country {
+    let native = engine_native_memory::country_identity::Country {
         pointer: 0x1000,
         id: 17,
         canonical_slot: 17,
@@ -165,7 +165,7 @@ fn pool_fixture() -> Vec<u8> {
         3,
     );
     bytes[HOLDER + cequipment_variant_pool::ALLOW_ZERO] = 1;
-    u64(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
+    u64(&mut bytes, VARIANT, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     u64(&mut bytes, VARIANT + 8, (5000_u64 << 32) | 70);
     for (index, amount) in [0_i64, -9, i64::from(i32::MAX) + 17]
         .into_iter()
@@ -392,7 +392,7 @@ fn market_contract_prices_and_requested_amounts_are_independent_pools() {
         u64(&mut bytes, items, VARIANT as u64);
         u64(&mut bytes, items + 8, amount as u64);
     }
-    u64(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
+    u64(&mut bytes, VARIANT, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
     u64(&mut bytes, VARIANT + 8, (1234_u64 << 32) | 70);
     array(&mut bytes, CONTRACT + DRAFT + DRAFT_SUBSIDIES, 0, 0);
     let levels = CONTRACT + DRAFT + DRAFT_PRICE_LEVELS;

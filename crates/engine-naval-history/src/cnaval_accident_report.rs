@@ -1,5 +1,6 @@
 use engine_sites::Rva;
-use crate::{Memory, cpdx_array::Array, cstrategic_region, read, walk::Buffer};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Buffer};
+use engine_native_parts::cstrategic_region;
 
 pub const VTABLE_RVA: Rva = Rva(0x029d_a718);
 pub const REPORTS: usize = 0xe0;
@@ -107,7 +108,7 @@ pub fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     const NAVY: usize = 0x100;
     const VECTOR: usize = 0x300;
     const REPORT: usize = 0x400;

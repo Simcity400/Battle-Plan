@@ -44,7 +44,7 @@ fn air_order(group: &AirGroup<'_>) -> (u8, Reverse<i32>, Reverse<u32>) {
         .map(|handle| {
             let product = handle
                 .rotate_left(32)
-                .wrapping_mul(engine_native::creference_registry::HASH_MULTIPLIER);
+                .wrapping_mul(engine_native_parts::creference_registry::HASH_MULTIPLIER);
             (product >> 32) as u32 ^ product as u32
         })
         .max()

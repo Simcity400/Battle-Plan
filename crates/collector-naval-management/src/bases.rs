@@ -1,5 +1,6 @@
 use crate::{Snapshot, changes};
-use engine_native::{Memory, naval_management as native, read};
+use engine_native_memory::{Memory, read};
+use engine_native_naval::naval_management as native;
 use replay_data::rows::*;
 use std::{
     collections::HashMap,
@@ -136,7 +137,7 @@ impl<'a, M: Memory> Session<'a, M> {
         }
         session
     }
-    pub fn visit(&mut self, pointer: usize, row: &engine_native::cnaval_base::Row) {
+    pub fn visit(&mut self, pointer: usize, row: &engine_native_naval::cnaval_base::Row) {
         if !self.observed || self.store.entries.get(&pointer) == Some(&row.province) {
             return;
         }
@@ -167,7 +168,7 @@ impl<'a, M: Memory> Session<'a, M> {
     ) -> Result<(), &'static str> {
         if !authenticated
             && pointer
-                .checked_add(engine_native::cnaval_base::PROVINCE_ID)
+                .checked_add(engine_native_parts::cnaval_base_layout::PROVINCE_ID)
                 .and_then(|at| read::<u32>(self.memory, at))
                 != Some(province)
         {
@@ -237,7 +238,7 @@ impl<'a, M: Memory> Session<'a, M> {
             }
         }
     }
-    pub fn finish(mut self, parent: engine_native::walk::Outcome) -> Captured {
+    pub fn finish(mut self, parent: engine_native_memory::walk::Outcome) -> Captured {
         if let Some(reason) = self.failure(parent) {
             return Captured {
                 tables: std::array::from_fn(|_| Err(reason)),
@@ -245,7 +246,7 @@ impl<'a, M: Memory> Session<'a, M> {
         }
         self.store.publish()
     }
-    pub fn finish_owned(mut self, parent: engine_native::walk::Outcome) -> (Captured, Option<Owned>) {
+    pub fn finish_owned(mut self, parent: engine_native_memory::walk::Outcome) -> (Captured, Option<Owned>) {
         if let Some(reason) = self.failure(parent) {
             return (
                 Captured {
@@ -267,12 +268,12 @@ impl<'a, M: Memory> Session<'a, M> {
             }),
         )
     }
-    fn failure(&mut self, parent: engine_native::walk::Outcome) -> Option<&'static str> {
+    fn failure(&mut self, parent: engine_native_memory::walk::Outcome) -> Option<&'static str> {
         if !self.observed {
             return Some(changes::UNAVAILABLE);
         }
         changes::base_demand(self.store.entries.len());
-        if !matches!(parent, engine_native::walk::Outcome::Rows { .. }) {
+        if !matches!(parent, engine_native_memory::walk::Outcome::Rows { .. }) {
             self.store.epoch = None;
             Some("naval repair source base census incomplete")
         } else {

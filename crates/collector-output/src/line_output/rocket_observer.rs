@@ -206,7 +206,7 @@ unsafe extern "system-unwind" fn before(
             return;
         }
         context.acquired = true;
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         if kind == 2 {
             let occupied = SCOPE.try_with(|scope| scope.get().present);
             if !matches!(occupied, Ok(false)) {
@@ -238,7 +238,7 @@ unsafe extern "system-unwind" fn before(
         } else {
             let scope = SCOPE.try_with(|scope| scope.get()).unwrap_or_default();
             let variant =
-                engine_native::cequipment_variant::identity(&memory, base, second).unwrap_or(0);
+                engine_native_parts::equipment_variant_identity::identity(&memory, base, second).unwrap_or(0);
             if let crate::rocket_output::Entry::Delivery {
                 country,
                 variant,

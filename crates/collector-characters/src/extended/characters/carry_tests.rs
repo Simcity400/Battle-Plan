@@ -899,7 +899,7 @@ fn quiet_leader_comparison_preserves_training_refusals() {
     }
     let leader = World::unit(5).unwrap();
     world.patch(
-        leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native::cpdx_array::COUNT,
+        leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native_memory::cpdx_array::COUNT,
         &3_u32.to_le_bytes(),
     );
     world.patch(leader + cunit_leader::EXPERIENCE, &i64::MIN.to_le_bytes());
@@ -911,7 +911,7 @@ fn quiet_leader_comparison_preserves_training_refusals() {
     assert!(matches!(frame.outcomes()[5], Outcome::Unavailable { .. }));
     assert_eq!(job.unit_carry.counts().read, 1);
     world.patch(
-        leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native::cpdx_array::COUNT,
+        leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native_memory::cpdx_array::COUNT,
         &2_u32.to_le_bytes(),
     );
     roster_hour_into(&mut job, &world, &mut frame);
@@ -1031,7 +1031,7 @@ fn forced_full_refresh_publishes_current_training_without_a_stale_carry_key() {
     };
     assert!(cache.is_some(), "the baseline must exercise the carry memo");
     let leader = World::unit(5).unwrap();
-    let progress = engine_native::read::<u64>(&world, leader + cunit_leader::TRAIT_EXPERIENCE_DATA)
+    let progress = engine_native_memory::read::<u64>(&world, leader + cunit_leader::TRAIT_EXPERIENCE_DATA)
         .unwrap() as usize;
     for (list, address, site, value) in [
         (0, progress + 8, 26, 1_234_567_i64),

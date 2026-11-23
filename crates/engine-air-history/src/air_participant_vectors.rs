@@ -1,9 +1,10 @@
 
-use crate::{
-    Memory, ccountry, cdiplomacy_status,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
 };
+use engine_native::ccountry;
 
 pub const RECIPROCAL_DONORS: usize = 0x1410;
 
@@ -49,8 +50,8 @@ const DONORS: [RecordField; 1] = [field(RECIPROCAL_DONORS, 0, 16)];
 const DONORS_LAYOUT: RecordLayout<'static> = RecordLayout::new(&DONORS, 16).expect("valid layout");
 const STATUS: [RecordField; 3] = [
     field(0, 0, 8),
-    field(cdiplomacy_status::ENEMY_COUNTRIES, 8, 16),
-    field(cdiplomacy_status::WARTIME_ALLIES, 24, 16),
+    field(engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES, 8, 16),
+    field(engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES, 24, 16),
 ];
 const STATUS_LAYOUT: RecordLayout<'static> = RecordLayout::new(&STATUS, 40).expect("valid layout");
 
@@ -93,7 +94,7 @@ pub fn headers(
     batch: &[(u32, usize, usize)],
     mut emit: impl FnMut(Staged),
 ) -> Result<(), &'static str> {
-    let vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+    let vtable = engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA)
         .ok_or("air participant module address overflow")? as u64;
     let len = batch.len();
     let mut pointers = [0_usize; BATCH];
@@ -224,7 +225,7 @@ pub fn rows(staged: &Staged, entries: &[u32], mut emit: impl FnMut(Row)) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1_4000_0000;
     const A: usize = 0x4000;
@@ -252,19 +253,19 @@ mod tests {
             put(
                 &mut bytes,
                 diplomacy,
-                &((BASE + cdiplomacy_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+                &((BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
         }
         header(&mut bytes, A + RECIPROCAL_DONORS, DATA as u64, 2);
         header(
             &mut bytes,
-            A_DIP + cdiplomacy_status::WARTIME_ALLIES,
+            A_DIP + engine_native_parts::cdiplomacy_status_layout::WARTIME_ALLIES,
             DATA as u64 + 8,
             1,
         );
         header(
             &mut bytes,
-            B_DIP + cdiplomacy_status::ENEMY_COUNTRIES,
+            B_DIP + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
             DATA as u64 + 12,
             2,
         );
@@ -330,7 +331,7 @@ mod tests {
         let mut bytes = fixture();
         header(
             &mut bytes,
-            B_DIP + cdiplomacy_status::ENEMY_COUNTRIES,
+            B_DIP + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES,
             DATA as u64,
             9,
         );

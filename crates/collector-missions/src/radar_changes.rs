@@ -1,7 +1,7 @@
 use collector_certificates::watch_registry::WatchRegistry;
 use collector_hooks::hook::Hook;
 use engine_map_air::{radar_group, radar_group::Symbol};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     collections::HashMap,
     ops::Range,

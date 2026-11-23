@@ -1,7 +1,7 @@
 use super::super::{RaidAssets, script::World, target_country, unit_inputs};
 use super::{chance, intel};
 use engine_executable::modifier_keys as keys;
-use engine_native::raid_tooltip_operands::*;
+use engine_native_air::raid_tooltip_operands::*;
 use content_reader_raids::raids::tooltips::Modifier;
 use replay_data::{rows::RaidRow, rows::RaidScope, rows::RaidTooltipOperandRow, rows::tables};
 
@@ -86,7 +86,7 @@ impl<'a, 'w> Inputs<'a, 'w> {
             .complete::<tables::SimulationFeatures>()
             .map_err(|e| e.to_string())?;
         let features = features.first().ok_or("simulation feature flags absent")?;
-        Ok(engine_native::modifier_definition::Operands {
+        Ok(engine_native_parts::modifier_definition::Operands {
             flags: definition.flags,
             selector: definition.feature_selector,
             eligibility_flags: features.dlc_mask,

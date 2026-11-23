@@ -6,7 +6,7 @@ use engine_mutations::{
     local_subunit_mutations::BONUS_LIST, local_subunit_mutations::CLONE_COUNT,
     local_subunit_mutations::MUTATIONS, local_subunit_mutations::Receiver,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},

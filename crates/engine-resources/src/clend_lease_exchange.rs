@@ -1,13 +1,14 @@
 
-use crate::{
-    Memory, allocation, ccountry, ccountry_resources, cequipment_variant,
-    cequipment_variant_pool as pool,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    equipment_entry,
     memory::{RecordField, RecordLayout, RecordSources},
     read_slice,
     walk::{Buffer, Outcome},
 };
+use crate::{allocation, ccountry_resources};
+use engine_native::{ccountry, cequipment_variant::{self, pool as pool}};
+use engine_native_parts::equipment_entry;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a9_9cf8);
@@ -85,7 +86,7 @@ pub fn schedules(
     for (index, source) in sources.into_iter().enumerate() {
         arrays[index] = pool::entries(memory, base, source)?;
         shape.counts[index] = arrays[index].count;
-        shape.allow_zero[index] = crate::read::<u8>(memory, address(source, pool::ALLOW_ZERO)?)
+        shape.allow_zero[index] = engine_native_memory::read::<u8>(memory, address(source, pool::ALLOW_ZERO)?)
             .ok_or("lend-lease schedule zero policy unreadable")?
             != 0;
     }
@@ -128,23 +129,23 @@ pub fn identity(
 ) -> Result<Identity, &'static str> {
     let expected =
         engine_sites::at(base, VTABLE_RVA).ok_or("lend-lease module address overflow")? as u64;
-    if crate::read::<u64>(memory, exchange) != Some(expected) {
+    if engine_native_memory::read::<u64>(memory, exchange) != Some(expected) {
         return Err("lend-lease exchange vtable unreadable or mismatch");
     }
-    let id = crate::read::<u64>(memory, address(exchange, HANDLE)?)
+    let id = engine_native_memory::read::<u64>(memory, address(exchange, HANDLE)?)
         .ok_or("lend-lease exchange reference unreadable")?;
-    let resources = crate::read::<u64>(memory, address(exchange, GIVER_RESOURCES)?)
+    let resources = engine_native_memory::read::<u64>(memory, address(exchange, GIVER_RESOURCES)?)
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("lend-lease giver resources unreadable or null")?;
     let resources_vtable = engine_sites::at(base, ccountry_resources::VTABLE_RVA)
         .ok_or("lend-lease module address overflow")? as u64;
-    if crate::read::<u64>(memory, resources) != Some(resources_vtable) {
+    if engine_native_memory::read::<u64>(memory, resources) != Some(resources_vtable) {
         return Err("lend-lease giver resources vtable unreadable or mismatch");
     }
-    let giver = crate::read(memory, address(resources, ccountry_resources::OWNER)?)
+    let giver = engine_native_memory::read(memory, address(resources, ccountry_resources::OWNER)?)
         .ok_or("lend-lease giver unreadable")?;
-    let receiver = crate::read(memory, address(exchange, RECEIVER)?)
+    let receiver = engine_native_memory::read(memory, address(exchange, RECEIVER)?)
         .ok_or("lend-lease receiver unreadable")?;
     Ok(Identity {
         id,
@@ -170,7 +171,7 @@ pub fn terms(
     ] {
         let source = address(exchange, offset)?;
         let entries = pool::entries(memory, base, source)?;
-        let allow_zero = crate::read::<u8>(memory, address(source, pool::ALLOW_ZERO)?)
+        let allow_zero = engine_native_memory::read::<u8>(memory, address(source, pool::ALLOW_ZERO)?)
             .ok_or("lend-lease terms zero-entry flag unreadable")?
             != 0;
         allocation::resize_default(&mut output.equipment, entries.count as usize)
@@ -191,11 +192,11 @@ pub fn terms(
         }
         output.allow_zero = allow_zero;
     }
-    output.active_since = crate::read(memory, address(exchange, ACTIVE_SINCE)?)
+    output.active_since = engine_native_memory::read(memory, address(exchange, ACTIVE_SINCE)?)
         .ok_or("lend-lease active date unreadable")?;
-    output.fuel_daily_raw = crate::read(memory, address(exchange, FUEL_DAILY)?)
+    output.fuel_daily_raw = engine_native_memory::read(memory, address(exchange, FUEL_DAILY)?)
         .ok_or("lend-lease daily fuel unreadable")?;
-    output.fuel_percentage_raw = crate::read(memory, address(exchange, FUEL_PERCENTAGE)?)
+    output.fuel_percentage_raw = engine_native_memory::read(memory, address(exchange, FUEL_PERCENTAGE)?)
         .ok_or("lend-lease fuel share unreadable")?;
     output.identity = expected;
     Ok(())
@@ -289,7 +290,7 @@ fn walk_inner(
     };
     let exchange_vtable = relocate(VTABLE_RVA)?;
     let pool_vtable = relocate(pool::VTABLE_RVA)?;
-    let variant_vtable = relocate(cequipment_variant::VTABLE_RVA)? as usize;
+    let variant_vtable = relocate(engine_native_parts::equipment_variant_identity::VTABLE_RVA)? as usize;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut found = false;
     let mut pointer_bytes = [0_u8; BATCH * 8];
@@ -370,7 +371,7 @@ fn walk_inner(
                             return Err("lend-lease pool variant unreadable");
                         }
                         let handle =
-                            cequipment_variant::identity_from_header(variant_vtable, identity)?;
+                            engine_native_parts::equipment_variant_identity::identity_from_header(variant_vtable, identity)?;
                         rows[*len] = Row {
                             giver: country.id,
                             exchange,

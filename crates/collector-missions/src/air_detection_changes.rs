@@ -1,6 +1,6 @@
 use collector_hooks::hook::Hook;
 use engine_map_air::map_air_sortie_inputs as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::{

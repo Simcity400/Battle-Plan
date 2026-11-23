@@ -179,7 +179,7 @@ call:engine_allocation::shared
 call:engine_dlc::cdlc_manager::observe_counts
 call:engine_events::politics_sites::lexical_key_demand
 call:engine_executable::executable_tables::initialize_executable
-call:engine_native::Memory::copy
+call:engine_native_memory::Memory::copy
 call:engine_research::research_modifiers::scripted_sharing_roster
 call:engine_sites::Image::live
 call:engine_sites::Located::locate

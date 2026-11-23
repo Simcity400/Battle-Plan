@@ -1,4 +1,4 @@
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use engine_peace::{
     peace_action, peace_conference as c, peace_settlement as p, peace_settlement::Action,
 };
@@ -116,8 +116,8 @@ impl Fixture {
             f.u64(at, engine_peace::ctake_state_action::VTABLE_RVA.0 as u64);
             f.u32(at + peace_action::TOKEN, 0x90000000 + i as u32);
             f.u64(
-                at + peace_action::CACHED_NAME + engine_native::msvc_string::CAPACITY,
-                engine_native::msvc_string::INLINE_CAPACITY,
+                at + peace_action::CACHED_NAME + engine_native_memory::msvc_string::CAPACITY,
+                engine_native_memory::msvc_string::INLINE_CAPACITY,
             );
             f.u32(at + peace_action::TAKER, 0xa0000000);
             f.u32(at + peace_action::GIVER, 0xb0000000);
@@ -138,15 +138,15 @@ impl Fixture {
         );
         f
     }
-    pub(crate) fn memory(&self) -> impl engine_native::Memory + '_ {
+    pub(crate) fn memory(&self) -> impl engine_native_memory::Memory + '_ {
         struct Memory<'a>(&'a [u8]);
-        impl engine_native::Memory for Memory<'_> {
+        impl engine_native_memory::Memory for Memory<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
                     output.copy_from_slice(&0x10000_u64.to_le_bytes());
                     true
                 } else {
-                    engine_native::Memory::copy(
+                    engine_native_memory::Memory::copy(
                         &SliceMemory {
                             base: 0,
                             bytes: self.0,
@@ -197,8 +197,8 @@ impl Fixture {
     }
     pub(crate) fn copy(
         &self,
-        winners: engine_native::walk::Buffer<'_, u32>,
-        actions: engine_native::walk::Buffer<'_, Action>,
+        winners: engine_native_memory::walk::Buffer<'_, u32>,
+        actions: engine_native_memory::walk::Buffer<'_, Action>,
     ) -> p::Snapshot {
         p::copy(
             &SliceMemory {
@@ -209,11 +209,11 @@ impl Fixture {
             0x100,
             p::Output {
                 winners,
-                losers: engine_native::walk::Buffer::Count,
+                losers: engine_native_memory::walk::Buffer::Count,
                 actions,
-                transfers: engine_native::walk::Buffer::Count,
-                subjects: engine_native::walk::Buffer::Count,
-                name_bytes: engine_native::walk::Buffer::Count,
+                transfers: engine_native_memory::walk::Buffer::Count,
+                subjects: engine_native_memory::walk::Buffer::Count,
+                name_bytes: engine_native_memory::walk::Buffer::Count,
             },
         )
     }

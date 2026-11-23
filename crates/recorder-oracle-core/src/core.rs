@@ -535,7 +535,7 @@ pub fn compare_railway_infrastructure(
             continue;
         };
         let name = *names
-            .get(&engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN)
+            .get(&engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN)
             .ok_or_else(|| invalid("infrastructure token has no recorded spelling"))?;
         let token =
             std::str::from_utf8(name).map_err(|_| invalid("infrastructure token is not UTF-8"))?;

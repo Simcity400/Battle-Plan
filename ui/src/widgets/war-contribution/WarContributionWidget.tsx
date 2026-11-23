@@ -3,7 +3,6 @@ import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import { ButterflyChart } from '../../charts/butterfly';
 import type { ButterflyPartHit } from '../../charts/butterfly';
 import { dayLabel } from '../../charts/draw';
@@ -27,7 +26,7 @@ import { useShownHour } from '../../dashboard/widgetPerf';
 import { useHeadHour } from '../army-size/headHour';
 import type { WarContributionsReply, WarsReply } from '../../generated/dashboard';
 import { joinedAt, observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData';
-import { OPTIONS, SHOW_CHOICES } from './definition';
+import { OPTIONS } from './definition';
 import { chosenWar, contributionItems, contributionRows, contributionStructure, formatContribution, readHourFor, shareText, sideAmount, warName } from './warContributionData';
 import type { ContributionItem, Looks, Show, SideTotal } from './warContributionData';
 import './warContribution.css';
@@ -36,7 +35,7 @@ import { productRequest } from '../../dashboard/request.ts';
 const VALUES_WIDTH = 420;
 const NO_ITEMS: readonly ContributionItem[] = [];
 
-export default function WarContributionWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
+export default function WarContributionWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const hoursPerSecond = usePlaybackMotion(clock);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -152,9 +151,9 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     }) : [];
     return [{ ...jumpItem(runtime, track.id, war.firstHour), label: `Jump to war start ${dayLabel(war.firstHour)}` }, ...joins];
   }, [war, track, runtime, looks, identities]);
-  const header = headerSlot && war && createPortal(<span className="pill" title={warName(observation)}>{warName(observation ?? war.observations.at(-1) ?? null)}</span>, headerSlot);
+  const header = headerSlot && observation && createPortal(<span className="pill" data-tooltip={warName(observation)}>{warName(observation)}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="swords" message="Load a campaign to see war contributions." />;
-  if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (!window) return <WidgetState kind="outside" />;
   if (structural.error) return <WidgetState kind="error" failure={structural.error} onRetry={structural.retry} />;
   if (error && !current) return <WidgetState kind="error" failure={error} onRetry={going ? head.retry : ended.retry} />;
   if (!structural.data) return <WidgetState kind="loading" label="Loading war contributions…" />;
@@ -165,7 +164,6 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   if (!group || group.reason) return <>{header}<WidgetState kind="unavailable" message="This war’s contributions were not recorded at this time." /></>;
   return <div ref={root} className="war-contribution">
     {header}
-    {setOption && <div className="war-contribution-caption"><Segmented value={show} options={SHOW_CHOICES} label="Show" onChange={value => setOption('show', value)} /></div>}
     <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, war.id])} label={`Contributions to ${warName(observation)}`}
       items={items} liveItems={live} leftLabel="◀ Viewpoint’s side" rightLabel="Opposing side ▶" ratioLabel="" showRatio={false} showFlags={false}
       showValues={values} axis={show === 'share'} formatTick={value => `${Math.round(value * 100)}%`}

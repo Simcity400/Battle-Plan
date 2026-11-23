@@ -357,8 +357,8 @@ fn bind_raiding_save_fields(
     let lexical = frame.complete::<tables::LexicalTokens>()?;
     let mut keys = [b"".as_slice(); 2];
     for (key, token) in keys.iter_mut().zip([
-        engine_native::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
-        engine_native::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
+        engine_native_naval::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
+        engine_native_naval::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
     ]) {
         let mut rows = lexical.iter().filter(|row| row.token == token);
         *key = rows
@@ -1487,7 +1487,7 @@ fn compare_extended(
                         .equipment
                         .get(current)
                         .ok_or_else(|| invalid("volunteer archetype content index invalid"))?;
-                    if database.category(definition) & engine_native::cequipment_type::PLANE_MASK
+                    if database.category(definition) & engine_native_parts::cequipment_type::PLANE_MASK
                         != 0
                     {
                         return Ok(true);

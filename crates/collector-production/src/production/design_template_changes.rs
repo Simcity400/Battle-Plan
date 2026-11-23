@@ -1,7 +1,8 @@
 use collector_certificates::dirty_set::DirtySet;
 use collector_hooks::hook::Hook;
+use engine_native_memory::Memory;
 use engine_native::{
-    Memory, ccountry,
+    ccountry,
     cproduction_status::{
         self,
         design_templates::{MUTATIONS, RECORDS, Receiver},
@@ -72,20 +73,20 @@ fn owner(
         Receiver::SecondArray => second.checked_sub(RECORDS)?,
         Receiver::Status => first,
     };
-    if engine_native::read::<u64>(memory, status)?
+    if engine_native_memory::read::<u64>(memory, status)?
         != engine_sites::at(base, cproduction_status::VTABLE_RVA)? as u64
     {
         return None;
     }
     let country =
-        engine_native::read::<u64>(memory, status.checked_add(cproduction_status::COUNTRY)?)?
+        engine_native_memory::read::<u64>(memory, status.checked_add(cproduction_status::COUNTRY)?)?
             as usize;
-    if engine_native::read::<u64>(memory, country)?
+    if engine_native_memory::read::<u64>(memory, country)?
         != engine_sites::at(base, ccountry::VTABLE_RVA)? as u64
     {
         return None;
     }
-    engine_native::read(memory, country.checked_add(ccountry::ID)?)
+    engine_native_memory::read(memory, country.checked_add(ccountry::ID)?)
 }
 unsafe extern "system-unwind" fn callback<const SITE: usize>(
     a: usize,
@@ -104,7 +105,7 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
     CALLS[SITE].fetch_add(1, Ordering::Relaxed);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let mark = match owner(
         &memory,
         BASE.load(Ordering::Acquire),
@@ -215,7 +216,7 @@ mod tests {
             .copy_from_slice(&0x1800_u64.to_le_bytes());
         bytes[0x800..0x808].copy_from_slice(&(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[0x808..0x80c].copy_from_slice(&5_000_u32.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };

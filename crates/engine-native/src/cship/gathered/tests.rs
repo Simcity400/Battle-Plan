@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    memory::{RecordField, SliceMemory},
-    read_census::ReadCensus,
-};
+use engine_native_memory::{memory::{RecordField, SliceMemory}, read_census::ReadCensus};
 
 const IMAGE: usize = 0x1000_0000;
 const LEN: usize = 0x6000;
@@ -440,7 +437,7 @@ fn worker_power_fields_invalidate_variant_reuse_without_widening_ordinary_gather
     let pointer = 0x1000;
     let mut bytes = vec![0; 0x2000];
     bytes[pointer..pointer + 8]
-        .copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
+        .copy_from_slice(&(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[pointer + 8..pointer + 16].copy_from_slice(
         &((1_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
     );
@@ -478,7 +475,7 @@ fn power_companion_demands_only_the_selected_variant_and_selected_carrier_word()
         (selected, super::super::naval_power::CARRIER_SIZE_SELECTOR),
     ] {
         bytes[pointer..pointer + 8]
-            .copy_from_slice(&(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes());
+            .copy_from_slice(&(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[pointer + 8..pointer + 16].copy_from_slice(
             &((pointer as u64) << 32 | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
         );

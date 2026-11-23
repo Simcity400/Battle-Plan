@@ -1,12 +1,18 @@
 
-use crate::{
-    Memory, cbuilding, cbuilding_status, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, craid_system, craid_target, cstate,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     read,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::cbuilding;
+use engine_native::{
+    cprovince::{buildings as cbuilding_status, self},
+    cgame_state,
+    cstate,
+};
+use engine_native_air::{craid_system, craid_target};
 
 pub const TARGETS: usize = 0x08;
 pub const SCOPE: usize = 0x08;
@@ -61,7 +67,7 @@ pub fn demand(
         rows: targets.count as usize,
         detected: 0,
     };
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         targets,
         "raid target pointers unreadable",
@@ -396,7 +402,7 @@ fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const STATE: usize = 0x100;
     const SYSTEM: usize = 0x800;
@@ -637,7 +643,7 @@ mod tests {
     fn bench_target_statuses_by_country_count() {
         for (countries, targets) in [(60, 2_500), (1_500, 10_000), (5_000, 25_000)] {
             let bytes = scaled(targets, countries);
-            let memory = crate::memory::CountingMemory::new(&bytes);
+            let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
             let mut rows = vec![Row::default(); targets];
             let mut detected = vec![0; targets * countries.div_ceil(8)];
             memory.bench(

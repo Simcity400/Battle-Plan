@@ -116,6 +116,8 @@ async function sent<T>(
 }
 
 const opened = new OpenedSources();
+const FOLLOW_PAGE_ID = crypto.randomUUID();
+let nextFollowSession = 0;
 
 async function releaseSource(sourceId: string): Promise<void> {
   opened.delete(sourceId);
@@ -128,9 +130,18 @@ export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
   ...(desktopAvailable ? {
     openFollow(ports: readonly MessagePort[]) {
-      return new Promise<string>((resolve, reject) => {
-        const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' }), session = crypto.randomUUID();
-        const fail = (reason: string) => { reader.terminate(); reject(new Error(reason)); };
+      const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' });
+      const session = `${FOLLOW_PAGE_ID}:${++nextFollowSession}`;
+      let terminated = false;
+      const close = () => {
+        if (terminated) return;
+        terminated = true;
+        reader.onmessage = null;
+        reader.onerror = null;
+        reader.terminate();
+      };
+      const ready = new Promise<string>((resolve, reject) => {
+        const fail = (reason: string) => { close(); reject(new Error(reason)); };
         reader.onmessage = ({ data }) => {
           if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(session); }
           else if (data.reason) fail(data.reason);
@@ -138,6 +149,7 @@ export const nativeDashboardClient: DashboardClient = {
         reader.onerror = event => fail(event.message);
         reader.postMessage({ ports, session }, [...ports]);
       });
+      return { ready, close };
     },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
     replayLibraryStamp: () => invoke<string>('replay_library_stamp'),

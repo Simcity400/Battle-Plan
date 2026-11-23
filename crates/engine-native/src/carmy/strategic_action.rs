@@ -77,9 +77,9 @@ pub fn read_inputs(
     roster: impl FnOnce() -> Result<u32, &'static str>,
     current_state: impl FnOnce() -> Result<usize, &'static str>,
 ) -> Result<StrategicRedeploymentInputs, StrategicActionFailure> {
-    let country_modifier = movement_address(owner, ccountry::MODIFIER_ACCUMULATOR)
+    let country_modifier = movement_address(owner, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .and_then(|at| {
-            crate::modifier_accumulator::requested_effective_at(
+            engine_native_parts::modifier_accumulator::requested_effective_at(
                 memory,
                 base,
                 at,
@@ -103,7 +103,7 @@ pub fn read_inputs(
         authenticate(memory, base, state, crate::cstate::VTABLE_RVA)?;
         let accumulator =
             crate::cstate::country_modifier_accumulator(memory, game_state, state, roster)?;
-        crate::modifier_accumulator::requested_effective_at(memory, base, accumulator, key)
+        engine_native_parts::modifier_accumulator::requested_effective_at(memory, base, accumulator, key)
     };
     let state_modifier = query(keys::DISABLE_STRATEGIC_REDEPLOYMENT)
         .map_err(|_| StrategicActionFailure::StateModifier)?;
@@ -125,7 +125,7 @@ pub fn read_inputs(
     Ok(inputs)
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,

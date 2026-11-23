@@ -6,8 +6,8 @@ pub fn walk_country_buffer(
     country_pointer: usize,
     country: u32,
     context: Result<Context, &'static str>,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bonuses: crate::walk::Buffer<'_, BonusRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bonuses: engine_native_memory::walk::Buffer<'_, BonusRow>,
 ) -> (Outcome, Outcome) {
     let mut bonus_len = 0_usize;
     let mut bonus_missing = 0_u32;

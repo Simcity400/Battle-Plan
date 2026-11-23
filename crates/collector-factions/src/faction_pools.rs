@@ -1,5 +1,5 @@
 use engine_allocation as allocation;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_resources::cstrategic_resource_pool as native;
 use replay_data::rows::{FactionResourceRow, TableRows, tables};
 use std::{
@@ -171,7 +171,7 @@ impl Storage {
             let header = cell
                 .pool
                 .checked_add(native::VALUES)
-                .and_then(|at| engine_native::read::<[u8; 16]>(memory, at));
+                .and_then(|at| engine_native_memory::read::<[u8; 16]>(memory, at));
             let source = header.and_then(|header| {
                 let data =
                     usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap())).ok()?;
@@ -192,7 +192,7 @@ impl Storage {
                 let value = ordinal
                     .checked_mul(native::VALUE_STRIDE)
                     .and_then(|offset| data.checked_add(offset))
-                    .and_then(|at| engine_native::read::<i64>(memory, at));
+                    .and_then(|at| engine_native_memory::read::<i64>(memory, at));
                 match value {
                     Some(value) => {
                         let target = &cell.resources[ordinal];
@@ -340,10 +340,10 @@ pub fn phase_call(receiver: usize, kind: usize, original: impl FnOnce() -> usize
         let cell = &storage.cells[index];
         let _reads =
             collector_memory::read_accounting::table(replay_data::rows::TableId::FactionProjection);
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         if let Some(count) = receiver
             .checked_add(engine_native::cfaction::MEMBER_COUNT)
-            .and_then(|at| engine_native::read::<i32>(&memory, at))
+            .and_then(|at| engine_native_memory::read::<i32>(&memory, at))
             .filter(|count| *count >= 0)
         {
             let epoch = NEXT_PHASE
@@ -438,7 +438,7 @@ pub fn rebuild() {
     let _flight = Flight::new();
     let _reads =
         collector_memory::read_accounting::table(replay_data::rows::TableId::FactionResources);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     storage.rebuild(&memory);
 }
 
@@ -573,7 +573,7 @@ impl Store {
             let result = pointer
                 .checked_add(engine_native::cfaction::POWER_PROJECTION_TOTAL)
                 .and_then(|at| {
-                    engine_native::read::<[u8; 24]>(memory, at).map(|bytes| {
+                    engine_native_memory::read::<[u8; 24]>(memory, at).map(|bytes| {
                         std::array::from_fn(|index| {
                             i64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap())
                         })
@@ -585,7 +585,7 @@ impl Store {
             }
         }
         let offset = if id == 0 {
-            engine_native::cfaction_system::EXTRACTED_RESOURCES
+            engine_native::cfaction::system::EXTRACTED_RESOURCES
         } else {
             engine_native::cfaction::EXTRACTED_RESOURCES
         };
@@ -627,7 +627,7 @@ impl Store {
         }
         let pointer = state
             .checked_add(engine_native::cgame_state::FACTION_SYSTEM)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|value| usize::try_from(value).ok())
             .filter(|value| *value != 0);
         let Some(pointer) = pointer else {
@@ -636,9 +636,9 @@ impl Store {
             self.read_failure[1] = self.system_failure;
             return;
         };
-        let vtable = engine_sites::at(base, engine_native::cfaction_system::VTABLE_RVA);
+        let vtable = engine_sites::at(base, engine_native::cfaction::system::VTABLE_RVA);
         if vtable.is_none()
-            || engine_native::read::<u64>(memory, pointer) != vtable.map(|v| v as u64)
+            || engine_native_memory::read::<u64>(memory, pointer) != vtable.map(|v| v as u64)
         {
             self.system_epoch = self.before;
             self.system_failure = Some("faction system resource owner vtable mismatch");
@@ -926,7 +926,7 @@ mod tests {
     impl Memory for MemoryCount {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &self.bytes,
             }

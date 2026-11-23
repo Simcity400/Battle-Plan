@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const STATE: usize = 0x1000;
@@ -16,10 +16,10 @@ fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
     put_header(&mut bytes, STATE + BUCKETS, HEADERS, 3);
     put_header(&mut bytes, HEADERS, MEMBERS, 4);
-    put_header(&mut bytes, HEADERS + crate::cpdx_array::STRIDE, 0, 0);
+    put_header(&mut bytes, HEADERS + engine_native_memory::cpdx_array::STRIDE, 0, 0);
     put_header(
         &mut bytes,
-        HEADERS + 2 * crate::cpdx_array::STRIDE,
+        HEADERS + 2 * engine_native_memory::cpdx_array::STRIDE,
         MEMBERS + 0x40,
         2,
     );
@@ -178,7 +178,7 @@ fn native_empty_outer_registry_is_available_and_malformed_headers_are_not() {
     assert_eq!(demand(&memory, STATE), Ok(Demand::default()));
     no_payload(&memory);
 
-    for address in [STATE + BUCKETS, HEADERS + crate::cpdx_array::STRIDE] {
+    for address in [STATE + BUCKETS, HEADERS + engine_native_memory::cpdx_array::STRIDE] {
         let mut bytes = fixture();
         bytes[address + 8..address + 12].copy_from_slice(&u32::MAX.to_le_bytes());
         let memory = Traced::new(&bytes);
@@ -219,7 +219,7 @@ fn header_only_demand_and_capture_refuse_changed_selectors() {
     for address in [
         STATE + BUCKETS,
         HEADERS,
-        HEADERS + 2 * crate::cpdx_array::STRIDE,
+        HEADERS + 2 * engine_native_memory::cpdx_array::STRIDE,
     ] {
         let mut memory = Traced::new(&bytes);
         memory.changed_header = Some(address);

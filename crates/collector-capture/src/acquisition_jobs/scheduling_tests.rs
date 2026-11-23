@@ -1,6 +1,6 @@
 use super::*;
 use collector_observers::country_input_changes::{Changes, Table};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use std::sync::{Condvar, atomic::AtomicUsize, mpsc};
 
 #[test]
@@ -243,7 +243,7 @@ fn projects_run_while_division_inputs_fog_and_construction_are_held() {
     let input = unsafe {
         batch.submit(&mut Some(Job::DivisionInputs(RawRequest {
             countries: engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap(),
             context: crate::sampling::DivisionsCopyContext::default(),

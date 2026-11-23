@@ -20,6 +20,10 @@ test('keyboard navigation reaches every option beyond the viewport and skips dis
   assert.equal(selectIndex(options, 4999, 'ArrowDown'), 0);
   assert.equal(selectIndex(options, 4999, 'Home'), 0);
   assert.equal(selectIndex([{ disabled: true }], 0, 'Home'), null);
+  const explained = [{ disabled: false }, { disabled: true, reason: 'Load a campaign first' }, { disabled: true }, { disabled: false }];
+  assert.equal(selectIndex(explained, 0, 'ArrowDown'), 1, 'a disabled option with a reason stays keyboard-focusable');
+  assert.equal(selectIndex(explained, 1, 'ArrowDown'), 3, 'a disabled option without a reason is skipped');
+  assert.equal(selectIndex(explained, 3, 'ArrowUp'), 1);
 });
 
 test('authored row gaps contribute to prefixes and viewport bounds without trailing spacing', () => {

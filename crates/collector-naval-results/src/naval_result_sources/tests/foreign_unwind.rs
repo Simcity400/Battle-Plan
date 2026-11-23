@@ -75,7 +75,7 @@ unsafe extern "system" fn record_original(first: usize, second: usize, rsp: usiz
         ENABLED.store(enabled, Ordering::SeqCst);
     }
     if call.site < 2 {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let hour = native::creation_hour(&memory, BASE.load(Ordering::Relaxed)).unwrap();
         unsafe { *((first + cnaval_combat_results::RESULT_HOUR) as *mut i32) = hour };
     }

@@ -3,7 +3,7 @@ use recorder_derive_framework::{
     forces::testing::{put, rows, store},
     framework::Writers,
 };
-use engine_native::craid_instance::{OUTCOME_NONE, OUTCOME_SUCCESS, PHASE_PREPARING};
+use engine_native_air::craid_instance::{OUTCOME_NONE, OUTCOME_SUCCESS, PHASE_PREPARING};
 use replay_columnar::store::Store;
 use replay_data::rows::{RaidRow, RaidTargetRow};
 

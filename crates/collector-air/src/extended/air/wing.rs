@@ -22,7 +22,7 @@ pub struct AirWingJob {
     pub(super) equipment: Vec<rows::WingEquipmentRow>,
     pub(super) cumulative: Vec<cair_wing::CumulativeRow>,
     pub(super) memberships: Vec<WingMembershipRead>,
-    pub naval_memberships: Vec<engine_native::ctheatre::WingMembership>,
+    pub naval_memberships: Vec<engine_native_air::cair_wing::WingMembership>,
     pub naval_membership_outcome: Outcome,
     pub game_score: crate::extended::game_score::AirInputs,
     pub(super) game_score_enabled: bool,
@@ -326,7 +326,7 @@ impl<M: Memory> WingMemory<'_, M> {
     }
 }
 impl<M: Memory> Memory for WingMemory<'_, M> {
-    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.inner.read_scalar::<T>(address);
         if value.is_some() {
             self.count(size_of::<T>());
@@ -337,7 +337,7 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<engine_native_memory::country_identity::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, state)
     }
 
@@ -345,7 +345,7 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
+    ) -> Option<Result<engine_native_memory::country_identity::Country, &'static str>> {
         self.inner.authenticated_reserved_country(base, state)
     }
 
@@ -353,7 +353,7 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
         &self,
         base: usize,
         state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
+    ) -> Option<engine_native_memory::country_identity::ReservedCountryObservation> {
         self.inner
             .authenticated_reserved_country_observation(base, state)
     }
@@ -377,8 +377,8 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
     }
     fn copy_records(
         &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         let completed = self.inner.copy_records(sources, layout, destination);
@@ -490,9 +490,9 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     let score_ticks = std::cell::Cell::new([0_u64; 2]);
     let score = std::cell::RefCell::new(&mut job.game_score);
     let mut map_len = 0;
-    let mut fuel_references = engine_native::creference_registry::ScopedResolver::new(ctx.base);
-    let map_rows = engine_native::walk::Buffer::Growing(&mut job.map_rows);
-    let sources = engine_native::walk::Buffer::Growing(&mut job.sources);
+    let mut fuel_references = engine_native_parts::creference_registry::ScopedResolver::new(ctx.base);
+    let map_rows = engine_native_memory::walk::Buffer::Growing(&mut job.map_rows);
+    let sources = engine_native_memory::walk::Buffer::Growing(&mut job.sources);
     let walked = cair_wing::walk_shared_game_score_buffers_with_owners(
         &source,
         ctx.base,
@@ -565,7 +565,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
             let wing = WingSource { pointer, row };
             if admitted.sources && !matches!(equipment, Outcome::Unavailable { .. }) {
                 source.mask.set(1);
-                let output = engine_native::walk::Buffer::Growing(&mut job.equipment);
+                let output = engine_native_memory::walk::Buffer::Growing(&mut job.equipment);
                 let (next, required) = read_equipment_carried(
                     &source,
                     ctx.base,
@@ -580,7 +580,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
             if admitted.sources && !matches!(cumulative, Outcome::Unavailable { .. }) {
                 reads.select(TableId::WingCumulative);
                 source.mask.set(2);
-                let mut output = engine_native::walk::Buffer::Growing(&mut job.cumulative);
+                let mut output = engine_native_memory::walk::Buffer::Growing(&mut job.cumulative);
                 let required = cumulative.len().saturating_add(1);
                 cumulative_required = required;
                 let next = if let Err(reason) = output.ensure(required) {
@@ -602,7 +602,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                 cumulative = append(cumulative, next);
             }
             if job.theatres_active && (admitted.map || admitted.naval) {
-                if engine_native::walk::Buffer::Growing(&mut job.memberships)
+                if engine_native_memory::walk::Buffer::Growing(&mut job.memberships)
                         .ensure(membership_len + 1)
                         .is_err()
                 {
@@ -612,7 +612,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                 source.mask.set(0);
                 let started = qpc();
                 job.memberships[membership_len] =
-                    match engine_native::ctheatre::read_wing_membership(&source, pointer, row) {
+                    match engine_native_air::cair_wing::read_wing_membership(&source, pointer, row) {
                         Ok(value) => WingMembershipRead { value, error: None },
                         Err(reason) => WingMembershipRead {
                             error: Some(reason),

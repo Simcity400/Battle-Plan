@@ -93,7 +93,7 @@ impl StatusPacket {
                             let pointer = seed
                                 .stat_block
                                 .ok_or("division presentation field unreadable")?;
-                            let maxima = crate::csub_unit_definition::capture_division_maxima(
+                            let maxima = engine_native_parts::csub_unit_definition::capture_division_maxima(
                                 memory, base, pointer,
                             )?;
                             packet.units[unit].maxima = packet.maxima.len();

@@ -65,10 +65,10 @@ impl Image {
         }
     }
     fn definition(&mut self, key: u32, flags: u32, selector: u32) {
-        self.u64(crate::modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
-        let row = DEFINITIONS + key as usize * crate::modifier_definition::STRIDE;
-        self.u32(row + crate::modifier_definition::FLAGS, flags);
-        self.u32(row + crate::modifier_definition::FEATURE_SELECTOR, selector);
+        self.u64(engine_native_parts::modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
+        let row = DEFINITIONS + key as usize * engine_native_parts::modifier_definition::STRIDE;
+        self.u32(row + engine_native_parts::modifier_definition::FLAGS, flags);
+        self.u32(row + engine_native_parts::modifier_definition::FEATURE_SELECTOR, selector);
     }
     fn touched(&self, address: usize) -> bool {
         self.reads.borrow().iter().any(|&(at, _)| at == address)
@@ -84,7 +84,7 @@ fn fixture() -> Image {
         image.u32(0x9000 + slot * 4, slot as u32);
         image.u64(pointer, ccountry::VTABLE_RVA.0 as u64);
         image.u32(pointer + ccountry::ID, slot as u32);
-        image.accumulator(pointer + ccountry::MODIFIER_ACCUMULATOR, 0, &[]);
+        image.accumulator(pointer + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0, &[]);
     }
     image.u32(UNIT + cunit::ROSTER_OWNER, 1);
     image.u32(UNIT + cunit::EXPEDITIONARY_OWNER, 2);
@@ -158,7 +158,7 @@ fn strategic_action_state_override_uses_roster_and_base_fallback() {
 fn strategic_action_country_and_missing_state_skip_later_branches() {
     let mut image = fixture();
     image.accumulator(
-        COUNTRY2 + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY2 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         VALUES + 0x200,
         &[(keys::DISABLE_STRATEGIC_REDEPLOYMENT, i64::MIN)],
     );
@@ -171,7 +171,7 @@ fn strategic_action_country_and_missing_state_skip_later_branches() {
         })
     );
     assert!(!image.touched(UNIT + cunit::LOCATION));
-    image.accumulator(COUNTRY2 + ccountry::MODIFIER_ACCUMULATOR, 0, &[]);
+    image.accumulator(COUNTRY2 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0, &[]);
     image.fault = None;
     image.u64(PROVINCE + cprovince::STATE, 0);
     assert_eq!(
@@ -192,24 +192,24 @@ fn strategic_action_friendly_gate_skips_controller_modifier_in_active_war() {
     const TUPLE: usize = 0x92000;
     const WAR: usize = 0x93000;
     image.u64(COUNTRY2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    image.u64(DIPLOMACY, crate::cdiplomacy_status::VTABLE_RVA.0 as u64);
+    image.u64(DIPLOMACY, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
     image.u64(
-        DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
+        DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
         COUNTRY2 as u64,
     );
     image.array(
-        DIPLOMACY + crate::cdiplomacy_status::RELATIONS,
+        DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
         RELATIONS,
         3,
     );
     image.u64(RELATIONS + 8, TUPLE as u64);
-    image.u64(TUPLE, crate::crelation_status::VTABLE_RVA.0 as u64);
+    image.u64(TUPLE, crate::crelation::status::VTABLE_RVA.0 as u64);
     image.u64(
-        TUPLE + crate::crelation_status::DIPLOMACY_STATUS,
+        TUPLE + crate::crelation::status::DIPLOMACY_STATUS,
         DIPLOMACY as u64,
     );
-    image.u32(TUPLE + crate::crelation_status::TARGET_COUNTRY, 1);
-    image.u64(TUPLE + crate::crelation_status::WAR_RELATION, WAR as u64);
+    image.u32(TUPLE + crate::crelation::status::TARGET_COUNTRY, 1);
+    image.u64(TUPLE + crate::crelation::status::WAR_RELATION, WAR as u64);
     image.u64(WAR, crate::cwar_relation::VTABLE_RVA.0 as u64);
     image.u32(WAR + crate::crelation::TYPE_ID, crate::cwar_relation::TYPE);
     image.put(WAR + crate::crelation::RETIRED, &[0]);
@@ -247,7 +247,7 @@ fn strategic_action_effective_getter_probes_without_capacity_or_suffix_reads() {
     image.definition(2, 0, 0);
     image.fault = Some(VALUES + 48..VALUES + 64);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(i64::MIN)
     );
     let keys = image
@@ -264,7 +264,7 @@ fn strategic_action_effective_getter_probes_without_capacity_or_suffix_reads() {
 
 #[test]
 fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
-    use crate::modifier_definition as definitions;
+    use engine_native_parts::modifier_definition as definitions;
     const ACC: usize = 0x1000;
     let mut image = Image::default();
     image.accumulator(ACC, VALUES, &[(2, i64::MAX)]);
@@ -272,7 +272,7 @@ fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
     image.u64(definitions::ELIGIBILITY_CALLBACK_RVA.0, 0);
     image.fault = Some(VALUES + 8..VALUES + 16);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(0)
     );
     assert!(!image.touched(VALUES + 8));
@@ -284,22 +284,22 @@ fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
     image.u32(definitions::TRADE_FEATURE_FLAGS_RVA.0, 4);
     image.fault = None;
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(100000)
     );
     image.u64(VALUES + 8, i64::MIN as u64);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(0)
     );
     image.definition(2, 0, 4);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(i64::MIN)
     );
     image.u64(definitions::ELIGIBILITY_CALLBACK_RVA.0, 77);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Err("modifier eligibility callback unsupported")
     );
 }
@@ -310,19 +310,19 @@ fn strategic_action_absent_empty_and_negative_count_are_distinct() {
     let mut image = Image::default();
     image.accumulator(ACC, VALUES, &[(3, 19)]);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(0)
     );
     assert!(!image.touched(VALUES + 8));
-    assert!(!image.touched(crate::modifier_definition::TABLE_RVA.0));
+    assert!(!image.touched(engine_native_parts::modifier_definition::TABLE_RVA.0));
     image.u32(ACC + 12, 0);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Ok(0)
     );
     image.u32(ACC + 12, u32::MAX);
     assert_eq!(
-        crate::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
+        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
         Err("strategic action modifier count negative")
     );
 }
@@ -331,7 +331,7 @@ fn strategic_action_absent_empty_and_negative_count_are_distinct() {
 fn strategic_action_country_ownership_uses_signed_positive_expeditionary() {
     let mut image = fixture();
     image.accumulator(
-        COUNTRY1 + ccountry::MODIFIER_ACCUMULATOR,
+        COUNTRY1 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         VALUES + 0x200,
         &[(keys::DISABLE_STRATEGIC_REDEPLOYMENT, 21)],
     );

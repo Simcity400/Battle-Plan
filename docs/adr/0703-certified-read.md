@@ -4,4 +4,4 @@ A reusable observation needs a writer certificate that includes the input identi
 
 A fresh read starts with a pending certificate. The reader first revokes the previous proof, then admits a replacement proof only when the read succeeds and the certificate remains unchanged. Abandoned reads, failed partial writes, or missing certificates require the next caller to read again. This lets the worker reuse its storage without mistaking the remaining bytes for a certified observation.
 
-[Certified reads](../../crates/engine-native/src/certified_read.rs) · [Equipment category certificates](../../crates/engine-native/src/cequipment_type/category_cache.rs)
+[Certified reads](../../crates/engine-native-memory/src/certified_read.rs) · [Equipment category certificates](../../crates/engine-native-parts/src/cequipment_type/category_cache.rs)

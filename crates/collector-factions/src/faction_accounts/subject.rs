@@ -1,10 +1,9 @@
 use super::Account;
 use collector_observers::country_input_changes as changes;
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, ccountry, modifier_accumulator, modifier_accumulator::Value,
-    modifier_definition::Operands,
-};
+use engine_native_memory::{Memory, modifier_cache::Value};
+use engine_native::ccountry;
+use engine_native_parts::{modifier_accumulator, modifier_definition::Operands};
 const SUBJECT_GAIN: u32 = 0x288;
 const POPULATION_GROWTH: u32 = 0x48;
 const KEYS: [u32; 2] = [SUBJECT_GAIN, POPULATION_GROWTH];
@@ -12,7 +11,7 @@ type Certificate = (u64, u64);
 type Raw = [Result<Value, &'static str>; 2];
 type Signature = Option<(u32, u32, u32)>;
 struct Held {
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     certificate: Certificate,
     raw: Raw,
 }
@@ -45,7 +44,7 @@ impl Store {
     fn raw(
         &mut self,
         memory: &impl Memory,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         sequence: &impl Fn(usize) -> Option<Certificate>,
     ) -> Raw {
         let Some(before) = sequence(country.pointer) else {
@@ -63,7 +62,7 @@ impl Store {
         let raw = KEYS.map(|key| {
             country
                 .pointer
-                .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                 .ok_or("faction country accumulator address overflow")
                 .and_then(|at| modifier_accumulator::lookup_key_at(memory, at, key))
         });
@@ -94,13 +93,13 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        members: &[engine_native::cfaction_system::MemberRow],
+        members: &[engine_native::cfaction::system::MemberRow],
         accounts: &mut [Account],
     ) -> bool {
         let before = changes::accumulator_quiet();
         let mut metadata = std::array::from_fn::<_, 2, _>(|i| {
             self.has_present[i]
-                .then(|| engine_native::modifier_definition::operands(memory, base, KEYS[i]))
+                .then(|| engine_native_parts::modifier_definition::operands(memory, base, KEYS[i]))
         });
         let current = std::array::from_fn(|i| metadata[i].as_ref().and_then(signature));
         if before == self.quiet
@@ -182,7 +181,7 @@ impl Store {
                         self.has_present[i] = true;
                         metadata[i]
                             .get_or_insert_with(|| {
-                                engine_native::modifier_definition::operands(memory, base, KEYS[i])
+                                engine_native_parts::modifier_definition::operands(memory, base, KEYS[i])
                             })
                             .as_ref()
                             .ok()
@@ -227,7 +226,7 @@ mod tests {
     #[test]
     fn distinct_account_and_member_aliases_demand_and_carry_both_country_keys() {
         let bytes = super::super::tests::alias_fixture();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -259,7 +258,7 @@ mod tests {
         });
         let mut changed = bytes.clone();
         changed[0x6008..0x6010].copy_from_slice(&(-25_000i64).to_le_bytes());
-        let changed = engine_native::memory::SliceMemory {
+        let changed = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &changed,
         };
@@ -279,20 +278,20 @@ mod tests {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
                 self.reads.set(self.reads.get() + 1);
                 !self.fail.get()
-                    && engine_native::memory::SliceMemory {
+                    && engine_native_memory::memory::SliceMemory {
                         base: 0,
                         bytes: &self.bytes,
                     }
                     .copy(at, out)
             }
         }
-        let country = ccountry::Country {
+        let country = engine_native_memory::country_identity::Country {
             pointer: 0x1000,
             canonical_slot: 3,
             id: 7,
         };
         let mut bytes = vec![0; 0x3000];
-        let accumulator = country.pointer + ccountry::MODIFIER_ACCUMULATOR;
+        let accumulator = country.pointer + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         bytes[accumulator..accumulator + 8].copy_from_slice(&0x2000u64.to_le_bytes());
         bytes[accumulator + modifier_accumulator::COUNT
             ..accumulator + modifier_accumulator::COUNT + 4]

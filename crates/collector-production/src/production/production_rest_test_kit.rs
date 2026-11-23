@@ -6,11 +6,20 @@ use engine_deployment::{
     cdeployment_status, cmilitary_deployment, cmilitary_deployment_conveyor,
     cmilitary_deployment_line,
 };
+use engine_native_parts::{carmy_manpower_values, cproduction_line};
 use engine_native::{
-    carmy_manpower_values, ccountry, cequipment_production_license, cequipment_production_line,
-    cequipment_variant, cequipment_variant_pool, cgame_state, cname_group_member, cproduction_line,
-    cproduction_status, creferenced_division_template, msvc_string, walk::Outcome,
+    ccountry,
+    cproduction_status::{
+        equipment_license as cequipment_production_license,
+        equipment_line as cequipment_production_line,
+        self,
+    },
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
+    cname_group_member,
+    creferenced_division_template,
 };
+use engine_native_memory::{msvc_string, walk::Outcome};
 
 pub const BASE: usize = 0x1000;
 const COUNTRY: usize = 0x3000;
@@ -108,7 +117,7 @@ pub fn fixture() -> Vec<u8> {
     for (offset, value) in [
         (
             0,
-            engine_native::cmilitary_production_line::VTABLE_RVA.0 as u64,
+            engine_native_parts::cmilitary_production_line::VTABLE_RVA.0 as u64,
         ),
         (cproduction_line::REFERENCE_TYPE, 0x8000_1234_0000_0038),
         (cproduction_line::PRODUCTION_STATUS, PROD as u64),
@@ -152,22 +161,22 @@ pub fn fixture() -> Vec<u8> {
     put(
         &mut bytes,
         EQUIPMENT_TYPE,
-        &(engine_native::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        EQUIPMENT_TYPE + engine_native::cequipment_type::ARCHETYPE,
+        EQUIPMENT_TYPE + engine_native_parts::cequipment_type::ARCHETYPE,
         &(EQUIPMENT_TYPE as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
-        EQUIPMENT_TYPE + engine_native::cequipment_type::MAX_MIL_FACTORIES,
+        EQUIPMENT_TYPE + engine_native_parts::cequipment_type::MAX_MIL_FACTORIES,
         &[150, 0, 0, 0, 1],
     );
     put(
         &mut bytes,
         VARIANT,
-        &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
         &mut bytes,
@@ -474,7 +483,7 @@ pub fn capacities() -> Capacities {
     }
 }
 
-pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
+pub fn direct(memory: &impl engine_native_memory::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
     let divisions = Sources {
         rows: &[],
@@ -495,7 +504,7 @@ pub fn job() -> ProductionRestJob {
 }
 
 pub fn split(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     capacities: &Capacities,
 ) -> (Captured, ProductionRestCopyReport, ProductionRestJob) {
     let mut captured = Captured::with_capacities(capacities);

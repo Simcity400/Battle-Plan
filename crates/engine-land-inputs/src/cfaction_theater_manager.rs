@@ -1,10 +1,12 @@
 
-use crate::{
-    Memory, cfaction, cfaction_system,
+use engine_native_memory::{
+    Memory,
     cpdx_array::{self, Array},
-    msvc_string, read,
+    msvc_string,
+    read,
     walk::Outcome,
 };
+use engine_native::cfaction::{self, system as cfaction_system};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a9_8778);
@@ -73,12 +75,12 @@ impl Walk {
 }
 
 pub struct Arenas<'a> {
-    pub rows: crate::walk::Buffer<'a, Row>,
-    pub icons: crate::walk::Buffer<'a, u8>,
-    pub names: crate::walk::Buffer<'a, u8>,
-    pub countries: crate::walk::Buffer<'a, u32>,
-    pub regions: crate::walk::Buffer<'a, u32>,
-    pub hidden: crate::walk::Buffer<'a, u32>,
+    pub rows: engine_native_memory::walk::Buffer<'a, Row>,
+    pub icons: engine_native_memory::walk::Buffer<'a, u8>,
+    pub names: engine_native_memory::walk::Buffer<'a, u8>,
+    pub countries: engine_native_memory::walk::Buffer<'a, u32>,
+    pub regions: engine_native_memory::walk::Buffer<'a, u32>,
+    pub hidden: engine_native_memory::walk::Buffer<'a, u32>,
 }
 
 pub struct Storage<'a> {
@@ -91,7 +93,7 @@ pub struct Storage<'a> {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    use crate::walk::Buffer::Count;
+    use engine_native_memory::walk::Buffer::Count;
     walk_buffer(
         memory,
         base,
@@ -108,7 +110,7 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
 }
 
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, storage: Storage<'_>) -> Walk {
-    use crate::walk::Buffer::Growing;
+    use engine_native_memory::walk::Buffer::Growing;
     walk_buffer(
         memory,
         base,
@@ -332,7 +334,8 @@ fn manager(memory: &impl Memory, base: usize, faction: usize) -> Result<Array, &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const SYSTEM: usize = 0x1200;
