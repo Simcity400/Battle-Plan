@@ -43,6 +43,11 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
     storage(|| replay::lanes::lifetimes(recording, run, table))
 }
 
+pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
+    declared(table)?;
+    storage(|| replay::lanes::presences(recording, run, table))
+}
+
 pub fn declared(table: TableId) -> io::Result<()> {
     if dashboard_declare::summaries()?.iter().any(|(held, _)| *held == table.index()) {
         return Ok(());

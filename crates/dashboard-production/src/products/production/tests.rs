@@ -110,6 +110,7 @@ fn a_scoped_reply_holds_only_what_its_identity_owned_inside_the_scope() {
     let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
     let moved = reply.lines.iter().find(|line| line.key == "1#1").expect("raw country 11's line is GER's while 11 links to GER's slot");
     assert_eq!(moved.steps, [step(1_000, 1_099, true, "100", 2), step(1_100, 1_149, false, "101", 2)], "the line leaves GER at the hour its raw country's link moves");
+    assert_eq!((moved.ended_by, moved.final_output.is_none()), (None, true), "a line whose country moves on did not end for GER, so it takes none of the next holder's output");
     let ended = reply.lines.iter().find(|line| line.key == "2#1").and_then(|line| line.final_output.as_ref()).expect("GER's ended line keeps its final count");
     assert!(ended.last_hour <= 1_205, "ended output is read only inside the scope, not through {}", ended.last_hour);
 }

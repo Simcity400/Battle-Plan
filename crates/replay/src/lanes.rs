@@ -1148,6 +1148,13 @@ pub fn chart_at(
 }
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
+    Ok(presences(recording, run, table)?
+        .into_iter()
+        .filter_map(|(key, spans)| Some((key, spans.first()?.0, spans.last()?.1)))
+        .collect())
+}
+
+pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
     let held = recording.run(run)?;
     let valid_hour = match recording.predates(table.index()) {
         Some(_) => None,
@@ -1166,7 +1173,7 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
     };
     let blocks = held.pages() as u32;
     let extents = pieces(recording, run, table.index(), 0..blocks, 8)?;
-    let mut spans: HashMap<u128, (i64, i64), foldhash::fast::RandomState> = HashMap::default();
+    let mut spans: HashMap<u128, Vec<(i64, i64)>, foldhash::fast::RandomState> = HashMap::default();
     let mut covered = Vec::new();
     for extent in &extents {
         let bytes = recording.stored_bytes(extent)?;
@@ -1180,9 +1187,7 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
                 }
                 let start = (piece.directory.first_bucket + bucket as i64) * size;
                 let (first, last) = (start + i64::from(life.first), start + i64::from(life.end) - 1);
-                let span = spans.entry(key).or_insert((first, last));
-                span.0 = span.0.min(first);
-                span.1 = span.1.max(last);
+                spans.entry(key).or_default().push((first, last));
             }
         }
     }
@@ -1197,21 +1202,30 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
             walk_ranges(recording, run, table, &[], &ranges, &mut walk)?;
             for (key, row) in walk.rows {
                 if let Some((first, last)) = row.lived {
-                    let span = spans.entry(key).or_insert((first, last));
-                    span.0 = span.0.min(first);
-                    span.1 = span.1.max(last);
+                    spans.entry(key).or_default().push((first, last));
                 }
             }
         }
     }
-    let mut out: Vec<(u128, i64, i64)> = spans
+    let mut out: Vec<(u128, Vec<(i64, i64)>)> = spans
         .into_iter()
-        .filter_map(|(key, (first, last))| {
-            let first = valid_hour.map_or(first, |floor| first.max(floor));
-            (first <= last).then_some((key, first, last))
+        .filter_map(|(key, mut held)| {
+            held.sort_unstable();
+            let mut merged: Vec<(i64, i64)> = Vec::with_capacity(held.len());
+            for (first, last) in held {
+                let first = valid_hour.map_or(first, |floor| first.max(floor));
+                if first > last {
+                    continue;
+                }
+                match merged.last_mut() {
+                    Some(span) if first <= span.1 + 1 => span.1 = span.1.max(last),
+                    _ => merged.push((first, last)),
+                }
+            }
+            (!merged.is_empty()).then_some((key, merged))
         })
         .collect();
-    out.sort_unstable();
+    out.sort_unstable_by_key(|(key, _)| *key);
     Ok(out)
 }
 

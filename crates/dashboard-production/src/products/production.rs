@@ -203,13 +203,14 @@ pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>
             };
             for (held_from, held_to) in spans {
                 for life in &index.lines {
-                    let (first, last) = (life.first.max(held_from), life.last.min(held_to));
-                    if first > last {
+                    let from = life.first.max(held_from);
+                    if from > life.last.min(held_to) {
                         continue;
                     }
-                    for (linked, first, last) in links.within(life.country, first, last) {
-                        if linked == Some(slot) {
-                            pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from, held_to });
+                    for (linked, first, owned_to) in links.within(life.country, from, held_to) {
+                        let last = owned_to.min(life.last);
+                        if linked == Some(slot) && first <= last {
+                            pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from, held_to: owned_to });
                         }
                     }
                 }

@@ -958,7 +958,7 @@ impl Product for ProductionLineBreakdown {
         }
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, super::held_hours(&query, &params.country, params.within.as_deref(), first, last).last().map_or(last, |span| span.last_hour)),
+            tag: query.holders.name(&params.country, params.hour),
             key: params.key.clone(),
             first_hour: first,
             last_hour: last,

@@ -1827,7 +1827,7 @@ impl<'q, 'a> Line<'q, 'a> {
             return Err(invalid("Invalid span"));
         }
         let recording = self.query.replay.recording();
-        let mut lives: HashMap<u32, Vec<(u128, i64, i64)>> = HashMap::new();
+        let mut lives: HashMap<u32, Vec<(u128, Vec<(i64, i64)>)>> = HashMap::new();
         let mut out = Vec::with_capacity(tags.len());
         for tag in tags {
             let mut found: BTreeMap<u128, Vec<(i32, i32)>> = BTreeMap::new();
@@ -1835,19 +1835,19 @@ impl<'q, 'a> Line<'q, 'a> {
             let held = self.parts(&country, from, to);
             for part in held.iter().filter_map(|part| self.valid_part(part)) {
                 if !lives.contains_key(&part.run) {
-                    let mut read = crate::cost::lifetimes(recording, part.run, self.series.table)?;
-                    read.sort_unstable_by_key(|(key, ..)| *key);
+                    let read = crate::cost::presences(recording, part.run, self.series.table)?;
                     lives.insert(part.run, read);
                 }
                 let (lo, hi) = parts.range(parts.owner(part.key));
                 let run = &lives[&part.run];
                 let start = run.partition_point(|(key, ..)| *key < lo);
-                for &(key, first, last) in run[start..].iter().take_while(|(key, ..)| *key <= hi) {
-                    let (first, last) = (first.max(i64::from(part.first)), last.min(i64::from(part.last)));
-                    if first > last {
-                        continue;
+                for (key, spans) in run[start..].iter().take_while(|(key, ..)| *key <= hi) {
+                    for &(first, last) in spans {
+                        let (first, last) = (first.max(i64::from(part.first)), last.min(i64::from(part.last)));
+                        if first <= last {
+                            found.entry(parts.part(*key)).or_default().push((first as i32, last as i32));
+                        }
                     }
-                    found.entry(parts.part(key)).or_default().push((first as i32, last as i32));
                 }
             }
             let mut missing = self.unheld(&country, from, to, &held);
