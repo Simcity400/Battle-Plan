@@ -1,5 +1,6 @@
 use replay::campaign::Replay;
-use replay::{spool::ControlRecord, spool::Record};
+use replay_recording::control::ControlRecord;
+use replay_capture_spool::spool::Record;
 use replay_data::{day_night, day_night::Clock, rows::Recorded, rows::TableId};
 use replay_data::{
     identity::Roster, identity::Verification, rows::DayNightClock, rows::ProvinceTemperature,
@@ -32,7 +33,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         );
         return;
     };
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let installation = synthetic_game::Installation::new("derived-verdict").build();
     let game = installation.game_dir.clone();
     let user = installation.user_dir.clone();
@@ -87,7 +88,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
     bitmap[28..30].copy_from_slice(&8_u16.to_le_bytes());
     bitmap[54..].fill(0);
     fs::write(game.join("map/rivers.bmp"), &bitmap).unwrap();
-    let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
+    let gathered = content_reader_layers::gather(&content_reader_layers::GatherOptions {
         game_dir: game.clone(),
         user_dir: user.clone(),
         cache_dir: installation.cache_dir.clone(),

@@ -6,7 +6,7 @@ use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals}};
 use dashboard_follow::live::Source as LiveSource;
 use dashboard_query::identity::Holder;
 use dashboard_text::variant_names::{self, Tags, Texts};
-use replay::lanes;
+use replay_lanes::lanes;
 use replay_columnar::summary;
 use replay_data::rows::{NavalRegionalMineRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};

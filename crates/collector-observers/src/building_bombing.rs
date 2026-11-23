@@ -83,26 +83,38 @@ pub fn capacity() -> usize {
 pub fn buildings() -> usize {
     BUILDINGS.load(Ordering::Acquire)
 }
-pub fn presize(events: usize) {
+/// # Safety
+/// Run only while building-bombing observer storage remains live for the active session (or an
+/// isolated test owning building-bombing observation) and teardown is excluded;
+/// `EventLedger::prepare` synchronizes spare and retired buffers across concurrent growth callers.
+pub unsafe fn presize(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
     LEDGER.prepare(events);
 }
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// owning building-bombing observation) when invalidating building-bombing drains.
+pub unsafe fn lost_drain() {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.lost_drain();
+    // SAFETY: Caller owns the building-bombing recovery or publication failure path.
+    unsafe { LEDGER.lost_drain() };
 }
-pub fn lost_output(events: usize) {
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test owning building-bombing observation) when recording lost building-bombing output.
+pub unsafe fn lost_output(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.lost_output(events);
+    // SAFETY: Caller owns the building-bombing projection or publication failure path.
+    unsafe { LEDGER.lost_output(events) };
 }
 fn writer_cost(start: i64) {
     let ticks = qpc().saturating_sub(start).max(0) as u64;
@@ -110,7 +122,10 @@ fn writer_cost(start: i64) {
     INTERVAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
 }
 
-pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass against the authenticated
+/// session image, while building-bombing observer storage remains live and teardown is excluded.
+pub unsafe fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
@@ -135,7 +150,10 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         LEDGER.refuse_preparation("building bombing preparation population size overflow");
     }
 }
-pub fn boundary(clock: Option<Clock>) {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer advancing
+/// building-bombing observation (or an isolated test owning building-bombing observation).
+pub unsafe fn boundary(clock: Option<Clock>) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
@@ -143,11 +161,16 @@ pub fn boundary(clock: Option<Clock>) {
     let ticks = INTERVAL_TICKS.swap(0, Ordering::Relaxed);
     LAST_HOUR_TICKS.store(ticks, Ordering::Relaxed);
     MAX_HOUR_TICKS.fetch_max(ticks, Ordering::Relaxed);
-    LEDGER.boundary(clock);
+    // SAFETY: Caller runs on the admitted hourly capture boundary for building-bombing observation.
+    unsafe { LEDGER.boundary(clock) };
 }
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining building-bombing events while
+/// observer storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     drain_admitted()?;
-    LEDGER.drain(output)
+    // SAFETY: Caller holds hourly capture admission as the sole building-bombing consumer.
+    unsafe { LEDGER.drain(output) }
 }
 fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]

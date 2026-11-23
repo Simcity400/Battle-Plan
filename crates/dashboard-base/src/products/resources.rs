@@ -4,7 +4,7 @@ use crate::{
     Source,
     catalogue::{self, Catalogue},
 };
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_gfx::gfx::SpriteSet;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::{rows::LexicalTokenRow, rows::ResourceDefinitionRow};
@@ -120,7 +120,7 @@ pub struct ContentView<'a> {
     pub layers: &'a ResolvedLayers,
     pub sprites: &'a SpriteSet,
     pub localisation: &'a Localisation,
-    pub guis: Result<&'a content_reader_core::gui::native::Guis, String>,
+    pub guis: Result<&'a content_reader_gui::gui::native::Guis, String>,
     pub gui_decode: &'a Result<content_reader_image::native::Decode, String>,
 }
 
@@ -148,7 +148,7 @@ struct Frames {
 }
 
 impl Frames {
-    fn new(resources: &content_reader_core::resources::Resources) -> Self {
+    fn new(resources: &content_reader_key_names::resources::Resources) -> Self {
         let mut by_token: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
         for resource in resources.numbered() {
             by_token
@@ -178,14 +178,14 @@ impl Frames {
 
 fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     let mut warnings = Vec::new();
-    let name = content_reader_core::gui::native::window_button_sprite(
+    let name = content_reader_gui::gui::native::window_button_sprite(
         view.guis.as_ref().map_err(crate::invalid)?,
         RESOURCE_ROW,
         RESOURCE_ICON,
         &mut warnings,
     )?;
     let sprite = catalogue::created_gui_sprite(view.sprites, &name)?.clone();
-    let (resources, notes) = content_reader_core::resources::read(view.layers)?;
+    let (resources, notes) = content_reader_key_names::resources::read(view.layers)?;
     warnings.extend(notes.into_iter().map(|(_, message)| message));
     Ok((
         Icons {
@@ -481,7 +481,7 @@ struct ResourceArt {
 }
 
 fn icon_frames(layers: &ResolvedLayers) -> io::Result<Frames> {
-    Ok(Frames::new(&content_reader_core::resources::read(layers)?.0))
+    Ok(Frames::new(&content_reader_key_names::resources::read(layers)?.0))
 }
 
 fn resource_icon(
@@ -491,7 +491,7 @@ fn resource_icon(
     ordinal: u32,
 ) -> Result<String, String> {
     let guis = catalogue.guis().map_err(|error| error.to_string())?;
-    let name = content_reader_core::gui::native::window_button_sprite(
+    let name = content_reader_gui::gui::native::window_button_sprite(
         guis,
         RESOURCE_ROW,
         RESOURCE_ICON,

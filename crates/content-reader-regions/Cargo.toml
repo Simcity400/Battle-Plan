@@ -10,14 +10,16 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-script.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
 weather-period.workspace = true
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-layers = { workspace = true, features = ["layer-fixtures"] }
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = ["content-reader-layers/test-support"]
 
 [lints]
 workspace = true
@@ -27,6 +29,7 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-regions = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

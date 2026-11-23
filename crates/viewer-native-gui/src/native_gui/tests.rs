@@ -5,7 +5,7 @@ use viewer_gpu::test_support::gpu;
 use crate::test_support::gui::*;
 #[cfg(test)]
 use viewer_gpu::test_support::serial;
-use content_reader_core::gui::native::read;
+use content_reader_gui::gui::native::read;
 use lifecycle::{
     Admission, Call, Calls, Held, Instance, MapIconPool, Pool, Rewrote, Tick, Unknown, Withheld,
 };
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 #[test]
 fn tooltip_uses_native_bake_and_ignores_authored_height() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     resources.templates.push(read(
         br#"guiTypes = { textBoxType = {
@@ -38,7 +38,7 @@ fn tooltip_uses_native_bake_and_ignores_authored_height() {
 
 #[test]
 fn tooltip_bake_keeps_soft_wrap_indent_and_hard_line_start() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     resources.templates.push(read(
         br#"guiTypes = { textBoxType = {
@@ -58,7 +58,7 @@ fn tooltip_bake_keeps_soft_wrap_indent_and_hard_line_start() {
 
 #[test]
 fn tooltip_fallback_fixed_size_and_named_null_refusal() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let refused = text_sprites::tooltip(&resources, "abcdef", 0.0, false).unwrap_err();
     let mut counts = Counts::default();
@@ -80,7 +80,7 @@ fn tooltip_fallback_fixed_size_and_named_null_refusal() {
 
 #[test]
 fn tooltip_bakes_native_inline_icons_and_flags_and_counts_missing_inputs() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     resources.templates.push(read(
         br#"guiTypes = { textBoxType = {
@@ -124,7 +124,7 @@ fn tooltip_bakes_native_inline_icons_and_flags_and_counts_missing_inputs() {
 
 #[test]
 fn resolved_flag_text_reaches_native_walk_and_tooltip_only_when_bound() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let value = format!("{}GER-Western_group, x", native_text::RESOLVED_FLAG);
     let laid = |resolved_flags| {
         laid_bound(
@@ -336,7 +336,7 @@ fn size(width: &str, height: &str, extra: &str) -> native::Size {
 
 #[test]
 fn sizes_evaluate_against_the_parent() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let evaluate = |size: &native::Size, parent| evaluate_size(size, parent, [10, 4], "s");
     assert_eq!(
         evaluate(&size("50%", "25%", ""), Some([101, 40])),
@@ -400,7 +400,7 @@ fn anchors_halve_toward_zero() {
 
 #[test]
 fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parts = parts(
         "size = { width = 101 height = 51 } \
          containerWindowType = { name = \"c\" size = { width = 21 height = 11 } \
@@ -413,7 +413,7 @@ fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
 
 #[test]
 fn a_root_is_placed_as_the_code_places_it() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     assert!(laid("origo = center size = { width = 4 height = 4 }", None).is_ok());
     let refused = laid("size = { width = 50% height = 4 }", None).unwrap_err();
     assert_eq!(refused[0].kind, RefusalKind::NoParent);
@@ -440,7 +440,7 @@ fn a_root_is_placed_as_the_code_places_it() {
 
 #[test]
 fn an_icon_is_placed_as_the_game_places_it() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parts = parts(
         "size = { width = 33 height = 43 } \
          iconType = { name = \"a\" spriteType = \"GFX_odd\" orientation = center \
@@ -462,7 +462,7 @@ fn an_icon_is_placed_as_the_game_places_it() {
 
 #[test]
 fn the_queried_extent_and_the_drawn_frame_differ() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let info = plain([10, 4], 1);
     assert_eq!(info.extent(), [10, 4]);
     let thirds = fixture().sprites["GFX_thirds"].clone();
@@ -504,7 +504,7 @@ fn the_queried_extent_and_the_drawn_frame_differ() {
 
 #[test]
 fn frames_follow_the_sprite_draw() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let authored = parts(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
          iconType = { name = \"b\" spriteType = \"GFX_odd\" frame = 3 } \
@@ -533,7 +533,7 @@ fn frames_follow_the_sprite_draw() {
 
 #[test]
 fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let refused = laid(
         "iconType = { name = \"a\" spriteType = \"GFX_tile\" } \
          iconType = { name = \"b\" spriteType = \"GFX_custom\" } \
@@ -551,7 +551,7 @@ fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
 
 #[test]
 fn a_cornered_tile_slices_its_texture() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid_bound(
         "fade_type = linear size = { width = 40 height = 30 } \
          background = { spriteType = \"GFX_cornered\" position = { x = 2 y = 3 } }",
@@ -573,7 +573,7 @@ fn a_cornered_tile_slices_its_texture() {
 
 #[test]
 fn tiles_repeat_and_resizeables_draw_nothing() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parts = parts(
         "iconType = { name = \"t\" spriteType = \"GFX_repeat\" } \
          iconType = { name = \"r\" spriteType = \"GFX_resizeable\" }",
@@ -587,7 +587,7 @@ fn tiles_repeat_and_resizeables_draw_nothing() {
 
 #[test]
 fn a_frame_animated_sprite_follows_its_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "iconType = { name = \"a\" spriteType = \"GFX_animated\" }";
     let error = laid(body, None).unwrap_err();
     assert_eq!(error[0].kind, RefusalKind::MissingInput);
@@ -610,7 +610,7 @@ fn a_frame_animated_sprite_follows_its_clock() {
 
 #[test]
 fn a_masked_shield_draws_its_flag_under_its_overlay() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "iconType = { name = \"s\" spriteType = \"GFX_shield\" }",
         None,
@@ -645,7 +645,7 @@ fn a_masked_shield_draws_its_flag_under_its_overlay() {
 
 #[test]
 fn a_shield_overlay_draws_with_zero_clocks() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::Clock;
     let reads_time = || {
         clocked_effect(
@@ -694,7 +694,7 @@ fn a_shield_overlay_draws_with_zero_clocks() {
 
 #[test]
 fn an_unknown_sprite_draws_the_fallback() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parts =
         parts("iconType = { name = \"a\" spriteType = \"GFX_mod\" } iconType = { name = \"b\" }");
     assert!(
@@ -722,7 +722,7 @@ fn an_unknown_sprite_draws_the_fallback() {
 
 #[test]
 fn bound_state_overrides_the_authored() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid_bound(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
          iconType = { name = \"b\" spriteType = \"GFX_odd\" hide = yes } \
@@ -756,7 +756,7 @@ fn bound_state_overrides_the_authored() {
 
 #[test]
 fn sprite_setters_rebuild_as_the_game_does() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "size = { width = 100 height = 100 } \
                 buttonType = { name = \"b\" spriteType = \"GFX_odd\" orientation = center \
                 centerPosition = yes scale = 2 rotation = 1.0 position = { x = 5 y = 5 } } \
@@ -796,7 +796,7 @@ fn sprite_setters_rebuild_as_the_game_does() {
 
 #[test]
 fn show_requests_and_the_hide_bit_are_separate() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("iconType = { name = \"h\" hide = yes } iconType = { name = \"s\" }");
     let window = gui.template("w").unwrap();
     let hidden = window.find(Kind::Icon, "h").unwrap();
@@ -836,7 +836,7 @@ fn show_requests_and_the_hide_bit_are_separate() {
 
 #[test]
 fn a_button_draws_its_state() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "buttonType = { name = \"a\" spriteType = \"GFX_four\" enabled = no } \
          buttonType = { name = \"b\" spriteType = \"GFX_odd\" enabled = no } \
@@ -869,7 +869,7 @@ fn a_button_draws_its_state() {
 
 #[test]
 fn a_missing_technique_keeps_the_previous_program() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let bind = |window: &Element, bindings: &mut Bindings| {
         bindings.pointer = Some(Pointer {
             at: [5.0, 5.0],
@@ -912,7 +912,7 @@ fn a_missing_technique_keeps_the_previous_program() {
 
 #[test]
 fn a_button_lays_out_its_text() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let glyphs = |body: &str| {
         let layout = laid(
             &format!("size = {{ width = 100 height = 60 }} buttonType = {{ name = \"b\" {body} }}"),
@@ -945,7 +945,7 @@ fn a_button_lays_out_its_text() {
 
 #[test]
 fn a_button_takes_its_sprite_from_its_parent() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let sprite = |body: &str| {
         parts(body)
             .into_iter()
@@ -995,7 +995,7 @@ fn a_button_takes_its_sprite_from_its_parent() {
 
 #[test]
 fn a_check_box_draws_its_state() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "size = { width = 50 height = 50 } \
          checkboxType = { name = \"u\" spriteType = \"GFX_four\" position = { x = 1 y = 2 } \
          orientation = center centerPosition = yes scale = 2 } \
@@ -1033,7 +1033,7 @@ fn a_check_box_draws_its_state() {
 
 #[test]
 fn the_pointer_hovers_and_presses_buttons() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "size = { width = 50 height = 50 } \
                 buttonType = { name = \"low\" spriteType = \"GFX_four\" } \
                 buttonType = { name = \"high\" spriteType = \"GFX_four\" } \
@@ -1108,7 +1108,7 @@ fn the_pointer_hovers_and_presses_buttons() {
 
 #[test]
 fn a_map_icon_takes_no_pointer() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "buttonType = { name = \"b\" spriteType = \"GFX_four\" }",
         None,
@@ -1124,7 +1124,7 @@ fn a_map_icon_takes_no_pointer() {
 #[test]
 #[allow(clippy::approx_constant)]
 fn turns_keep_their_floating_corners() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "size = { width = 5 height = 5 } clipping = yes \
          iconType = { name = \"a\" spriteType = \"GFX_even\" rotation = 1.5708 position = { x = 14 y = 8 } } \
@@ -1163,7 +1163,7 @@ fn turns_keep_their_floating_corners() {
 
 #[test]
 fn a_stretched_bar_keeps_its_geometry() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid_bound(
         "iconType = { name = \"bar\" spriteType = \"GFX_bar3x17\" rotation = 1.5708 \
          position = { x = 13 y = 19 } }",
@@ -1185,7 +1185,7 @@ fn a_stretched_bar_keeps_its_geometry() {
 
 #[test]
 fn a_progress_bar_runs_its_own_pipeline() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parts =
         parts("iconType = { name = \"p\" spriteType = \"GFX_bar\" rotation = 1.5708 scale = 3 }");
     let PartKind::Progress {
@@ -1299,7 +1299,7 @@ fn text_at(body: &str, text: &str) -> Result<[f32; 2], Refusals> {
 
 #[test]
 fn text_aligns_as_the_bitmap_font_draws_it() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let box_ =
         "position = { x = 10 y = 20 } maxWidth = 40 maxHeight = 30 borderSize = { x = 2 y = 3 }";
     assert_eq!(text_at(box_, "ab"), Ok([12.0, 23.0]));
@@ -1334,7 +1334,7 @@ fn text_aligns_as_the_bitmap_font_draws_it() {
 
 #[test]
 fn text_wraps_and_cuts_as_the_game_does() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let box_ = "position = { x = 10 y = 20 } maxWidth = 20 borderSize = { x = 2 y = 0 }";
     let wrapped = text_glyphs(&format!("{box_} multiline = yes"), "abc").unwrap();
     assert_eq!(
@@ -1360,7 +1360,7 @@ fn text_wraps_and_cuts_as_the_game_does() {
 
 #[test]
 fn text_colours_follow_the_codes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let own = native_text::packed([128.0 / 255.0, 64.0 / 255.0, 32.0 / 255.0, 1.0]);
     let glyphs = text_glyphs("", "ab").unwrap();
     assert_eq!(glyphs[0].color, own);
@@ -1403,7 +1403,7 @@ fn text_colours_follow_the_codes() {
 
 #[test]
 fn text_flags_and_icons_resolve_through_the_caller() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let flag = native_text::FLAG;
     let icon = native_text::ICON;
     let layout = laid_bound(
@@ -1450,7 +1450,7 @@ fn text_flags_and_icons_resolve_through_the_caller() {
 
 #[test]
 fn long_text_flushes_its_glyphs_before_later_icons() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let icon = native_text::ICON;
     let kinds = |count: usize| {
         laid_bound(
@@ -1480,7 +1480,7 @@ fn long_text_flushes_its_glyphs_before_later_icons() {
 
 #[test]
 fn a_null_font_page_draws_nothing_and_keeps_the_window() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui(
         "instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"MOD_INNER\" } \
          iconType = { name = \"i\" spriteType = \"GFX_even\" }",
@@ -1505,7 +1505,7 @@ fn a_null_font_page_draws_nothing_and_keeps_the_window() {
 
 #[test]
 fn reader_refusals_reach_the_layout() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("iconType = { name = \"i\" spriteType = \"GFX_even\" } \
          instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"MOD_INNER\" }");
     let window = gui.template("w").unwrap();
@@ -1549,7 +1549,7 @@ fn reader_refusals_reach_the_layout() {
 
 #[test]
 fn authored_text_shows_its_localisation() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let shown = |key: &str| {
         parts(&format!(
             "instantTextBoxType = {{ name = \"t\" font = \"Main_14\" text = \"{key}\" }}"
@@ -1586,7 +1586,7 @@ fn authored_text_shows_its_localisation() {
 
 #[test]
 fn a_window_refuses_what_needs_run_time() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     assert_eq!(laid("fade_type = linear fade_time = 0", None), Ok(None));
     for body in [
         "fade_type = linear",
@@ -1610,7 +1610,7 @@ fn a_window_refuses_what_needs_run_time() {
 
 #[test]
 fn backgrounds_draw_under_the_content() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "size = { width = 40 height = 30 } margin = { left = 5 top = 5 } \
          background = { spriteType = \"GFX_even\" position = { x = 1 y = 2 } frame = 1 \
@@ -1639,7 +1639,7 @@ fn backgrounds_draw_under_the_content() {
 
 #[test]
 fn a_content_scale_scales_positions_and_sizes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "size = { width = 100 height = 100 } margin = { left = 10 top = 10 } scale = 2 \
          iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 5 y = 5 } } \
@@ -1681,7 +1681,7 @@ fn a_content_scale_scales_positions_and_sizes() {
 
 #[test]
 fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"x\" \
                 position = { x = 3 y = 1 } maxWidth = 50 maxHeight = 20 format = left \
                 vertical_alignment = top }";
@@ -1737,7 +1737,7 @@ fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
 
 #[test]
 fn a_zero_font_viewport_keeps_its_siblings() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let window = gui(
         "iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 5 y = 6 } } \
          instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"x\" \
@@ -1815,7 +1815,7 @@ fn layout_refusals(laid: Result<Option<Layout>, Refusals>) -> String {
 
 #[test]
 fn a_bound_opacity_and_position_apply() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid_bound(
         "fade_type = linear size = { width = 50 height = 50 } \
          iconType = { name = \"i\" spriteType = \"GFX_even\" } \
@@ -1844,7 +1844,7 @@ fn a_bound_opacity_and_position_apply() {
 
 #[test]
 fn fades_run_on_the_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("fade_type = linear fade_time = 1000 fade_delay = 100");
     let window = gui.template("w").unwrap();
@@ -1884,7 +1884,7 @@ fn fades_run_on_the_clock() {
 
 #[test]
 fn movements_run_on_the_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 10 height = 10 } position = { x = 0 y = 0 } \
@@ -1911,7 +1911,7 @@ fn movements_run_on_the_clock() {
 
 #[test]
 fn run_time_helpers_follow_the_game() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("fade_type = linear fade_time = 1000");
     let window = gui.template("w").unwrap();
@@ -1969,7 +1969,7 @@ fn gui_item(body: &str) -> native::Gui {
 
 #[test]
 fn a_clipping_window_scissors_its_children() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "size = { width = 10 height = 10 } clipping = yes \
          iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 5 y = 5 } }",
@@ -1992,7 +1992,7 @@ fn a_clipping_window_scissors_its_children() {
 
 #[test]
 fn a_refused_draw_pushes_nothing() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     struct Some2(SpriteSheet);
     impl Sheets for Some2 {
         fn sheet(&self, sprite: &[u8]) -> Option<&SpriteSheet> {
@@ -2024,7 +2024,7 @@ fn a_refused_draw_pushes_nothing() {
 
 #[test]
 fn grid_slots_follow_the_formats_and_limits() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let slots = |body: &str, count| {
         let gui = gui(&format!(
             "gridBoxType = {{ name = \"g\" size = {{ width = 101 height = 51 }} slotsize = {{ width = 20 height = 10 }} {body} }}"
@@ -2073,7 +2073,7 @@ fn grid_slots_follow_the_formats_and_limits() {
 
 #[test]
 fn a_grid_finalises_its_items() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = read(
         b"guiTypes = { containerWindowType = { name = \"w\" size = { width = 300 height = 300 } \
           gridBoxType = { name = \"g\" position = { x = 7 y = 8 } \
@@ -2118,7 +2118,7 @@ fn a_grid_finalises_its_items() {
 
 #[test]
 fn explicit_grid_positions_bypass_append_limits_and_scale_the_coordinates() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = read(
         br#"guiTypes = {
             containerWindowType = { name = w
@@ -2149,7 +2149,7 @@ fn explicit_grid_positions_bypass_append_limits_and_scale_the_coordinates() {
 
 #[test]
 fn explicit_grid_positions_keep_the_format_and_viewport_constructor_offset() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = read(
         br#"guiTypes = {
             containerWindowType = { name = w
@@ -2170,7 +2170,7 @@ fn explicit_grid_positions_keep_the_format_and_viewport_constructor_offset() {
 
 #[test]
 fn holder_items_compose_in_attach_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "size = { width = 40 height = 40 } clipping = yes \
          iconType = { name = \"a\" spriteType = \"GFX_even\" } \
@@ -2220,7 +2220,7 @@ fn layout_item(gui: &native::Gui) -> Layout {
 
 #[test]
 fn bound_holder_positions_replace_the_authored() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("size = { width = 100 height = 100 } \
          OverlappingElementsBoxType = { name = \"l\" size = { x = 100 y = 50 } position = { x = 3 y = 4 } } \
          gridBoxType = { name = \"g\" position = { x = 1 y = 2 } }");
@@ -2247,7 +2247,7 @@ fn bound_holder_positions_replace_the_authored() {
 
 #[test]
 fn a_position_holds_a_code_placed_window() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("size = { width = 100 height = 100 }          containerWindowType = { name = \"c\" position = { x = 20 y = 10 } size = { width = 50 height = 50 }          positionType = { name = \"p\" position = { x = 36 y = 6 } } }");
     let window = gui.template("w").unwrap();
     let layout = layout(window, None, &fixture(), &Bindings::default())
@@ -2262,7 +2262,7 @@ fn a_position_holds_a_code_placed_window() {
 
 #[test]
 fn list_places_follow_the_layout() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let places = |body: &str, count| {
         let gui = gui(&format!(
             "OverlappingElementsBoxType = {{ name = \"l\" size = {{ x = 100 y = 50 }} {body} }}"
@@ -2313,7 +2313,7 @@ fn list_places_follow_the_layout() {
 
 #[test]
 fn parts_name_their_top_level_child() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
          gridBoxType = { name = \"g\" } \
@@ -2332,7 +2332,7 @@ fn parts_name_their_top_level_child() {
 
 #[test]
 fn a_bound_texture_replaces_the_frame() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let texture = Texture {
         texture: 7,
         uv: [0.5, 0.25, 0.75, 0.5],
@@ -2378,7 +2378,7 @@ fn a_bound_texture_replaces_the_frame() {
 
 #[test]
 fn assets_list_every_named_sprite_and_font() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("background = { spriteType = \"GFX_bg\" } \
          iconType = { name = \"a\" spriteType = \"GFX_odd\" } \
          containerWindowType = { name = \"c\" \
@@ -2431,7 +2431,7 @@ fn assets_list_every_named_sprite_and_font() {
 
 #[test]
 fn list_entries_choose_the_native_factory() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = read(
         b"guiTypes = { containerWindowType = { name = \"c\" } \
           windowType = { name = \"f\" } iconType = { name = \"i\" } }",
@@ -2477,7 +2477,7 @@ const FIXED_ENTRY: &[u8] = b"guiTypes = {
 
 #[test]
 fn a_window_type_entry_lays_out_as_its_fixed_window() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture_with(read(FIXED_ENTRY));
     let entry = resources.gui_type(b"entry").unwrap();
     assert!(matches!(
@@ -2528,7 +2528,7 @@ fn a_window_type_entry_lays_out_as_its_fixed_window() {
 
 #[test]
 fn a_window_type_entry_draws_through_its_instance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture_with(read(FIXED_ENTRY));
     let entry = resources.gui_type(b"entry").unwrap();
     let mut row = Instance::construct(entry, [800, 600], &resources).unwrap();
@@ -2546,7 +2546,7 @@ fn a_window_type_entry_draws_through_its_instance() {
 
 #[test]
 fn a_window_type_root_draws_on_the_views_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::{Bounded, Clock};
     let mut resources = fixture_with(read(
         b"guiTypes = { windowType = { name = \"entry\" size = { x = 60 y = 40 } \
@@ -2610,7 +2610,7 @@ fn a_window_type_root_draws_on_the_views_clock() {
 
 #[test]
 fn a_fixed_window_attaches_as_the_game_attaches() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture_with(read(
         b"guiTypes = { windowType = { name = \"dup\" size = { x = 100 y = 100 }
             iconType = { name = \"a\" spriteType = \"GFX_even\" position = { x = 1 y = 1 } }
@@ -2706,7 +2706,7 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
 
 #[test]
 fn a_fixed_window_scrollbar_draws_only_when_shown() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let bar = |name: &str, hide: &str| {
         format!(
             "scrollbarType = {{ name = \"{name}\" {hide} position = {{ x = 2 y = 3 }}                  size = {{ x = 10 y = 60 }} maxValue = 4 startValue = 1 minValue = 0                  slider = \"slider\" track = \"track\" leftButton = \"down\"                  rightButton = \"up\" buttonType = {{ name = \"up\" spriteType = \"GFX_four\" }}                  buttonType = {{ name = \"down\" spriteType = \"GFX_four\" }}                  guiButtonType = {{ name = \"track\" spriteType = \"GFX_bar3x17\" }}                  guiButtonType = {{ name = \"slider\" spriteType = \"GFX_bar3x17\" }} }}"
@@ -2746,7 +2746,7 @@ fn a_fixed_window_scrollbar_draws_only_when_shown() {
 
 #[test]
 fn a_text_box_name_used_as_a_sprite_is_session_history() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "iconType = { name = \"i\" spriteType = \"label\" }";
     let mut resources = fixture_with(gui(body));
     let window = gui(body);
@@ -2772,7 +2772,7 @@ fn a_text_box_name_used_as_a_sprite_is_session_history() {
 
 #[test]
 fn a_window_type_entry_collects_what_it_draws() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = read(FIXED_ENTRY);
     let entry = document.template("entry").unwrap();
     let assets = assets_in(
@@ -2851,7 +2851,7 @@ impl Resources for Asked<'_> {
 
 #[test]
 fn acquisition_follows_construction() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = read(
         b"guiTypes = { scrollbarType = { name = \"base\" \
           buttonType = { name = \"up\" spriteType = \"GFX_four\" buttonFont = \"Main_14\" \
@@ -2908,7 +2908,7 @@ fn acquisition_follows_construction() {
 
 #[test]
 fn externally_resolved_parts_carry_their_refusals() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let base = |up_position: &str| {
         format!(
             "scrollbarType = {{ name = \"base\" size = {{ x = 10 y = 20 }} minValue = 0 \
@@ -2978,7 +2978,7 @@ fn externally_resolved_parts_carry_their_refusals() {
 
 #[test]
 fn text_icons_are_acquired_and_animations_refused() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut assets = Assets::default();
     let icon = native_text::ICON;
     assets.add_text(&format!("a{icon}pp|2 b{icon}x c"));
@@ -3001,7 +3001,7 @@ fn text_icons_are_acquired_and_animations_refused() {
 
 #[test]
 fn a_grid_background_draws_under_its_items() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layout = laid(
         "size = { width = 100 height = 100 } \
          gridBoxType = { name = \"g\" position = { x = 5 y = 6 } orientation = center \
@@ -3019,7 +3019,7 @@ fn a_grid_background_draws_under_its_items() {
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_text_preserves_bgra_border_and_vertex_constants() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{self as shader, library};
     use std::sync::Arc;
     let source = br#"
@@ -3045,7 +3045,7 @@ PixelShader = { MainCode P [[ float4 main(Out v) : PDX_COLOR { return v.color; }
 Effect Text { VertexShader = V PixelShader = P }
 "#;
     let program =
-        content_reader_core::gui::native::shader::program::read_with(b"custom-text.shader", &|path| {
+        content_reader_gui::gui::native::shader::program::read_with(b"custom-text.shader", &|path| {
             Some(if path == b"custom-text.shader" {
                 source.to_vec()
             } else {
@@ -3120,7 +3120,7 @@ Effect Text { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_samples_sixteen_bit_texels_at_full_precision() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{self as shader, library};
     use content_reader_image::dds;
     use std::sync::Arc;
@@ -3147,7 +3147,7 @@ return float4(c.r > 0.0322575, c.g > 0.01587, c.b > 0.0322575, 1);
 Effect Up { VertexShader = V PixelShader = P }
 "#;
     let program =
-        content_reader_core::gui::native::shader::program::read_with(b"sixteen.shader", &|path| {
+        content_reader_gui::gui::native::shader::program::read_with(b"sixteen.shader", &|path| {
             Some(if path == b"sixteen.shader" {
                 source.to_vec()
             } else {
@@ -3212,7 +3212,7 @@ Effect Up { VertexShader = V PixelShader = P }
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_past_the_dynamic_offset_limit_is_refused_and_counted() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{self as shader, library};
     use std::sync::Arc;
     let _serial = serial();
@@ -3255,7 +3255,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 "#
     );
     let program =
-        content_reader_core::gui::native::shader::program::read_with(b"blocks.shader", &|path| {
+        content_reader_gui::gui::native::shader::program::read_with(b"blocks.shader", &|path| {
             Some(if path == b"blocks.shader" {
                 source.as_bytes().to_vec()
             } else {
@@ -3303,7 +3303,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_reads_past_the_written_sprite_constants_are_refused() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{self as shader, library};
     use std::sync::Arc;
     let effect = |pixel: &str| {
@@ -3332,7 +3332,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 "#
         );
         let program =
-            content_reader_core::gui::native::shader::program::read_with(b"tail.shader", &|path| {
+            content_reader_gui::gui::native::shader::program::read_with(b"tail.shader", &|path| {
                 Some(if path == b"tail.shader" {
                     source.as_bytes().to_vec()
                 } else {
@@ -3465,7 +3465,7 @@ fn compiled_effect(file: &str, source: &str) -> Arc<shader_pipeline::library::Ef
     use shader_pipeline::{self as shader, library};
     use std::sync::Arc;
     let program =
-        content_reader_core::gui::native::shader::program::read_with(file.as_bytes(), &|path| {
+        content_reader_gui::gui::native::shader::program::read_with(file.as_bytes(), &|path| {
             Some(if path == file.as_bytes() {
                 source.as_bytes().to_vec()
             } else {
@@ -3510,7 +3510,7 @@ fn compiled_part(
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_sprite_draws_four_records_as_a_strip() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let effect = compiled_effect(
         "vertex_id.shader",
         r#"
@@ -3727,7 +3727,7 @@ Effect Up {{ VertexShader = V PixelShader = P }}
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_runs_local_vertices_clocks_and_sorted_null_techniques() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{self as shader, library};
     use std::sync::Arc;
     let source = br#"
@@ -3757,7 +3757,7 @@ v.local.z == 1 && clock == 10 && changed == 7 && frame.x > 0.3 && nextFrame.x > 
 Effect Up { VertexShader = V PixelShader = P }
 "#;
     let program =
-        content_reader_core::gui::native::shader::program::read_with(b"mod-owned.shader", &|path| {
+        content_reader_gui::gui::native::shader::program::read_with(b"mod-owned.shader", &|path| {
             Some(if path == b"mod-owned.shader" {
                 source.to_vec()
             } else {
@@ -3822,7 +3822,7 @@ Effect Up { VertexShader = V PixelShader = P }
     );
     let mut absent = batch.quads[0].clone();
     let payload = Arc::make_mut(absent.exact.as_mut().unwrap().native.as_mut().unwrap());
-    let empty = content_reader_core::pdxshader::program::read_with::<Vec<u8>>(b"absent.lua", &|_| None).unwrap();
+    let empty = content_reader_gui::pdxshader::program::read_with::<Vec<u8>>(b"absent.lua", &|_| None).unwrap();
     payload.effect.asset = library::Effect::from_compiled(Arc::new(empty), vec![], vec![]);
     payload.effect.technique = "Up".into();
     absent.layer = 3;
@@ -3928,7 +3928,7 @@ Effect Up { VertexShader = V PixelShader = P }
 
 #[test]
 fn the_shipped_naval_combat_window_lays_out() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = read(
         br#"guiTypes = {
 	containerWindowType = {
@@ -4015,7 +4015,7 @@ fn scrollbar_rects(layout: &Layout) -> Vec<(String, Rect)> {
 
 #[test]
 fn a_container_shows_its_extended_scrollbar() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = format!(
         "guiTypes = {{ {SCROLLBAR} containerWindowType = {{ name = \"w\" \
          size = {{ width = 100 height = 80 }} margin = {{ top = 5 bottom = 5 }} \
@@ -4042,7 +4042,7 @@ fn a_container_shows_its_extended_scrollbar() {
 
 #[test]
 fn overflowing_children_show_and_move_the_scrollbar() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = |icon: &str| {
         format!(
             "guiTypes = {{ {SCROLLBAR} containerWindowType = {{ name = \"w\" \
@@ -4068,7 +4068,7 @@ fn overflowing_children_show_and_move_the_scrollbar() {
 
 #[test]
 fn scrollbar_children_draw_as_constructed() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let child = SCROLLBAR.replace(
         "size = { width = 10 height = 50 }",
         "size = { width = 10 height = 50 } position = { x = 5 y = 6 } \
@@ -4122,7 +4122,7 @@ fn rects_of(parts: &[Part]) -> Vec<Rect> {
 
 #[test]
 fn list_boxes_hold_their_rows() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "listBoxType = { name = \"l\" position = { x = 4 y = 6 } \
                 size = { x = 30 y = 25 } borderSize = { x = 2 y = 9 } \
                 background = \"GFX_cornered\" orientation = \"upper_right\" }";
@@ -4164,7 +4164,7 @@ fn list_boxes_hold_their_rows() {
 
 #[test]
 fn list_box_scrollbars_show_as_their_rows_leave_them() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = |body: &str| {
         read(
             format!("guiTypes = {{ {PLAIN} containerWindowType = {{ name = \"w\" {body} }} }}")
@@ -4232,7 +4232,7 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
 
 #[test]
 fn edit_boxes_drop_downs_browsers_and_curves() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let paths = |body: &str| {
         laid_document(
             &format!("guiTypes = {{ containerWindowType = {{ name = \"w\" {body} }} }}"),
@@ -4321,7 +4321,7 @@ fn edit_boxes_drop_downs_browsers_and_curves() {
 
 #[test]
 fn drop_down_headers_take_the_viewport() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = |hide: &str| {
         format!(
             "guiTypes = {{ containerWindowType = {{ name = \"w\" \
@@ -4363,7 +4363,7 @@ fn scroll_values_snap_as_the_game_snaps_them() {
 
 #[test]
 fn charts_and_cornered_tiles_follow_their_native_state() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let even = resources.sprites["GFX_even"].clone();
     let chart = |kind: SpriteKind| SpriteInfo {
@@ -4415,7 +4415,7 @@ fn charts_and_cornered_tiles_follow_their_native_state() {
 
 #[test]
 fn circular_progress_bars_draw_their_fan() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let circle = SpriteInfo {
         texture: [16, 16],
@@ -4479,7 +4479,7 @@ fn circular_progress_bars_draw_their_fan() {
 
 #[test]
 fn plain_scrollbar_parts_follow_their_constructor() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let run = |templates: &str, bar: &str| {
         laid_document(
             &format!(
@@ -4567,7 +4567,7 @@ fn plain_scrollbar_parts_follow_their_constructor() {
 
 #[test]
 fn text_box_scrollbars_show_when_the_text_overflows() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let run = |key: &str, scrollbar: &str, bind: Option<&str>| {
         laid_document(
             &format!(
@@ -4616,7 +4616,7 @@ fn text_box_scrollbars_show_when_the_text_overflows() {
 
 #[test]
 fn text_box_bound_offsets_move_glyphs_regions_and_scrollbars() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let run = |offset| {
         laid_document(
             &format!(
@@ -4682,7 +4682,7 @@ fn finalized_grid_resources(smooth: bool) -> Fixture {
 
 #[test]
 fn runtime_container_size_keeps_flag_zero_child_geometry() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture_with(read(
         br#"guiTypes = {
         containerWindowType = {
@@ -4756,7 +4756,7 @@ fn runtime_container_size_keeps_flag_zero_child_geometry() {
 
 #[test]
 fn finalized_grid_resolved_offsets_keep_runtime_extents() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = finalized_grid_resources(false);
     let window = resources.gui_type(b"w").unwrap();
     let grid = window.child_named("rows").unwrap();
@@ -4790,7 +4790,7 @@ fn finalized_grid_resolved_offsets_keep_runtime_extents() {
 
 #[test]
 fn scrollbar_regions_keep_native_owner_and_action() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let bar = SCROLLBAR
         .replace("name = \"inc\"", "name = \"more\"")
         .replace("name = \"dec\"", "name = \"less\"");
@@ -4837,7 +4837,7 @@ fn scrollbar_regions_keep_native_owner_and_action() {
 
 #[test]
 fn finalized_grid_extents_synchronize_container_scrolling() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = finalized_grid_resources(false);
     let window = resources.gui_type(b"w").unwrap();
     let grid = window.child_named("rows").unwrap();
@@ -4883,7 +4883,7 @@ fn finalized_grid_extents_synchronize_container_scrolling() {
 
 #[test]
 fn native_scroll_inputs_keep_current_and_target_distinct() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = finalized_grid_resources(true);
     let window = resources.gui_type(b"w").unwrap();
     let grid = window.child_named("rows").unwrap();
@@ -4964,7 +4964,7 @@ fn native_scroll_inputs_keep_current_and_target_distinct() {
 
 #[test]
 fn finalized_grid_scrolling_runs_on_the_instance_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = finalized_grid_resources(true);
     let window = resources.gui_type(b"w").unwrap();
     let grid = window.child_named("rows").unwrap();
@@ -5020,7 +5020,7 @@ fn finalized_grid_scrolling_runs_on_the_instance_clock() {
 
 #[test]
 fn container_scrollbars_move_their_content() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let bar = |extra: &str| {
         SCROLLBAR.replace(
             "size = { width = 10 height = 50 }",
@@ -5097,7 +5097,7 @@ fn container_scrollbars_move_their_content() {
 
 #[test]
 fn overflow_boxes_measure_each_kind() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let shows = |child: &str| {
         let layout = laid_document(
             &format!(
@@ -5141,7 +5141,7 @@ fn overflow_boxes_measure_each_kind() {
 
 #[test]
 fn a_turned_cornered_tile_draws_unturned() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let turned = parts("iconType = { name = \"c\" spriteType = \"GFX_cornered\" rotation = 30 }");
     let still = parts("iconType = { name = \"c\" spriteType = \"GFX_cornered\" }");
     assert_eq!(turned, still);
@@ -5149,7 +5149,7 @@ fn a_turned_cornered_tile_draws_unturned() {
 
 #[test]
 fn text_bakes_submit_each_frames_glyphs_once() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let icon = native_text::ICON;
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_text").unwrap().texture = [9000, 20];
@@ -5175,7 +5175,7 @@ fn text_bakes_submit_each_frames_glyphs_once() {
 
 #[test]
 fn text_sprites_follow_the_setter_and_measure_their_bake() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("size = { width = 100 height = 50 } \
          buttonType = { name = \"b\" spriteType = \"GFX_even\" font = \"Main_14\" \
          text = \"MOD_KEY\" position = { x = 5 y = 6 } orientation = center rotation = 1.0 } \
@@ -5217,7 +5217,7 @@ fn text_sprites_follow_the_setter_and_measure_their_bake() {
 
 #[test]
 fn text_sprites_bake_as_the_game_bakes_them() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let baked = laid(
         "buttonType = { name = \"b\" spriteType = \"GFX_text\" font = \"Main_14\" \
          text = \"MOD_KEY\" position = { x = 5 y = 6 } }",
@@ -5289,9 +5289,9 @@ fn text_sprites_bake_as_the_game_bakes_them() {
 
 #[test]
 fn animation_records_run_on_the_instance_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let record = |kind: i32, looping: bool| AnimationRecord {
-        data: content_reader_core::gui::native::sprites::AnimationData {
+        data: content_reader_gui::gui::native::sprites::AnimationData {
             kind,
             looping,
             ..Default::default()
@@ -5332,7 +5332,7 @@ fn animation_records_run_on_the_instance_clock() {
 
 #[test]
 fn a_map_icon_window_moves_over_the_map_point() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 20 height = 20 } show_animation_type = linear \
@@ -5393,7 +5393,7 @@ fn text_bytes_decode_as_the_game_converts_them() {
 
 #[test]
 fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("size = { width = 100 height = 100 } \
          iconType = { name = \"own\" spriteType = \"GFX_even\" } \
@@ -5439,7 +5439,7 @@ fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
 
 #[test]
 fn a_rejected_show_changes_nothing() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 20 height = 20 } fade_type = linear fade_time = 1000 \
@@ -5475,7 +5475,7 @@ fn a_rejected_show_changes_nothing() {
 
 #[test]
 fn an_immediate_hide_and_a_show_reach_every_child() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("size = { width = 100 height = 100 } \
          iconType = { name = \"a\" spriteType = \"GFX_even\" } \
          iconType = { name = \"b\" spriteType = \"GFX_even\" hide = yes } \
@@ -5521,7 +5521,7 @@ fn an_immediate_hide_and_a_show_reach_every_child() {
 
 #[test]
 fn drawable_clocks_run_on_the_instance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     resources.sprites.insert(
         "GFX_still",
@@ -5563,7 +5563,7 @@ fn drawable_clocks_run_on_the_instance() {
 
 #[test]
 fn a_looping_tile_pulses_on_the_instance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let tile = |rate: f32| SpriteInfo {
         texture: [12, 12],
@@ -5597,13 +5597,13 @@ fn a_looping_tile_pulses_on_the_instance() {
 
 #[test]
 fn a_code_check_restarts_the_drawables_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_four").unwrap().animated = true;
     resources.animations.insert(
         "GFX_four",
         vec![AnimationRecord {
-            data: content_reader_core::gui::native::sprites::AnimationData {
+            data: content_reader_gui::gui::native::sprites::AnimationData {
                 kind: 4,
                 looping: true,
                 trigger_frames: 1 << 2,
@@ -5645,7 +5645,7 @@ fn a_code_check_restarts_the_drawables_clock() {
 
 #[test]
 fn an_instance_is_active_while_anything_runs() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 10 height = 10 } show_animation_type = linear \
@@ -5666,7 +5666,7 @@ fn an_instance_is_active_while_anything_runs() {
 
 #[test]
 fn a_pool_reuses_released_windows_with_their_state() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 } \
          instantTextBoxType = { name = \"t\" font = \"Main_14\" maxWidth = 40 maxHeight = 20 }");
@@ -5725,7 +5725,7 @@ fn a_pool_reuses_released_windows_with_their_state() {
 
 #[test]
 fn an_icon_leaves_and_reenters_the_viewport() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("size = { width = 10 height = 10 } \
          OverlappingElementsBoxType = { name = \"l\" size = { width = 10 height = 10 } }");
     let window = gui.template("w").unwrap();
@@ -5780,7 +5780,7 @@ fn an_icon_leaves_and_reenters_the_viewport() {
 
 #[test]
 fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 10 height = 10 } fade_type = linear fade_time = 100 \
@@ -5825,7 +5825,7 @@ fn a_freed_fading_window_reports_its_lists_when_the_fade_ends() {
 
 #[test]
 fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 10 height = 10 } fade_type = linear fade_time = 100 \
@@ -5878,7 +5878,7 @@ fn the_visible_list_holds_the_live_icons_whose_window_is_visible() {
 
 #[test]
 fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut withheld = Withheld::default();
     withheld.refuse('a', Unknown::Update, "an operand".into());
     assert_eq!(withheld.why(&'a'), Some("an operand"));
@@ -5925,7 +5925,7 @@ fn a_refusal_stands_until_what_it_left_unknown_is_written_again() {
 
 #[test]
 fn the_pass_walks_the_live_array_as_it_stood() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();
     let resources = fixture();
@@ -5954,7 +5954,7 @@ fn the_pass_walks_the_live_array_as_it_stood() {
 
 #[test]
 fn a_pool_exhausts_while_its_icons_are_off_screen() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();
@@ -5986,7 +5986,7 @@ fn a_pool_exhausts_while_its_icons_are_off_screen() {
 
 #[test]
 fn a_window_takes_an_opacity_set_on_it() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 20 height = 20 } fade_type = linear fade_time = 1000 \
@@ -6028,7 +6028,7 @@ fn a_window_takes_an_opacity_set_on_it() {
 
 #[test]
 fn a_window_type_root_shows_and_hides_its_children() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = read(
         b"guiTypes = { windowType = { name = \"f\" size = { width = 40 height = 20 } \
           iconType = { name = \"a\" spriteType = \"GFX_even\" } \
@@ -6068,7 +6068,7 @@ fn a_window_type_root_shows_and_hides_its_children() {
 
 #[test]
 fn a_controls_show_reaches_its_parts() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 100 height = 100 } scrollbarType = { name = \"bar\" \
@@ -6140,7 +6140,7 @@ fn sprites_at(layout: &Layout, path: &str) -> Vec<(Vec<u8>, i32, f32)> {
 
 #[test]
 fn inherited_scrollbar_parts_run_on_their_own_clocks() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let bar = |name: &str, x: i32| {
         format!(
             "scrollbarType = {{ name = \"{name}\" position = {{ x = {x} y = 3 }} \
@@ -6198,7 +6198,7 @@ fn inherited_scrollbar_parts_run_on_their_own_clocks() {
 
 #[test]
 fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("size = { width = 100 height = 100 } \
          listBoxType = { name = \"l\" position = { x = 4 y = 6 } size = { x = 30 y = 25 } \
@@ -6263,7 +6263,7 @@ fn list_box_backgrounds_and_window_scrollbars_run_on_the_instance() {
 
 #[test]
 fn a_fallback_sprite_runs_on_the_instance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let animated = resources.sprites["GFX_animated"].clone();
     resources
@@ -6307,7 +6307,7 @@ fn a_fallback_sprite_runs_on_the_instance() {
 
 #[test]
 fn state_effects_run_on_the_graphics_clock_for_as_long_as_they_change() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("checkboxType = { name = \"c\" spriteType = \"GFX_four\" } \
          checkboxType = { name = \"n\" spriteType = \"GFX_no_down\" \
@@ -6372,7 +6372,7 @@ fn clocked_icon(effect: Effect, seconds: usize) -> (f32, Vec<(bool, f32, f32)>) 
 
 #[test]
 fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::{Bounded, Clock};
     let effect = |pixel| clocked_effect("Up", pixel);
     let (first, steps) = clocked_icon(
@@ -6425,7 +6425,7 @@ fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
 
 #[test]
 fn a_descending_step_keeps_its_instance_active_at_its_edge() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::{Bounded, Clock};
     let mut resources = fixture();
     resources.sprites.get_mut("GFX_even").unwrap().effect = Ok(clocked_effect(
@@ -6463,7 +6463,7 @@ fn a_descending_step_keeps_its_instance_active_at_its_edge() {
 #[test]
 #[ignore = "requires the shader compiler"]
 fn compiled_programs_reading_time_keep_their_instance_active() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{self as shader, library};
     use std::sync::Arc;
     let effect = |pixel: &str| {
@@ -6475,7 +6475,7 @@ fn compiled_programs_reading_time_keep_their_instance_active() {
              PixelShader = {{ MainCode P [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return {pixel}; }} ]] }}\n\
              Effect Up {{ VertexShader = V PixelShader = P }}\n"
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
             Some(if path.ends_with(b".shader") {
                 source.as_bytes().to_vec()
             } else {
@@ -6510,7 +6510,7 @@ fn compiled_programs_reading_time_keep_their_instance_active() {
 
 #[test]
 fn a_missing_technique_changes_for_as_long_as_the_previous_program() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let tree = gui("checkboxType = { name = \"c\" spriteType = \"GFX_four\" } \
          checkboxType = { name = \"n\" spriteType = \"GFX_no_down\" \
@@ -6563,7 +6563,7 @@ fn clocked_effect(techniques: &str, clock: shader_pipeline::clock::Clock) -> Eff
         .split(' ')
         .map(|name| format!("Effect {name} {{ VertexShader = V PixelShader = P }}\n"))
         .collect();
-    let program = content_reader_core::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"gfx/FX/mod.lua", &|path| {
         Some(if path.ends_with(b".shader") {
             source.as_bytes().to_vec()
         } else {
@@ -6605,7 +6605,7 @@ fn clocked_effect(techniques: &str, clock: shader_pipeline::clock::Clock) -> Eff
 
 #[test]
 fn a_missing_compiled_technique_runs_on_the_previous_program() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::{Bounded, Clock};
     let run = |text: Clock| {
         let mut resources = fixture();
@@ -6679,7 +6679,7 @@ fn a_missing_compiled_technique_runs_on_the_previous_program() {
 
 #[test]
 fn a_kept_draw_after_a_refused_one_does_not_keep_frames_coming() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::{clock::Clock, library};
     let mut resources = fixture();
     resources.text = Some(clocked_effect(
@@ -6727,7 +6727,7 @@ fn a_kept_draw_after_a_refused_one_does_not_keep_frames_coming() {
 
 #[test]
 fn a_failed_replacement_keeps_the_retained_drawable() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("iconType = { name = \"type\" spriteType = \"GFX_even\" }");
     let window = gui.template("w").unwrap();
@@ -6802,7 +6802,7 @@ fn a_failed_replacement_keeps_the_retained_drawable() {
 
 #[test]
 fn a_drop_down_headers_fade_runs_on_the_instance() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let drop = read(
         b"guiTypes = { containerWindowType = { name = \"w\" \
@@ -6851,7 +6851,7 @@ fn a_drop_down_headers_fade_runs_on_the_instance() {
 
 #[test]
 fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::{Bounded, Clock};
     let fading = || {
         clocked_effect(
@@ -6919,10 +6919,10 @@ fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
 
 #[test]
 fn a_replaced_drawable_starts_its_own_history() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let record = |trigger_frames: u32| AnimationRecord {
-        data: content_reader_core::gui::native::sprites::AnimationData {
+        data: content_reader_gui::gui::native::sprites::AnimationData {
             kind: 4,
             looping: true,
             trigger_frames,
@@ -7015,7 +7015,7 @@ fn a_replaced_drawable_starts_its_own_history() {
 
 #[test]
 fn a_play_reaches_the_drawable_its_earlier_calls_left() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let still = SpriteInfo {
         kind: SpriteKind::FrameAnimated {
@@ -7083,7 +7083,7 @@ fn a_play_reaches_the_drawable_its_earlier_calls_left() {
 
 #[test]
 fn a_compiled_frame_animation_plays_only_the_drawable_play_reached() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use shader_pipeline::clock::Clock;
     let mut resources = fixture();
     let still = SpriteInfo {
@@ -7142,7 +7142,7 @@ fn a_compiled_frame_animation_plays_only_the_drawable_play_reached() {
 
 #[test]
 fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let animated = |pause: f32| SpriteKind::FrameAnimated {
         seconds_per_frame: 0.25,
         looping: true,
@@ -7188,7 +7188,7 @@ fn a_frame_animation_whose_wrap_never_ends_is_a_hang() {
 
 #[test]
 fn several_instances_tick_in_the_games_phase_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let icons = gui(
         "size = { width = 20 height = 20 } fade_type = linear fade_time = 1000 \
@@ -7300,7 +7300,7 @@ fn text_bar_slider(instance: &Instance, window: &Element, resources: &Fixture) -
 
 #[test]
 fn a_text_write_refreshes_its_scrollbar_in_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = text_box_window("MOD_KEY", "GFX_animated", "maxValue = 1");
     let window = resources.gui_type(b"w").unwrap();
     let text = window.find(Kind::TextBox, "t").unwrap();
@@ -7359,7 +7359,7 @@ fn a_text_write_refreshes_its_scrollbar_in_order() {
 
 #[test]
 fn resolved_flag_text_setter_keeps_native_scroll_range() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = text_box_window("MOD_KEY", "GFX_bar3x17", "maxValue = 1");
     let window = resources.gui_type(b"w").unwrap();
     let text = window.find(Kind::TextBox, "t").unwrap();
@@ -7378,7 +7378,7 @@ fn resolved_flag_text_setter_keeps_native_scroll_range() {
 
 #[test]
 fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = text_box_window(
         "MOD_LONG",
         "GFX_bar3x17",
@@ -7417,7 +7417,7 @@ fn a_text_box_scrollbar_keeps_the_clamp_of_a_smaller_range() {
 
 #[test]
 fn retained_result_text_scroll_moves_glyphs_by_the_native_line_step() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = text_box_window(
         "MOD_KEY",
         "GFX_bar3x17",
@@ -7490,7 +7490,7 @@ fn retained_result_text_scroll_moves_glyphs_by_the_native_line_step() {
 
 #[test]
 fn calls_prepared_off_the_view_apply_once() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = gui(
         "size = { width = 10 height = 10 } iconType = { name = \"a\" spriteType = \"GFX_even\" }",
     );
@@ -7538,7 +7538,7 @@ fn calls_prepared_off_the_view_apply_once() {
 
 #[test]
 fn a_root_is_built_in_the_viewport() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui(
         "size = { width = 50% height = 20 } iconType = { name = \"a\" spriteType = \"GFX_even\" }",
@@ -7557,7 +7557,7 @@ fn a_root_is_built_in_the_viewport() {
 
 #[test]
 fn alpha_hover_keeps_an_out_of_range_selected_frame_offset() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     resources.physical = Some([800, 600]);
     resources.add_sprite("strip", [8, 4], 2);
@@ -7592,7 +7592,7 @@ fn alpha_hover_keeps_an_out_of_range_selected_frame_offset() {
 
 #[test]
 fn normalized_progress_keeps_large_step_rounding_without_an_integer_reclamp() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = fixture();
     let steps = 16_777_215;
     let bar = resources.sprites.get_mut("GFX_bar").unwrap();
@@ -7653,7 +7653,7 @@ fn a_dragged_slider_gives_its_share_of_the_range() {
 
 #[test]
 fn a_clip_the_code_sets_bounds_a_windows_children() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let body = "size = { width = 40 height = 40 } \
          containerWindowType = { name = \"c\" \
             iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 30 y = 5 } } }";
@@ -7669,7 +7669,7 @@ fn a_clip_the_code_sets_bounds_a_windows_children() {
 
 #[test]
 fn adjacency_rule_pool_admits_64_icons_before_first_growth() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();
@@ -7715,7 +7715,7 @@ fn adjacency_rule_pool_admits_64_icons_before_first_growth() {
 
 #[test]
 fn unknown_build_refuses_map_icon_pool_capacity_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = fixture();
     let gui = gui("size = { width = 10 height = 10 }");
     let window = gui.template("w").unwrap();

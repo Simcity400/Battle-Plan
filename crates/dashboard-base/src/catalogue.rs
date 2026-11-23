@@ -108,7 +108,7 @@ fn load_with(
     source: &Source,
     options: &ContentOptions,
     settings: &Settings,
-    resolved: impl Fn() -> io::Result<Arc<content_reader_core::content::ResolvedContent>>,
+    resolved: impl Fn() -> io::Result<Arc<content_reader_layers::content::ResolvedContent>>,
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
     keeping: Keeping,
 ) -> io::Result<Catalogue> {
@@ -145,7 +145,7 @@ fn load_with(
                     &options.options.cache_dir,
                     &[],
                 ),
-                || content_reader_core::content::diagnostics::capture(read_sprites),
+                || content_reader_layers::content::diagnostics::capture(read_sprites),
             );
             noted.credit();
             sprites
@@ -166,7 +166,7 @@ fn load_with(
 }
 
 pub fn read_scripted_content(
-    content: Arc<content_reader_core::content::ResolvedContent>,
+    content: Arc<content_reader_layers::content::ResolvedContent>,
     recorded_language: String,
 ) -> Result<ScriptedContent, String> {
     ScriptedContent::read(content, recorded_language)
@@ -272,11 +272,11 @@ pub fn present<T, E: std::fmt::Display>(
     #[cfg(any(test, feature = "test-support"))]
     PRESENTED.with(|count| count.set(count.get() + 1));
     Drawn::new(|| {
-        if std::ptr::eq(admitted, recorded) || content_reader_core::content::is_strict() {
+        if std::ptr::eq(admitted, recorded) || content_reader_layers::content::is_strict() {
             return draw(admitted);
         }
         let (shown, noted) =
-            capture_isolated(|| content_reader_core::content::strict(|| draw(admitted)));
+            capture_isolated(|| content_reader_layers::content::strict(|| draw(admitted)));
         match shown {
             Ok(value) => {
                 credit(&noted);
@@ -285,7 +285,7 @@ pub fn present<T, E: std::fmt::Display>(
             Err(reason) => {
                 let drawn = draw(recorded);
                 if drawn.is_ok() {
-                    content_reader_core::content::credit_overlay_refusals(
+                    content_reader_layers::content::credit_overlay_refusals(
                         &std::collections::BTreeSet::from([format!("{what} ({reason})")]),
                     );
                 }
@@ -320,18 +320,18 @@ mod present_tests {
         select(&source, &mut options, &["art"]);
         let (admitted, recorded) = presenting(&source, Some(&options)).unwrap().unwrap();
         let note = |text: &str| {
-            content_reader_core::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
+            content_reader_layers::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
                 text.to_owned(),
             ]))
         };
         let (drawn, line) = fallback_line(|| {
             present("the icon", &admitted, &recorded, |cat| {
                 if std::ptr::eq(cat, &*admitted) {
-                    assert!(content_reader_core::content::is_strict());
+                    assert!(content_reader_layers::content::is_strict());
                     note("discarded selector note");
                     Err("the mod's sprite does not load".to_owned())
                 } else {
-                    assert!(!content_reader_core::content::is_strict());
+                    assert!(!content_reader_layers::content::is_strict());
                     Ok::<_, String>(7)
                 }
             })
@@ -371,7 +371,7 @@ mod present_tests {
                 &plain,
                 |cat| {
                     attempts.set(attempts.get() + 1);
-                    assert!(!content_reader_core::content::is_strict());
+                    assert!(!content_reader_layers::content::is_strict());
                     assert!(std::ptr::eq(cat, &*plain));
                     Ok::<_, String>(1)
                 },
@@ -423,7 +423,7 @@ mod present_tests {
                 cat,
                 |drawing| {
                     if std::ptr::eq(drawing, &*shown) {
-                        assert!(content_reader_core::content::is_strict());
+                        assert!(content_reader_layers::content::is_strict());
                         Err("the mod's inner sprite does not load".to_owned())
                     } else {
                         Ok::<_, String>("recorded inner")
@@ -625,7 +625,7 @@ mod loader_tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{records, source};
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use std::sync::atomic::AtomicBool;
         let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
             ("hoi4.exe", "test"),
@@ -712,7 +712,7 @@ mod loader_tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{records, source};
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use std::sync::{atomic::AtomicBool, mpsc};
         let files: &[(&str, &str)] = &[
             ("hoi4.exe", "test"),
@@ -790,11 +790,11 @@ mod loader_tests {
     }
 }
 
-pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<content_reader_core::equipment::Database>, String> {
+pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<content_reader_key_names::equipment::Database>, String> {
     catalogue
         .content
         .layers
-        .derived::<CachedResult<content_reader_core::equipment::Database>>()
-        .get_or_init(|| content_reader_core::equipment::Database::load_complete(&catalogue.content.layers))
+        .derived::<CachedResult<content_reader_key_names::equipment::Database>>()
+        .get_or_init(|| content_reader_key_names::equipment::Database::load_complete(&catalogue.content.layers))
         .map_err(|error| error.to_string())
 }

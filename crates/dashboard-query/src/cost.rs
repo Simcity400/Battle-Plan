@@ -1,5 +1,5 @@
 
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::TableId;
 use std::{cell::Cell, io, time::Instant};
 
@@ -40,12 +40,12 @@ pub fn take() -> u64 {
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
     declared(table)?;
-    storage(|| replay::lanes::lifetimes(recording, run, table))
+    storage(|| replay_lanes::lanes::lifetimes(recording, run, table))
 }
 
 pub fn presences(recording: &Recording, run: u32, table: TableId, keys: (u128, u128), from: i64, to: i64) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
     declared(table)?;
-    storage(|| replay::lanes::presences(recording, run, table, keys, from, to))
+    storage(|| replay_lanes::lanes::presences(recording, run, table, keys, from, to))
 }
 
 pub fn declared(table: TableId) -> io::Result<()> {

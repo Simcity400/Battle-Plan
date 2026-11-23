@@ -115,6 +115,7 @@ group = "windows"
 tier = "check"
 toolchain = "rust"
 inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "vendor/*/Cargo.toml", "tools/check-feature-unification.py"]
+ci-only = true
 command = ["{python}", "tools/check-feature-unification.py"]
 
 [[job]]
@@ -130,7 +131,7 @@ name = "tool-tests"
 group = "windows"
 tier = "check"
 toolchain = "tools"
-inputs = ["tools/**"]
+inputs = ["tools/**", ".github/workflows/**"]
 ci-only = true
 unset = ["WARM_TARGET_END_TO_END"]
 command = ["{python}", "tools/test-python.py"]
@@ -190,7 +191,7 @@ dependents = false
 shared = ["tools/check-clippy.py"]
 command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
 ci-only = true
-shards = 2
+shards = 1
 warm = ["cargo", "clippy", "--workspace", "--all-targets", "--keep-going", "--no-deps"]
 
 [[job]]
@@ -198,7 +199,8 @@ name = "fuzz-build"
 group = "rust"
 tier = "check"
 toolchain = "rust"
-inputs = ["fuzz/**", "crates/replay/**", "crates/replay-columnar/**", "crates/replay-data/**", "crates/replay-frame/**", "crates/dashboard-base/**"]
+inputs = ["fuzz/**", "crates/replay-files/**"]
+manifest = "fuzz/Cargo.toml"
 command = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
 ci-only = true
 warm = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]

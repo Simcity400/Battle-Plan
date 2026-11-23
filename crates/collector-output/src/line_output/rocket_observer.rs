@@ -82,7 +82,8 @@ impl Default for Context {
 fn retain() {
     RETAINED.store(true, Ordering::SeqCst);
     ENABLED.store(false, Ordering::SeqCst);
-    invalidate();
+    // SAFETY: Rocket observer hook failure invalidates the active session's line-output observation.
+    unsafe { invalidate() };
 }
 pub(super) fn retention_required() -> bool {
     RETAINED.load(Ordering::SeqCst)
@@ -278,7 +279,8 @@ unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
                 if rocket_source(context.kind, context.caller) {
                     WORLD_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
-                invalidate();
+                // SAFETY: Rocket observer hook failure invalidates the active session's line-output observation.
+    unsafe { invalidate() };
             }
             PENDING.set(NOTHING_PENDING);
             if context.scope_owned && SCOPE.try_with(|scope| scope.set(Scope::default())).is_err() {

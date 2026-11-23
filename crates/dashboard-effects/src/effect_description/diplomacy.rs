@@ -201,8 +201,8 @@ impl Renderer<'_, '_, '_> {
             .names
             .iter()
             .filter(|name| {
-                content_reader_core::tokens::Token::c_str(name)
-                    == content_reader_core::tokens::Token::c_str(goal.as_bytes())
+                content_reader_parser::tokens::Token::c_str(name)
+                    == content_reader_parser::tokens::Token::c_str(goal.as_bytes())
             })
             .count()
             > 1;
@@ -260,8 +260,8 @@ impl Renderer<'_, '_, '_> {
                 .token(owned.goal_type)
                 .map_err(|why| why.to_string())?
                 .ok_or("create_wargoal goal type spelling is not recorded")?;
-            if content_reader_core::tokens::Token::c_str(spelling)
-                != content_reader_core::tokens::Token::c_str(goal.as_bytes())
+            if content_reader_parser::tokens::Token::c_str(spelling)
+                != content_reader_parser::tokens::Token::c_str(goal.as_bytes())
             {
                 continue;
             }
@@ -541,7 +541,7 @@ impl Renderer<'_, '_, '_> {
         };
         let name = self.localised(label, &[], scopes, false)?;
         let country = self.country_name(target, true)?;
-        let active = content_reader_core::parser::read_bool_field(children(item), "active", true);
+        let active = content_reader_parser::parser::read_bool_field(children(item), "active", true);
         self.line(
             if active {
                 b"EFFECT_ENACT_RELATION"
@@ -564,7 +564,7 @@ impl Renderer<'_, '_, '_> {
                 names.push(self.country_name(0, false)?);
                 continue;
             };
-            let value = content_reader_core::parser::c_string(scalar_operand(operand)?);
+            let value = content_reader_parser::parser::c_string(scalar_operand(operand)?);
             if scope_selector(operand).is_some_and(|selector| {
                 !matches!(
                     selector,
@@ -592,7 +592,7 @@ impl Renderer<'_, '_, '_> {
                 let text = std::str::from_utf8(value)
                     .map_err(|_| format!("{name} scope links are not UTF-8"))?;
                 let parsed =
-                    content_reader_core::scope::parse(text, false, self.context.text.recorded());
+                    content_reader_script::scope::parse(text, false, self.context.text.recorded());
                 let selected = self
                     .evaluator()?
                     .enter_scope(&parsed, scopes)
@@ -612,7 +612,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 let text = std::str::from_utf8(value)
                     .map_err(|_| format!("{name} country specifier is not UTF-8"))?;
-                if !content_reader_core::scope::Names::is_country(self.context.text.recorded(), text) {
+                if !content_reader_script::scope::Names::is_country(self.context.text.recorded(), text) {
                     return Err(format!(
                         "{name} country specifier {text} is not defined by the content stack"
                     ));
@@ -644,7 +644,7 @@ impl Renderer<'_, '_, '_> {
             && item
                 .value
                 .scalar()
-                .and_then(content_reader_core::parser::read_bool)
+                .and_then(content_reader_parser::parser::read_bool)
                 .unwrap_or(false);
         let name = self.state_name(state)?;
         self.line(
@@ -703,9 +703,9 @@ impl Renderer<'_, '_, '_> {
         let mut states = self.border_states(item, scopes)?;
         if finalize {
             let attacker =
-                content_reader_core::parser::read_bool_field(children(item), "attacker_win", false);
+                content_reader_parser::parser::read_bool_field(children(item), "attacker_win", false);
             let defender =
-                content_reader_core::parser::read_bool_field(children(item), "defender_win", false);
+                content_reader_parser::parser::read_bool_field(children(item), "defender_win", false);
             if !attacker && !defender {
                 return Ok(String::new());
             }
@@ -764,7 +764,7 @@ impl Renderer<'_, '_, '_> {
             )?);
         }
         if field(children(item), "change_state_after_war").is_some() {
-            let enabled = content_reader_core::parser::read_bool_field(
+            let enabled = content_reader_parser::parser::read_bool_field(
                 children(item),
                 "change_state_after_war",
                 false,
@@ -964,7 +964,7 @@ impl Renderer<'_, '_, '_> {
         let id = state
             .map(scalar_operand)
             .transpose()?
-            .map(content_reader_core::parser::c_string)
+            .map(content_reader_parser::parser::c_string)
             .unwrap_or_default();
         if release && id.is_empty() {
             return Ok(String::new());
@@ -1060,7 +1060,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let name = self.localised(
-            content_reader_core::parser::c_string(scalar_operand(item)?),
+            content_reader_parser::parser::c_string(scalar_operand(item)?),
             &[],
             scopes,
             false,
@@ -1320,7 +1320,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let unlock = content_reader_core::parser::c_string(scalar_operand(item)?) == b"yes";
+        let unlock = content_reader_parser::parser::c_string(scalar_operand(item)?) == b"yes";
         let name = self.localised(b"FACTION_ACCESS_TAB_MILITARY", &[], scopes, false)?;
         self.localised(
             if unlock {

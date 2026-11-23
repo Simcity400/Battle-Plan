@@ -1,3 +1,4 @@
+use crate::land_events::{LIVE, Observer};
 use crate::land_events::Drain;
 use collector_primitives::table_capture::{grow_capacity, grow_vec};
 use engine_allocation as allocation;
@@ -28,8 +29,12 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, hour: i32, reason: &'static str) {
-        self.drained = Some(crate::land_events::lost_drain(hour, reason));
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live land-event observation.
+    pub unsafe fn fail(&mut self, hour: i32, reason: &'static str) {
+        // SAFETY: Caller owns the capture or publication failure path for land events.
+        self.drained = Some(unsafe { crate::land_events::lost_drain(hour, reason) });
     }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
@@ -43,29 +48,49 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.words.capacity() * size_of::<u64>()
     }
-    pub fn grow(&mut self, c: &mut Capacities) {
-        crate::land_events::prepare();
-        c.words = c.words.max(crate::land_events::capacity());
+    /// # Safety
+    /// Caller holds exclusive `&mut` access to this frame while land-event storage stays live for
+    /// the active session (or an isolated test) and teardown is excluded. Different frames may grow
+    /// concurrently across spool and sizing threads because `land_events::prepare` locks `LOG_SWAP`.
+    pub unsafe fn grow(&mut self, c: &mut Capacities) {
+        self.grow_from(&LIVE, c);
+    }
+
+    pub(crate) fn grow_from(&mut self, observer: &Observer, c: &mut Capacities) {
+        observer.prepare();
+        c.words = c.words.max(observer.capacity());
         if let Some(d) = self.drained {
             grow_capacity(&mut c.words, d.required);
         }
         grow_vec(&mut self.words, c.words);
     }
-    pub fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
+    /// # Safety
+    /// Only the admitted hour's sole observer boundary (or an isolated test owning land-event
+    /// observation) may drain the shared land-event log and install offered storage while storage
+    /// remains live and teardown is excluded.
+    pub unsafe fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
+        self.drain_from(&LIVE, hour, invalidating)
+    }
+
+    pub(crate) fn drain_from(&mut self, observer: &Observer, hour: i32, invalidating: bool) -> u64 {
         let start = collector_primitives::clock::qpc();
-        self.drained = Some(crate::land_events::drain(
-            &mut self.words,
-            hour,
-            invalidating,
-        ));
-        crate::land_events::install_offered();
+        self.drained = Some(observer.drain(&mut self.words, hour, invalidating));
+        observer.install_offered();
         collector_primitives::clock::qpc()
             .saturating_sub(start)
             .max(0) as u64
     }
-    pub fn lost_casualty_reads(&mut self, count: u64) {
+
+    /// # Safety
+    /// Caller must hold hourly capture admission for the active session (or an isolated test
+    /// owning land-event observation) so global casualty-read loss accounting belongs to this pass.
+    pub unsafe fn lost_casualty_reads(&mut self, count: u64) {
+        self.lost_casualty_reads_from(&LIVE, count);
+    }
+
+    pub(crate) fn lost_casualty_reads_from(&mut self, observer: &Observer, count: u64) {
         if count != 0 {
-            let lost = crate::land_events::lost_casualty_reads(count);
+            let lost = observer.lost_casualty_reads(count);
             if let Some(drain) = &mut self.drained {
                 drain.lost = drain.lost.max(lost);
             }
@@ -599,21 +624,20 @@ mod tests {
     }
     #[test]
     fn land_event_buffers_grow_past_the_former_cap_in_the_drain() {
-        let _guard = test_support::own();
-        test_support::reset_with_words(0);
+        let fixture = test_support::Fixture::new(0);
         let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.drain(10, true);
-        captured.drain(11, false);
+        captured.drain_from(&fixture.observer, 10, true);
+        captured.drain_from(&fixture.observer, 11, false);
         let payload = vec![0; (1 << 20) + 17];
-        let lost = test_support::thread_lost();
-        test_support::append_record(&payload);
-        captured.drain(12, false);
+        let lost = fixture.lost();
+        fixture.append_record(&payload);
+        captured.drain_from(&fixture.observer, 12, false);
         let drained = captured.drained.unwrap();
         assert!(drained.complete, "{}", drained.reason);
         assert_eq!(drained.words, payload.len() + 1);
         assert!(captured.words.len() > payload.len());
-        assert_eq!(test_support::thread_lost(), lost);
-        test_support::disable();
+        assert_eq!(fixture.lost(), lost);
+        fixture.stop();
     }
     fn encode_land(
         encoder: &mut replay_frame::frame::FrameEncoder,
@@ -644,21 +668,20 @@ mod tests {
     }
     #[test]
     fn refresh_full_read_keeps_actual_land_drain_epoch_and_events() {
-        let _guard = test_support::own();
-        test_support::reset();
+        let fixture = test_support::Fixture::new(1024);
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut decoder = replay_frame::frame::FrameDecoder::new();
-        captured.drain(10, true);
+        captured.drain_from(&fixture.observer, 10, true);
         let first = captured.tables();
         let epoch = complete_coverage(&first).epoch;
         assert!(!complete_coverage(&first).complete);
         decoder
             .advance(&encode_land(&mut encoder, 10, first, false))
             .unwrap();
-        test_support::append_record(&[7, 11, 17, 4999, 1500, 9, 10, 41, 2, 42, 42]);
+        fixture.append_record(&[7, 11, 17, 4999, 1500, 9, 10, 41, 2, 42, 42]);
         captured.reset();
-        captured.drain(11, false);
+        captured.drain_from(&fixture.observer, 11, false);
         let refreshed = captured.tables();
         let coverage = complete_coverage(&refreshed);
         assert_eq!(coverage.epoch, epoch);
@@ -689,20 +712,19 @@ mod tests {
             &*decoded.tables[TableId::DestroyedDivisions.index()],
             &expected
         );
-        test_support::disable();
+        fixture.stop();
     }
     #[test]
     fn actual_land_drain_load_and_gap_invalidate_but_next_hour_recovers() {
-        let _guard = test_support::own();
-        test_support::reset();
+        let fixture = test_support::Fixture::new(1024);
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
-        captured.drain(10, true);
-        captured.drain(11, false);
+        captured.drain_from(&fixture.observer, 10, true);
+        captured.drain_from(&fixture.observer, 11, false);
         let initial = complete_coverage(&captured.tables()).epoch;
         for (hour, invalidating) in [(20, true), (30, false)] {
-            test_support::append_record(&[7, hour as u64, 17, 1, 2, 9, 10, 41, 0]);
+            fixture.append_record(&[7, hour as u64, 17, 1, 2, 9, 10, 41, 0]);
             captured.reset();
-            captured.drain(hour, invalidating);
+            captured.drain_from(&fixture.observer, hour, invalidating);
             let unknown = captured.tables();
             let coverage = complete_coverage(&unknown);
             assert!(!coverage.complete);
@@ -711,7 +733,7 @@ mod tests {
             assert!(matches!(unknown[1], TableView::Unavailable { .. }));
             let epoch = coverage.epoch;
             captured.reset();
-            captured.drain(hour + 1, false);
+            captured.drain_from(&fixture.observer, hour + 1, false);
             let recovered = captured.tables();
             let coverage = complete_coverage(&recovered);
             assert!(coverage.complete);
@@ -722,29 +744,28 @@ mod tests {
                 TableView::Complete(TableRows::DestroyedDivisions(vec![]))
             );
         }
-        test_support::disable();
+        fixture.stop();
     }
     #[test]
     fn unpublished_actual_land_drain_cannot_be_covered_by_the_next_frame() {
-        let _guard = test_support::own();
-        test_support::reset();
+        let fixture = test_support::Fixture::new(1024);
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut decoder = replay_frame::frame::FrameDecoder::new();
-        captured.drain(10, true);
+        captured.drain_from(&fixture.observer, 10, true);
         decoder
             .advance(&encode_land(&mut encoder, 10, captured.tables(), false))
             .unwrap();
-        captured.drain(11, false);
+        captured.drain_from(&fixture.observer, 11, false);
         decoder
             .advance(&encode_land(&mut encoder, 11, captured.tables(), false))
             .unwrap();
-        test_support::append_record(&[7, 12, 17, 1, 2, 9, 10, 41, 0]);
-        captured.drain(12, false);
+        fixture.append_record(&[7, 12, 17, 1, 2, 9, 10, 41, 0]);
+        captured.drain_from(&fixture.observer, 12, false);
         assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 1 });
         let dropped_epoch = complete_coverage(&captured.tables()).epoch;
         captured.reset();
-        captured.drain(13, false);
+        captured.drain_from(&fixture.observer, 13, false);
         let next = captured.tables();
         let coverage = complete_coverage(&next);
         assert!(coverage.complete);
@@ -767,7 +788,7 @@ mod tests {
             &*decoded.tables[TableId::DestroyedDivisions.index()],
             &TableView::Complete(TableRows::DestroyedDivisions(vec![]))
         );
-        test_support::disable();
+        fixture.stop();
     }
     #[test]
     fn wipe_decode_refuses_short_or_trailing_records_and_preserves_native_context() {
@@ -821,11 +842,10 @@ mod tests {
     }
     #[test]
     fn terminal_losses_past_the_log_are_kept_and_only_failed_storage_counts_a_gap() {
-        let _guard = test_support::own();
-        test_support::reset_with_words(8);
+        let fixture = test_support::Fixture::new(8);
         let mut c = Captured::with_capacities(&Capacities { words: 32 });
-        c.drain(10, true);
-        c.drain(11, false);
+        c.drain_from(&fixture.observer, 10, true);
+        c.drain_from(&fixture.observer, 11, false);
         let terminal = [
             8,
             41,
@@ -838,17 +858,17 @@ mod tests {
             2 << 32 | 70,
             987_654,
         ];
-        let lost = test_support::thread_lost();
-        test_support::append_record(&terminal);
-        c.drain(12, false);
+        let lost = fixture.lost();
+        fixture.append_record(&terminal);
+        c.drain_from(&fixture.observer, 12, false);
         let drained = c.drained.unwrap();
         assert!(drained.complete, "{}", drained.reason);
         assert_eq!(drained.words, terminal.len() + 1);
         assert_eq!(c.words[0], terminal.len() as u64 + 1);
         assert_eq!(c.words[1..drained.words], terminal);
-        assert_eq!(test_support::thread_lost(), lost);
-        collector_test_support::with_allocations_denied(|| test_support::append_record(&terminal));
-        c.drain(13, false);
+        assert_eq!(fixture.lost(), lost);
+        collector_test_support::with_allocations_denied(|| fixture.append_record(&terminal));
+        c.drain_from(&fixture.observer, 13, false);
         assert_eq!(
             c.drained.unwrap().reason,
             "land event storage allocation failed"
@@ -858,9 +878,9 @@ mod tests {
         assert!(!coverage.complete);
         assert!(coverage.lost_events > 0);
         assert!(matches!(tables[0], TableView::Unavailable { .. }));
-        c.drain(14, false);
+        c.drain_from(&fixture.observer, 14, false);
         assert!(complete_coverage(&c.tables()).complete);
-        test_support::disable();
+        fixture.stop();
     }
     fn result(kind: u64, border: bool, tags: bool) -> Vec<u64> {
         let mut out = vec![

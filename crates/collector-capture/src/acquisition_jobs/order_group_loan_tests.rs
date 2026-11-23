@@ -75,32 +75,33 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
     for mode in 0..3 {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let pool =
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
-            let Job::ChildFronts(request) = job else {
-                panic!("unexpected fixture runner");
-            };
-            observed.fetch_add(1, Ordering::Relaxed);
-            let payload = request.group_source.as_ref().unwrap();
-            {
-                let ordinary = Recorded::build(&payload.log).unwrap();
-                assert!(ordinary.copy(FLAG, &mut [0]));
-                assert!(ordinary.copy(FLAG, &mut [0]));
-            }
-            let source = naval_history::OrderGroupSource::new(payload).unwrap();
-            let mut flag = [9];
-            assert!(source.copy(FLAG, &mut flag));
-            assert_eq!(flag, [1]);
-            if mode == 2 {
-                panic!("synthetic ChildFronts failure with an active OOB reader");
-            }
-            drop(source);
-            if mode == 1 {
-                request.plans.fail_child_fronts();
-            }
-            Report::ChildFronts(OrdersReport)
-        }) }
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
+                let Job::ChildFronts(request) = job else {
+                    panic!("unexpected fixture runner");
+                };
+                observed.fetch_add(1, Ordering::Relaxed);
+                let payload = request.group_source.as_ref().unwrap();
+                {
+                    let ordinary = Recorded::build(&payload.log).unwrap();
+                    assert!(ordinary.copy(FLAG, &mut [0]));
+                    assert!(ordinary.copy(FLAG, &mut [0]));
+                }
+                let source = naval_history::OrderGroupSource::new(payload).unwrap();
+                let mut flag = [9];
+                assert!(source.copy(FLAG, &mut flag));
+                assert_eq!(flag, [1]);
+                if mode == 2 {
+                    panic!("synthetic ChildFronts failure with an active OOB reader");
+                }
+                drop(source);
+                if mode == 1 {
+                    request.plans.fail_child_fronts();
+                }
+                Report::ChildFronts(OrdersReport)
+            })
+        }
         .unwrap();
         let mut pending = Some(Job::ChildFronts(request(7)));
         let payload = loan(pending.as_ref().unwrap());
@@ -122,11 +123,17 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
 
 #[test]
 fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
-    let pool =
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
-        panic!("cancelled ChildFronts runner must not execute");
-    }) }
+    let trace = Arc::new(collector_memory::read_accounting::fixtures::ReadTrace::default());
+    let runner_trace = Arc::clone(&trace);
+    // SAFETY: Test owns this local acquisition pool and shuts it down before test exit.
+    let pool = unsafe {
+        collector_workers::acquisition::Pool::start(0, 1, move |_: &mut Job| -> Report {
+            runner_trace.record((), || {
+                collector_memory::read_accounting::fixtures::read(1);
+                panic!("cancelled ChildFronts runner must not execute");
+            })
+        })
+    }
     .unwrap();
     let mut pending = Some(Job::ChildFronts(request(8)));
     let payload = loan(pending.as_ref().unwrap());
@@ -137,6 +144,8 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
     unsafe { pool.shutdown() }.unwrap();
     let completed = pool.finish(ticket).unwrap();
     assert!(matches!(completed.report, Err(Failure::Stopped)));
+    assert_eq!(trace.take(()), collector_memory::read_accounting::ZERO);
+    #[cfg(feature = "acquisition_profile")]
     assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO
@@ -146,11 +155,12 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
 
 #[test]
 fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
-    let pool =
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
-        panic!("rejected ChildFronts must never run");
-    }) }
+    // SAFETY: Test owns this local acquisition pool and shuts it down before test exit.
+    let pool = unsafe {
+        collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
+            panic!("rejected ChildFronts must never run");
+        })
+    }
     .unwrap();
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
     unsafe { pool.shutdown() }.unwrap();

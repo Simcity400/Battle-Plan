@@ -118,12 +118,12 @@ impl Flights {
         let motions = TaskForceMotions::read(frame)?;
         let land = |province| {
             movement.and_then(|movement| movement.map.terrain(province)).map_or_else(
-                || content.map.definitions.get(&province).is_some_and(|definition| definition.kind == content_reader_core::map::ProvinceKind::Land),
+                || content.map.definitions.get(&province).is_some_and(|definition| definition.kind == content_reader_map::map::ProvinceKind::Land),
                 |terrain| terrain.flags & 1 != 0,
             )
         };
         let origin = |force: &TaskForceRow| motions.settled_origin(force, movement, world.as_ref(), &|province, slot| content.counters.anchor(province, slot), &land);
-        let evaluate = |items: &[content_reader_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
+        let evaluate = |items: &[content_reader_parser::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
         let values = LimitValues::default();
         let (plan, decided, made) = models.session(&content.unit_models, frame, Limits::new(&values, &evaluate), |model| {
             AircraftPlan::make(frame, &content.aircraft, &content.counters.region_of, &content.province_geometry, &heights, ours, model, &origin, &|province| content.products.impact_place(province), kept)
@@ -157,7 +157,7 @@ impl Build for Flights {
             return false;
         }
         let hour = self.content.hour(frame);
-        let evaluate = |items: &[content_reader_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
+        let evaluate = |items: &[content_reader_parser::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
         let values = LimitValues::default();
         Limits::new(&values, &evaluate).decide_the_same(&flown.decided)
     }

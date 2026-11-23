@@ -92,6 +92,7 @@ struct Log {
     lanes: Box<[Lane]>,
     shared: SharedLane<SharedRecord>,
     pushed: SpillStack<Spilled>,
+    pushed_bytes: AtomicUsize,
     spill: Mutex<Vec<Spilled>>,
     admitted: Box<[AtomicU64]>,
     registered: AtomicUsize,
@@ -119,6 +120,7 @@ impl Log {
                 .map_err(|_| "map event lane allocation failed")?,
             shared,
             pushed: SpillStack::new(),
+            pushed_bytes: AtomicUsize::new(0),
             spill: Mutex::new(Vec::new()),
             admitted: engine_allocation::boxed_slice(admitted)
                 .map_err(|_| "map event lane allocation failed")?,
@@ -126,6 +128,13 @@ impl Log {
             publishers: AtomicUsize::new(0),
             previous: AtomicPtr::new(std::ptr::null_mut()),
         })
+    }
+    fn spill_pending(&self) -> usize {
+        let spill = self
+            .spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        spill.len().saturating_add(self.pushed.len())
     }
     fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
@@ -137,12 +146,17 @@ impl Log {
             + self.shared.allocated_bytes()
             + self.admitted.len() * size_of::<AtomicU64>()
             + {
-                let spill = self.spill();
+                let spill = self
+                    .spill
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 spill.capacity() * size_of::<Spilled>()
                     + spill
                         .iter()
                         .map(|spilled| spilled.payload.capacity())
                         .sum::<usize>()
+                    + self.pushed.len() * SpillStack::<Spilled>::node_size()
+                    + self.pushed_bytes.load(Ordering::Acquire)
             }
     }
     fn admission(&self, slot: u64) -> &AtomicU64 {
@@ -154,9 +168,24 @@ impl Log {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.pushed.is_empty() {
-            match self.pushed.take_into(&mut spill) {
-                Ok(()) => spill.sort_unstable_by_key(|spilled| spilled.sequence),
-                Err(_) => crate::interval::lost_output(),
+            let taken = self.pushed.take();
+            if taken.len() != 0 {
+                let mut drained_bytes = 0usize;
+                if engine_allocation::reserve(&mut spill, taken.len()).is_ok() {
+                    for item in taken {
+                        drained_bytes = drained_bytes.saturating_add(item.payload.capacity());
+                        spill.push(item);
+                    }
+                    self.pushed_bytes.fetch_sub(drained_bytes, Ordering::AcqRel);
+                    spill.sort_unstable_by_key(|spilled| spilled.sequence);
+                } else {
+                    for item in taken {
+                        drained_bytes = drained_bytes.saturating_add(item.payload.capacity());
+                    }
+                    self.pushed_bytes.fetch_sub(drained_bytes, Ordering::AcqRel);
+                    // SAFETY: Overflow loss during map-event lane handling records lost output.
+                    unsafe { crate::interval::lost_output() };
+                }
             }
         }
         spill
@@ -262,7 +291,7 @@ fn lane_index(log: &Log) -> usize {
     })
 }
 
-pub fn publish(
+pub(crate) fn publish(
     family: u8,
     hour: i32,
     world: u64,
@@ -361,6 +390,7 @@ fn spill(
     if writer.written != len {
         return Err(Refusal::Read("map event writer left its frame short"));
     }
+    let payload_bytes = payload.capacity();
     let mut spilled = log
         .pushed
         .reserve(Spilled {
@@ -374,6 +404,7 @@ fn spill(
         .map_err(|_| Refusal::Allocation)?;
     let sequence = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
     spilled.sequence = sequence;
+    log.pushed_bytes.fetch_add(payload_bytes, Ordering::AcqRel);
     spilled.push();
     SPILLED.fetch_add(1, Ordering::Relaxed);
     PUBLISHED.fetch_add(1, Ordering::SeqCst);
@@ -449,7 +480,10 @@ fn generations() -> impl Iterator<Item = &'static Log> {
     })
 }
 
-pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
+/// # Safety
+/// Only the originating session's sole spool consumer (or an isolated test owning the global map-
+/// event lanes) may assemble a sealed interval while the lanes remain live before [`release`].
+pub unsafe fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
     output.frames.clear();
     output.bytes.clear();
     output.lanes.clear();
@@ -627,9 +661,9 @@ impl Assembled {
     }
 
     /// # Safety
-    /// Acknowledge a confirmed writer receipt, before the originating session releases the observer
-    /// lanes retained by this publication.
-    pub unsafe fn commit(&self) {
+    /// Acknowledge a confirmed writer receipt once, in assembly order, before the originating
+    /// session releases the observer lanes retained by this publication.
+    pub unsafe fn commit(self) {
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
@@ -701,11 +735,12 @@ pub unsafe fn reset_admitted() {
         }
     }
     if ADMITTED.swap(0, Ordering::AcqRel) != 0 {
-        crate::interval::lost_output();
+        // SAFETY: Spool reset-admitted recovery path owns recording lost map-event output.
+        unsafe { crate::interval::lost_output() };
     }
 }
 
-pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
+pub(crate) fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let current = CURRENT.load(Ordering::SeqCst);
     let lanes = lanes.max(REQUIRED_LANES.load(Ordering::Relaxed));
     let (lane_bytes, shared) = match unsafe { current.as_ref() } {
@@ -775,15 +810,19 @@ pub struct Capacity {
 }
 
 pub fn capacity() -> Capacity {
+    let _retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut capacity = Capacity {
         generations: generations().count(),
         required_lanes: REQUIRED_LANES.load(Ordering::Relaxed),
         sequence: SEQUENCE.load(Ordering::Relaxed),
         published: PUBLISHED.load(Ordering::Relaxed),
         spilled: SPILLED.load(Ordering::Relaxed),
-        spill_pending: generations().map(|log| log.spill().len()).sum(),
+        spill_pending: generations().map(Log::spill_pending).sum(),
         ..Default::default()
     };
+    // SAFETY: `_retained` pins every generation reachable from `CURRENT` against `release`.
     if let Some(log) = unsafe { CURRENT.load(Ordering::SeqCst).as_ref() } {
         capacity.lanes = log.lanes.len();
         capacity.lane_bytes = log.lanes.iter().map(Lane::capacity).max().unwrap_or(0);

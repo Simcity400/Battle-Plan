@@ -1,154 +1,148 @@
 import { useId, useLayoutEffect, useRef } from 'react';
-import { clockGeneration, drawClock, drawPost, onDraw, surfaceId } from '../../dashboard/pulled.ts';
-import { perfLog } from '../../shell/perf.ts';
-import { measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { hideTooltip, showTooltip, tooltipText } from '../tooltip.ts';
 import type { RaceChartProps } from './RaceChart';
 import { raceHeight, raceText } from './race.ts';
+import type { RaceItem } from './race';
 import type { PlaybackController } from '../../dashboard/playback';
-import type { ArsenalModel, RaceInspection, RaceTarget } from '../../draw/arsenal';
-import { arsenalNotice, arsenalRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
+import type { ArsenalModel, RaceInspection } from '../../draw/arsenal';
+import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
+import { pipelineOf } from '../../dashboard/follow/pipeline.ts';
+import { pageClock } from '../../dashboard/widgetClock.ts';
+import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
+import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
+import { perfLog } from '../../shell/perf.ts';
+import { validateNuclearArsenal, arsenalNotice, arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
-import { noticeMatchesAnchor, shownTime } from '../../draw/anchorGeneration.ts';
-import { heldPicture } from '../../draw/held.ts';
+
+const RACE_AUDIT = -2;
 
 type ExactRead = (hour: number) => Promise<unknown>;
-export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined } }) {
+type Model = Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined };
+
+export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Model }) {
   const root = useRef<HTMLDivElement>(null), container = useRef<HTMLDivElement>(null), extent = useRef<HTMLDivElement>(null), ranking = useRef<HTMLParagraphElement>(null);
   const description = useRef<HTMLParagraphElement>(null), latest = useRef(props), update = useRef<() => void>(undefined);
-  const owner = useId(), widget = measuredWidget();
+  const owner = useId(), widgetKey = useWidgetKey();
   latest.current = props;
+  const pipeline = pipelineOf(pageClock(props.clock));
+  const pinned = props.model.follow === undefined && props.model.fixed !== undefined ? props.model.fixed + props.model.offset : null;
+  const pipe = useFollowedWidget(pipeline, pipeline && props.active ? `${widgetKey}|${props.model.offset}` : null, { offset: props.model.offset, pin: pinned });
   useLayoutEffect(() => {
-    const scroller = container.current;
-    const region = root.current;
-    if (!scroller || !region || !props.active) return;
-    const canvas = document.createElement('canvas');
-    canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-describedby', owner + '-ranking');
-    canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
+    const scroller = container.current, region = root.current;
+    if (!scroller || !region || !props.active || !pipeline || pipe === null) return;
+    const drawn = pipeline.held(pipe, 'race', () => {
+      const canvas = document.createElement('canvas');
+      canvas.tabIndex = 0; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End Enter Space');
+      canvas.dataset.surface = 'race'; canvas.dataset.placement = String(pipe);
+      return { canvas, surface: bitmapSurface(canvas) };
+    })!;
+    const { canvas, surface } = drawn;
+    canvas.setAttribute('aria-describedby', owner + '-ranking');
     scroller.prepend(canvas);
-    const offscreen = canvas.transferControlToOffscreen(), id = surfaceId(), clock = props.clock;
-    const stopClock = drawClock(clock);
-    let point: { x: number; y: number } | undefined;
-    let version = 0, ready = false, first = true, restoring = false, selected = -1, ticket = 0, chosen: string | undefined;
-    let resolve: ((p?: RaceInspection) => void) | undefined;
-    const visible = (show: boolean) => {
-      canvas.style.visibility = show ? '' : 'hidden';
-      if (ready !== show) perfLog?.ink(id, show);
-      ready = show;
-    };
-    const describe = (on: boolean) => { if (on) canvas.setAttribute('aria-describedby', owner + '-ranking'); else canvas.removeAttribute('aria-describedby'); };
-    const silence = () => { resolve?.(); resolve = undefined; hideTooltip(owner);
-      if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
-    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; chosen = undefined; restoring = false; silence(); };
-    const hold = () => { describe(false); silence(); restoring = true; };
-    const held = heldPicture(clock, region, () => latest.current.model.fixed === undefined, clear, hold);
+    let point: { x: number; y: number } | undefined, action: { x: number; y: number; key: string } | undefined, selected = -1, bound = '';
+    const items = (): readonly RaceItem[] => (pipeline.view(pipe)?.fields?.items as readonly RaceItem[] | undefined) ?? [];
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
-      if (!width || !height) { clear(); return; }
-      const message = { type: 'race' as const, id, owner: ++version, model: { ...model, view: 'nuclear-arsenal' as const, widget: widget ?? undefined, width, height, dpr: devicePixelRatio, scroll: scroller.scrollTop } };
-      const { exactRead } = latest.current;
-      if (exactRead) perfLog?.reader(id, version, async hour => {
-        const reply = validateNuclearArsenal(await exactRead(hour));
-        const values = new Map<string, string>();
-        for (const row of arsenalRows(reply, hour, model)) {
-          const item = countryRaceItem(row, model.colours, () => model.tokens.accent, model.tokens.muted);
-          values.set(item.key + ':total', item.label);
-          for (const part of item.segments) if (part.id !== 'total') values.set(item.key + ':' + part.id, String(part.value));
-        }
-        if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
-        return { values, ranked: true };
-      });
-      if (widget) { canvas.dataset.placement = String(id); canvas.dataset.surface = 'nuclear-arsenal'; }
-      drawPost(first ? { ...message, canvas: offscreen } : message, first ? [offscreen] : []);
-      if (point) {
-        const b = canvas.getBoundingClientRect();
-        drawPost({ type: 'racePointer', id, owner: version, point: { x: point.x - b.left, y: point.y - b.top } });
-      }
-      first = false; canvas.setAttribute('aria-label', latest.current.label);
+      if (!width || !height) return;
+      const key = JSON.stringify([width, height, devicePixelRatio, scroller.scrollTop, model], (_, value: unknown) => value instanceof Map ? [...value] : value instanceof Set ? [...value] : value);
+      if (key === bound) return;
+      bound = key;
+      pipeline.present(pipe, 'race');
+      pipeline.bind(pipe, [surface], { surfaces: [{ width, height, dpr: devicePixelRatio }],
+        ...model.follow === undefined && model.fixed !== undefined ? { dated: { h: model.fixed + model.offset, c: model.fixed + model.offset } } : {} },
+        {}, { ...model, scroll: scroller.scrollTop });
+      canvas.setAttribute('aria-label', latest.current.label);
     };
     update.current = send;
-    const stop = onDraw(m => {
-      if (m.type === 'failed' || m.type === 'followFailure') { clear(); return; }
-      if ((m.type !== 'racePresent' && m.type !== 'raceInspection' && m.type !== 'raceHover') || m.id !== id || m.owner !== version || m.seek !== clock.getSnapshot().seekSequence ||
-          (m.type === 'racePresent' && !noticeMatchesAnchor(m.generation, clockGeneration(clock)))) return;
-      if (m.type === 'raceHover') {
-        if (!point) return;
-        const content = !held.stale && m.item && latest.current.tooltip?.(m.item.key, m.item);
-        if (content && m.item) showTooltip(owner, content, point.x, point.y, m.item.key);
-        else hideTooltip(owner);
-        if (description.current) description.current.textContent = content ? tooltipText(content) : '';
-        return;
-      }
-      if (m.type === 'raceInspection') { if (m.request === ticket) { resolve?.(m.picture); resolve = undefined; } return; }
-      const clockHour = clock.positionAt(shownTime(m.shown));
-      const ahead = latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour);
-      if (m.hour === null && m.waiting && held.stale && !ahead) return;
-      if (m.hour === null || ahead || m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
-      else {
-        held.present(m.holdsThrough); visible(true); describe(true);
-        if (restoring && document.activeElement !== canvas) restoring = false;
-        if (restoring) {
-          const b = canvas.getBoundingClientRect();
-          void act(chosen === undefined ? undefined : { key: chosen }, 'read', b.right, b.top + b.height / 2);
-        }
-      }
-    });
-    const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {
-      resolve?.(); if (!ready || held.stale) { done(undefined); return; }
-      resolve = done; drawPost({ type: 'inspectRace', id, owner: version, request: ++ticket, target });
-    });
-    const act = async (target: RaceTarget | undefined, action: string, x: number, y: number) => {
-      const pic = await inspect(target), p = latest.current;
-      if (!pic) return;
-      restoring = false;
-      if (ranking.current) ranking.current.textContent = raceText(pic.items, p.name) || p.empty || '';
-      if (extent.current) extent.current.style.height = `calc(${raceHeight(pic.items.length)}px - 100%)`;
-      if (!pic.item) {
-        hideTooltip(owner);
-        if (!target || !('key' in target)) return;
-        selected = -1; chosen = undefined;
-        if (description.current) description.current.textContent = `${p.name(target.key)} is no longer in the ranking`;
-        return;
-      }
-      const item = pic.item;
-      selected = pic.items.findIndex(i => i.key === item.key); chosen = item.key;
-      if (action === 'pick') p.onPick?.(item.key, item);
-      else if (action === 'menu') p.onContextMenu?.(item.key, x, y, item);
-      else {
-        const content = p.tooltip?.(item.key, item);
-        if (content) { showTooltip(owner, content, x, y, item.key); if (description.current) description.current.textContent = tooltipText(content); }
-      }
+    const install = () => {
+      const shown = pipeline.view(pipe);
+      const held = !!shown?.dim;
+      holdElement(region, held);
+      canvas.style.visibility = shown?.mode === 'picture' ? '' : 'hidden';
+      if (held) canvas.removeAttribute('aria-describedby'); else canvas.setAttribute('aria-describedby', owner + '-ranking');
+      const listed = items(), p = latest.current;
+      if (ranking.current) ranking.current.textContent = held ? '' : raceText(listed, p.name) || p.empty || '';
+      if (extent.current) extent.current.style.height = `calc(${raceHeight(listed.length)}px - 100%)`;
+      const inspected = shown?.tooltip as RaceInspection | null | undefined, item = inspected?.item;
+      if (!item || shown?.dim) { hideTooltip(owner); if (description.current) description.current.textContent = ''; return; }
+      selected = listed.findIndex(each => each.key === item.key);
+      const asked = action?.key === `race:${item.key}` ? action : undefined;
+      if (asked) action = undefined;
+      const at = asked ?? point;
+      if (!at) return;
+      const content = p.tooltip?.(item.key, item);
+      if (content) { showTooltip(owner, content, at.x, at.y, item.key); if (description.current) description.current.textContent = tooltipText(content); }
     };
+    const perform = (kind: string, item: RaceItem, x: number, y: number) => {
+      const shown = pipeline.view(pipe);
+      if (shown?.mode !== 'picture' || shown.dim) return;
+      const at = { ...item, hour: shown.through ?? shown.h ?? item.hour };
+      if (kind === 'pick') latest.current.onPick?.(at.key, at);
+      else latest.current.onContextMenu?.(at.key, x, y, at);
+    };
+    install();
+    const stop = pipeline.onInstall(pipe, install);
     const pointer = (event: MouseEvent) => {
       const b = canvas.getBoundingClientRect();
-      if (event.type === 'pointermove') {
-        point = { x: event.clientX, y: event.clientY };
-        drawPost({ type: 'racePointer', id, owner: version, point: { x: point.x - b.left, y: point.y - b.top } });
-        return;
-      }
+      point = { x: event.clientX, y: event.clientY };
       if (event.type === 'contextmenu') event.preventDefault();
-      void act({ x: event.clientX - b.left, y: event.clientY - b.top }, event.type === 'click' ? 'pick' : event.type === 'contextmenu' ? 'menu' : 'tip', event.clientX, event.clientY);
+      const act = event.type === 'pointermove' ? undefined : { kind: event.type === 'click' ? 'pick' : 'menu', x: event.clientX, y: event.clientY };
+      pipeline.pointer(pipe, 0, [event.clientX - b.left, event.clientY - b.top], act && (key => {
+        const item = key === null ? undefined : items().find(each => `race:${each.key}` === key);
+        if (item) perform(act.kind, item, act.x, act.y);
+      }));
     };
-    const leave = () => { point = undefined; drawPost({ type: 'racePointer', id, owner: version }); ++ticket; resolve?.(); resolve = undefined; hideTooltip(owner); };
-    const focus = () => { void act(undefined, 'read', 0, 0); };
+    const leave = () => { point = undefined; pipeline.pointer(pipe, 0, null); pipeline.inspect(pipe, null); hideTooltip(owner); };
+    const choose = (index: number, kind: string) => {
+      const listed = items(), b = canvas.getBoundingClientRect();
+      const item = listed[Math.min(listed.length - 1, Math.max(0, index))];
+      if (!item) return;
+      selected = listed.indexOf(item);
+      if (kind !== 'tip') { perform(kind, item, b.right, b.top + b.height / 2); return; }
+      action = { x: b.right, y: b.top + b.height / 2, key: `race:${item.key}` };
+      if (pipeline.inspecting(pipe) === `race:${item.key}`) install();
+      else pipeline.inspect(pipe, `race:${item.key}`);
+    };
     const key = (e: KeyboardEvent) => {
-      const b = canvas.getBoundingClientRect();
-      if (e.key === 'Escape') { selected = -1; chosen = undefined; leave(); return; }
-      const action = e.key === 'Enter' || e.key === ' ' ? 'pick' : e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey) ? 'menu' : 'tip';
+      if (e.key === 'Escape') { selected = -1; pipeline.inspect(pipe, null); hideTooltip(owner); return; }
+      const kind = e.key === 'Enter' || e.key === ' ' ? 'pick' : e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey) ? 'menu' : 'tip';
       const index = e.key === 'Home' ? 0 : e.key === 'End' ? Number.MAX_SAFE_INTEGER : e.key === 'ArrowDown' ? selected + 1 : e.key === 'ArrowUp' ? Math.max(0, selected - 1) : selected;
-      if (action === 'tip' && !['Home','End','ArrowDown','ArrowUp'].includes(e.key) || index < 0) return;
-      e.preventDefault(); void act({ index }, action, b.right, b.top + b.height / 2);
+      if (kind === 'tip' && !['Home', 'End', 'ArrowDown', 'ArrowUp'].includes(e.key) || index < 0) return;
+      e.preventDefault(); choose(index, kind);
     };
-    const anchor = clock.onDiscard(() => { if (latest.current.model.fixed === undefined) clear(); });
+    const focus = () => choose(Math.max(0, selected), 'tip');
+    const blur = () => { point = undefined; pipeline.inspect(pipe, null); hideTooltip(owner); };
     const resize = new ResizeObserver(send); resize.observe(canvas);
     canvas.addEventListener('pointermove', pointer); canvas.addEventListener('click', pointer); canvas.addEventListener('contextmenu', pointer);
-    canvas.addEventListener('focus', focus); canvas.addEventListener('blur', leave); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
+    canvas.addEventListener('focus', focus); canvas.addEventListener('blur', blur); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
     scroller.addEventListener('scroll', send, { passive: true });
-    clear(); send();
-    return () => { clear(); stop(); stopClock(); anchor(); held.close(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
-      drawPost({ type: 'closeRace', id }); update.current = undefined; };
-  }, [owner, props.clock, props.active, props.model.follow, props.model.fixed, props.resetKey, widget]);
+    send();
+    return () => {
+      stop(); resize.disconnect(); scroller.removeEventListener('scroll', send); hideTooltip(owner); holdElement(region, false);
+      canvas.removeEventListener('pointermove', pointer); canvas.removeEventListener('click', pointer); canvas.removeEventListener('contextmenu', pointer);
+      canvas.removeEventListener('focus', focus); canvas.removeEventListener('blur', blur); canvas.removeEventListener('pointerleave', leave); canvas.removeEventListener('keydown', key);
+      canvas.remove(); update.current = undefined;
+    };
+  }, [owner, pipeline, pipe, props.active, props.resetKey]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);
+  const auditable = !!props.exactRead;
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || !auditable) return;
+    pipeline.audit(pipe, RACE_AUDIT, fields => fields.audit as readonly { row: string; key: string; value?: string }[] | undefined);
+    perfLog.reader(pipe, RACE_AUDIT, async hour => {
+      const read = latest.current.exactRead, model = latest.current.model;
+      if (!read) return null;
+      const reply = validateNuclearArsenal(await read(hour)), values = new Map<string, string>();
+      for (const row of arsenalRows(reply, hour, model)) {
+        const item = countryRaceItem(row, model.colours, () => model.tokens.accent, model.tokens.muted);
+        values.set(`${item.key}:total`, item.label);
+        for (const part of item.segments) if (part.id !== 'total') values.set(`${item.key}:${part.id}`, String(part.value));
+      }
+      if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
+      return { values, ranked: true };
+    });
+    return () => pipeline.audit(pipe, RACE_AUDIT, null);
+  }, [pipeline, pipe, auditable]);
   return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>
     <p ref={ranking} id={owner + '-ranking'} className="sr-only">{raceText(props.items, props.name) || props.empty}</p>

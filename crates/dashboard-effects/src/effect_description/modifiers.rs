@@ -4,7 +4,7 @@ use crate::{
     identity,
     triggers::{Scope, Scopes},
 };
-use content_reader_core::{modifiers::Modifiers, scope::Scope as Parsed};
+use content_reader_script::{modifiers::Modifiers, scope::Scope as Parsed};
 use content_reader_localisation::localisation::crt_case_text;
 use replay_data::rows::{
     AdvisorTokenRow, CachedModifier, CountryAppearanceRow, LexicalTokenRow,
@@ -51,7 +51,7 @@ fn text_field<'a>(fields: &'a [Item], name: &str) -> Result<&'a str, String> {
     let bytes = field(fields, name)
         .and_then(|item| item.value.scalar())
         .unwrap_or_default();
-    std::str::from_utf8(content_reader_core::parser::c_string(bytes))
+    std::str::from_utf8(content_reader_parser::parser::c_string(bytes))
         .map_err(|_| format!("modifier {name} is not UTF-8"))
 }
 
@@ -67,7 +67,7 @@ fn idea_tokens(item: &Item) -> Result<Vec<&str>, String> {
     tokens
         .into_iter()
         .map(|bytes| {
-            std::str::from_utf8(content_reader_core::parser::c_string(bytes))
+            std::str::from_utf8(content_reader_parser::parser::c_string(bytes))
                 .map_err(|_| "idea token is not UTF-8".to_owned())
         })
         .collect()
@@ -101,7 +101,7 @@ fn timed_component_integer(value: i64) -> i32 {
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    fn idea(&self, token: &str) -> Result<Option<&'c content_reader_core::ideas::Idea>, String> {
+    fn idea(&self, token: &str) -> Result<Option<&'c content_reader_politics::ideas::Idea>, String> {
         self.context
             .content
             .ideas
@@ -114,7 +114,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         &self,
         operand: &str,
         scopes: Scopes,
-    ) -> Result<Option<&'c content_reader_core::ideas::Idea>, String> {
+    ) -> Result<Option<&'c content_reader_politics::ideas::Idea>, String> {
         if let Some(token) = operand.strip_prefix("token:") {
             return self.idea(token);
         }
@@ -130,14 +130,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map_err(|why| why.to_string())?;
         let literal = crate::scripted_text::spelled(&rows, token)?
             .ok_or_else(|| format!("idea variable references unrecorded lexer token {token}"))?;
-        let literal = std::str::from_utf8(content_reader_core::parser::c_string(literal))
+        let literal = std::str::from_utf8(content_reader_parser::parser::c_string(literal))
             .map_err(|_| "idea variable token is not UTF-8")?;
         self.idea(literal)
     }
 
     fn idea_name(
         &self,
-        idea: &content_reader_core::ideas::Idea,
+        idea: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let country = match scopes.this {
@@ -225,7 +225,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_details(
         &self,
-        idea: &content_reader_core::ideas::Idea,
+        idea: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut text = String::new();
@@ -309,7 +309,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn research_bonus_line(
         &self,
-        bonus: &content_reader_core::modifiers::Modifier,
+        bonus: &content_reader_script::modifiers::Modifier,
         scopes: Scopes,
     ) -> Result<String, String> {
         let category = self.localised(
@@ -331,7 +331,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_tooltip(
         &self,
-        idea: &content_reader_core::ideas::Idea,
+        idea: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let name = self.idea_name(idea, scopes)?;
@@ -492,7 +492,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn timed_idea_days(
         &self,
-        idea: &content_reader_core::ideas::Idea,
+        idea: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<Option<i32>, String> {
         let country = self.current_country(scopes)?;
@@ -591,8 +591,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn swap_idea_description(
         &mut self,
-        add: &content_reader_core::ideas::Idea,
-        remove: &content_reader_core::ideas::Idea,
+        add: &content_reader_politics::ideas::Idea,
+        remove: &content_reader_politics::ideas::Idea,
         old: i32,
         days: i32,
         scopes: Scopes,
@@ -679,8 +679,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_targeted_difference(
         &self,
-        add: &content_reader_core::ideas::Idea,
-        remove: &content_reader_core::ideas::Idea,
+        add: &content_reader_politics::ideas::Idea,
+        remove: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         if add.targeted.is_empty() && remove.targeted.is_empty() {
@@ -736,8 +736,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_research_difference(
         &self,
-        add: &content_reader_core::ideas::Idea,
-        remove: &content_reader_core::ideas::Idea,
+        add: &content_reader_politics::ideas::Idea,
+        remove: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut remaining: Vec<_> = remove.research_bonuses.iter().map(Some).collect();
@@ -774,13 +774,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_rule_difference(
         &self,
-        add: &content_reader_core::ideas::Idea,
-        remove: &content_reader_core::ideas::Idea,
+        add: &content_reader_politics::ideas::Idea,
+        remove: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut text = String::new();
         for (index, &(_, key, default, fulfilled)) in
-            content_reader_core::power_balance::rules().iter().enumerate()
+            content_reader_politics::power_balance::rules().iter().enumerate()
         {
             let value = add
                 .rules
@@ -839,25 +839,25 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn idea_equipment_difference(
         &self,
-        add: &content_reader_core::ideas::Idea,
-        remove: &content_reader_core::ideas::Idea,
+        add: &content_reader_politics::ideas::Idea,
+        remove: &content_reader_politics::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let mut groups: Vec<content_reader_core::modifiers::EquipmentBonus> = Vec::new();
+        let mut groups: Vec<content_reader_script::modifiers::EquipmentBonus> = Vec::new();
         for (idea, subtract) in [(add, false), (remove, true)] {
             for bonus in &idea.equipment_bonuses {
                 let index = groups
                     .iter()
                     .position(|group| group.equipment.eq_ignore_ascii_case(&bonus.equipment))
                     .unwrap_or_else(|| {
-                        groups.push(content_reader_core::modifiers::EquipmentBonus {
+                        groups.push(content_reader_script::modifiers::EquipmentBonus {
                             values: Vec::new(),
                             ..bonus.clone()
                         });
                         groups.len() - 1
                     });
                 for value in &bonus.values {
-                    let Some(stat) = content_reader_core::equipment::stat_index(value.name.as_bytes())
+                    let Some(stat) = content_reader_script::equipment_stats::stat_index(value.name.as_bytes())
                     else {
                         continue;
                     };
@@ -867,7 +867,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         value.value
                     };
                     if let Some(stored) = groups[index].values.iter_mut().find(|stored| {
-                        content_reader_core::equipment::stat_index(stored.name.as_bytes()) == Some(stat)
+                        content_reader_script::equipment_stats::stat_index(stored.name.as_bytes()) == Some(stat)
                     }) {
                         stored.value = stored.value.wrapping_add(contribution);
                     } else {
@@ -898,7 +898,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 if values.len() > 1 {
                     text.push_str("    ");
                 }
-                let index = content_reader_core::equipment::stat_index(value.name.as_bytes())
+                let index = content_reader_script::equipment_stats::stat_index(value.name.as_bytes())
                     .expect("filtered equipment stat");
                 text.push_str(&self.char_equipment_stat_difference(index, value.value, scopes)?);
                 text.push('\n');
@@ -1064,7 +1064,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         for (key, operand) in &modifier.scoped_modifiers {
             let value = self.scoped_value(operand, selected_scopes)?;
             let mut modifiers = Modifiers::default();
-            modifiers.values.push(content_reader_core::modifiers::Modifier {
+            modifiers.values.push(content_reader_script::modifiers::Modifier {
                 key: key.clone(),
                 name: key.to_ascii_lowercase(),
                 text: String::from_utf8_lossy(operand).into_owned(),
@@ -1120,7 +1120,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .collect();
         let mut list = String::new();
         for (index, token) in tokens.iter().enumerate() {
-            let token = std::str::from_utf8(content_reader_core::parser::c_string(token))
+            let token = std::str::from_utf8(content_reader_parser::parser::c_string(token))
                 .map_err(|_| "province modifier is not UTF-8")?;
             let (name, modifiers) = self.static_modifier(token)?;
             let name = match name {
@@ -1173,7 +1173,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let fields = field(children(item), "modifier")
             .map(children)
             .unwrap_or_default();
-        let modifiers = content_reader_core::modifiers::values(fields);
+        let modifiers = content_reader_script::modifiers::values(fields);
         let mut text = String::new();
         let frame = self.context.world()?.tables();
         let definitions = frame
@@ -1336,7 +1336,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let tooltips = keys
             .iter()
             .map(|key| {
-                std::str::from_utf8(content_reader_core::parser::c_string(key))
+                std::str::from_utf8(content_reader_parser::parser::c_string(key))
                     .map(str::to_owned)
                     .map_err(|_| "advisor roles tooltip key is not UTF-8".to_owned())
             })

@@ -112,15 +112,15 @@ impl collector_primitives::capacity::CapacityMax for FrameCapacities {
 
 impl FrameCapacities {
     /// # Safety
-    /// The sizing owner must have exclusive use of the frame. Run only during attach or the active
-    /// session's frame sizing pass, with the observer storage live and no competing teardown or
-    /// observer presizer.
+    /// Caller must hold exclusive `&mut` access to `frame` while session observer storage stays
+    /// live and teardown is excluded. Concurrent sizing of different frames across spool recycling
+    /// and idle-frame sizing relies on the shared observers' internal synchronization.
     pub unsafe fn grow_frame(&mut self, frame: &mut crate::sampling::Captured) {
         frame.grow(&mut self.core);
-        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        // SAFETY: Caller holds exclusive access to `frame` with live observer storage and teardown excluded.
         unsafe { frame.map.grow(&mut self.map) };
         self.extended.raise_for_states(self.core[3]);
-        // SAFETY: This path owns the frame capacity changes and excludes teardown.
+        // SAFETY: Caller holds exclusive access to `frame` with live observer storage and teardown excluded.
         unsafe { frame.extended.grow(&mut self.extended) };
     }
 }

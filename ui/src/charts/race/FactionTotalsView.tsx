@@ -11,7 +11,7 @@ import { useChartTokens } from '../useChartTokens';
 import { useHeadHour } from '../../widgets/army-size/headHour.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionValue } from '../../dashboard/options';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { useFollow } from '../../dashboard/follow/useFollow.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';

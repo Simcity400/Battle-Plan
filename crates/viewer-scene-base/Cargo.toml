@@ -10,14 +10,20 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["dep:pollster", "shader-pipeline/test-support", "content-reader-core/test-support", "engine-executable/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-gpu/test-support", "viewer-runtime/test-support"]
+test-support = ["dep:pollster", "shader-pipeline/test-support", "content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support", "engine-executable/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-gpu/test-support", "viewer-runtime/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-mesh.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 viewer-gpu.workspace = true
 viewer-runtime.workspace = true
 pollster = { workspace = true, optional = true }
 bytemuck = { workspace = true, features = ["derive"] }
-content-reader-core.workspace = true
 content-reader-image.workspace = true
 content-reader-regions.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
@@ -30,10 +36,12 @@ replay-frame.workspace = true
 shader-pipeline.workspace = true
 
 [dev-dependencies]
+content-reader-image = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-gpu = { workspace = true, features = ["test-support"] }
 viewer-native-gui = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 pollster.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
@@ -47,9 +55,14 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-dpi = { workspace = true }

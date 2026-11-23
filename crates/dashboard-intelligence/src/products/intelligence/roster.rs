@@ -515,13 +515,13 @@ impl Product for OperativesDeparted {
         let recording = query.replay.recording();
         let keys: Vec<u128> = mine.iter().map(|&(key, ..)| key).collect();
         let assignment = dashboard_declare::field(TableId::OperativeMemberships, "assignment")?;
-        let history = dashboard_query::cost::storage(|| replay::lanes::history(recording, stretch.run, TableId::OperativeMemberships, &[assignment], replay::lanes::Keys::These(&keys), stretch.first, params.hour))?;
+        let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, TableId::OperativeMemberships, &[assignment], replay_lanes::lanes::Keys::These(&keys), stretch.first, params.hour))?;
         let steps: HashMap<u128, Vec<(i32, Option<u32>)>> = history
             .keys
             .into_iter()
             .map(|(key, steps)| {
                 let steps = steps.into_iter().map(|step| (step.hour, match step.cells.as_deref() {
-                    Some([replay::points::Cell::Number(value), ..]) => u32::try_from(*value).ok(),
+                    Some([replay_lanes::points::Cell::Number(value), ..]) => u32::try_from(*value).ok(),
                     _ => None,
                 })).collect();
                 (key, steps)
@@ -533,7 +533,7 @@ impl Product for OperativesDeparted {
         let asks: Vec<(i32, u128)> = leaving.iter().map(|leaving| (leaving.last, leaving.key)).collect();
         let mut rows: HashMap<u128, OperativeMembershipRow> = HashMap::new();
         dashboard_query::cost::storage(|| {
-            replay::lanes::at_each(recording, stretch.run, TableId::OperativeMemberships, None, &asks, &mut |_, key, row| {
+            replay_lanes::lanes::at_each(recording, stretch.run, TableId::OperativeMemberships, None, &asks, &mut |_, key, row| {
                 if let Some((view, slot)) = row
                     && let Some(row) = replay_frame::frame::cells_rows(TableId::OperativeMemberships, &view, &[(key, slot)], format)
                         .ok()

@@ -467,21 +467,21 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
             .iter()
             .map(|read| ProductionLinesAt::projection(&live_params, read.table, &[], &live_ctx))
             .collect();
-        let keyed: Vec<replay::at::Read<'_>> = step_reads
+        let keyed: Vec<replay_lanes::at::Read<'_>> = step_reads
             .iter()
             .zip(&projections)
-            .map(|(read, cols)| replay::at::Read {
+            .map(|(read, cols)| replay_lanes::at::Read {
                 table: read.table,
                 columns: cols.as_deref(),
                 keys: match &read.keys {
-                    Keys::All => replay::at::Keys::All,
-                    Keys::These(keys) => replay::at::Keys::These(keys),
-                    Keys::Range(low, high) => replay::at::Keys::Range(*low, *high),
-                    Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                    Keys::All => replay_lanes::at::Keys::All,
+                    Keys::These(keys) => replay_lanes::at::Keys::These(keys),
+                    Keys::Range(low, high) => replay_lanes::at::Keys::Range(*low, *high),
+                    Keys::Ranges(ranges) => replay_lanes::at::Keys::Ranges(ranges),
                 },
             })
             .collect();
-        let read = replay::at::frame(recording, 0, FIRST, &keyed).unwrap();
+        let read = replay_lanes::at::frame(recording, 0, FIRST, &keyed).unwrap();
         for asked in &step_reads {
             held.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
         }
@@ -514,20 +514,20 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         if step_reads.is_empty() {
             break;
         }
-        let keyed: Vec<replay::at::Read<'_>> = step_reads
+        let keyed: Vec<replay_lanes::at::Read<'_>> = step_reads
             .iter()
-            .map(|read| replay::at::Read {
+            .map(|read| replay_lanes::at::Read {
                 table: read.table,
                 columns: None,
                 keys: match &read.keys {
-                    Keys::All => replay::at::Keys::All,
-                    Keys::These(keys) => replay::at::Keys::These(keys),
-                    Keys::Range(low, high) => replay::at::Keys::Range(*low, *high),
-                    Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                    Keys::All => replay_lanes::at::Keys::All,
+                    Keys::These(keys) => replay_lanes::at::Keys::These(keys),
+                    Keys::Range(low, high) => replay_lanes::at::Keys::Range(*low, *high),
+                    Keys::Ranges(ranges) => replay_lanes::at::Keys::Ranges(ranges),
                 },
             })
             .collect();
-        let read = replay::at::frame(recording, 0, FIRST, &keyed).unwrap();
+        let read = replay_lanes::at::frame(recording, 0, FIRST, &keyed).unwrap();
         for asked in &step_reads {
             market_held.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
         }

@@ -194,7 +194,7 @@ fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: i
             continue;
         }
         let runs = read::runs(recording, stretch.run, TableId::MilitaryAid, divisions, Some(&keys), stretch.first, stretch.last)?;
-        let available = dashboard_query::cost::storage(|| replay::lanes::available_reads(recording, stretch.run, TableId::MilitaryAid, stretch.first, stretch.last))?;
+        let available = dashboard_query::cost::storage(|| replay_lanes::lanes::available_reads(recording, stretch.run, TableId::MilitaryAid, stretch.first, stretch.last))?;
         let mut lifetime: HashMap<u128, Vec<(i64, i64)>> = HashMap::new();
         for &(key, born, gone) in lives_of.iter().filter(meets) {
             lifetime.entry(key).or_default().push((born, gone));

@@ -4,7 +4,7 @@ use dashboard_world::products::place_names;
 use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, products::at_hour::{At, AtHour, Read}};
 use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
-use content_reader_core::province_graph::ProvinceGraph;
+use content_reader_map::province_graph::ProvinceGraph;
 use content_reader_localisation::localisation::Argument;
 use replay_columnar::{manifest::Status, summary};
 use replay_data::{
@@ -415,7 +415,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     for stretch in query.timeline.within(first, last) {
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
         known.extend(read::statuses(recording, stretch.run, TableId::WeatherRegions, from, to)?.into_iter().filter(|run| available(run.status)).map(|run| (stretch.run, run.first, run.last)));
-        reads.extend(dashboard_query::cost::storage(|| replay::lanes::reads(recording, stretch.run, TableId::WeatherRegions, from, to))?);
+        reads.extend(dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, TableId::WeatherRegions, from, to))?);
     }
     let days = days(first, last, &known, &reads);
     let wanted: Option<BTreeSet<u32>> = params.regions.as_ref().map(|ids| ids.iter().filter_map(|id| id.parse().ok()).collect());
@@ -461,11 +461,11 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             let mut daily: Daily = BTreeMap::new();
             let mut memo = Memo::default();
             let mut refused = Refusals::default();
-            let mut seeker = replay::at::Seeker::new(recording)?;
+            let mut seeker = replay_lanes::at::Seeker::new(recording)?;
             for (index, day) in days.iter().enumerate() {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let Some((run, at)) = day.at else { continue };
-                let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay::at::Read::all(table)]))?;
+                let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(table)]))?;
                 if params.show == Show::Modifier {
                     let Ok(held) = frame.complete::<tables::WeatherRegions>() else { continue };
                     for row in held {
@@ -502,7 +502,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     if first > last {
         let hour = if params.last_hour < query.timeline.first { query.timeline.first } else { query.timeline.last };
         if let Some(stretch) = query.timeline.at(hour)
-            && let Ok(held) = dashboard_query::cost::storage(|| replay::at::frame(recording, stretch.run, hour, &[replay::at::Read::all(TableId::WeatherRegions)]))
+            && let Ok(held) = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, hour, &[replay_lanes::at::Read::all(TableId::WeatherRegions)]))
             && let Ok(held) = held.complete::<tables::WeatherRegions>()
         {
             rows.extend(held.iter().map(|row| row.id));
@@ -511,7 +511,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let columns = fold(&days, params.width, &measures, params.show == Show::Conditions)?;
     let shown = days.iter().rev().find_map(|day| day.at);
     let auxiliary = match shown {
-        Some((run, at)) => dashboard_query::cost::storage(|| replay::at::frame(recording, run, at, &[replay::at::Read::all(TableId::ModifierDefinitions)])).ok(),
+        Some((run, at)) => dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, at, &[replay_lanes::at::Read::all(TableId::ModifierDefinitions)])).ok(),
         None => None,
     };
     let mut refused = Refusals::default();

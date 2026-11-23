@@ -171,14 +171,20 @@ pub fn active() -> usize {
 pub(crate) fn quiet() -> Option<Witness> {
     WRITERS.quiet()
 }
-pub fn stop() {
+/// # Safety
+/// Caller must own session teardown/detach (or isolated test cleanup) when disabling combat
+/// history observation.
+pub unsafe fn stop() {
     WRITERS.enabled.store(false, SeqCst);
     WRITERS.changed();
 }
 pub fn retention_required() -> bool {
     WRITERS.escaped.load(SeqCst)
 }
-pub fn release_storage() -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session teardown/detach after combat history hooks are stopped and quiesced
+/// (or isolated test cleanup with no live hooks or concurrent consumers).
+pub unsafe fn release_storage() -> Result<(), &'static str> {
     if WRITERS.enabled.load(SeqCst) || WRITERS.active.load(SeqCst) != 0 || retention_required() {
         return Err("combat log event storage release before quiescence");
     }
@@ -307,24 +313,33 @@ fn equipment_enabled() -> bool {
     }
 }
 
-pub fn prepare_active(demand: usize) {
+/// # Safety
+/// Run only from the admitted combat capture or serial sizing pass (or an isolated test), while
+/// history-event storage remains live and teardown is excluded.
+pub unsafe fn prepare_active(demand: usize) {
     ACTIVE_DEMAND.fetch_max(demand, SeqCst);
-    prepare(0);
+    // SAFETY: Caller guarantees admitted combat capture or sizing pass while storage is live.
+    unsafe { prepare(0) };
 }
-pub fn prepare_noncombat(demand: usize) {
+pub(crate) fn prepare_noncombat(demand: usize) {
     NONCOMBAT_DEMAND.fetch_max(demand, SeqCst);
-    prepare(0);
+    // SAFETY: Crate-internal sizing helper called from `combat_log::Capacities::presize`.
+    unsafe { prepare(0) };
 }
 pub(crate) fn prepare_seed(demand: usize) {
     SEED_DEMAND.fetch_max(demand.max(1), SeqCst);
-    prepare(0);
+    // SAFETY: Crate-internal sizing helper called from `history_capture` while storage is live.
+    unsafe { prepare(0) };
 }
 fn demand(seed: usize, active: usize, noncombat: usize, attempted: usize) -> usize {
     seed.saturating_add(active)
         .saturating_add(noncombat)
         .max(attempted)
 }
-pub fn prepare(attempted: usize) {
+/// # Safety
+/// Run only during attach, the active session's serial sizing pass, or admitted combat-log capture
+/// (or an isolated test), while history-event storage remains live and teardown is excluded.
+pub unsafe fn prepare(attempted: usize) {
     REQUIRED.fetch_max(
         demand(
             SEED_DEMAND.load(SeqCst),
@@ -799,8 +814,11 @@ pub(crate) mod test_support {
     }
     impl Drop for Producer {
         fn drop(&mut self) {
-            stop();
-            release_storage().unwrap();
+            // SAFETY: Unit test owns combat-history teardown with no live hooks.
+            unsafe {
+                stop();
+                release_storage().unwrap();
+            }
         }
     }
 }

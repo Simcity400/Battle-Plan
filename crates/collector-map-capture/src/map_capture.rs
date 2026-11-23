@@ -86,12 +86,15 @@ impl MapCapacities {
     /// measured for that session. A test fixture may use its own capacities in a process without
     /// a live attachment. Allocation failure can stop the recording.
     pub unsafe fn orders(&self) -> Orders {
-        Orders::new(
-            self.rows[9],
-            self.order_geometry,
-            self.order_groups,
-            self.order_visits,
-        )
+        // SAFETY: Caller upholds the active-session/fixture capacity sizing contract.
+        unsafe {
+            Orders::new(
+                self.rows[9],
+                self.order_geometry,
+                self.order_groups,
+                self.order_visits,
+            )
+        }
     }
 
     pub fn presize_combats(
@@ -231,13 +234,16 @@ impl ShipCensus {
         // SAFETY: This frame's owner is returning its outstanding naval loan before reuse.
         unsafe { self.discard_owned() };
         models.begin_sources();
-        let management =
-            std::cell::RefCell::new(collector_naval_management::forces::Session::begin_owned(
+        // SAFETY: `ShipCensus::walk` runs in the admitted naval capture against the session image
+        // and settles or discards `self.management_owned` before frame reuse or detach.
+        let management = std::cell::RefCell::new(unsafe {
+            collector_naval_management::forces::Session::begin_owned(
                 memory,
                 base,
                 state,
                 collector_workers::panic_failure::owned_failed,
-            ));
+            )
+        });
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
         let naval = cfleet::walk_timed_with_management(
@@ -546,12 +552,15 @@ impl MapCaptured {
                 .max(collector_air::sizing::air_wing_name_bytes()),
         );
         grow_vec(&mut self.air_wing_names, capacities.air_wing_names);
-        self.orders.grow(
-            &mut capacities.rows[9],
-            &mut capacities.order_geometry,
-            &mut capacities.order_groups,
-            &mut capacities.order_visits,
-        );
+        // SAFETY: Caller holds exclusive `&mut` access to this map frame at the frame-growth boundary.
+        unsafe {
+            self.orders.grow(
+                &mut capacities.rows[9],
+                &mut capacities.order_geometry,
+                &mut capacities.order_groups,
+                &mut capacities.order_visits,
+            );
+        }
         grow_capacity(&mut capacities.player_names, self.player_names_required);
         grow_capacity(
             &mut capacities.land_participants,
@@ -1669,12 +1678,15 @@ mod tests {
         orders.visits.reserve_exact(100_003);
         orders.visits_required = 5_000;
         let worker_capacity = orders.visits.capacity();
-        orders.grow(
-            &mut capacity.rows[9],
-            &mut capacity.order_geometry,
-            &mut capacity.order_groups,
-            &mut capacity.order_visits,
-        );
+        // SAFETY: Isolated unit test owns `orders` and `capacity`.
+        unsafe {
+            orders.grow(
+                &mut capacity.rows[9],
+                &mut capacity.order_geometry,
+                &mut capacity.order_groups,
+                &mut capacity.order_visits,
+            );
+        }
         assert!(capacity.order_visits >= 5_000);
         assert!(capacity.order_visits < worker_capacity);
         // SAFETY: The test process has no live attachment and only this fixture grew the capacities.

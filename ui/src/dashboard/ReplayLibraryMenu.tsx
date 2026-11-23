@@ -74,11 +74,11 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   };
   const renameFile = (path: string, name: string) => {
     if (!client.renameRecording) return;
-    void client.renameRecording(path, name).then(renamed => {
+    void client.renameRecording(path, name).then(({ path: renamed, warning }) => {
       const row = refocused.current, active = row?.ownerDocument.activeElement;
       refocused.current = null;
       if (row && (active === row || active === row.ownerDocument.body)) refocus.current = renamed;
-      setActionError(null);
+      setActionError(warning ? { ...actionFailure('Renamed, but Windows didn’t confirm the name was saved.', warning) } : null);
       setPickedFiles(files => files.map(file => sameCampaignPath(file.path, path) ? { ...file, path: renamed, name: recordingFilename(renamed) } : file));
       onRenamed(path, renamed);
       void library.refresh();
@@ -93,7 +93,8 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); refocus.current = path; cancelRename(); }
       }} /></div>;
   const saveFlag = (campaignKey: string, tag: string | null) => {
-    const report = (message: string | null) => setActionError(message ? sidebarFailure('Couldn’t change the campaign flag.', message, () => saveFlag(campaignKey, tag)) : null);
+    const report = (message: string | null, warning?: string | null) => setActionError(message ? sidebarFailure('Couldn’t change the campaign flag.', message, () => saveFlag(campaignKey, tag))
+      : warning ? actionFailure('Flag changed, but Windows didn’t confirm it was saved.', warning) : null);
     report(saveCampaignFlag(campaignKey, tag, report));
   };
   const loadError = (path: string) => Object.entries(errors).find(([failed]) => sameCampaignPath(failed, path))?.[1];
@@ -238,7 +239,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       <button type="button" className="icon-button sidebar-group-action" aria-label="Open a recording" disabled={picking || !client.chooseRecording} hidden={emptyShown && offerOpen}
         data-tooltip={client.chooseRecording ? 'Open a recording…' : 'Open recordings in the desktop app'}
         onClick={() => { void pickRecording(); }}>{picking ? <span className="spinner" /> : <Icon name="plus" />}</button></div>
-    {[pickError, actionError].map((error, index) => error && <FailureLine key={index} className="sidebar-failure" message={error.text} detail={error.detail} onRetry={error.retry} retryDisabled={index === 0 && picking} />)}
+    {[pickError, actionError].map((error, index) => error && <FailureLine key={index} className="sidebar-failure" message={error.text} detail={error.detail} onRetry={error.retry} onDismiss={error.retry ? undefined : () => setActionError(null)} retryDisabled={index === 0 && picking} />)}
     <label className="sidebar-search"><Icon name="search" />
       <input ref={searchInput} type="search" aria-label="Find a campaign" placeholder="Find a campaign" value={query} onFocus={() => { void library.refresh(); }}
         aria-keyshortcuts={sole ? 'Enter' : undefined} aria-describedby={sole ? 'sidebar-sole-match' : undefined}
@@ -312,7 +313,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   </div>;
 }
 
-type SidebarFailure = PlainFailure & { retry: () => void };
+type SidebarFailure = PlainFailure & { retry?: () => void };
 
 function sidebarFailure(sentence: string, error: unknown, retry: () => void): SidebarFailure {
   return { ...actionFailure(sentence, error instanceof Error ? error.message : String(error)), retry };

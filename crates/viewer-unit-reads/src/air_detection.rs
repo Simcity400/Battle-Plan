@@ -272,7 +272,7 @@ pub struct Defines {
     pub no_search_mission: i64,
 }
 impl Defines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> std::io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> std::io::Result<Self> {
         Ok(Self {
             occupation: defines.fixed5("NAir", "DETECT_CHANCE_FROM_OCCUPATION")?,
             radar: defines.fixed5("NAir", "DETECT_CHANCE_FROM_RADARS")?,

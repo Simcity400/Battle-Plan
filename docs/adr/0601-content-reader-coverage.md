@@ -6,4 +6,4 @@ Country tags are three-byte declarations in direct database files, with the firs
 
 Use Lua 5.1 for the game's defines, raw deflate for archive members and zstd for stored recording-fact chunks. Expose synthetic fixture layers as a narrower test feature than the full catalogue fixtures, so consumers can select the least test-only surface they need. Retain native Windows opens, monitor IDs and file-change records where those platform-specific facts are needed.
 
-[Coverage](../../crates/content-reader-core/src/coverage.rs) · [Country tags](../../crates/content-reader-core/src/country_tags.rs) · [Country scorers](../../crates/content-reader-core/src/country_scorers.rs) · [Reader dependencies and fixtures](../../crates/content-reader-core/Cargo.toml)
+[Coverage](../../crates/content-reader-parser/src/coverage.rs) · [Country tags](../../crates/content-reader-key-names/src/country_tags.rs) · [Country scorers](../../crates/content-reader-politics/src/country_scorers.rs) · [Reader dependencies and fixtures](../../crates/content-reader-parser/Cargo.toml)

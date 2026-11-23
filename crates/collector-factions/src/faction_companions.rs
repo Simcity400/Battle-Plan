@@ -680,7 +680,10 @@ impl Store {
         self.doctrine.visit(memory, base, pointer, id, changes);
         self.pools.visit(memory, base, pointer, id);
     }
-    pub fn acquire_accounts(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `faction_companion_changes` account demand updates belong to this pass.
+    pub unsafe fn acquire_accounts(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -688,22 +691,38 @@ impl Store {
         changes: &impl Changes,
         members: &[engine_native::cfaction_system::MemberRow],
     ) {
-        self.accounts
-            .acquire_members(memory, base, state, self.accounts_force, changes, members);
+        // SAFETY: Caller upholds the hourly capture admission contract.
+        unsafe {
+            self.accounts.acquire_members(
+                memory,
+                base,
+                state,
+                self.accounts_force,
+                changes,
+                members,
+            );
+        }
         self.pools.system(memory, base, state);
     }
-    pub fn finish(&mut self, complete: bool, changes: &impl Changes, output: &mut Captured) {
-        crate::faction_companion_changes::demand(
-            self.minimum
-                .held
-                .len()
-                .max(self.doctrine.held.len())
-                .max(self.rules.held.len())
-                .max(self.programmes.held.len())
-                .max(self.manpower.held.len())
-                .max(self.unlocks.held.len()),
-        );
-        self.advisors.finish(complete, changes);
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `faction_companion_changes` demand updates belong to this pass.
+    pub unsafe fn finish(&mut self, complete: bool, changes: &impl Changes, output: &mut Captured) {
+        // SAFETY: Admitted faction-companion capture records measured owner demand.
+        unsafe {
+            crate::faction_companion_changes::demand(
+                self.minimum
+                    .held
+                    .len()
+                    .max(self.doctrine.held.len())
+                    .max(self.rules.held.len())
+                    .max(self.programmes.held.len())
+                    .max(self.manpower.held.len())
+                    .max(self.unlocks.held.len()),
+            );
+        }
+        // SAFETY: Caller holds hourly capture admission for this faction-advisor finish pass.
+        unsafe { self.advisors.finish(complete, changes) };
         (output.rows[11], output.failure[11]) = self.advisors.output();
         self.rules.finish(complete, changes, output);
         self.programmes.finish(complete, changes, output);
@@ -876,7 +895,8 @@ mod tests {
         for index in 0..owners {
             store.visit(memory, 0, FIRST + index * STRIDE, index as u64 + 1, changes);
         }
-        store.finish(true, changes, output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, changes, output) };
     }
     #[test]
     fn faction_companion_certificates_carry_owners_without_reads_or_allocations_and_select_one_list()
@@ -982,7 +1002,8 @@ mod tests {
         store.visit(&memory, 0, FIRST, 1, &changes);
         drop(changes.0[5].notify(unrelated));
         store.visit(&memory, 0, FIRST + STRIDE, 2, &changes);
-        store.finish(true, &changes, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &changes, &mut output) };
         assert_eq!(output.failure[5], None);
         let rows = output.rows[5].as_ref().unwrap();
         assert_eq!(rows.rows::<tables::FactionVariables>().unwrap().len(), 2);
@@ -995,7 +1016,8 @@ mod tests {
         store.visit(&memory, 0, FIRST + STRIDE, 2, &changes);
         assert_eq!(memory.reads.get(), reads, "a quiet family carries both stores");
         drop(changes.0[5].notify(unrelated));
-        store.finish(true, &changes, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &changes, &mut output) };
         assert_eq!(
             output.failure[5],
             Some("faction companion observation changed during acquisition")

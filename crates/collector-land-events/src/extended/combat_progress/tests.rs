@@ -138,11 +138,13 @@ impl Memory for Registry {
 
 fn read(c: &mut Captured, worlds: &[World]) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    c.begin();
+    // SAFETY: tests serialize combat-progress globals with `test_globals()`.
+    unsafe { c.begin() };
     for (n, world) in worlds.iter().enumerate() {
         c.visit(&memory, 0, world.source((n as u64 + 1) << 32 | 62));
     }
-    c.finish(Outcome::Rows { len: worlds.len() });
+    // SAFETY: paired with `c.begin()` under `test_globals()`.
+    unsafe { c.finish(Outcome::Rows { len: worlds.len() }) };
 }
 fn rows(c: &Captured) -> Vec<LandCombatProgressRow> {
     let [
@@ -255,12 +257,18 @@ fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
         rows(&c)[0].defender_equipment_losses,
         first[0].defender_equipment_losses
     );
-    c.finish(Outcome::Unavailable {
-        reason: "census gap",
-    });
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe {
+        c.finish(Outcome::Unavailable {
+            reason: "census gap",
+        });
+    }
     assert!(!c.losses_complete());
-    c.begin();
-    c.finish(Outcome::Rows { len: 0 });
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe {
+        c.begin();
+        c.finish(Outcome::Rows { len: 0 });
+    }
     assert!(rows(&c).is_empty());
     assert!(!worlds[0].variants.is_empty());
 }
@@ -274,10 +282,13 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
     };
     let mut c = Captured::with_capacities(&capacity);
     read(&mut c, &worlds);
-    c.finish(Outcome::Truncated {
-        len: 2,
-        unread_rows: 3,
-    });
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe {
+        c.finish(Outcome::Truncated {
+            len: 2,
+            unread_rows: 3,
+        });
+    }
     assert_eq!(
         c.outcomes()[0],
         Outcome::Truncated {
@@ -291,20 +302,20 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
     read(&mut c, &worlds);
     assert!(c.losses_complete());
     c.reset();
-    c.finish(Outcome::Rows { len: 1 });
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe { c.finish(Outcome::Rows { len: 1 }) };
     assert!(matches!(c.outcomes()[0], Outcome::Unavailable { .. }));
 }
 #[test]
 fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let _globals = super::test_globals();
     use crate::land_events::test_support;
-    let _guard = test_support::own();
-    test_support::reset();
+    let fixture = test_support::Fixture::new(1024);
     let mut events = crate::extended::land_events::Captured::with_capacities(
         &crate::extended::land_events::Capacities { words: 0 },
     );
-    events.drain(10, true);
-    events.drain(11, false);
+    events.drain_from(&fixture.observer, 10, true);
+    events.drain_from(&fixture.observer, 11, false);
     let mut captured = Captured::with_capacities(&Capacities {
         rows: 1,
         variants: 1,
@@ -336,7 +347,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let allocated = captured.allocated_bytes();
     read(&mut captured, &worlds);
     assert_eq!(captured.allocated_bytes(), allocated);
-    events.lost_casualty_reads(captured.lost_reads());
+    events.lost_casualty_reads_from(&fixture.observer, captured.lost_reads());
     let [
         _,
         _,
@@ -347,7 +358,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     };
     assert_eq!(coverage[0].lost_events, 0);
     assert!(coverage[0].complete);
-    test_support::disable();
+    fixture.stop();
 }
 #[test]
 fn hourly_losses_off_thread_census_presizes_all_sides() {
@@ -397,9 +408,11 @@ fn hourly_losses_read_failure_never_becomes_zero() {
         rows: 1,
         variants: 0,
     });
-    c.begin();
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe { c.begin() };
     c.visit(&Unreadable, 0, world.source(62));
-    c.finish(Outcome::Rows { len: 1 });
+    // SAFETY: paired with `c.begin()` under `test_globals()`.
+    unsafe { c.finish(Outcome::Rows { len: 1 }) };
     assert!(matches!(c.outcomes()[0], Outcome::Unavailable { .. }));
 }
 
@@ -463,9 +476,11 @@ fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counte
     world.sides[0][counter..counter + 4].copy_from_slice(&i32::MIN.to_le_bytes());
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.begin();
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe { captured.begin() };
     captured.visit(&memory, 0, world.source(7 << 32 | 62));
-    captured.finish(Outcome::Rows { len: 1 });
+    // SAFETY: paired with `captured.begin()` under `test_globals()`.
+    unsafe { captured.finish(Outcome::Rows { len: 1 }) };
     assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 22 });
     let rows = &captured.observers;
     assert!(rows.iter().any(|r| r.attacker
@@ -580,10 +595,14 @@ fn combat_log_projection_uses_committed_labels_across_capture_buffers_and_keyfra
 
 fn daily_capture(memory: &impl Memory, world: &World, hour: i32, full: bool) -> Captured {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.prepare_hour(hour, full);
-    captured.begin();
+    // SAFETY: tests serialize combat-progress globals with `test_globals()`.
+    unsafe {
+        captured.prepare_hour(hour, full);
+        captured.begin();
+    }
     captured.visit(memory, 0, world.source(7 << 32 | 62));
-    captured.finish(Outcome::Rows { len: 1 });
+    // SAFETY: paired with `captured.begin()` under `test_globals()`.
+    unsafe { captured.finish(Outcome::Rows { len: 1 }) };
     assert!(
         matches!(captured.outcomes()[1], Outcome::Rows { .. }),
         "{:?}",
@@ -741,11 +760,14 @@ fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recove
     let changed = daily_capture(&memory, &world, 14, false);
     assert_eq!(observer_row(&changed, event::ACTIVITY_DAMAGE, 0).a, 202);
     let mut failed = Captured::with_capacities(&Capacities::default());
-    failed.prepare_hour(15, false);
-    failed.begin();
-    failed.finish(Outcome::Unavailable {
-        reason: "synthetic census refusal",
-    });
+    // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+    unsafe {
+        failed.prepare_hour(15, false);
+        failed.begin();
+        failed.finish(Outcome::Unavailable {
+            reason: "synthetic census refusal",
+        });
+    }
     World::q(&mut damage, 8, 303);
     let recovered = daily_capture(&memory, &world, 16, false);
     assert_eq!(observer_row(&recovered, event::ACTIVITY_DAMAGE, 0).a, 303);
@@ -753,7 +775,8 @@ fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recove
     let slot = 24 + replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT as i32;
     for (hour, full, value) in [(slot, false, 404), (slot + 2, true, 505)] {
         World::q(&mut damage, 8, value);
-        rejected.prepare_hour(hour, full);
+        // SAFETY: test holds `test_globals()` as the sole combat-progress caller.
+        unsafe { rejected.prepare_hour(hour, full) };
         let recovered = daily_capture(&memory, &world, hour + 1, false);
         assert_eq!(
             observer_row(&recovered, event::ACTIVITY_DAMAGE, 0).a,

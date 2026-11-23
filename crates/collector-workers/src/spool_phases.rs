@@ -45,12 +45,20 @@ const PHASES: [Phase; Phase::Wait as usize + 1] = [
 
 const STEPS: usize = Phase::Wait as usize + 1;
 
-pub struct Steps {
+pub trait PhaseObserver {
+    fn entered(&self, phase: Phase);
+}
+
+impl PhaseObserver for () {
+    #[inline]
+    fn entered(&self, _: Phase) {}
+}
+
+pub struct Steps<O = ()> {
+    observer: O,
     current: std::sync::atomic::AtomicU8,
     walls: [std::sync::atomic::AtomicU64; STEPS],
     gated: std::sync::atomic::AtomicU64,
-    #[cfg(any(test, feature = "test-support"))]
-    started: [std::sync::atomic::AtomicU64; Phase::Wait as usize + 1],
     #[cfg(feature = "phase_cpu")]
     cycles: [std::sync::atomic::AtomicU64; Phase::Wait as usize + 1],
     #[cfg(feature = "phase_cpu")]
@@ -100,14 +108,13 @@ pub fn status() -> impl serde::Serialize {
     })
 }
 
-impl Steps {
-    const fn new() -> Self {
+impl<O: PhaseObserver> Steps<O> {
+    const fn new(observer: O) -> Self {
         Self {
+            observer,
             current: std::sync::atomic::AtomicU8::new(Phase::Wait as u8),
             walls: [const { std::sync::atomic::AtomicU64::new(0) }; STEPS],
             gated: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
-            started: [const { std::sync::atomic::AtomicU64::new(0) }; Phase::Wait as usize + 1],
             #[cfg(feature = "phase_cpu")]
             cycles: [const { std::sync::atomic::AtomicU64::new(0) }; Phase::Wait as usize + 1],
             #[cfg(feature = "phase_cpu")]
@@ -123,7 +130,7 @@ impl Steps {
     /// Only a worker designated by this attachment to record phases on these counters may start a
     /// span, or an isolated fixture may use its own counters. Keep that authority through the
     /// span's finish or drop.
-    pub unsafe fn span(&self, phase: Phase) -> Span<'_> {
+    pub unsafe fn span(&self, phase: Phase) -> Span<'_, O> {
         if phase != Phase::Wait {
             let begin = collector_primitives::clock::qpc();
             crate::tick_gate::wait();
@@ -149,11 +156,10 @@ impl Steps {
     /// Only a worker designated by this attachment to record phases on these counters may start a
     /// span, or an isolated fixture may use its own counters. Keep that authority through the
     /// span's finish or drop.
-    pub unsafe fn span_now(&self, _phase: Phase) -> Span<'_> {
+    pub unsafe fn span_now(&self, _phase: Phase) -> Span<'_, O> {
         self.current
             .store(_phase as u8, std::sync::atomic::Ordering::Relaxed);
-        #[cfg(any(test, feature = "test-support"))]
-        self.started[_phase as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.observer.entered(_phase);
         Span(
             self,
             _phase,
@@ -164,19 +170,15 @@ impl Steps {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn phase(&self, phase: Phase) -> (u64,) {
-        (self.started[phase as usize].load(std::sync::atomic::Ordering::Relaxed),)
-    }
 }
 
-pub static SPOOL: Steps = Steps::new();
-pub static HELPER: Steps = Steps::new();
-pub static SIZING: Steps = Steps::new();
+pub static SPOOL: Steps = Steps::new(());
+pub static HELPER: Steps = Steps::new(());
+pub static SIZING: Steps = Steps::new(());
 
 #[must_use = "a step ends when finished or dropped"]
-pub struct Span<'a>(
-    &'a Steps,
+pub struct Span<'a, O: PhaseObserver = ()>(
+    &'a Steps<O>,
     Phase,
     i64,
     #[cfg(feature = "phase_cpu")] Option<u64>,
@@ -203,7 +205,7 @@ pub fn cycles_since(begin: Option<u64>) -> Option<u64> {
     Some(thread_cycles()?.saturating_sub(begin?))
 }
 
-impl Drop for Span<'_> {
+impl<O: PhaseObserver> Drop for Span<'_, O> {
     fn drop(&mut self) {
         let phase = self.1 as usize;
         self.0.walls[phase].fetch_add(
@@ -247,14 +249,38 @@ pub const WALL_NAMES: [&str; STEPS + 1] = [
     "Gate",
 ];
 
-impl<'a> Span<'a> {
+impl<'a, O: PhaseObserver> Span<'a, O> {
     pub fn finish(self) {}
 
-    pub fn switch(self, phase: Phase) -> Span<'a> {
+    pub fn switch(self, phase: Phase) -> Span<'a, O> {
         let steps = self.0;
         drop(self);
         // SAFETY: This worker records phases on the counters assigned to its spool role.
         unsafe { steps.span(phase) }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures {
+    use super::{Phase, PhaseObserver, STEPS, Steps};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub struct Entries([AtomicUsize; STEPS]);
+
+    impl PhaseObserver for Entries {
+        fn entered(&self, phase: Phase) {
+            self.0[phase as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl Steps<Entries> {
+        pub fn counted() -> Self {
+            Self::new(Entries([const { AtomicUsize::new(0) }; STEPS]))
+        }
+
+        pub fn entries(&self, phase: Phase) -> usize {
+            self.observer.0[phase as usize].load(Ordering::Relaxed)
+        }
     }
 }
 

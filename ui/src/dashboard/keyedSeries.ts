@@ -26,9 +26,9 @@ export function ownerKeys(owner: SeriesOwner | null, parts: readonly string[]): 
   const keys = owner ? parts.map(part => ({ tag: owner.key, part })) : [];
   return { keys, within: owner?.spans ? new Map(keys.map(key => [keyId(key), owner.spans!])) : undefined };
 }
-import { followStore } from './follow/connection.ts';
+import { followStore } from './follow/store.ts';
 import { rowAmount } from './follow/painters.ts';
-import { followsHead, useFollow } from './follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from './follow/useFollow.ts';
 import type { FollowEntry, FollowStore } from './follow/store';
 import type { PlaybackController } from './playback';
 import { followAtHead, tileHead } from './tiles/head.ts';
@@ -171,7 +171,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   return { enabled, owner, decimals, lines: reached, states: stateRead.data, summaryByKey, summaryOf, revision: readLines, subscribe, onSummaryView, onNavigateHour,
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
     followed: followedEntry && store ? { store, entry: followedEntry, row: (key: SeriesKey) => followedRow(followedEntry.answer, key, partBits) } : null,
-    reason: following && followed.status === 'unavailable' ? followed.reason : undefined,
+    reason: following ? followRefusal(followed) ?? undefined : undefined,
     unrecorded, error, retry };
 }
 

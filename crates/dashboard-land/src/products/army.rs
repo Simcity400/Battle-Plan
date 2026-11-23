@@ -10,8 +10,8 @@ use dashboard_query::{
     read,
     series::{Line, NavigationKey, Part, SeriesKeyReply},
 };
-use content_reader_core::unit_leader::SubUnits;
-use replay::columnar_frames::Recording;
+use content_reader_script::sub_units::SubUnits;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::{store::TableView, summary};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
@@ -386,9 +386,9 @@ fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catal
     let group = units.map_or_else(|| Err("game content is unavailable".into()), |units| units.group(name.as_bytes()));
     let (key, label, mut warning) = match group {
         Ok(Some(group)) => {
-            let identity = match content_reader_core::tokens::Token::c_str(group.as_bytes()) {
-                content_reader_core::tokens::Token::Name(name) => String::from_utf8(name).unwrap_or_else(|_| group.to_owned()),
-                content_reader_core::tokens::Token::Rejected => String::new(),
+            let identity = match content_reader_parser::tokens::Token::c_str(group.as_bytes()) {
+                content_reader_parser::tokens::Token::Name(name) => String::from_utf8(name).unwrap_or_else(|_| group.to_owned()),
+                content_reader_parser::tokens::Token::Rejected => String::new(),
             };
             (format!("group:{identity}"), group, None)
         }
@@ -417,7 +417,7 @@ fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catal
 
 pub fn check_content(catalogue: &dashboard_base::catalogue::Catalogue) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
-    let units = content_reader_core::unit_leader::sub_units(&catalogue.content.layers)?;
+    let units = content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers)?;
     let mut findings: Vec<_> = units.warnings().iter().map(|message| Finding::new(Kind::Refused, "unit group reader", message)).collect();
     for name in units.registered() {
         match std::str::from_utf8(name) {
@@ -462,7 +462,7 @@ fn composition(
     if let Some(catalogue) = &catalogue
         && groups.content.as_ref().is_none_or(|(old, _)| !Arc::ptr_eq(old, catalogue))
     {
-        let units = content_reader_core::unit_leader::sub_units(&catalogue.content.layers).map_err(|error| error.to_string());
+        let units = content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|error| error.to_string());
         groups.content = Some((Arc::clone(catalogue), units));
     }
     let units = catalogue.as_ref().and_then(|_| groups.content.as_ref().map(|(_, units)| units));

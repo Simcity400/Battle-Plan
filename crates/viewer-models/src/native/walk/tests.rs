@@ -16,14 +16,14 @@ fn append(library: &mut ModelLibrary) {
         bound: 1.,
         convoy_radius: None,
         attachments: 0,
-        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
     library.rigs.push(Arc::new(Rig::default()));
 }
 
 #[test]
 fn installed_routes_match_direct_mutation_and_demand_order_across_512_frames() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut library = ModelLibrary::default();
     for _ in 0..7 {
         append(&mut library);

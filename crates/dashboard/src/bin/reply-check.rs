@@ -76,9 +76,9 @@ fn run() -> io::Result<bool> {
     }
     let cold_cache = cold
         .then(|| {
-            replay::cold_cache::probe_file(
+            replay_tools::cold_cache::probe_file(
                 &recording,
-                replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+                replay_tools::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
             )
         })
         .transpose()?;
@@ -100,7 +100,7 @@ fn run() -> io::Result<bool> {
     let open_ms = opened.elapsed().as_secs_f64() * 1e3;
     let content = match (game, user, cache) {
         (Some(game_dir), Some(user_dir), Some(cache_dir)) => Some(dashboard_core::config::ContentOptions {
-            options: content_reader_core::ResolveOptions { game_dir, user_dir, cache_dir },
+            options: content_reader_layers::ResolveOptions { game_dir, user_dir, cache_dir },
             allow_unverified: false,
             presentation: Default::default(),
         }),
@@ -158,9 +158,9 @@ fn run() -> io::Result<bool> {
                 if !cold {
                     return Ok(0.0);
                 }
-                replay::cold_cache::probe_file(
+                replay_tools::cold_cache::probe_file(
                     &recording,
-                    replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+                    replay_tools::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
                 )?;
                 let fresh = open()?;
                 *source.borrow_mut() = fresh;

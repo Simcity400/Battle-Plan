@@ -10,7 +10,8 @@ fn event(family: u8, hour: i32, payload: &[u8]) -> Result<u64, Refusal> {
 
 fn drained(seal: Seal) -> Vec<(u64, i32, u8, Vec<u8>)> {
     let mut assembled = Assembled::default();
-    assemble(seal, &mut assembled).unwrap();
+    // SAFETY: tests serialize lane access with `LOCK` and are the sole assembler.
+    unsafe { assemble(seal, &mut assembled) }.unwrap();
     let rows = assembled
         .frames
         .iter()
@@ -23,7 +24,7 @@ fn drained(seal: Seal) -> Vec<(u64, i32, u8, Vec<u8>)> {
             )
         })
         .collect();
-    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    // SAFETY: `assembled` was produced by `assemble` under `LOCK` in this test.
     unsafe { assembled.commit() };
     rows
 }
@@ -80,7 +81,8 @@ fn an_uncommitted_interval_is_copied_again_and_a_failed_writer_takes_no_number()
     assert_eq!(event(0, 1, b"kept"), Ok(1));
     let seal = seal();
     let mut assembled = Assembled::default();
-    assemble(seal, &mut assembled).unwrap();
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe { assemble(seal, &mut assembled) }.unwrap();
     assert_eq!(assembled.frames.len(), 1);
     assert_eq!(event(0, 2, b"next"), Ok(2));
     let rows = drained(super::seal());
@@ -233,25 +235,25 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     assert_eq!(event(0, 1, &quarter), Ok(1));
     assert_eq!(shared_event(1, 1, b"shared"), 2);
     let mut first = Assembled::default();
-    assemble(seal(), &mut first).unwrap();
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe { assemble(seal(), &mut first) }.unwrap();
     assert_eq!(sequences(&first), [1, 2]);
-    // SAFETY: This is the spool's actual queue admission while its originating observer remains
-    // live.
+    // SAFETY: test holds `LOCK` and admits intervals in assembly order.
     unsafe { first.admitted() };
     assert_eq!(event(0, 2, &quarter), Ok(3));
     assert_eq!(shared_event(1, 2, b"later"), 4);
     let mut second = Assembled::default();
-    assemble(seal(), &mut second).unwrap();
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe { assemble(seal(), &mut second) }.unwrap();
     assert_eq!(sequences(&second), [3, 4]);
     assert_eq!(&second.bytes[second.frames[1].start..], b"later");
-    // SAFETY: This is the spool's actual queue admission while its originating observer remains
-    // live.
+    // SAFETY: test holds `LOCK` and admits intervals in assembly order.
     unsafe { second.admitted() };
     let mut quiet = Assembled::default();
-    assemble(seal(), &mut quiet).unwrap();
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe { assemble(seal(), &mut quiet) }.unwrap();
     assert!(quiet.frames.is_empty());
-    // SAFETY: This is the spool's actual queue admission while its originating observer remains
-    // live.
+    // SAFETY: test holds `LOCK` and admits intervals in assembly order.
     unsafe { quiet.admitted() };
     let log = current();
     assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), 0);
@@ -264,7 +266,7 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     );
     assert_eq!(event(0, 3, &quarter), Ok(5));
     assert_eq!(event(0, 3, &quarter), Ok(6));
-    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    // SAFETY: test holds `LOCK` and commits intervals in assembly order.
     unsafe { first.commit() };
     assert_eq!(
         log.lanes[0].consumed.load(Ordering::Acquire),
@@ -282,10 +284,11 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     assert_eq!(event(0, 3, &quarter), Ok(7));
     assert_eq!(event(0, 3, &quarter), Ok(8));
     assert_eq!(capacity().spill_pending, 2);
-    // SAFETY: The originating spool has the writer receipt and still owns the observers.
-    unsafe { second.commit() };
-    // SAFETY: The originating spool has the writer receipt and still owns the observers.
-    unsafe { quiet.commit() };
+    // SAFETY: test holds `LOCK` and commits intervals in assembly order.
+    unsafe {
+        second.commit();
+        quiet.commit();
+    }
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
     let rows = drained(seal());
     assert_eq!(
@@ -317,26 +320,26 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     assert_eq!(event(0, 1, b"ring"), Ok(1));
     assert_eq!(shared_event(1, 1, b"shared"), 2);
     let mut first = Assembled::default();
-    assemble(seal(), &mut first).unwrap();
-    // SAFETY: This is the spool's actual queue admission while its originating observer remains
-    // live.
-    unsafe { first.admitted() };
-    // SAFETY: This is the spool's actual queue admission while its originating observer remains
-    // live.
-    unsafe { first.admitted() };
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe {
+        assemble(seal(), &mut first).unwrap();
+        first.admitted();
+        first.admitted();
+    }
     assert_eq!(event(0, 2, b"next"), Ok(3));
     let mut second = Assembled::default();
-    assemble(seal(), &mut second).unwrap();
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe { assemble(seal(), &mut second) }.unwrap();
     assert_eq!(sequences(&second), [3]);
-    // SAFETY: This is the spool's actual queue admission while its originating observer remains
-    // live.
+    // SAFETY: test holds `LOCK` and admits intervals in assembly order.
     unsafe { second.admitted() };
     assert_eq!(ADMITTED.load(Ordering::Acquire), 2);
     drop((first, second));
-    // SAFETY: The sole spool has invalidated pending writes and still owns its observer frontier.
+    // SAFETY: test holds `LOCK` and dropped all uncommitted intervals above.
     unsafe { reset_admitted() };
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
-    let lost = crate::interval::seal(3, Some(1));
+    // SAFETY: Unit test exclusively owns map-event observation and sealing.
+    let lost = unsafe { crate::interval::seal(3, Some(1)) };
     assert!(
         lost.health
             .iter()
@@ -350,13 +353,42 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
             (3, 2, 0, b"next".to_vec()),
         ]
     );
-    // SAFETY: The sole spool has invalidated pending writes and still owns its observer frontier.
+    // SAFETY: test holds `LOCK` with no in-flight intervals remaining.
     unsafe { reset_admitted() };
     assert!(
-        crate::interval::seal(4, Some(1))
+        // SAFETY: Unit test exclusively owns map-event observation and sealing.
+        unsafe { crate::interval::seal(4, Some(1)) }
             .health
             .iter()
             .all(|health| !health.faults.contains(Fault::OutputLost))
     );
     assert!(drained(seal()).is_empty());
+}
+
+#[test]
+fn capacity_and_allocated_bytes_observe_spilled_records_without_popping_or_losing_them() {
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset_for_tests();
+    grow(1, MINIMUM_LANE_BYTES).unwrap();
+    let bytes_before = allocated_bytes();
+    let seq = spill(current(), 1, 1, 1, b"spilled".len(), |writer| {
+        writer.put(b"spilled");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seq, 1);
+    let (cap, bytes_after) =
+        collector_test_support::with_allocations_denied(|| (capacity(), allocated_bytes()));
+    assert_eq!(cap.spill_pending, 1);
+    let payload_capacity = current().pushed_bytes.load(Ordering::Acquire);
+    assert!(payload_capacity >= b"spilled".len());
+    assert_eq!(
+        bytes_after - bytes_before,
+        SpillStack::<Spilled>::node_size() + payload_capacity
+    );
+    assert_eq!(current().pushed.len(), 1);
+    assert_eq!(drained(seal()), vec![(1, 1, 1, b"spilled".to_vec())]);
+    assert_eq!(capacity().spill_pending, 0);
 }

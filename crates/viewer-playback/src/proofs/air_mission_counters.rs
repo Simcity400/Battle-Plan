@@ -8,7 +8,8 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_counters::map::counters::{air_mission_counts::MISSIONS, counts_withheld, fragment_withheld, ground_withheld};
+use replay_derive::air_mission_counts::MISSIONS;
+use viewer_counters_naval::air_missions::{counts_withheld, fragment_withheld, ground_withheld};
 
 const PHASE_NS: [&str; PHASES.len()] = ["ns registrations", "ns holders", "ns regions", "ns by the hour"];
 

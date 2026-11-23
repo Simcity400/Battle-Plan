@@ -107,7 +107,7 @@ pub fn level_of(bin_hours: i64) -> io::Result<u8> {
         return Err(invalid("Invalid tile bin hours"));
     }
     if bin_hours < BASE_HOURS {
-        return Ok(replay::lanes::WALKED);
+        return Ok(replay_lanes::lanes::WALKED);
     }
     let mut level = 0u8;
     while bucket_hours(level + 1) <= bin_hours {

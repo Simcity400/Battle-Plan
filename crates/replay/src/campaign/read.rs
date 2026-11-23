@@ -1,12 +1,8 @@
 
 use super::{BlockIndex, Replay, SeekResult};
-use crate::{
-    BranchId, Hour,
-    codec::invalid_static,
-    columnar_frames::{Frames, Pool},
-    frame::{DecodedFrame, RecordedFrame},
-    rows::TableId,
-};
+use replay_data::{BranchId, Hour, codec::invalid_static, rows::TableId};
+use replay_recording::columnar_frames::{Frames, Pool};
+use replay_frame::frame::{DecodedFrame, RecordedFrame};
 use std::{io, sync::Arc};
 
 impl Replay {
@@ -91,7 +87,7 @@ pub struct HourCursor {
 struct Held(Arc<Replay>);
 
 impl std::ops::Deref for Held {
-    type Target = crate::columnar_frames::Recording;
+    type Target = replay_recording::columnar_frames::Recording;
 
     fn deref(&self) -> &Self::Target {
         &self.0.recording
@@ -147,14 +143,10 @@ impl HourCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        branches::{BranchReason, BranchStart, Parentage},
-        cells::TableReader,
-        frame::{Frame, Metrics, SharedView, TableUpdate, TableView},
-        identity::{CaptureMode, Identity, SampleBoundary, SessionStart, Verification},
-        rows::{CampaignRow, ClockRow, TableRows},
-        spool::Record,
-    };
+    use replay_frame::{branches::{BranchReason, BranchStart, Parentage}, frame::{Frame, Metrics, SharedView, TableUpdate, TableView}};
+    use replay_recording::cells::TableReader;
+    use replay_data::{identity::{CaptureMode, Identity, SampleBoundary, SessionStart, Verification}, rows::{CampaignRow, ClockRow, TableRows}};
+    use replay_capture_spool::spool::Record;
     use replay_columnar::envelope::UNIT_ORDINALS;
 
     const CAMPAIGN: &[u8] = b"hour cursor";
@@ -175,7 +167,7 @@ mod tests {
                     TableId::Campaign => TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.to_vec() }]),
                     table => TableRows::empty(table),
                 };
-                match crate::frame::current_absence(rows.table()) {
+                match replay_frame::frame::current_absence(rows.table()) {
                     Some(TableView::NotRecorded { mode }) => TableUpdate::NotRecorded { mode },
                     Some(TableView::Unavailable { reason }) => TableUpdate::Unavailable { reason },
                     None => TableUpdate::Snapshot(rows),
@@ -255,15 +247,9 @@ mod tests {
 
     #[test]
     fn records_added_to_a_recording_of_an_earlier_format_are_recorded_in_its_format() {
-        use crate::{
-            branches::Gap,
-            campaign::{
-                Records,
-                writer::{self, Addition},
-            },
-            columnar_frames::{Open, Recording},
-            spool::ControlRecord,
-        };
+        use replay_frame::branches::Gap;
+        use replay_recording::{records::Records, columnar_frames::{Open, Recording}, control::ControlRecord};
+        use crate::campaign::writer::{self, Addition};
         use replay_data::rows::compatibility::{CAPTURE_ADDITIONS_FORMAT, EVENT_LOSS_FORMAT};
         let format = CAPTURE_ADDITIONS_FORMAT - 1;
         let bytes = crate::campaign::fixtures::encode_records_at(recorder_derive::writers_within, format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
@@ -274,6 +260,11 @@ mod tests {
         let gap = Gap { branch: 1, first_hour: LATER + 30, last_hour: LATER + 40, reason: "recovered".into() };
         let partial = ControlRecord::Partial { session: 1, reason: "the capture failed".into(), failed_hour: Some(LATER + 41) };
         let added = Records { gaps: vec![gap.clone()], controls: vec![partial.clone()], ..Records::default() };
+        let closed = replay_settings::exit::Exit::new();
+        closed.seal();
+        let refused = writer::revise_under(&closed, &path, &opened, &Addition { records: Some(&added), ..Addition::default() }, false, 3).unwrap_err();
+        assert_eq!(refused.to_string(), replay_settings::exit::CLOSED, "an addition asked for once BattlePlan closes is refused, never cut off before its footer");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
         writer::revise(&path, &opened, &Addition { records: Some(&added), ..Addition::default() }, false, 3).unwrap();
         drop(opened);
         let reopened = Replay::open_path_as(&path, Open::Newest).unwrap();
@@ -284,15 +275,15 @@ mod tests {
         drop(reopened);
         std::fs::remove_file(&path).unwrap();
         let loss = Records { controls: vec![ControlRecord::EventLoss { session: 1, branch: 1, after_hour: 1, hour: 2 }], ..Records::default() };
-        let error = loss.encode(crate::format::FormatVersion::read(EVENT_LOSS_FORMAT - 1).unwrap()).unwrap_err();
+        let error = loss.encode(replay_data::format::FormatVersion::read(EVENT_LOSS_FORMAT - 1).unwrap()).unwrap_err();
         assert!(error.to_string().contains("EventLoss layout changed"), "{error}");
     }
 
     #[test]
     fn a_recording_of_a_newer_format_is_refused_by_name_however_it_is_opened() {
-        let newer = crate::format::FormatVersion::CURRENT.version() + 1;
+        let newer = replay_data::format::FormatVersion::CURRENT.version() + 1;
         let bytes = crate::campaign::fixtures::encode_records_naming(recorder_derive::writers(), newer, CAMPAIGN.to_vec(), &[records(frame)]).unwrap();
-        for error in [crate::columnar_frames::Recording::open(bytes.clone()).map(drop).unwrap_err(), Replay::open(bytes).map(drop).unwrap_err()] {
+        for error in [replay_recording::columnar_frames::Recording::open(bytes.clone()).map(drop).unwrap_err(), Replay::open(bytes).map(drop).unwrap_err()] {
             assert!(error.to_string().contains(&format!("recording format {newer} is newer")), "{error}");
         }
     }
@@ -390,7 +381,7 @@ mod tests {
 
     #[test]
     fn a_cursor_with_change_facts_hands_them_through_its_frames() {
-        use crate::frame::{HourInput, TableChanges};
+        use replay_frame::frame::{HourInput, TableChanges};
         let replay = Arc::new(replay());
         let at = |cursor: &mut HourCursor, hour: Hour| {
             let SeekResult::Frame(frame) = cursor.seek(1, hour).unwrap() else { panic!("hour {hour} is a gap") };

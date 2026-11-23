@@ -1,8 +1,9 @@
+use viewer_counter_kit::combat_markers::whole_of;
 
 use viewer_layer_core::{layers::{Carried, Change, Settling, Inputs, KeptAt, Keys, Layer, List, Num, Text, Upstream, View}, engagements::{Engagements, Index}};
 use super::land_markers::{bytes_of, held, held_as, opaque, u64s};
 use viewer_layer_core::playhead_host::mirror::{Mirror, Mirrors};
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{NavalCombatSideDetails, NavalProvinceCombatRow, TableId};
@@ -14,10 +15,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use viewer_counters::map::{
-    counters::{DetailFacts, HqForces, NavalMarkerInputs, NavalMarkerValues, ResultFields, combat_markers::whole_of, naval_marker_values, result_country_lists},
-    naval_combat_occurrences::{Combat, Direct, Transfers, Units},
-};
+use viewer_counters_naval::naval_markers::{DetailFacts, HqForces, NavalMarkerInputs, NavalMarkerValues, ResultFields, naval_marker_values, result_country_lists};
+use viewer_counter_kit::naval_combat_occurrences::{Combat, Direct, Transfers, Units};
 use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{NAVAL, NAVAL_ICON, Provenance},

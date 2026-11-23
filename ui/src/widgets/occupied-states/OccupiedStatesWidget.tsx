@@ -22,7 +22,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf.ts';
 import { OPTIONS } from './definition';
-import { emptyReason, occupationTooltip, occupiedRows, occupiedStructure, validateOccupiedStates, type CountryRole, type OccupiedDetail } from './occupiedStatesData.ts';
+import { occupationTooltip, occupiedStructure, validateOccupiedStates, type CountryRole, type OccupiedDetail } from './occupiedStatesData.ts';
 import { lookAt } from '../../draw/tables/looks.ts';
 import type { OccupiedFilter } from './occupiedTable';
 import OccupiedTableSurface from './OccupiedTableSurface.tsx';
@@ -102,11 +102,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   })), [named, looks, hour]);
   const context = useMemo(() => ({ filter, role, labels }), [filter, role, labels]);
   const exactRead = head.exactRead;
-  const exactRows = exactRead && match.ready && !match.reason ? async (at: number) => {
-    const reply = validateOccupiedStates(await exactRead(at));
-    const exact = occupiedRows(reply, widget.countries.kind === 'all' ? null : tag => match.matches(tag, at), role, membershipUnrecordedAt(widget.countries, groups.data, at));
-    return emptyReason(reply, exact) ? ['empty:notice'] : exact.rows.map(row => row.key);
-  } : undefined;
+  const exactReply = exactRead && match.ready && !match.reason ? async (at: number) => validateOccupiedStates(await exactRead(at)) : undefined;
   const tooltip = (key: string, drawn: TableReading) => {
     const detail = drawn.detail as OccupiedDetail | undefined;
     if (!detail) return null;
@@ -143,7 +139,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
       live={head.live} countryColours={countryColours} onHover={(key, at, drawn) => {
         const content = key !== null && at && drawn ? tooltip(key, drawn) : null;
         if (content && at) showTooltip(tooltipOwner, content, at.x, at.y, key!); else hideTooltip(tooltipOwner);
-      }} setOption={setOption} exactRows={exactRows} headerSlot={headerSlot}
+      }} setOption={setOption} exactReply={exactReply} headerSlot={headerSlot}
       fixed={widget.time.mode === 'follow' || head.hour === null ? undefined : head.hour - (track?.axisOffset ?? 0)} />
   </>;
   return <div className="occupied-states" ref={head.root} onContextMenu={event => {

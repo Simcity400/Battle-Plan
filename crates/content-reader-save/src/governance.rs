@@ -686,13 +686,13 @@ mod tests {
     use crate::GameDate;
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
-        parse(&content_reader_core::parser::parse(text)?.items)
+        parse(&content_reader_parser::parser::parse(text)?.items)
     }
 
     #[test]
     fn gap_research_grants_research_grant_inventory_keeps_unused_grants_duplicates_restrictions_and_counter()
      {
-        let research = parse_research(&content_reader_core::parser::parse(br#"next_bonus_id=-2147483648
+        let research = parse_research(&content_reader_parser::parser::parse(br#"next_bonus_id=-2147483648
             limited_use_bonus={id=7 name=mod_grant uses=3 claim=2 bonus=0.25 ahead_reduction=-1.5 technology=mod_tech technology=mod_tech category=mod_category}
             limited_use_bonus={id=7 name=mod_repeated uses=-1}
             limited_use_cost_reduction_bonus={id=8 name=mod_cost uses=1 cost_reduction=0.4 category=mod_category}"#).unwrap().items).unwrap();

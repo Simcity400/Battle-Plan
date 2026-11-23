@@ -1,7 +1,7 @@
 
 use super::{MapText, Presented, Source, TABLES};
 use viewer_layer_core::{layers::{Layer, Upstream, View}, test_support::recorded, vision, playhead_host::{MapSide, open}};
-use content_reader_core::buildings::Buildings;
+use content_reader_key_names::buildings::Buildings;
 use content_reader_localisation::localisation::Localisation;
 use map_display_data::{MapTextResult, PopupResult};
 use playhead::Settings;
@@ -89,7 +89,7 @@ fn record(recorded: impl Fn(u32) -> bool) -> viewer_layer_core::playhead_host::u
 
 fn insert_whole(store: &mut Store, table: TableId, slot: u32, key: u128) {
     use replay_columnar::state::Kind;
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut changes = store.table(table.index()).unwrap();
     changes.insert_at(slot, key).unwrap();
     for (column, kind) in kinds[table.index()].iter().enumerate() {

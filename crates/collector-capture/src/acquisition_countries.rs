@@ -237,19 +237,22 @@ impl TemplatesRequest {
         let cached = self.countries.view(memory);
         let (workers, base) = (&self.workers, self.base);
         let mut walk = |parts| workers.template_walk(parts, memory, base);
-        self.templates.capture_preacquired(
-            &cached,
-            self.base,
-            self.game_state,
-            self.hour,
-            self.force_full,
-            Some(
-                collector_division_templates::extended::division_templates::TemplateWorkers {
-                    lanes: workers.lanes(),
-                    walk: &mut walk,
-                },
-            ),
-        );
+        // SAFETY: Admitted template worker records template sizing demand for the active session.
+        unsafe {
+            self.templates.capture_preacquired(
+                &cached,
+                self.base,
+                self.game_state,
+                self.hour,
+                self.force_full,
+                Some(
+                    collector_division_templates::extended::division_templates::TemplateWorkers {
+                        lanes: workers.lanes(),
+                        walk: &mut walk,
+                    },
+                ),
+            );
+        }
         TemplatesReport
     }
 
@@ -569,18 +572,19 @@ mod tests {
         for workers in [0, 1, 3] {
             let bytes = fixture();
             let snapshot = snapshot(&bytes, 256);
-            let pool =
-            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-            unsafe { collector_workers::acquisition::Pool::start(
-                workers,
-                1,
-                move |request: &mut Request| {
-                    request.run(&SliceMemory {
-                        base: 0,
-                        bytes: &bytes,
-                    })
-                },
-            ) }
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                collector_workers::acquisition::Pool::start(
+                    workers,
+                    1,
+                    move |request: &mut Request| {
+                        request.run(&SliceMemory {
+                            base: 0,
+                            bytes: &bytes,
+                        })
+                    },
+                )
+            }
             .unwrap();
             let mut rows = vec![ccountry::Row::default(); 2];
             let mut links = vec![ccountry::LinkRow::default(); 8];

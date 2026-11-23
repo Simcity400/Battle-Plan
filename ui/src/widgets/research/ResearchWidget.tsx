@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useId, useMemo, useRef, useState } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -17,7 +17,7 @@ import { usNumber } from '../../charts/numberFormat';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { hideTooltip, showTooltip } from '../../charts/tooltip';
+import { useOpenTooltip } from '../../charts/openTooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
@@ -44,6 +44,7 @@ import { completedRow, completedTooltip, coverageAt, currentTooltip, gapTooltip,
   recordedResearchLanes, researchLanesAt, researchRevealKey, researchRows } from './researchLayout';
 import type { ResearchItem, ResearchLane, ResearchRow, ResearchText } from './researchLayout';
 import { slotNumbers, slotsStructure } from './researchSlots';
+import type { SlotInspection } from './researchSlots';
 import { historyTokens, useResearchReply, useResearchSlots } from './useResearch';
 import { useTechnologyArtwork } from './useTechnologyArtwork';
 import './research.css';
@@ -56,7 +57,7 @@ const NO_COVERAGE: ResearchCoverage[] = [];
 const NO_LANES: ResearchLane[] = [];
 const NO_LOOKS: ReadonlyMap<string, ResearchFolderLook> = new Map();
 type Breakdown = { slotIndex: number; entry: ResearchEntry; hour: number };
-type Tip = (content: () => TooltipContent, key: string, x: number, y: number) => void;
+type Tip = (content: () => TooltipContent | null, key: string, x: number, y: number) => void;
 type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpProps>;
 const laneInteractive = (item: ResearchItem) => item.kind !== 'opened' && item.kind !== 'closed';
 const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.databaseIndex : null;
@@ -65,7 +66,7 @@ function Art({ icon, className }: { icon: string | undefined; className: string 
   return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
-function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
+function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent | null) {
   return {
     onPointerMove: (event: { clientX: number; clientY: number }) => tip(content, key, event.clientX, event.clientY),
     onPointerLeave: untip,
@@ -94,7 +95,7 @@ function LaneRow({ item, slots, text, dimmed, tip, untip, jump, onOpen }: {
 function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }: {
   lane: ResearchLane; history: ResearchData['history']; now: ResearchSlotsAt | undefined; text: ResearchText;
   tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
-  latest: { current: ResearchSlotsAt | undefined };
+  latest: { current: ResearchSlotsAt | undefined; inspect?: (slot: number) => SlotInspection | undefined };
 }) {
   const { slot } = lane;
   const read = now?.slots.find(item => item.index === slot.index);
@@ -115,6 +116,9 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
   const databaseIndex = entry?.databaseIndex ?? null;
   const name = text.name(token, databaseIndex);
   const content = () => {
+    const shown = latest.inspect?.(slot.index);
+    if ((shown ? shown.token : (latest.current ?? now).slots.find(item => item.index === slot.index)?.state.token) !== read.state.token) return null;
+    if (shown) return currentTooltip(token, slot.index, shown.fraction === null ? null : { fraction: shown.fraction, hour: shown.hour }, shown.left, !!entry, text, null, databaseIndex);
     const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;
     const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, reply.hour);
     return currentTooltip(token, slot.index, progress, slotNumbers(current, reply.hour).left, !!entry, text, null, databaseIndex);
@@ -188,7 +192,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
       return view === 'columns' ? keys(observed) : researchRows(observed, researchAt(data.history, requested),
         coverageAt(data.history.coverage, requested)).filter(includeRow).map(row => row.key);
     },
-  } : undefined);
+  } : undefined, now.placement);
   const imageTokens = useMemo(() => data ? [...new Set(historyTokens(data.history).map(use => typeof use === 'string' ? use : use[0]))] : NO_TOKENS, [data]);
   const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
   const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data, recorded);
@@ -201,9 +205,9 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     artworkFailure: token => images.failures?.get(token),
     folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
   }), [artwork, looks, images.failures]);
-  const tip = useCallback<Tip>((content, key, x, y) => showTooltip(owner, content(), x, y, key), [owner]);
-  const untip = useCallback(() => hideTooltip(owner), [owner]);
-  useEffect(() => untip, [untip]);
+  const tips = useOpenTooltip(owner, now.live.subscribe);
+  const tip = useCallback<Tip>((content, key, x, y) => tips.show(content, key, x, y), [tips]);
+  const untip = tips.hide;
   const breakdown = usePopover('start');
   const [shown, setShown] = useState<Breakdown | null>(null);
   const open = useCallback((target: Breakdown, anchor: () => AnchorRect | null) => {
@@ -264,7 +268,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
 
 function ResearchColumns({ lanes, slots, hour, moment, now, latest, text, dimmed, tip, untip, jump, onOpen, data }: {
   lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; hour: number; moment: boolean; now: ResearchSlotsAt | undefined;
-  latest: { current: ResearchSlotsAt | undefined }; text: ResearchText;
+  latest: { current: ResearchSlotsAt | undefined; inspect?: (slot: number) => SlotInspection | undefined }; text: ResearchText;
   dimmed: (token: string) => boolean; tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
   data: ResearchData;
 }) {

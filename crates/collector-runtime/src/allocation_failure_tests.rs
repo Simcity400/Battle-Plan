@@ -1425,10 +1425,7 @@ fn exercise_pipeline(
     unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }?;
     let mut processor =
     // SAFETY: The isolated test owns the spool's failure state.
-    unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
-    if phase == Phase::Spool {
-        processor.lockstep_writer();
-    }
+    unsafe { collector_spool::spooling::spool_allocation_fixture(&root, phase == Phase::Spool) }?;
     let mut frame = collector_spool::spooling::allocation_failure_frame(19);
     if changed_loads {
         frame.clock.as_mut().unwrap().play_session_started_at = 19;
@@ -1492,8 +1489,7 @@ fn exercise_pipeline(
     collector_memory::terminal::inject(phase, ordinal as u64);
     TARGET_PHASE.store(phase as u8, Ordering::Relaxed);
     REACHED.store(false, Ordering::Relaxed);
-    // SAFETY: Only the isolated spool test changes this publication failure setting.
-    unsafe { collector_spool::spooling::fail_publication_for_test(fail_publication) };
+    let mut fail_next_publication = fail_publication;
     let mut original_calls = 0;
     let mut conversion_matched = true;
     let mut callback_calls = 0;
@@ -1643,7 +1639,11 @@ fn exercise_pipeline(
                         if !collector_memory::terminal::failed() {
                             let _ = processor
                                 .prepare(&frame)
-                                .and_then(|()| processor.frame(&frame));
+                                .and_then(|()| processor.frame_before_publication(&frame, || {
+                                    if std::mem::take(&mut fail_next_publication) {
+                                        collector_memory::terminal::fail(Phase::Spool, Code::Reserve);
+                                    }
+                                }));
                         }
                     }
                     Phase::Status => {
@@ -1843,12 +1843,12 @@ fn recovered_hours(
                 }
             }
         }
-        let recovered = replay::spool::recover_prefix(prefix);
+        let recovered = replay_capture_spool::spool::recover_prefix(prefix);
         if exact_cap && recovered.valid_bytes != prefix.len() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         for record in recovered.records {
-            if let replay::spool::Record::Frame(frame) = record {
+            if let replay_capture_spool::spool::Record::Frame(frame) = record {
                 hours += 1;
                 attempted_committed |= frame.hour == attempted_hour;
             }

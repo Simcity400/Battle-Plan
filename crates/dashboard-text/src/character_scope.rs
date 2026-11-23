@@ -1,6 +1,7 @@
 
 use crate::{state_resources::Links, triggers::Failure};
-use content_reader_core::{leader_traits::LeaderTraits, unit_leader::Traits};
+use content_reader_military::leader_traits::LeaderTraits;
+use content_reader_key_names::unit_leader::Traits;
 use replay_data::{
     rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
     rows::CountryCharacterRow, rows::TableSchema, rows::UnitLeaderRow, rows::UnitLeaderTraitRow,

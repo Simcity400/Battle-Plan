@@ -1,7 +1,7 @@
 use super::*;
 
-fn program(source: &str) -> content_reader_core::pdxshader::program::Program {
-    content_reader_core::pdxshader::program::read_with(b"arena.shader", &|path| {
+fn program(source: &str) -> content_reader_gui::pdxshader::program::Program {
+    content_reader_gui::pdxshader::program::read_with(b"arena.shader", &|path| {
         Some(if path == b"arena.shader" {
             source.as_bytes().to_vec()
         } else {

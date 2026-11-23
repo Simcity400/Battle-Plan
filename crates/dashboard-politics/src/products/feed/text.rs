@@ -4,7 +4,7 @@ use dashboard_base::{catalogue::{self, Catalogue}, products::artwork};
 use dashboard_effects::{ScriptedEffects, effect_description};
 use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeName, ScriptedText}};
 use dashboard_query::Query;
-use replay::at::{Cursor, Read, Readers};
+use replay_lanes::at::{Cursor, Read, Readers};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, HourFrame, TableView};
 use std::{
@@ -602,7 +602,7 @@ fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<
     catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &[])?)
 }
 
-fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[content_reader_core::parser::Item]) -> Result<effect_description::Description, String> {
+fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[content_reader_parser::parser::Item]) -> Result<effect_description::Description, String> {
     let scripted = catalogue.scripted_content()?;
     let content = scripted.effects()?;
     let frame = DecodedFrame {
@@ -619,7 +619,7 @@ fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, 
     Ok(effect_description::describe(items, &context, &mut inputs.graph(decision)?))
 }
 
-fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, inputs: &Inputs, decision: bool, label: &str, items: &[content_reader_core::parser::Item]) -> io::Result<()> {
+fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, inputs: &Inputs, decision: bool, label: &str, items: &[content_reader_parser::parser::Item]) -> io::Result<()> {
     if items.is_empty() {
         return Ok(());
     }

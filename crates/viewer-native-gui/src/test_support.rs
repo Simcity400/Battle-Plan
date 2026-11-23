@@ -4,7 +4,7 @@ use crate::{
     native_gui::{self, Layout, Resources, SpriteInfo, SpriteKind, Texture},
     sprites::SpriteSheet,
 };
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 
 pub const VIEWPORT: [i32; 2] = [1920, 1080];

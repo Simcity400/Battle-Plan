@@ -298,7 +298,7 @@ struct Options {
     out: Option<PathBuf>,
     headless_dump: bool,
     playback_cost_end: Option<Hour>,
-    visual_mods: Vec<content_reader_core::content::visual::Choice>,
+    visual_mods: Vec<content_reader_layers::content::visual::Choice>,
     window_dump: bool,
     fly: Option<app::fly::Scripted>,
     fly_view: Option<controls::flight::View>,
@@ -345,7 +345,7 @@ struct Options {
     find: Option<String>,
     intel_hover: Vec<[f32; 2]>,
     ui_scale: Option<f32>,
-    counter_colors: Option<viewer_counters::map::counters::CounterColorMode>,
+    counter_colors: Option<viewer_counter_kit::CounterColorMode>,
     nato_counters: Option<bool>,
     diagnostics: bool,
     demilitarized: BTreeSet<u32>,
@@ -356,10 +356,10 @@ impl Options {
     pub(crate) fn counter_settings(
         &self,
         game: &content_reader_settings::settings::MapOptions,
-    ) -> viewer_counters::map::counters::CounterSettings {
-        viewer_counters::map::counters::CounterSettings {
+    ) -> viewer_counter_kit::CounterSettings {
+        viewer_counter_kit::CounterSettings {
             color_mode: self.counter_colors.unwrap_or(
-                viewer_counters::map::counters::CounterColorMode::of(game.country_counter_colours),
+                viewer_counter_kit::CounterColorMode::of(game.country_counter_colours),
             ),
             nato: self.nato_counters.unwrap_or(game.nato_counters),
         }
@@ -628,7 +628,7 @@ impl Options {
                         .and_then(|value| value.into_string().ok())
                         .filter(|value| !value.is_empty())
                         .ok_or_else(|| invalid("--visual-mod needs a mod id, such as mod/name.mod"))?;
-                    options.visual_mods.push(content_reader_core::content::visual::Choice {
+                    options.visual_mods.push(content_reader_layers::content::visual::Choice {
                         name: id.clone(),
                         id,
                     });
@@ -780,10 +780,10 @@ impl Options {
                         "--counter-colors" => {
                             options.counter_colors = Some(match value.trim() {
                                 value if value.eq_ignore_ascii_case("allegiance") => {
-                                    viewer_counters::map::counters::CounterColorMode::Allegiance
+                                    viewer_counter_kit::CounterColorMode::Allegiance
                                 }
                                 value if value.eq_ignore_ascii_case("country") => {
-                                    viewer_counters::map::counters::CounterColorMode::Country
+                                    viewer_counter_kit::CounterColorMode::Country
                                 }
                                 _ => {
                                     return Err(invalid(
@@ -808,7 +808,7 @@ impl Options {
                 _ => return Err(invalid(USAGE)),
             }
         }
-        if options.replay.as_deref().is_some_and(|path| !replay::recording_files::is_recording(path)) {
+        if options.replay.as_deref().is_some_and(|path| !replay_files::recording_files::is_recording(path)) {
             return Err(invalid("Choose a BattlePlan recording."));
         }
         match walk {
@@ -2430,7 +2430,7 @@ mod tests {
 
     #[test]
     fn counter_options_override_the_users_settings() {
-        use viewer_counters::map::counters::{CounterColorMode, CounterSettings};
+        use viewer_counter_kit::{CounterColorMode, CounterSettings};
         let from_file = &content_reader_settings::settings::MapOptions {
             country_counter_colours: true,
             nato_counters: true,

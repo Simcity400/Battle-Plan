@@ -11,7 +11,8 @@ use playhead::{
     lane::Lane,
     pages::{Pages, Span, WorldPages},
 };
-use replay::{campaign::Replay, spool::Record};
+use replay::campaign::Replay;
+use replay_capture_spool::spool::Record;
 use replay_columnar::{envelope::UNIT_ORDINALS, summary::Cells};
 use replay_data::{
     identity::{CaptureMode, Identity as Recorded, Roster, SampleBoundary, SessionStart, Verification},
@@ -186,7 +187,7 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
     let followed = Query::Series { series: &NEGATED, measure: &NEGATED.measures[0], countries: vec!["GER".into(), "ITA".into()], top: None, least: false, parts: false, identity };
     let line = Line::new(&state, &NEGATED, &NEGATED.measures[0]).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let edge = FIRST + UNIT_ORDINALS as i32;
     let (mut valued, mut unrecorded) = (0, 0);
     for (from, to) in [(ITA_FROM - 30, ITA_FROM + 60), (edge - 40, edge + 40)] {
@@ -231,7 +232,7 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
     let parts = series.parts.unwrap();
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
     let line = Line::new(&state, series, measure).unwrap();
-    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let columns = dashboard_query::read::columns_of(&dashboard_declare::source(series.table, measure).unwrap());
     let mut compared = 0;
     for top in [None, Some(2)] {
@@ -269,14 +270,9 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
         Definitions,
         definitions::{Define, Form},
     };
-    use replay::{
-        campaign::Records,
-        columnar_file::{FileWriter, HourWriter, Resumed, Settings},
-        columnar_frames::{
-            Recording, schema,
-            synthetic::{Input, Sample, Synthetic},
-        },
-    };
+    use replay_recording::{records::Records, columnar_frames::Recording, schema::schema};
+    use replay_journal::{columnar_file::{FileWriter, HourWriter, Resumed}, synthetic::{Input, Sample, Synthetic}};
+    use replay_settings::compression::Settings;
     use replay_columnar::{
         container::{self, SectionKey, Tags},
         envelope::{self, Kind},

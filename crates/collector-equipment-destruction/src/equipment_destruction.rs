@@ -1885,10 +1885,6 @@ fn revoke_active_observation() {
     }
 }
 pub fn lost_drain() {
-    #[cfg(any(test, feature = "test-support"))]
-    if !tests::owns_observation() {
-        return;
-    }
     LOST.fetch_add(1, Ordering::Relaxed);
     log(Kind::Lost);
 }
@@ -1923,10 +1919,6 @@ fn grow_queue(store: &mut Store) -> Result<(), &'static str> {
 }
 
 pub fn boundary(clock: Option<Clock>) {
-    #[cfg(any(test, feature = "test-support"))]
-    if !tests::owns_observation() {
-        return;
-    }
     let Some(clock) = clock else {
         lost_drain();
         return;
@@ -1980,10 +1972,6 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
 }
 
 fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drain, &'static str> {
-    #[cfg(any(test, feature = "test-support"))]
-    if !tests::owns_observation() {
-        return Err("equipment destruction hooks unavailable (see status unhooked)");
-    }
     DRAINS.fetch_add(1, Ordering::Relaxed);
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("equipment destruction hooks unavailable (see status unhooked)");

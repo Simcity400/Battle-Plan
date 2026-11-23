@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn mission_kind_is_mandatory_and_convoy_omission_is_preserved() {
         let read = |fields: &str| {
-            parse(&content_reader_core::parser::parse(format!(
+            parse(&content_reader_parser::parser::parse(format!(
             "countries={{ X={{ units={{ fleet={{ id={{id=1 type=61}} task_force={{id={{id=2 type=61}} mission={{{fields}}} }} }} }} }} }}"
         ).as_bytes()).unwrap().items)
         };
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn mission_operands_keep_absence_and_presence_rings_keep_order() {
         let saved = parse(
-            &content_reader_core::parser::parse(
+            &content_reader_parser::parser::parse(
                 br#"countries={
                 ENG={ strategic_navy={ max_allowed_dockyards_to_repair=46
                     convoy_escort_presence_history={ "9"={ -1 -1 0 2 } "206"={ } } }

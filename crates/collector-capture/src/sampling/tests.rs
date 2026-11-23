@@ -91,6 +91,13 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
         Err(acquisition::Failure::Stopped)
     ));
     assert_eq!(
+        pool.calibration().roles[collector_workers::roles::Role::DivisionInputs as usize]
+            .counters
+            .inline_completed,
+        0
+    );
+    #[cfg(feature = "acquisition_profile")]
+    assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO
     );
@@ -190,6 +197,13 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
             completed.report,
             Ok(acquisition::Report::AirMissions(_))
         ));
+        assert_eq!(
+            pool.calibration().roles[collector_workers::roles::Role::AirMissions as usize]
+                .counters
+                .inline_completed,
+            0
+        );
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             completed.table_reads,
             collector_memory::read_accounting::ZERO
@@ -979,6 +993,7 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
         completed.report,
         Err(acquisition::Failure::Stopped)
     ));
+    #[cfg(feature = "acquisition_profile")]
     assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO
@@ -1383,7 +1398,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             let (started, builds) = mpsc::channel::<()>();
             let (release, released) = mpsc::channel::<()>();
             let released = Mutex::new(released);
-            let installed = shared.build_ahead_seam.set(Box::new(move |at| {
+            let observe = move |at| {
                 if at == BuildAhead::Starting {
                     let _ = started.send(());
                     let _ = released
@@ -1391,8 +1406,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
                         .unwrap()
                         .recv_timeout(collector_test_support::TEST_HANG_GUARD);
                 }
-            }));
-            assert!(installed.is_ok());
+            };
             let gauge = || format!("{:?}", shared.frames.gauge());
             let hour = |at: usize, held: &mut Vec<usize>| {
                 steps.at(format_args!("hour {at}: taking its frame; {}", gauge()));
@@ -1422,7 +1436,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
                     });
             };
             let mut held = Vec::new();
-            let builder = TestBuilder::start(&shared, release);
+            let builder = TestBuilder::following(&shared, release, || {}, observe);
             for at in 1..=STEADY - AHEAD {
                 assert_eq!(hour(at, &mut held), 0, "hour {at}: {}", gauge());
             }
@@ -1509,14 +1523,11 @@ struct TestBuilder {
 }
 
 impl TestBuilder {
-    fn start(shared: &Arc<Shared>, release: std::sync::mpsc::Sender<()>) -> Self {
-        Self::following(shared, release, || {})
-    }
-
     fn following(
         shared: &Arc<Shared>,
         release: std::sync::mpsc::Sender<()>,
         follow: impl FnMut() + Send + 'static,
+        observe: impl FnMut(BuildAhead) + Send + 'static,
     ) -> Self {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let builder = {
@@ -1524,7 +1535,7 @@ impl TestBuilder {
             collector_test_support::spawn_ending(move ||
             // SAFETY: This is the session's designated builder, which the runtime joins before
             // releasing Shared.
-            unsafe { shared.build_ahead_until(&stop, follow) })
+            unsafe { shared.build_ahead_until_observing(&stop, follow, observe) })
         };
         Self {
             stop,
@@ -1595,7 +1606,7 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
                         .unwrap()
                         .recv_timeout(collector_test_support::TEST_HANG_GUARD);
                 };
-                let installed = shared.build_ahead_seam.set(Box::new({
+                let observe = {
                     let (seen, hold) = (Mutex::new(seen.clone()), hold.clone());
                     move |at| {
                         let _ = seen.lock().unwrap().send(Seen::Build(at));
@@ -1603,8 +1614,7 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
                             hold();
                         }
                     }
-                }));
-                assert!(installed.is_ok());
+                };
                 let mut looks = 0;
                 let builder = TestBuilder::following(&shared, release, move || {
                     looks += 1;
@@ -1612,7 +1622,7 @@ fn a_stopped_frame_builder_builds_nothing_more_and_ends() {
                         let _ = seen.send(Seen::Looking);
                         hold();
                     }
-                });
+                }, observe);
                 let mut starts = 0;
                 let mut wait_for = |wanted: Seen| {
                     steps.at(format_args!("waiting for {wanted:?}; {}", gauge()));
@@ -1941,10 +1951,10 @@ fn table_retry_preserves_admitted_politics_mutations() {
         &memory,
     );
     let mut cursors = vec![LaneCursor::default()];
-    let handoff = fixture.handoff(&mut cursors).unwrap();
-    let shared =
-    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
-    unsafe { Shared::new(0, 0, 1) };
+    // SAFETY: `fixture` stays alive and unmoved on the stack through `handoff.drain` below.
+    let handoff = unsafe { fixture.handoff(&mut cursors) }.unwrap();
+    // SAFETY: The caller owns the isolated fixture state required by this constructor.
+    let shared = unsafe { Shared::new(0, 0, 1) };
     let mut cadence = prepared_cadence();
     cadence.force_full(&cadence_clock(61320026, 1).borrowed());
     // SAFETY: The spool requests recovery after unpublished output in the current session.
@@ -1955,11 +1965,13 @@ fn table_retry_preserves_admitted_politics_mutations() {
     let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
     assert!(cadence.force_full(&clock.borrowed()) | recovery | refresh);
     if !continuous || recovery {
-        politics::invalidate();
+        // SAFETY: Test owns its isolated politics fixture and exercises recovery invalidation.
+        unsafe { politics::invalidate() };
     }
     let mut events = [Event::default()];
     let mut bytes = [0; 128];
-    let drained = handoff.drain(&cursors, &mut events, &mut bytes).unwrap();
+    // SAFETY: `fixture` is still alive and `cursors` came from `fixture.handoff` above.
+    let drained = unsafe { handoff.drain(&cursors, &mut events, &mut bytes) }.unwrap();
     assert_eq!(drained.copied, 1);
     assert_eq!(
         (events[0].country, events[0].before, events[0].after),
@@ -2760,12 +2772,31 @@ fn divisions_split_from_any_pooled_storage_matches_the_whole_direct_walk() {
     }
 }
 
+fn run_naval_observer_test_in_child(test: &str) -> bool {
+    const CHILD: &str = "BATTLEPLAN_NAVAL_ACQUISITION_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        return false;
+    }
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD, "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    true
+}
+
 #[test]
 fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     use collector_naval_results::{
         naval_result_sources as sources,
         naval_result_sources::{Entry, tests::Observation},
     };
+    if run_naval_observer_test_in_child(
+        "sampling::tests::no_frame_acquisition_marks_naval_sources_unavailable_before_reuse",
+    ) {
+        return;
+    }
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
@@ -2819,6 +2850,11 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
         naval_result_sources as sources,
         naval_result_sources::{Entry, tests::Observation},
     };
+    if run_naval_observer_test_in_child(
+        "sampling::tests::contained_acquisition_failure_marks_the_naval_event_interval_unavailable",
+    ) {
+        return;
+    }
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
@@ -2885,7 +2921,7 @@ fn campaign_clock_memory(len: usize) -> CampaignClockMemory {
 fn campaign_shared() -> Shared {
     // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
     // boundary or detach.
-    unsafe { Shared::with_sizing(0, 0, 1, &crate::country_scale::Sizing::for_slots(0)) }.unwrap()
+    unsafe { Shared::with_fixture_sizing(0, 0, 1, &crate::country_scale::Sizing::for_slots(0), 0) }.unwrap()
 }
 
 #[test]
@@ -3336,4 +3372,13 @@ fn every_air_bases_join_has_a_raw_payload_or_a_failure() {
             }
         }
     }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "no recording's tables are in scope")]
+fn ordinary_frame_sizing_requires_executable_tables() {
+    let sizing = crate::country_scale::Sizing::for_slots(0);
+    // SAFETY: This fixture does not publish observer bindings or install hooks.
+    let _ = unsafe { Shared::without_frames(0, 0, 1, &sizing) };
 }

@@ -27,18 +27,19 @@ fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
         )
         .unwrap();
         let bytes = captured.allocated_bytes() + orders.allocated_bytes();
-        let pool =
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
-            let Job::Late(request) = job else {
-                panic!("only Late is submitted");
-            };
-            assert!(mode != 1, "synthetic Late unwind");
-            request
-                .plans
-                .fail_unit_transports("synthetic optional transport refusal");
-            Report::Late(LateReport)
-        }) }
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
+                let Job::Late(request) = job else {
+                    panic!("only Late is submitted");
+                };
+                assert!(mode != 1, "synthetic Late unwind");
+                request
+                    .plans
+                    .fail_unit_transports("synthetic optional transport refusal");
+                Report::Late(LateReport)
+            })
+        }
         .unwrap();
         if mode == 3 {
             // SAFETY: This fixture owns its frame and worker state and runs without a live

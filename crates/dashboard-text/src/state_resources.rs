@@ -1,7 +1,9 @@
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
-use content_reader_core::{buildings::Buildings, defines::Defines, parser::Operator};
+use content_reader_key_names::buildings::Buildings;
+use content_reader_defines::defines::Defines;
+use content_reader_parser::parser::Operator;
 use replay_data::{
     rows::BuildingRow, rows::CountryBuildingResourceRow, rows::ResourceDefinitionRow,
     rows::StateBaseResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,

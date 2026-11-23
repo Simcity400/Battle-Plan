@@ -8,6 +8,25 @@ use std::cell::RefCell;
 
 pub const B0_HANDLE: u64 = (0x41 << 32) | cair_base::TYPE as u64;
 
+#[cfg(all(test, feature = "air_base_changes"))]
+#[test]
+fn ordinary_air_base_refresh_selects_dense_slots() {
+    let bytes = fixture();
+    let mut job = AirBasesJob::fixture();
+    let report = copy_air_bases_refresh(
+        &kit::memory(&bytes),
+        AirBasesCopyContext {
+            hour: 0,
+            force_full: false,
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        },
+        &mut job,
+    );
+    assert!(report.raw_ok);
+    assert!(job.slot_run.dense);
+}
+
 pub fn fixture() -> Vec<u8> {
     let mut bytes = kit::fixture();
     kit::put64(
@@ -58,7 +77,7 @@ pub fn captured_hour(
         inner: kit::memory(bytes),
         reads: RefCell::default(),
     };
-    let report = copy_air_bases_refresh(
+    let report = copy_air_bases_fixture(
         &memory,
         AirBasesCopyContext {
             hour: 0,
@@ -222,7 +241,7 @@ fn hour_reusing(
     job: &mut AirBasesJob,
     decoded: &mut DecodedRegistrations,
 ) -> fog::RegistrationsSnapshot {
-    let report = copy_air_bases_refresh(
+    let report = copy_air_bases_fixture(
         &kit::memory(bytes),
         AirBasesCopyContext {
             hour: 0,
@@ -332,7 +351,7 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
             inner: kit::memory(&bytes),
             reads: RefCell::default(),
         };
-        let report = copy_air_bases_refresh(
+        let report = copy_air_bases_fixture(
             &memory,
             AirBasesCopyContext {
                 hour: 0,
@@ -404,7 +423,7 @@ fn failed_optional_state_order_stays_unknown_under_the_registration_certificate(
         game_state: kit::GAME_STATE,
     };
     assert!(
-        copy_air_bases_refresh(
+        copy_air_bases_fixture(
             &Failed {
                 memory: kit::memory(&bytes)
             },
@@ -422,7 +441,7 @@ fn failed_optional_state_order_stays_unknown_under_the_registration_certificate(
         inner: kit::memory(&bytes),
         reads: RefCell::default(),
     };
-    assert!(copy_air_bases_refresh(&memory, ctx(), &mut job).raw_ok);
+    assert!(copy_air_bases_fixture(&memory, ctx(), &mut job).raw_ok);
     assert_eq!(job.registration_store.as_ref().unwrap().counts().carried, 2);
     assert!(!memory.reads.borrow().contains(&DENSE));
     let source = kit::direct(&kit::memory(&bytes)).bases;

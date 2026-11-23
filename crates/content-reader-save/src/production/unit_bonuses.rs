@@ -1,7 +1,7 @@
 
 use std::io;
 
-use content_reader_core::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Value};
 
 use crate::{Decimal, block, boolean, bytes, decimal, field, integer, invalid, scalar};
 

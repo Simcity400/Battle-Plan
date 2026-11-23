@@ -1,6 +1,6 @@
 use super::scale_tests::{BASE, MANAGER, Populated, STATE, TRAITS, resolved_operatives};
 use super::{Capacities, Captured, RoleStore};
-use crate::extended::characters::census::RoleCensus;
+use crate::extended::characters::census::{FixtureHistory, RoleCensus};
 use collector_observers::character_changes::{Changes, Counting as Lookups, Counts, Watches};
 use engine_characters::cscientist;
 use engine_native::{
@@ -9,7 +9,7 @@ use engine_native::{
 };
 use replay_data::{rows::CharacterRoleTraitRow, rows::TableRows};
 use replay_frame::frame::TableView;
-use std::{cell::Cell, ops::Range};
+use std::{cell::{Cell, RefCell}, ops::Range};
 
 const COUNTRIES: usize = 40;
 const CHARACTERS: u64 = COUNTRIES as u64 * 2;
@@ -37,6 +37,7 @@ impl Memory for Watched<'_> {
 struct World {
     memory: Populated,
     characters: Vec<usize>,
+    history: RefCell<FixtureHistory>,
 }
 
 static UNOBSERVED: collector_observers::unit_leader_changes::Watches =
@@ -65,7 +66,7 @@ impl World {
                 u64::from_le_bytes(pointer) as usize
             })
             .collect();
-        Self { memory, characters }
+        Self { memory, characters, history: RefCell::default() }
     }
 
     fn census(&self, memory: &impl Memory) -> RoleCensus {
@@ -82,7 +83,7 @@ impl World {
             })
             .collect();
         let mut census = RoleCensus::new(identities.len());
-        assert!(census.gather(memory, (BASE, STATE), &identities, identities.len()));
+        assert!(self.history.borrow_mut().gather(&mut census, memory, (BASE, STATE), &identities, identities.len()));
         census
     }
 

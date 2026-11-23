@@ -96,7 +96,7 @@ impl Renderer<'_, '_, '_> {
         }
         let values = scores.sorted();
         let count = (values.len() as i64).wrapping_mul(100_000);
-        let num = content_reader_core::scoped_variable::ScopedVariable {
+        let num = content_reader_script::scoped_variable::ScopedVariable {
             parsed: true,
             num: true,
             ..Default::default()
@@ -111,7 +111,7 @@ impl Renderer<'_, '_, '_> {
             evaluator.store_description_temp(key, count);
         }
         for (index, (country, score)) in values.into_iter().enumerate() {
-            let index = content_reader_core::scoped_variable::ScopedVariable::literal(
+            let index = content_reader_script::scoped_variable::ScopedVariable::literal(
                 (index as i64).wrapping_mul(100_000),
             );
             let key = evaluator

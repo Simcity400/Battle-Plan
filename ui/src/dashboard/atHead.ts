@@ -8,7 +8,7 @@ import type { SlotTags } from './countrySlots';
 import type { DashboardClient } from './client';
 import { type BoundTrack } from './model.ts';
 import type { PlaybackController } from './playback';
-import { useFallbackHour } from './follow/useFollow.ts';
+import { usePlaybackHour } from './follow/useFollow.ts';
 
 const unsubscribed = () => () => {};
 
@@ -80,6 +80,6 @@ export function useIdentityHour(client: DashboardClient, track: Pick<BoundTrack,
     return at === null ? null : (timeline ? slotIdentitySince(timeline, slots, at, tags) : undefined) ?? Number.NaN;
   });
   const unheld = on && Number.isNaN(settled);
-  const requestHour = useFallbackHour(clock, unheld);
+  const requestHour = usePlaybackHour(clock, unheld);
   return !on || unheld ? trackHour(requestHour) : settled;
 }

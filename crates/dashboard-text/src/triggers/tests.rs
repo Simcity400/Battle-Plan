@@ -1,8 +1,7 @@
 
 use super::*;
-use content_reader_core::{
-    buildings::Buildings, key_names::KeyNames, tag_aliases::TagAliases, trigger_keys::TriggerNames,
-};
+use content_reader_key_names::{buildings::Buildings, tag_aliases::TagAliases};
+use content_reader_script::{key_names::KeyNames, trigger_keys::TriggerNames};
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
     rows::CountryRow, rows::FactionMemberRow, rows::FocusRow, rows::LexicalTokenRow,
@@ -205,14 +204,14 @@ fn with_world_traits<T>(
     roles: Result<&LeaderRoles, &str>,
     traits: Result<
         (
-            &content_reader_core::unit_leader::Traits,
-            &content_reader_core::leader_traits::LeaderTraits,
+            &content_reader_key_names::unit_leader::Traits,
+            &content_reader_military::leader_traits::LeaderTraits,
         ),
         &str,
     >,
     run: impl FnOnce(&World) -> T,
 ) -> T {
-    let aliases: Arc<TagAliases> = Arc::new(content_reader_core::tag_aliases::parse(
+    let aliases: Arc<TagAliases> = Arc::new(content_reader_key_names::tag_aliases::parse(
         &[("common/country_tag_aliases/a.txt", aliases.as_bytes())],
         &names(),
     ));
@@ -262,8 +261,8 @@ fn names() -> KeyNames {
     names
 }
 
-fn items(text: &str) -> Vec<content_reader_core::parser::Item> {
-    content_reader_core::triggers::read(text.as_bytes(), &names()).items
+fn items(text: &str) -> Vec<content_reader_parser::parser::Item> {
+    content_reader_script::triggers::read(text.as_bytes(), &names()).items
 }
 
 #[test]
@@ -396,10 +395,10 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { same = {} SAME = {} }").unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let traits = content_reader_core::leader_traits::read(&layers).unwrap().0;
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let traits = content_reader_military::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
-    let units = content_reader_core::unit_leader::Traits::default();
+    let units = content_reader_key_names::unit_leader::Traits::default();
     let mut frame = frame(&[(100, 0, "AAA", 1, "AAA", "")], &[]);
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -648,7 +647,7 @@ fn a_character_target_reads_only_this_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&countries(), &[]);
-    let roles = LeaderRoles::new(vec![content_reader_core::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/GER.txt".into(),
         tag: "GER_rommel".into(),
         line: None,
@@ -1250,7 +1249,7 @@ fn a_character_scope_is_named_by_the_templates() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let frame = frame(&countries(), &[]);
-    let roles = LeaderRoles::new(vec![content_reader_core::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/GER.txt".into(),
         tag: "GER_rommel".into(),
         line: None,
@@ -1321,7 +1320,7 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
         fn trigger(
             &self,
             _: &str,
-            _: &content_reader_core::parser::Item,
+            _: &content_reader_parser::parser::Item,
             _: Scope,
             _: &Evaluator,
         ) -> Option<Eval> {
@@ -2166,7 +2165,7 @@ fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
         let scopes = Scopes::of(Scope::Country(0));
         let weight = |fields: &str| {
             let text = format!("test = {{ base = {{ {fields} }} }}");
-            let database = content_reader_core::combat_tactics::parse(text.as_bytes(), &names());
+            let database = content_reader_military::combat_tactics::parse(text.as_bytes(), &names());
             assert!(
                 database.unsupported.is_empty(),
                 "{:?}",
@@ -2553,7 +2552,7 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
             current_ideology: Recorded::Value(Some(Some(11))),
         }]));
     let names = TriggerNames {
-        counts: Some(content_reader_core::trigger_keys::CountTriggerNames {
+        counts: Some(content_reader_script::trigger_keys::CountTriggerNames {
             ideology_types: BTreeSet::from([b"synthetic_type".to_vec()]),
             ..Default::default()
         }),
@@ -2936,7 +2935,7 @@ fn country_leader_ideology_reads_the_recorded_first_leader_without_a_character()
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={types={First_Subtype={} visible_subtype={}}}}",
     )]);
-    let ideologies = content_reader_core::ideologies::read(&cat.content.layers)
+    let ideologies = content_reader_key_names::ideologies::read(&cat.content.layers)
         .unwrap()
         .0;
     let mut f = frame(&countries(), &[]);
@@ -3027,7 +3026,7 @@ fn country_government_and_numeric_original_keep_local_table_admission() {
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={} other_group={}}",
     )]);
-    let ideologies = content_reader_core::ideologies::read(&cat.content.layers)
+    let ideologies = content_reader_key_names::ideologies::read(&cat.content.layers)
         .unwrap()
         .0;
     let dlcs = BTreeSet::new();
@@ -3246,7 +3245,7 @@ fn government_id_and_scope_resolution_cover_every_country() {
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={} other_group={}}",
     )]);
-    let ideologies = content_reader_core::ideologies::read(&cat.content.layers)
+    let ideologies = content_reader_key_names::ideologies::read(&cat.content.layers)
         .unwrap()
         .0;
     let tags: Vec<_> = (0..24)
@@ -3378,7 +3377,7 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
         value: 1,
         ..Default::default()
     });
-    let roles = LeaderRoles::new(vec![content_reader_core::characters::LeaderTemplate {
+    let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/mod.txt".into(),
         tag: "mod_commander".into(),
         line: Some(4),
@@ -3406,7 +3405,7 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
 fn leader_visibility_steps_decide_as_the_roster_check() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use content_reader_core::characters::LeaderTemplate;
+    use content_reader_key_names::characters::LeaderTemplate;
     use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let path = "common/characters/mod.txt";
     let mut frame = frame(&countries(), &[101]);

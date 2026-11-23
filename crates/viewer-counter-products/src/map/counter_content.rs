@@ -1,5 +1,5 @@
 use super::province_tooltips;
-use content_reader_core::unit_leader::SubUnits;
+use content_reader_script::sub_units::SubUnits;
 use content_reader_division_names::division_names::Database;
 use content_reader_localisation::localisation::Localisation;
 use std::{collections::BTreeMap, sync::Arc};
@@ -15,7 +15,7 @@ pub struct Content {
     pub default_anchors: Arc<BTreeMap<u32, [f32; 3]>>,
     pub terrain: Arc<viewer_gpu::terrain_content::TerrainContent>,
     pub region_of: Arc<BTreeMap<u32, u32>>,
-    pub kinds: Arc<BTreeMap<u32, content_reader_core::map::ProvinceKind>>,
+    pub kinds: Arc<BTreeMap<u32, content_reader_map::map::ProvinceKind>>,
     pub ability_sprites: Arc<content_reader_abilities::abilities::AbilitySprites>,
     pub fog: Arc<Result<viewer_foundation::visibility::FogContent, String>>,
     pub aggression: Arc<Vec<i64>>,
@@ -28,7 +28,7 @@ pub struct Content {
     pub ability_comms_scaling: Result<Arc<Vec<i64>>, String>,
     pub ability_no_hq_scaling: Result<i64, String>,
     pub province_hover: Arc<province_tooltips::Content>,
-    pub equipment: Arc<content_reader_core::equipment::Database>,
+    pub equipment: Arc<content_reader_key_names::equipment::Database>,
     pub strategic_regions: Arc<BTreeMap<u32, content_reader_regions::regions::StrategicRegion>>,
     pub localisation: Arc<Localisation>,
     pub recorded_language: String,
@@ -37,7 +37,7 @@ pub struct Content {
     pub text_icons: Arc<dyn TextIcons + Send + Sync>,
     pub division_names: Arc<Database>,
     pub sub_units: Result<Arc<SubUnits>, String>,
-    pub movement_terrain: Result<Arc<content_reader_core::terrain::TerrainDefinitions>, String>,
+    pub movement_terrain: Result<Arc<content_reader_key_names::terrain::TerrainDefinitions>, String>,
     pub building_facts: Arc<BuildingFacts>,
     pub air_base_first_provinces: Arc<viewer_foundation::building_facts::FirstProvinces>,
     pub movement: Option<Arc<MovementContent>>,
@@ -60,6 +60,6 @@ impl Content {
     pub(crate) fn province_is_land(&self, province: u32) -> Option<bool> {
         self.kinds
             .get(&province)
-            .map(|kind| *kind == content_reader_core::map::ProvinceKind::Land)
+            .map(|kind| *kind == content_reader_map::map::ProvinceKind::Land)
     }
 }

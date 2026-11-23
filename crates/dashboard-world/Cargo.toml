@@ -14,8 +14,15 @@ export-types = ["dashboard-base/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-politics.workspace = true
+replay-lanes.workspace = true
+replay-recording.workspace = true
 blake3 = { workspace = true }
-content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
 content-reader-gfx = { workspace = true }
 content-reader-image = { workspace = true }
@@ -34,7 +41,6 @@ engine-native = { workspace = true }
 engine-stability = { workspace = true }
 png = { workspace = true }
 recording-upgrade = { workspace = true }
-replay = { workspace = true }
 replay-columnar = { workspace = true }
 replay-data = { workspace = true }
 replay-frame = { workspace = true }
@@ -45,8 +51,11 @@ ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["test-support"] }
+replay-capture-spool.workspace = true
 recorder-derive.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }
 content-reader-image = { workspace = true, features = ["test-support"] }
@@ -58,7 +67,6 @@ dashboard-core = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 dashboard-world = { workspace = true, features = ["export-types"] }
 engine-heap = { workspace = true }
-replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 
@@ -69,12 +77,17 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-indexmap = { workspace = true }

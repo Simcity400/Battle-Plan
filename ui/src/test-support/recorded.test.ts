@@ -70,7 +70,7 @@ test('the recorded client answers a request the app made, whatever order its par
   const { port1, port2 } = new MessageChannel();
   await client.openFollow([port1]);
   const delivered = new Promise<number[]>(resolve => {
-    port2.onmessage = ({ data: [item] }) => resolve(item.message.answers.map((answer: { id: number }) => answer.id));
+    port2.onmessage = ({ data }: MessageEvent<{ kind: string; bytes: Uint8Array }>) => resolve(parseFollowed(data.bytes).answers.map(answer => answer.id));
   });
   assert.ok(client.deliver(message(12, [{ id: 3, answer: { keys: [1n], columns: 1, values: [2n] } }])));
   try {

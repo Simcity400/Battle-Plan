@@ -1,6 +1,6 @@
 
 use super::*;
-use content_reader_core::{gui::native::Element, gui::native::Kind};
+use content_reader_gui::gui::native::{Element, Kind};
 use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
 use viewer_native_gui::{
     gui_resources::{count_noted, count_refused},
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn operative_portrait_setter_uses_its_own_fallback_and_recovers_after_withheld() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(br#"guiTypes = {
             containerWindowType = { name = operative_map_icon_entry size = { width = 68 height = 48 }
                 iconType = { name = portrait spriteType = GFX_even }

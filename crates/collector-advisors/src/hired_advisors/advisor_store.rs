@@ -240,11 +240,14 @@ impl<'a> PoolReuse<'a> {
         store.previous.clear();
         store.planned = None;
         store.measure();
-        crate::advisor_pool_changes::record(
-            Table::AvailableAdvisors,
-            &store.counts,
-            complete.then_some(store.pools.max(census)),
-        );
+        // SAFETY: Called from admitted advisor capture with measured pool demand.
+        unsafe {
+            crate::advisor_pool_changes::record(
+                Table::AvailableAdvisors,
+                &store.counts,
+                complete.then_some(store.pools.max(census)),
+            );
+        }
     }
 }
 
@@ -387,7 +390,10 @@ impl<'a> TokenReuse<'a> {
             store.tokens.published = None;
         }
         store.measure();
-        crate::advisor_pool_changes::record(Table::AdvisorTokens, &store.token_counts, None);
+        // SAFETY: Called from admitted advisor-token capture with no pool-demand override.
+        unsafe {
+            crate::advisor_pool_changes::record(Table::AdvisorTokens, &store.token_counts, None);
+        }
     }
 }
 

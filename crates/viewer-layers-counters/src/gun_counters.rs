@@ -7,7 +7,7 @@ use replay_data::{
     Hour,
     rows::{Field, NativeValue, Opaque, RailwayGunEtaOperands, RailwaySelectionInputs, Recorded, TableId},
 };
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use std::{
     cell::Cell as Flag,
     collections::{BTreeMap, HashMap},
@@ -17,7 +17,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use viewer_counters::map::counters::{CounterContent, Gun, GunFields, GunGround, GunJoins, GunPlaced, GunRoute, LayeredGuns, gun_member, gun_name, type_tint};
+use viewer_counter_kit::type_tint;
+use viewer_counters::counters::CounterContent;
+use viewer_counters_land::gun_layers::{GunPlaced, GunRoute, LayeredGuns};
+use viewer_counters_land::gun_members::{Gun, GunFields, GunGround, GunJoins, gun_member, gun_name};
 use viewer_gpu::camera::Pose;
 use viewer_foundation::{
     mode_visibility::UnitKinds,

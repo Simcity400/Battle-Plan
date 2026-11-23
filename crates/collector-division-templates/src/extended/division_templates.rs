@@ -74,7 +74,11 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    pub fn presize(
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass against the authenticated
+    /// session image, while template and subunit observer storage remains live and teardown is
+    /// excluded.
+    pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -373,7 +377,10 @@ impl Captured {
         }
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `template_changes` sizing demand updates belong to this pass.
+    pub unsafe fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -397,16 +404,22 @@ impl Captured {
             );
             return [0; N];
         }
-        self.capture_original(
-            memory,
-            base,
-            state,
-            hour,
-            force,
-            &crate::template_changes::Observer,
-        )
+        // SAFETY: Caller holds hourly capture admission for this template capture pass.
+        unsafe {
+            self.capture_original(
+                memory,
+                base,
+                state,
+                hour,
+                force,
+                &crate::template_changes::Observer,
+            )
+        }
     }
-    pub fn capture_preacquired(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `template_changes` sizing demand updates belong to this pass.
+    pub unsafe fn capture_preacquired(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -472,9 +485,12 @@ impl Captured {
         self.fail_preacquired(base, state, hour, force, reason);
         [0; N]
     }
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `template_changes` sizing demand updates belong to this pass.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(clippy::too_many_arguments)]
-    pub fn capture_original(
+    pub unsafe fn capture_original(
         &mut self,
         memory: &impl Memory,
         base: usize,

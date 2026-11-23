@@ -1,66 +1,37 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { useFollowedProduct } from './products.ts';
 import type { ProductState } from './products';
 import type { Failure } from './queryError';
-import { followStore } from './follow/connection.ts';
 import { panelReply } from './follow/panel.ts';
-import { observeOnScreen, screenHolder, useFallbackHour, useFollow } from './follow/useFollow.ts';
-import type { FollowedAnswer } from './follow/message';
-import type { FollowEntry, FollowStore, Landed } from './follow/store';
 import { canonical } from './follow/canonical.ts';
+import { useWidgetKey } from './follow/useFollow.ts';
+import { datedStore, installedLive, installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, usePipeline, useSurfaceLabel } from './follow/useFollowed.ts';
+import type { ModelField } from '../draw/views/fields';
+import { perfLog } from '../shell/perf.ts';
+import { exactLive, panelAuditRows, panelTexts } from './follow/panelAudit.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
-import { coverageOf, useReadsRegion, watchBoundary, type ReadCoverage } from './widgetTime.ts';
-import { axisAt, axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
-import type { Gate } from './regionGate';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
+import { asFailure } from './queryError.ts';
+import type { Pipeline } from './follow/pipeline';
+import { coverageOf, useReadsRegion, type ReadCoverage } from './widgetTime.ts';
+import { axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
+import type { Gate } from './regionGate';
 import { forwardRequest, type DeclaredProduct } from './request.ts';
+import { holdElement } from '../draw/bitmapSurface.ts';
 
 export function headRead(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]): { follows: boolean; hourAt: (axis: AxisHour) => TrackHour | null } {
   return { follows: regionFollows(region), hourAt: axis => regionHour(region, track, tracks, axis) };
 }
 
-export function headSource(following: boolean, status: 'off' | FollowEntry['status'], landed: boolean, hidden = false): 'pushed' | 'fallback' | 'asked' | 'idle' {
-  if (following && hidden) return 'idle';
-  if (!following || status === 'off') return 'asked';
-  return status === 'followed' && landed ? 'pushed' : 'fallback';
-}
+export const headKey = (widgetKey: string, offset: number, region: Pick<Region, 'action'>) =>
+  `${widgetKey}|${offset}${region.action.kind === 'spec' ? '' : region.action.kind === 'at' ? '|detail' : '|follow'}`;
 
-export { watchBoundary };
-
-export const heldPanel = (entry: FollowEntry | null): Landed | undefined => entry && !entry.panel ? entry.landed ?? undefined : undefined;
-
-export interface HeldReading<T> { data: T; hour: number; through: number; live: Live<LiveValues<number>> }
-
-export function withHeld<T>(head: HeadProduct<T>): HeadProduct<T> {
-  const held = head.held;
-  return head.data !== undefined || !held ? head
-    : { ...head, data: held.data, live: held.live, at: held.hour, atNow: () => held.hour, shownAt: () => held.through };
-}
-
-function followedLive(store: FollowStore, entry: FollowEntry, read: () => FollowEntry['values']): Live<LiveValues<number>> {
-  let held: FollowEntry['values'];
-  let values: LiveValues<number>;
-  return {
-    read() {
-      const next = read();
-      if (!values || held !== next) {
-        held = next;
-        values = {
-          get(key) { const v = next?.get(key); return typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v) : undefined; },
-          raw(key) { const v = next?.get(key); return typeof v === 'bigint' ? v : typeof v === 'number' && Number.isSafeInteger(v) ? BigInt(v) : undefined; },
-          missing(key) { const v = next?.get(key); return typeof v === 'string' ? v : 'Not recorded'; },
-        };
-      }
-      return values;
-    },
-    subscribe: (changed: () => void) => store.watchLive(entry, changed),
-  };
-}
+let pinnedOwners = -1000;
 
 export interface HeadProductOptions<T> {
   paint?: (reply: T) => boolean | void;
@@ -71,10 +42,13 @@ export interface HeadProductOptions<T> {
 
 export interface HeadProduct<T> extends ProductState<T>, ReadCoverage {
   exactRead?: (hour: number) => Promise<unknown>;
-  held?: HeldReading<T>;
+  structure?: string;
   workerFollow?: number;
+  followedWidget?: number;
+  placement?: number;
+  pipeline?: Pipeline | null;
   root: (element: Element | null) => void;
-  read: 'followed' | 'asked' | 'fallback' | 'off';
+  read: 'followed' | 'asked' | 'off';
   reason?: string;
   hour: number | null;
   at: number | null;
@@ -82,17 +56,7 @@ export interface HeadProduct<T> extends ProductState<T>, ReadCoverage {
   live: Live<LiveValues<number>>;
   shownAt: () => number | null;
   current: () => T | undefined;
-}
-
-export const headFallbacks = new Map<string, string>();
-
-const MOVING = ['hour'] as const;
-
-export function whenDue(hour: number, head: () => number, subscribe: (fn: () => void) => () => void, wake: () => void) {
-  const frame = () => { if (head() >= hour) { stop(); wake(); } };
-  const stop = subscribe(frame);
-  frame();
-  return stop;
+  inspected: () => { texts: ReadonlyMap<string, string>; hour: number; data: T | undefined } | undefined;
 }
 
 export function momentHour(moment: string | undefined): number | null {
@@ -106,7 +70,6 @@ export function headSubject(track: Pick<BoundTrack, 'source' | 'branch'> | undef
 }
 
 export interface Retained<T> { client: unknown; subject: string; data: T; hour: number | null }
-export const shownAsked = (hour: number | null, paused: number | null) => paused === null || hour === paused;
 type TargetHour = { exact: number | null } | { through: number };
 
 export function retain<T>(held: Retained<T> | null, client: unknown, subject: string | null, asked: T | undefined, hour: number | null, target?: TargetHour): Retained<T> | null {
@@ -118,94 +81,121 @@ export function retain<T>(held: Retained<T> | null, client: unknown, subject: st
 
 export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: WidgetRuntime, gate: Gate, product: K, wanted: ParamsFor<K> | null,
   options: HeadProductOptions<T>): HeadProduct<T> {
-  const { active, validate, structure, paint } = options;
+  const { active, validate, paint } = options;
   const { region, track } = gate;
   const params = gate.open ? wanted : null;
   const follows = regionFollows(region);
-  const hourAt = gate.hourAt;
   const prepared = useContext(PreparingPage);
   const following = active && follows && !prepared && !!track && !!params;
-  const paramsKey = params ? canonical(params) : null;
-  const [element, setElement] = useState<Element | null>(null);
-  const root = useCallback((next: Element | null) => { if (next) setElement(screenHolder(next)); }, []);
-  const target = useMemo(() => ({ current: element }), [element]);
-  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const query = useMemo(() => following ? gate.follow({ ...params, panel: product, branchId: track!.branch.id }) : null,
-    [following, product, paramsKey, track?.branch.id, gate.follow]);
-  const latest = useRef({ validate, structure, paint });
-  latest.current = { validate, structure, paint };
-  const shape = useCallback((_answer: FollowedAnswer | undefined, entry: FollowEntry) => {
-    const { data, error } = panelReply(entry.panel, latest.current.validate);
-    if (error) return `!${error.message}`;
-    if (data === undefined) return entry.landed ? '~' : entry.landed === null ? '-' : '';
-    return latest.current.structure ? `=${latest.current.structure(data, entry.hour)}` : `#${entry.version}`;
-  }, []);
-  const painting = useCallback((entry: FollowEntry) => {
-    const { data } = panelReply(entry.panel, latest.current.validate);
-    if (data !== undefined) return latest.current.paint?.(data);
-  }, []);
-  const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
+  const hour = follows || !track || !params ? null : gate.hourAt(axisHour(runtime.clock));
+  const pinned = active && !follows && !prepared && hour !== null;
   const outside = gate.outside !== null;
   useReadsRegion(region, active);
-  const entry = followed.entry;
-  const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
-  const idle = source === 'idle';
-  const pushed = source === 'pushed';
-  const panelLive = useMemo(() => store && entry ? followedLive(store, entry, () => entry.values) : null, [store, entry]);
-  const heldLive = useMemo(() => store && entry ? followedLive(store, entry, () => entry.landed?.values) : null, [store, entry]);
-  const fallback = source === 'fallback';
-  const requestHour = useFallbackHour(runtime.clock, fallback);
-  const hour = pushed || idle || !track || !params ? null : hourAt(fallback ? axisAt(requestHour) : axisHour(runtime.clock));
+  const paramsKey = params ? canonical(params) : null;
+  const [node, setNode] = useState<Element | null>(null);
+  const root = useCallback((next: Element | null) => { if (next) setNode(next); }, []);
+  const pipeline = usePipeline(runtime.clock, runtime.client);
+  const bounds = useMemo(() => track ? [track.branch.firstHour, track.branch.lastHour] as const : null,
+    [track?.branch.firstHour, track?.branch.lastHour]);
+  const widgetKey = useWidgetKey();
+  const [owner] = useState(() => pinnedOwners--);
+  const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? headKey(widgetKey, track.axisOffset, region) : null,
+    { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, widget: widgetKey, key: `${region.widget.kind}|${product}|${paramsKey}` });
+  const query = useMemo(() => following ? gate.follow({ ...params, panel: product, branchId: track!.branch.id }) : null,
+    [following, product, paramsKey, track?.branch.id, gate.follow]);
+  const follow = useMemo(() => track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null, [track?.source, track?.branch.id, track?.axisOffset]);
+  const sub = useFollowedSub(pipeline, pipe, follow, query, 'panel', product);
+  const view = useInstalled(pipeline, pipe);
+  const model = installedModel(view, sub);
+  const [holder] = useState(() => ({}));
+  const dim = (following || pinned) && !!view?.dim;
+  useLayoutEffect(() => {
+    if (!node) return;
+    holdElement(node, dim, holder);
+    return () => holdElement(node, false, holder);
+  }, [node, dim, holder]);
+  const panel = installedPanel(model);
+  const pushed = following && view?.mode === 'picture' && panel !== undefined;
+  const fromPanel = pushed ? panelReply(panel, validate) : {};
+  const named = following && (view?.mode === 'failed' || view?.mode === 'refused') ? view.reason ?? 'The followed stream failed' : undefined;
+  const followFailure = useMemo(() => named === undefined ? undefined : asFailure(new Error(named)), [named]);
+  const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : forwardRequest(track!.source, product, { ...params, branchId: track!.branch.id, hour } as unknown as ParamsFor<K>),
-    !follows ? [] : MOVING, active, validate, track?.source);
+    [], active, validate, track?.source);
   const askedAt = asked.data === undefined ? null : momentHour(asked.moment) ?? hour;
   const held = useRef<Retained<T> | null>(null);
-  const targetHour: TargetHour = follows ? { through: runtime.clock.getHour() + (track?.axisOffset ?? 0) } : { exact: hour };
-  const dueAt = 'through' in targetHour && askedAt !== null && askedAt > targetHour.through ? askedAt - (track?.axisOffset ?? 0) : null;
-  const [, wake] = useState(0);
-  useEffect(() => {
-    if (dueAt !== null) return whenDue(dueAt, runtime.clock.getHour, runtime.clock.subscribeFrame, () => wake(n => n + 1));
-  }, [dueAt, runtime.clock]);
-  held.current = retain(held.current, runtime.client, headSubject(track, product, params), asked.data, askedAt, targetHour);
-  const fromPanel = pushed ? panelReply(entry?.panel, validate) : {};
-  const landed = pushed ? heldPanel(entry) : undefined;
-  const heldData = landed ? panelReply(landed.panel, validate).data : undefined;
-  const heldReading = useMemo(() => heldData !== undefined && landed && heldLive ? { data: heldData, hour: landed.hour, through: landed.through, live: heldLive } : undefined,
-    [heldData, landed, heldLive]);
-  const kept = outside || pushed ? undefined : held.current ?? undefined;
-  const shown = kept && shownAsked(kept.hour, follows && !runtime.clock.getSnapshot().playing ? hourAt(axisHour(runtime.clock)) : null) ? kept : undefined;
-  const data = outside ? undefined : pushed ? fromPanel.data : shown?.data;
-  const dataAt = shown?.hour ?? null;
-  const error: Failure | undefined = outside ? undefined : pushed ? fromPanel.error : asked.error;
-  const askedData = pushed ? undefined : data;
-  const askedLive = useMemo(() => repliedCells(askedData), [askedData]);
-  const askedHeld = kept && !shown && !asked.error ? kept : undefined;
-  const askedReading = useMemo(() => askedHeld && askedHeld.hour !== null
-    ? { data: askedHeld.data, hour: askedHeld.hour, through: askedHeld.hour, live: repliedCells(askedHeld.data) } : undefined, [askedHeld]);
-  const live = pushed && panelLive ? panelLive : askedLive;
-  if (followed.status === 'unavailable' && followed.reason) headFallbacks.set(product, followed.reason);
-  const exactRead = perfLog && track && params ? (asked: number) => {
-    const at = gate.recorded(asked);
-    if (at === null) return Promise.reject(new Error('This hour was not recorded.'));
-    const request = forwardRequest(track.source, product, { ...params, branchId: track.branch.id, hour: at } as unknown as ParamsFor<K>);
-    return perfLog!.exactOnce(JSON.stringify(request), async () => (await runtime.client.product(request, new AbortController().signal)).data);
+  const subject = headSubject(track, product, params);
+  held.current = following ? null : retain(held.current, runtime.client, subject, asked.data, askedAt, { exact: hour });
+  const shown = held.current ?? undefined;
+  const data = outside ? undefined : following ? fromPanel.data : shown?.data;
+  const error: Failure | undefined = outside ? undefined : following ? followFailure ?? fromPanel.error : asked.error;
+  const askedLive = useMemo(() => repliedCells(following ? undefined : data), [following, data]);
+  const shownLive = following && live ? live : askedLive;
+  const at = outside ? null : following ? (pushed ? view!.painted ?? view!.h ?? null : null) : shown?.hour ?? null;
+  const latest = useRef(paint);
+  latest.current = paint;
+  useLayoutEffect(() => { if (data !== undefined) latest.current?.(data); }, [data]);
+  const exactRead = track && params ? (asking: number) => {
+    const recorded = gate.recorded(asking);
+    if (recorded === null) return Promise.reject(new Error('This hour was not recorded.'));
+    return runtime.client.product(forwardRequest(track.source, product, { ...params, branchId: track.branch.id, hour: recorded } as unknown as ParamsFor<K>),
+      new AbortController().signal).then(reply => reply.data);
   } : undefined;
-  const committedHour = entry?.hour ?? null;
-  useRecordedRows(product, exactRead && pushed && data !== undefined && committedHour !== null ? {
-    hour: committedHour, rows: () => recordedPanelRows(product, data),
-    exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
-  } : undefined);
+  const exactNow = useRef(exactRead);
+  exactNow.current = exactRead;
+  const auditable = !!exactRead;
+  useSurfaceLabel(node, (following || pinned) && auditable, pipe);
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null || !pinned) return;
+    pipeline.answer(pipe, owner, data === undefined || at === null ? null : { hour: at, rows: () => auditable ? panelAuditRows(product, data, exactLive(data)) : undefined });
+    return () => pipeline.answer(pipe, owner, null);
+  }, [pipeline, pipe, owner, pinned, data, at, product, auditable]);
+  useLayoutEffect(() => {
+    if (!perfLog || pipe === null || !pinned || !auditable) return;
+    perfLog.reader(pipe, owner, async hour => {
+      const read = exactNow.current;
+      if (!read) return null;
+      const raw = await read(hour);
+      return { values: new Map(panelAuditRows(product, raw, exactLive(raw)).map(row => [row.key, row.value])) };
+    });
+  }, [pipe, owner, pinned, product, auditable]);
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
+    let texted = false;
+    pipeline.audit(pipe, sub, fields => {
+      const texts = fields[`texts:${sub}`] as ReadonlyMap<string, string> | null | undefined, panel = installedPanel(fields[`model:${sub}`] as ModelField | undefined);
+      texted = texts !== undefined;
+      if (texts) return [...texts].map(([key, value]) => ({ row: key, key, value }));
+      return panel?.data === undefined ? undefined : panelAuditRows(product, panel.data, fields[`live:${sub}`] as ReadonlyMap<string, unknown> | null | undefined);
+    });
+    perfLog.reader(pipe, sub, async hour => {
+      const read = exactNow.current;
+      if (!read) return null;
+      const raw = await read(hour), live = exactLive(raw);
+      const rows = texted ? [...panelTexts(product, raw, live, hour) ?? []].map(([key, value]) => ({ row: key, key, value })) : panelAuditRows(product, raw, live);
+      return { values: new Map(rows.map(row => [row.key, row.value])) };
+    });
+    return () => pipeline.audit(pipe, sub, null);
+  }, [pipeline, pipe, sub, product, auditable]);
+  useRecordedRows(product, pushed && data !== undefined && at !== null && exactRead ? {
+    hour: at, rows: () => recordedPanelRows(product, data), exact: async () => recordedPanelRows(product, await exactRead(at)),
+  } : undefined, pipe ?? undefined);
+  const shownThrough = () => outside ? null : following ? (pipe === null || !pipeline ? null : pipeline.view(pipe)?.through ?? null) : data === undefined ? null : at;
   return {
-    data, error, retry: asked.retry, root, hour, live, ...coverageOf(gate.outside),
-    exactRead, held: outside ? undefined : pushed ? heldReading : askedReading,
-    workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
-    at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,
-    atNow: outside ? () => null : pushed && entry ? () => entry.panel ? entry.hour : null : () => dataAt,
-    shownAt: outside ? () => null : pushed && entry ? () => entry.panel ? entry.through : null : () => data === undefined ? null : dataAt,
-    current: outside ? () => undefined : pushed && entry ? () => panelReply(entry.panel, latest.current.validate).data
-      : () => follows && dataAt !== null && dataAt > runtime.clock.getHour() + (track?.axisOffset ?? 0) ? undefined : data,
-    read: outside ? 'off' : pushed ? 'followed' : fallback || idle ? 'fallback' : hour === null ? 'off' : 'asked',
-    ...(followed.status === 'unavailable' && followed.reason ? { reason: followed.reason } : {}),
+    data, error, retry: asked.retry, root, hour, live: shownLive, ...coverageOf(gate.outside),
+    structure: outside || !pushed ? undefined : model?.structure,
+    exactRead,
+    workerFollow: pushed ? sub : undefined,
+    followedWidget: following ? pipe ?? undefined : undefined,
+    placement: pipe ?? undefined,
+    pipeline,
+    at, atNow: () => outside ? null : following ? datedStore(pipeline, pipe).read() : at, shownAt: shownThrough,
+    current: () => data,
+    inspected: () => {
+      if (!pushed || !pipeline || pipe === null || sub === undefined) return undefined;
+      const shown = pipeline.view(pipe), texts = shown?.fields?.[`texts:${sub}`] as ReadonlyMap<string, string> | null | undefined, hour = shown?.painted ?? shown?.h;
+      return shown?.mode === 'picture' && !shown.dim && texts && hour !== undefined ? { texts, hour, data: panelReply(installedPanel(installedModel(shown, sub)), validate).data } : undefined;
+    },
+    read: outside ? 'off' : following ? 'followed' : hour === null ? 'off' : 'asked',
   };
 }
-import { perfLog } from '../shell/perf.ts';

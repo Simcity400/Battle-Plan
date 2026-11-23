@@ -11,13 +11,15 @@ import { jumpItem } from '../../charts/jump';
 import { useRowTooltips } from '../../charts/useRowTooltips';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { LiveValues } from '../../charts/live';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
-import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
+import { headState } from '../../dashboard/HeadState';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
@@ -42,8 +44,9 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const gate = useGate(runtime, widget);
   const head = useHeadProduct(runtime, gate, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
-  useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
-  const drawn = withHeld(head), holding = drawn !== head;
+  const painted = useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
+  const offset = track?.axisOffset ?? 0;
+  const drawn = head;
   const { data, error, retry } = drawn;
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
   const live = drawn.live;
@@ -75,7 +78,10 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     const found = tracks.get(rest[0]);
     if (!found) return null;
     const { folder, item } = found;
-    const numbers = trackNumbers(live.read(), rest[0]);
+    const inspected = painted.inspected();
+    if (inspected === null) return null;
+    const numbers = trackNumbers(inspected ? paintedValues(inspected.live) : live.read(), rest[0]);
+    const date = dayLabel(inspected ? inspected.date.through : hourShown());
     if (kind === 'mark') {
       const index = Number(rest[1]);
       const next = item.rewards[index];
@@ -89,9 +95,14 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
         { label: 'Mastery', value: met === null || missing === null ? 'Not recorded' : met ? 'Requirement met' : `${masteryText(missing)} to go` }],
       ...description ? { description } : {} };
     }
-    return trackTooltip(folder, item, numbers, dayLabel(hourShown()));
-  }, [tracks, described.data, head.hour, live]);
-  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, held: holding, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
+    return trackTooltip(folder, item, numbers, date);
+  }, [tracks, described.data, head.hour, live, painted, offset]);
+  const spoken = (key: string) => { const shown = content(key); return shown ? tooltipText(shown) : ''; };
+  const refresh = useMemo(() => {
+    const pipeline = head.pipeline, pipe = head.followedWidget;
+    return pipeline && pipe !== undefined ? (changed: () => void) => { const installed = pipeline.onInstall(pipe, changed), dated = pipeline.onDate(pipe, changed); return () => { installed(); dated(); }; } : undefined;
+  }, [head.pipeline, head.followedWidget]);
+  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, refresh, revision: `${head.hour}:${described.data ? 'described' : ''}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, hourShown())]); } });
   useEffect(() => {
     const [kind, key] = tips.hovered?.split('#') ?? [];
@@ -106,6 +117,8 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const pill = headerSlot && head.data && createPortal(<span className="pill">{activeTracks(head.data.folders)} tracks active</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="flask" message="Load a campaign to see doctrines." />;
   if (!tag) return <WidgetState kind="empty" icon="flask" message="Choose a country in the widget's header." />;
+  const shared = headState(drawn);
+  if (shared) return <div ref={attach} className="doctrine-mastery">{shared}</div>;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <div ref={attach} className="doctrine-mastery"><WidgetState kind="loading" label="Loading doctrines…" /></div>;
   const chips = data.folders.map(folder => ({ value: folder.id, label: folderName(folder), icon: folderImage(doctrineSprite(folder.icon)) }));
@@ -114,12 +127,11 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     setOption?.('folders', next.length === chips.length ? '' : next.map(setToken).join(' '));
   };
   const values = live.read();
-  return <div ref={attach} className="doctrine-mastery" data-held={holding ? 'stale' : 'current'} aria-busy={holding || undefined}>
+  return <div ref={attach} className="doctrine-mastery">
     {pill}
     {chips.length > 1 && setOption && <div className="log-chips doctrine-mastery-chips"><ChipSet label="Doctrine folders" chips={chips}
       selected={chosen.length ? chosen : chips.map(chip => chip.value)} max={chips.length} onToggle={toggle} /></div>}
-    {!data.folders.length ? holding ? <WidgetState kind="loading" label="Loading doctrines…" />
-      : <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no doctrines at this date.`} />
+    {!data.folders.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no doctrines at this date.`} />
       : <div className="doctrine-mastery-folders themed-scrollbar">{shown.map(folder => <section key={folder.id} className="doctrine-mastery-folder" aria-label={folderName(folder)}>
         <h3 className="doctrine-mastery-heading">{artNode(folder.grand?.icon)}
           <span>{folderName(folder)}</span>
@@ -131,7 +143,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
           const texts = trackTexts(numbers);
           const ratio = trackRatio(item, numbers.mastery);
           return <div key={key} data-track={key} className={`doctrine-mastery-track${item.sub === null ? ' is-empty' : ''}`} {...tips.rowProps(`track#${key}`)}>
-            {tips.hovered === `track#${key}` && <span id={tips.descriptionId(`track#${key}`)} className="sr-only">{tooltipText(trackTooltip(folder, item, numbers, dayLabel(hourShown())))}</span>}
+            {tips.hovered === `track#${key}` && <span id={tips.descriptionId(`track#${key}`)} className="sr-only">{spoken(`track#${key}`)}</span>}
             <div className="doctrine-mastery-sub">{artNode(item.sub?.icon)}
               <span>{choiceName(item.sub, 'No subdoctrine chosen')}</span></div>
             <div className="doctrine-mastery-meter">
@@ -157,6 +169,13 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
       }))}</tbody></table>}
     {menu.menu}
   </div>;
+}
+
+function paintedValues(values: ReadonlyMap<string, number | string>): LiveValues<number> {
+  return {
+    get: key => { const value = values.get(key); return typeof value === 'number' ? value : undefined; },
+    missing: key => { const value = values.get(key); return typeof value === 'string' ? value : 'Not recorded'; },
+  };
 }
 
 function trackTooltip(folder: MasteryFolder, item: MasteryTrack, numbers: TrackNumbers, date: string): TooltipContent {

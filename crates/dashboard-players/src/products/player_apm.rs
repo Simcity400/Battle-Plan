@@ -1,7 +1,7 @@
 use dashboard_base::products::{LoadContext, Product, check_reply_budget};
 use dashboard_core::protocol::validate_tag;
 use dashboard_base::Source;
-use replay::commands::{self, Counts, Index, Timeline};
+use replay_capture_spool::commands::{self, Counts, Index, Timeline};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -178,7 +178,7 @@ pub(super) fn index(
     Ok(index)
 }
 
-fn player_id(timeline: &Timeline, actor: u64, history: &[commands::Actor]) -> String {
+fn player_id(timeline: &Timeline, actor: u64, history: &[replay_recording::command_packet::Actor]) -> String {
     use std::fmt::Write;
     let user = &history[0].user;
     if user.is_empty() || history.iter().any(|observation| observation.user != *user) {
@@ -195,7 +195,7 @@ fn player_id(timeline: &Timeline, actor: u64, history: &[commands::Actor]) -> St
     id
 }
 
-fn player_name(observation: &commands::Actor) -> String {
+fn player_name(observation: &replay_recording::command_packet::Actor) -> String {
     String::from_utf8(observation.name.clone()).unwrap_or_else(|_| "Player name unavailable".into())
 }
 
@@ -669,10 +669,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{
-        commands::{Actor, Batch, Category, Event, Kind, Origin, Packet, Span},
-        spool::ControlRecord,
-    };
+    use replay_recording::{command_packet::{Actor, Batch, Category, Event, Kind, Origin, Packet, Span}, control::ControlRecord};
 
     fn fixture(extra: impl FnOnce(&mut Batch)) -> (replay_data::identity::SessionStart, Batch) {
         let mut session = dashboard_base::test_fixtures::session(7);

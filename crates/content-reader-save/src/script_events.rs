@@ -1,5 +1,5 @@
 use super::{GameDate, block, bytes, field, integer, invalid, null_permitted_handle, scalar};
-use content_reader_core::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Value};
 use std::{collections::BTreeMap, io};
 
 pub const REFERENCE_KEYS: [&[u8]; 9] = [
@@ -246,7 +246,7 @@ mod tests {
     use super::*;
     #[test]
     fn retained_events_preserve_repeats_scope_branches_signed_components_and_absence() {
-        let document=content_reader_core::parser::parse(br#"
+        let document=content_reader_parser::parser::parse(br#"
             fired_event_names={id=synthetic.1 id=synthetic.1 id=123}
             pending_events={event={id=synthetic.1 pending_id=7 timeout=1936.1.2.1 scope={country=AAA random={4 3} root={random={6 5}}}}}
             countries={AAA={delayed_event={event={id=13 type=42} hours=-3 days=-2 months=-1 scope={random={2 1}} originator=BBB}} BBB={}}
@@ -286,7 +286,7 @@ mod tests {
     }
     #[test]
     fn one_unreadable_registry_or_country_queue_leaves_the_others_readable() {
-        let document = content_reader_core::parser::parse(
+        let document = content_reader_parser::parser::parse(
             br#"
             fired_event_names={id=synthetic.1}
             pending_events={event={id=synthetic.1 pending_id=malformed}}

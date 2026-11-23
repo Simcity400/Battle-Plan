@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSource, headSubject, heldPanel, momentHour, retain, watchBoundary, whenDue, withHeld } from './headProduct.ts';
+import { headKey, headRead, headSubject, momentHour, retain } from './headProduct.ts';
 import { PlaybackController } from './playback.ts';
 import type { FrameEngine, EngineFrame } from '../engine/frame';
 import { WidgetFrames } from './widgetClock.ts';
-import { followSpan } from './widgetTime.ts';
-import type { HeadProduct } from './headProduct';
-import { at, SPEC, type TrackHour, axisAt } from './regionTime.ts';
+import { followSpan, watchBoundary } from './widgetTime.ts';
+import { at, FOLLOW, SPEC, type TrackHour, axisAt } from './regionTime.ts';
 import type { BoundTrack, WidgetSpec } from './model';
-import type { FollowEntry } from './follow/store';
-import { observeOnScreen, screenHolder } from './follow/useFollow.ts';
+import { observeOnScreen, screenHolder } from './follow/onScreen.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
@@ -53,36 +51,6 @@ test('an hour outside the recorded branch, or no track, asks nothing', () => {
   assert.equal(headRead({ widget: widget({ mode: 'follow' }) as WidgetSpec, action: SPEC }, undefined, []).hourAt(axisAt(200)), null);
 });
 
-test('a followed panel is asked by the fallback’s clock until its first push lands, and read only from pushes after, whatever a seek empties', () => {
-  assert.equal(headSource(true, 'followed', false), 'fallback', 'a follow whose first push has not landed asks the hour sought');
-  assert.equal(headSource(true, 'followed', true), 'pushed', 'once a push has landed, a seek that empties the reading keeps the pushed source and its surface');
-  assert.equal(headSource(true, 'pending', false), 'fallback');
-  assert.equal(headSource(true, 'unavailable', true), 'fallback');
-  assert.equal(headSource(true, 'off', false), 'asked', 'not watched yet, or with no element, it is asked as rendered');
-  assert.equal(headSource(true, 'off', false, true), 'idle', 'following but seen off screen, nothing is read for it, whatever renders around it');
-  assert.equal(headSource(false, 'off', false, true), 'asked', 'not following, its own hour is asked wherever it is');
-  assert.equal(headSource(false, 'followed', true), 'asked');
-});
-
-test('a followed head reads only the panel of the hour shown, and holds the last landed one apart, only while that hour is read', () => {
-  const landed = { panel: { data: 'hour 23', refused: null }, values: new Map([['GER:total', 3]]), hour: 23, through: 23 };
-  const entry = { id: 1, status: 'followed', answer: undefined, panel: landed.panel, values: landed.values, landed, hour: 23, through: 23, version: 1 } as FollowEntry;
-  assert.equal(heldPanel(entry), undefined, 'the panel of the hour shown is the reading, nothing is held');
-  Object.assign(entry, { panel: undefined, values: undefined });
-  assert.equal(heldPanel(entry), landed, 'a step that empties the reading holds the last panel with its values and hours');
-  Object.assign(entry, { landed: null });
-  assert.equal(heldPanel(entry), undefined, 'a backward seek holds nothing');
-  assert.equal(headSource(true, 'followed', entry.landed !== undefined), 'pushed', 'and the follow keeps its pushed source');
-  assert.equal(heldPanel(null), undefined);
-  const live = { read: () => ({ get: () => 3, missing: () => '' }), subscribe: () => () => {} };
-  const pending = { data: undefined, at: null, atNow: () => null, shownAt: () => null, held: { data: 'hour 23', hour: 23, through: 23, live } } as unknown as HeadProduct<string>;
-  const drawn = withHeld(pending);
-  assert.deepEqual([pending.data, drawn.data, drawn.at, drawn.atNow(), drawn.shownAt(), drawn.live], [undefined, 'hour 23', 23, 23, 23, live],
-    'only a drawn host, which dims it, is handed the held reading, dated at its own hours');
-  const current = { ...pending, data: 'hour 24' } as HeadProduct<string>;
-  assert.equal(withHeld(current), current, 'once the hour shown lands it is read');
-});
-
 test('the reply shown while a newer hour loads is dated at the hour it was asked for', () => {
   assert.equal(momentHour(JSON.stringify([60_759_371])), 60_759_371);
   assert.equal(momentHour(undefined), null);
@@ -112,16 +80,11 @@ test('moving a dated pin backward clears the previous reply until the explicit t
   assert.equal(retain(later, client, 'projects', 'earlier header', 12, { exact: 12 })?.data, 'earlier header');
 });
 
-test('a future fallback reply wakes on its first eligible clock frame', () => {
-  let hour = 10, wakes = 0;
-  const frames = new Set<() => void>();
-  const stop = whenDue(14, () => hour, frame => { frames.add(frame); return () => frames.delete(frame); }, () => wakes++);
-  for (hour of [11, 13, 14, 16]) {
-    frames.forEach(frame => frame());
-    assert.equal(wakes, hour >= 14 ? 1 : 0);
-  }
-  assert.equal(frames.size, 0);
-  stop();
+test('review 8 4: a detail timed by its own hour owns its timing, and the card keeps one placement through its own pin', () => {
+  assert.notEqual(headKey('card', 0, { action: at(40) }), headKey('card', 0, { action: SPEC }), 'a hovered detail never writes its pin into the followed parent');
+  assert.notEqual(headKey('card', 0, { action: FOLLOW }), headKey('card', 0, { action: SPEC }), 'a drill following playback under a pinned card has its own placement');
+  assert.equal(headKey('card', 0, { action: at(40) }), headKey('card', 0, { action: at(52) }), 'a detail keeps one placement as its hour moves');
+  assert.equal(headKey('card', 0, { action: SPEC }), headKey('card', 0, { action: SPEC }));
 });
 
 test('continuous playback across a track’s end tells a following widget once, when its hour leaves the track, and not on frames within it', t => {

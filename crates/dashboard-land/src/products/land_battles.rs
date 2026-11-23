@@ -4,7 +4,7 @@ use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::Nam
 use dashboard_base::Source;
 use dashboard_base::products::battles::{BattleBound, BattleEnd, BattleMoment, BattleWarning, BattleWindow, BattleWinner};
 use dashboard_query::Query;
-use replay::lanes::{self, Cell, Keys};
+use replay_lanes::lanes::{self, Cell, Keys};
 use replay_data::{
     codec::Decoder,
     rows::{LandBattleEndRow, LandEquipmentLoss, TableId},
@@ -1288,7 +1288,7 @@ impl Product for LandBattleCourses {
 
 pub(super) fn design_names(query: &Query<'_>, content: &super::divisions::Content, run: u32, hour: i32, designs: &[u64]) -> io::Result<(Vec<LandEquipmentDesign>, Vec<String>)> {
     use super::divisions::{DESIGN_TABLES, Refusals, find};
-    use replay::at::Read;
+    use replay_lanes::at::Read;
     use replay_data::rows::tables;
     if designs.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -1300,7 +1300,7 @@ pub(super) fn design_names(query: &Query<'_>, content: &super::divisions::Conten
         .iter()
         .map(|&table| if table == TableId::VariantDefinitions { Read { table, columns: None, keys: Keys::These(&keys) } } else { Read::all(table) })
         .collect();
-    let frame = dashboard_query::cost::storage(|| replay::at::frame(query.replay.recording(), run, hour, &reads))?;
+    let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &reads))?;
     let mut refusals = Refusals::default();
     let definitions = frame.complete::<tables::VariantDefinitions>().map_err(|why| refusals.note(format!("Design names unavailable: {why}"))).ok();
     let named = designs

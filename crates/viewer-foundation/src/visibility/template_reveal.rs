@@ -9,7 +9,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(content: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(content: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let maximum = content.fixed5_array("NIntel", "COUNTRY_LEVEL_INTEL_MAXIMUMS")?;
         if maximum.len() != 4 {
             return Err(invalid(

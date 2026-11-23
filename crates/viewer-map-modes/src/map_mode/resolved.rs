@@ -38,7 +38,7 @@ fn project_with<'a, 'w>(
     };
     let mut game_layers: Vec<(GameLayer, ClosedLayer)> = Vec::new();
     let mut close = |side,
-                     layer: &content_reader_core::scripted_map_modes::Layer|
+                     layer: &content_reader_map::scripted_map_modes::Layer|
      -> io::Result<ClosedLayer> {
         match layer.kind {
             LayerType::None => Ok(ClosedLayer::Empty {}),

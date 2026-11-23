@@ -18,7 +18,7 @@ use viewer_gpu::gpu_contract::{
     select_adapter,
 };
 
-use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
+use std::{fs::File, io, path::Path, sync::Arc};
 
 use eframe::wgpu;
 
@@ -203,10 +203,27 @@ pub fn write_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
+    warn(path, write_png_under(&replay_settings::exit::EXIT.admit(replay_settings::exit::What::Export)?, scene, device, queue, path)?);
+    Ok(())
+}
+
+fn warn(path: &Path, warning: Option<String>) {
+    if let Some(warning) = warning {
+        eprintln!("Saved {}, but {warning}", path.display());
+    }
+}
+
+pub fn write_png_under(
+    receipt: &replay_settings::exit::Receipt<'_>,
+    scene: &Scene,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    path: &Path,
+) -> io::Result<Option<String>> {
     let targets = scene
         .targets()
         .ok_or_else(|| invalid("render a map before saving PNG"))?;
-    write_texture_png(targets.output(), device, queue, path)
+    write_texture_under(receipt, targets.output(), device, queue, path)
 }
 
 pub fn write_texture_png(
@@ -215,15 +232,29 @@ pub fn write_texture_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
+    warn(path, write_texture_under(&replay_settings::exit::EXIT.admit(replay_settings::exit::What::Export)?, texture, device, queue, path)?);
+    Ok(())
+}
+
+fn write_texture_under(
+    receipt: &replay_settings::exit::Receipt<'_>,
+    texture: &wgpu::Texture,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    path: &Path,
+) -> io::Result<Option<String>> {
     let (width, height) = (texture.width(), texture.height());
     let pixels = read_texture(device, queue, texture, 4)?;
-    let mut encoder = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-    let mut writer = encoder.write_header().map_err(io::Error::other)?;
-    writer.write_image_data(&pixels).map_err(io::Error::other)?;
-    writer.finish().map_err(io::Error::other)
+    receipt.replace(path, |out| {
+        let mut encoder = png::Encoder::new(out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        let mut writer = encoder.write_header().map_err(io::Error::other)?;
+        writer.write_image_data(&pixels).map_err(io::Error::other)?;
+        writer.finish().map_err(io::Error::other)
+    })
+    .map(|applied| applied.warning)
 }
 
 pub struct DumpReport {

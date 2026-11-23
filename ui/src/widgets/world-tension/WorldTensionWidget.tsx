@@ -35,7 +35,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import type { ThreatEvent, ThreatEventsReply } from '../../generated/dashboard';
 import { mix, parseColor, toHex } from '../../shell/appearance/color';
@@ -88,7 +88,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
   const pinnedDrill = options.show === 'breakdown';
-  const playbackHour = useFallbackHour(runtime.clock, false);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const playhead = window && (following || pinned) ? window.lastHour : null;

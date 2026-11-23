@@ -26,7 +26,10 @@ pub struct Capacities {
 collector_primitives::capacity_max!(Capacities { rows });
 
 impl Capacities {
-    pub fn presize(
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass against the authenticated
+    /// session image, while HQ-group observer storage remains live and teardown is excluded.
+    pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -157,15 +160,22 @@ impl Captured {
             &mut self.rows.rows,
         )
     }
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `template_changes` HQ-group demand updates belong to this pass.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    pub unsafe fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let begin = qpc();
-        self.acquire(memory, base, state);
+        // SAFETY: Caller upholds the hourly capture admission contract.
+        unsafe { self.acquire(memory, base, state) };
         self.decode_owned();
         [qpc().saturating_sub(begin).max(0) as u64]
     }
 
-    pub fn acquire(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `template_changes` HQ-group demand updates belong to this pass.
+    pub unsafe fn acquire(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = collector_memory::read_accounting::table(TABLES[0]);
         let begin = qpc();
         if std::mem::take(&mut self.refresh_templates) {
@@ -256,7 +266,8 @@ mod tests {
         };
         let mut capacity = Capacities { rows: 1 };
         let mut capture = Captured::with_capacities(&capacity);
-        capture.capture(&memory, 0, 0);
+        // SAFETY: Unit test runs against an isolated in-memory fixture.
+        unsafe { capture.capture(&memory, 0, 0) };
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         capture.reset();
         capture.rows.rows[0] = corders_group::CounterInputsRow {

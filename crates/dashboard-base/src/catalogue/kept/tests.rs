@@ -1,7 +1,7 @@
 use super::*;
 use crate::catalogue::{Catalogue, View, built_catalogue, catalogue};
 use crate::products::ContentOptions;
-use content_reader_core::content::diagnostics;
+use content_reader_layers::content::diagnostics;
 use std::sync::atomic::AtomicBool;
 
 fn built() -> usize {
@@ -100,7 +100,7 @@ fn kept_sprites_read_back_as_every_kind_was_declared() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = SpriteSet::new(&[(
         "interface/test.gfx".to_owned(),
-        content_reader_core::gui::native::sprites::read_sprites(GFX.as_bytes()),
+        content_reader_gui::gui::native::sprites::read_sprites(GFX.as_bytes()),
     )]);
     for name in ["GFX_a", "GFX_b", "GFX_tile", "GFX_bar", "GFX_anim"] {
         assert!(read.contains(name), "{name}: {read:?}");
@@ -160,9 +160,9 @@ fn game(name: &str, files: &[(&str, &str)]) -> (PathBuf, ContentOptions, replay_
     (root, options, identity)
 }
 
-fn session(identity: &replay_data::identity::Identity) -> Vec<replay::spool::Record> {
+fn session(identity: &replay_data::identity::Identity) -> Vec<replay_capture_spool::spool::Record> {
     let mut input = crate::test_fixtures::records(1, vec![crate::test_fixtures::source(1, 100, Some(1))]);
-    let replay::spool::Record::SessionStart(session) = &mut input[0] else {
+    let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else {
         unreachable!()
     };
     session.identity = identity.clone();

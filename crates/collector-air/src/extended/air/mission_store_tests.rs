@@ -204,7 +204,8 @@ fn walk_with(
         bytes: &world.bytes,
         regional: Default::default(),
     };
-    let mut reuse = MissionReuse::begin(store, watches);
+    // SAFETY: Unit test owns its local `MissionStore` and `Watches` fixture.
+    let mut reuse = unsafe { MissionReuse::begin(store, watches) };
     let mut rows = Vec::new();
     let mut failure = FailureContext::default();
     let outcome = walk_carried(
@@ -216,7 +217,8 @@ fn walk_with(
         &mut failure,
         &mut reuse,
     );
-    reuse.finish(matches!(outcome, Outcome::Rows { .. }));
+    // SAFETY: Unit test owns its local `MissionStore` and `Watches` fixture.
+    unsafe { reuse.finish(matches!(outcome, Outcome::Rows { .. })) };
     rows.truncate(outcome.len());
     Hour {
         rows,
@@ -339,7 +341,8 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
             regional: Default::default(),
         };
         let census = world.sorted_census();
-        let mut reuse = MissionReuse::begin(store, watches);
+        // SAFETY: Unit test owns its local `MissionStore` and `Watches` fixture.
+        let mut reuse = unsafe { MissionReuse::begin(store, watches) };
         let mut rows = Vec::new();
         let result = walk_carried(
             &memory,
@@ -354,7 +357,8 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
         rows.truncate(result.len());
         assert_eq!(rows, world.rows());
         let mut labels = Vec::new();
-        reuse.finish_with_order(true, &memory, &census, &mut labels);
+        // SAFETY: Unit test owns its local `MissionStore` and `Watches` fixture.
+        unsafe { reuse.finish_with_order(true, &memory, &census, &mut labels) };
         (labels, memory.regional.into_inner())
     }
     let mut world = World::new();

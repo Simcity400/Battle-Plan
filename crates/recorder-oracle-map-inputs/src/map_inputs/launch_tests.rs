@@ -7,7 +7,7 @@ use replay_frame::frame::TableView;
 fn fixture(physical: Vec<u32>, countries: &[u8], words: &[i32]) -> (DecodedFrame, Save) {
     let (mut frame, mut save, _, _) = super::super::super::fixtures::fixture();
     save.country_naval_launch = content_reader_save::naval_launch::parse_country_occurrences(
-        &content_reader_core::parser::parse(countries).unwrap().items,
+        &content_reader_parser::parser::parse(countries).unwrap().items,
     )
     .unwrap();
     *frame.tables[TableId::ReservedCountryNaming.index()] =

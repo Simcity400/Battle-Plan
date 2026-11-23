@@ -200,7 +200,7 @@ fn strip_in(cat: &Catalogue) -> Result<String, String> {
     let button = guis
         .template(MISSION_ENTRY_TEMPLATE)
         .ok_or_else(|| format!("GUI template {MISSION_ENTRY_TEMPLATE} is absent"))?
-        .find(content_reader_core::gui::native::Kind::Button, "button")
+        .find(content_reader_gui::gui::native::Kind::Button, "button")
         .and_then(|element| element.button())
         .ok_or_else(|| format!("GUI template {MISSION_ENTRY_TEMPLATE} has no button"))?;
     sprites::icon_key(cat, &button.sprite)
@@ -582,10 +582,10 @@ fn wings_reply(frame: &DecodedFrame, selected: &[&AirWingRow], names: &Names, li
         (Err(why), _) | (_, Err(why)) => Err(why.clone()),
     };
     let units = names.catalogue.as_ref().map_err(Clone::clone).and_then(|cat| {
-        cat.content.layers.derived::<CachedResult<content_reader_core::unit_leader::SubUnits>>().get_or_init(|| content_reader_core::unit_leader::sub_units(&cat.content.layers)).map_err(|error| error.to_string())
+        cat.content.layers.derived::<CachedResult<content_reader_script::sub_units::SubUnits>>().get_or_init(|| content_reader_key_names::unit_leader::sub_units(&cat.content.layers)).map_err(|error| error.to_string())
     });
     let fuel_penalty = names.catalogue.as_ref().map_err(Clone::clone).and_then(|cat| {
-        let defines = cat.content.layers.derived::<CachedResult<content_reader_core::defines::Defines>>().get_or_init(|| content_reader_core::defines::read(&cat.content.layers)).map_err(|error| error.to_string())?;
+        let defines = cat.content.layers.derived::<CachedResult<content_reader_defines::defines::Defines>>().get_or_init(|| content_reader_defines::defines::read(&cat.content.layers)).map_err(|error| error.to_string())?;
         defines.fixed5("NAir", "MISSION_EFFICIENCY_MULT_AT_LACK_OF_FUEL").map_err(|error| error.to_string())
     });
     let mut notes = BTreeMap::<String, usize>::new();

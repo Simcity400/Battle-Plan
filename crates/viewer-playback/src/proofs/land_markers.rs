@@ -8,7 +8,7 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_counters::map::counters::combat_markers::LandMarker;
+use viewer_counter_kit::combat_markers::LandMarker;
 use viewer_engagements::engagement_history::History;
 use viewer_foundation::tables::core;
 

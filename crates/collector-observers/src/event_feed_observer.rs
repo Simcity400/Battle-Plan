@@ -1333,7 +1333,10 @@ pub fn note_wars(count: usize) {
     WARS.store(count, Ordering::Relaxed);
 }
 
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's capture, recovery, or publication failure path (or an
+/// isolated test fixture) when revoking live event-feed world observation.
+pub unsafe fn lost_drain() {
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
         owner.revoke_world();
     }
@@ -1349,7 +1352,11 @@ fn input_failure(owner: &Owner) -> Option<&'static str> {
     }
 }
 
-pub fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
+/// # Safety
+/// Caller must run on the admitted hourly observer boundary as the sole consumer preparing the
+/// event-feed interval with teardown excluded; a stable absent owner (hooks disabled) is permitted
+/// and returns unavailable.
+pub unsafe fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
     let generation = crate::world_lifetime::generation();
     let owner =
         unsafe { SHARED.load(Ordering::SeqCst).as_ref() }.ok_or("Event feed hooks unavailable")?;
@@ -1404,7 +1411,10 @@ pub(crate) fn presize_owner_for_test(
     crate::test_support::with_allocations_denied(|| install_offered(store));
 }
 
-pub fn seal(output: &mut Snapshot, hour: i32, partial: bool) {
+/// # Safety
+/// Caller must hold hourly capture ownership as the sole consumer sealing the prepared event-feed
+/// interval while event-feed storage stays live and teardown is excluded.
+pub unsafe fn seal(output: &mut Snapshot, hour: i32, partial: bool) {
     seal_hour(output, hour, partial, || {});
 }
 
@@ -1478,12 +1488,17 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
     }
 }
 
-pub fn accepted(pack: &crate::event_feed_history::Prepared) -> std::io::Result<()> {
+/// # Safety
+/// Caller must be the originating spool resolving a confirmed publication receipt for this session.
+pub unsafe fn accepted(pack: &crate::event_feed_history::Prepared) -> std::io::Result<()> {
     resolve(pack.publication(), true);
     Ok(())
 }
 
-pub fn discarded(publication: u64) {
+/// # Safety
+/// Caller must be the originating spool or capture recovery path discarding an uncommitted
+/// publication receipt for this session.
+pub unsafe fn discarded(publication: u64) {
     resolve(publication, false);
 }
 
@@ -2319,7 +2334,8 @@ mod tests {
         during: &dyn Fn(),
     ) -> crate::event_feed_history::Prepared {
         let pack = seal_unwritten(owner, output, hour, during);
-        accepted(&pack).unwrap();
+        // SAFETY: Unit test holds `test_globals()` and resolves its own test receipt.
+        unsafe { accepted(&pack) }.unwrap();
         pack
     }
     fn seal_unwritten(
@@ -2363,18 +2379,24 @@ mod tests {
             .collect();
         assert!(packs.iter().all(|pack| pack.row().failure.is_none()));
         assert_eq!(ledger(&owner).cells.len(), 64);
-        discarded(packs[9].publication());
-        for pack in &packs {
-            accepted(pack).unwrap();
+        // SAFETY: Unit test holds `test_globals()` and resolves each receipt once in isolation.
+        unsafe {
+            discarded(packs[9].publication());
+            for (index, pack) in packs.iter().enumerate() {
+                if index != 9 {
+                    accepted(pack).unwrap();
+                }
+            }
         }
-        discarded(packs[20].publication());
-        accepted(&packs[9]).unwrap();
-        discarded(packs[63].publication() + 1000);
+        resolve(packs[9].publication(), true);
+        resolve(packs[20].publication(), false);
+        resolve(packs[63].publication() + 1000, false);
         assert!(ledger(&owner).cells.iter().all(|cell| cell.1.is_some()));
         let next = seal_unwritten(&owner, &mut output, 65, &|| {});
         assert_eq!(next.row().coverage, EventFeedCoverage::Unavailable);
         assert_eq!(ledger(&owner).cells.len(), 1);
-        accepted(&next).unwrap();
+        // SAFETY: Unit test holds `test_globals()` and resolves its own test receipt.
+        unsafe { accepted(&next) }.unwrap();
         let losses = owner
             .access(Role::Detach, |store| {
                 take_receipts(&owner, store);
@@ -2744,7 +2766,8 @@ mod tests {
         );
         assert_eq!(total_declines(&owner), 0);
         let mut snapshot = Snapshot::new(0);
-        seal(&mut snapshot, 1, false);
+        // SAFETY: Unit test holds `test_globals()` and exercises seal refusal in isolation.
+        unsafe { seal(&mut snapshot, 1, false) };
         assert_eq!(snapshot.boundary.failure, Some(WORKER_RETAINED));
         assert_eq!(
             snapshot.boundary.coverage,

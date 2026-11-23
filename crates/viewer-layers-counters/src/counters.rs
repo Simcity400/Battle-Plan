@@ -15,7 +15,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use viewer_counters::map::counters::{type_tint, CounterContent, DivisionFields, DivisionStatus, LandStacks, Member, MemberJoins, StatusFields, division_kind, division_member, member_orders, member_strength};
+use viewer_counter_kit::type_tint;
+use viewer_counters::counters::CounterContent;
+use viewer_counters_land::land::{DivisionStatus, StatusFields};
+use viewer_counters_land::members::{DivisionFields, LandStacks, Member, MemberJoins, division_kind, division_member, member_orders, member_strength};
 use viewer_unit_reads::{
     counter_inputs::{AssignedOrders, GroupFacts, OrderFacts},
     counter_move::UnitRoute,

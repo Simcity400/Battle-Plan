@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, VertexInput, gpu, library::Effect};
 use std::{io, sync::Arc};

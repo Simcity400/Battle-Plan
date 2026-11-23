@@ -48,10 +48,10 @@ pub struct Terrains {
     categories: Vec<Vec<u8>>,
 }
 impl Terrains {
-    pub fn read(layers: &content_reader_core::ResolvedLayers) -> io::Result<Self> {
-        let (definitions, map) = content_reader_core::terrain::read(layers)?;
+    pub fn read(layers: &content_reader_layers::ResolvedLayers) -> io::Result<Self> {
+        let (definitions, map) = content_reader_key_names::terrain::read(layers)?;
         let provinces =
-            content_reader_core::map::province_terrains(&layers.read(&map.file("definitions")?)?)?;
+            content_reader_map::map::province_terrains(&layers.read(&map.file("definitions")?)?)?;
         Ok(Self {
             provinces,
             categories: definitions
@@ -220,7 +220,7 @@ mod tests {
 
     fn terrains() -> Terrains {
         Terrains {
-            provinces: content_reader_core::map::province_terrains(
+            provinces: content_reader_map::map::province_terrains(
                 b"0;0;0;0;land;false;unknown;0\n1;10;20;30;land;false;Mod_Hills;1\n2;10;20;31;land;false;plains;1\n3;10;20;32;land;false;swamp;1\n",
             )
             .unwrap(),

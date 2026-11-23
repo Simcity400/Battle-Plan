@@ -1,8 +1,6 @@
 
-use replay::{
-    columnar_frames::Recording,
-    lanes::{Cell, Keys, history},
-};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::lanes::{Cell, Keys, history};
 use replay_data::rows::{
     EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON, EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentLossCoverageRow as Row, TableId, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
 };

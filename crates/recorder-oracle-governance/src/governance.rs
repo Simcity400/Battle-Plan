@@ -57,7 +57,7 @@ fn label(tag: &[u8], field: &str) -> String {
 }
 
 fn literal<'a>(report: &mut Report, subject: &str, token: &'a [u8]) -> &'a [u8] {
-    let end = content_reader_core::parser::c_string(token).len();
+    let end = content_reader_parser::parser::c_string(token).len();
     if end < token.len() {
         report.limitation("native text serialization ends at the first NUL; captured trailing bytes are not save-comparable", subject);
     }

@@ -71,8 +71,8 @@ test.skip('actual product and window hooks scope ready, late and retried results
           assert.notEqual(hooked, source, `${path} imports its hooks from React`);
           return hooked;
         }
-        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
-          "import { createContext } from 'react'; const { useEffect, useState } = globalThis.__productClientHooks; const useContext = () => null;");
+        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useRef, useState } from 'react';",
+          "import { createContext } from 'react'; const { useEffect, useRef, useState } = globalThis.__productClientHooks; const useContext = () => null;");
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
           'return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
       },

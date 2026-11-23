@@ -700,7 +700,7 @@ impl super::Viewer {
                 }).find(|&point| self.map_hit(point).is_none())
             }
             Family::Counters => self.counter_report.land_hovers.first().map(|hover| middle(hover.rect)),
-            Family::Naval => self.counter_report.naval_region_hovers.iter().find(|hover| matches!(hover.control, viewer_counters::map::counters::NavalRegionalControl::Mines | viewer_counters::map::counters::NavalRegionalControl::Accidents)).map(|hover| middle(hover.rect)),
+            Family::Naval => self.counter_report.naval_region_hovers.iter().find(|hover| matches!(hover.control, viewer_counter_kit::NavalRegionalControl::Mines | viewer_counter_kit::NavalRegionalControl::Accidents)).map(|hover| middle(hover.rect)),
             Family::Occupation => self.overlay_hits.occupation.iter().find(|hit| matches!(hit.hover, viewer_map_icons::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
             Family::Capture => None,
         }
@@ -770,7 +770,7 @@ impl Inputs {
         self.job(Box::new(move |frame, _| Arc::new(if mines { naval_mines::build(&inputs.content, frame, &inputs.vision, region, false) } else { naval_accidents::build(&inputs.content, frame, &inputs.vision, region) })))
     }
 
-    pub(crate) fn occupation(&self, state: u32, definition: content_reader_core::occupation_modifiers::Definition) -> Job {
+    pub(crate) fn occupation(&self, state: u32, definition: content_reader_politics::occupation_modifiers::Definition) -> Job {
         let inputs = self.clone();
         self.job(Box::new(move |frame, _| Arc::new(occupation_modifier_tooltips::build(&inputs.content, frame, state, &definition, inputs.vision.ours()))))
     }

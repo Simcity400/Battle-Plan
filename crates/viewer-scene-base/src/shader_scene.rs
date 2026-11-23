@@ -14,8 +14,8 @@ pub struct Program {
     selection: shader_pipeline::library::Selection,
     layouts: Vec<gpu::VertexLayout>,
     state: gpu::State,
-    raster: content_reader_core::pdxshader::RasterizerState,
-    depth: content_reader_core::pdxshader::DepthStencilState,
+    raster: content_reader_gui::pdxshader::RasterizerState,
+    depth: content_reader_gui::pdxshader::DepthStencilState,
 }
 
 impl Program {
@@ -38,8 +38,8 @@ impl Program {
         selection: &shader_pipeline::library::Selection,
         layouts: &[gpu::VertexLayout],
         state: &gpu::State,
-        raster: &content_reader_core::pdxshader::RasterizerState,
-        depth: &content_reader_core::pdxshader::DepthStencilState,
+        raster: &content_reader_gui::pdxshader::RasterizerState,
+        depth: &content_reader_gui::pdxshader::DepthStencilState,
     ) -> Self {
         Self {
             selection: selection.clone(),
@@ -74,7 +74,7 @@ impl Program {
     }
 
     fn bind_registers(&self, retained: &mut State, buffers: &BTreeMap<u32, impl AsRef<[u8]>>) {
-        use content_reader_core::pdxshader::program::Stage;
+        use content_reader_gui::pdxshader::program::Stage;
         self.select(retained);
         let stream = &mut retained.stream;
         for (slot, layout) in self.layouts.iter().enumerate() {
@@ -94,7 +94,7 @@ impl Program {
         }
     }
 
-    pub fn sampler(&self, key: u32) -> Option<&content_reader_core::pdxshader::program::Sampler> {
+    pub fn sampler(&self, key: u32) -> Option<&content_reader_gui::pdxshader::program::Sampler> {
         self.state.samplers.get(&key)
     }
 
@@ -120,7 +120,7 @@ impl Program {
         retained: &mut State,
         textures: impl Iterator<Item = (u32, gpu::TextureBinding)>,
     ) {
-        use content_reader_core::pdxshader::program::Stage;
+        use content_reader_gui::pdxshader::program::Stage;
         let stream = &mut retained.stream;
         for (key, texture) in textures {
             let stage = if key % 2 == 0 {

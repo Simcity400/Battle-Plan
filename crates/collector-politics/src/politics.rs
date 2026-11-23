@@ -93,8 +93,9 @@ impl Captured {
             + self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
     /// # Safety
-    /// Only the serial sizing owner may replace the live political log. Exclude competing presizers
-    /// and detach throughout.
+    /// Caller holds exclusive `&mut` access to this frame while politics staging stays live for the
+    /// active session (or an isolated test) and `politics_changes::release` is excluded. Different
+    /// frames may grow concurrently across spool and sizing threads because `resize` locks `LOGS`.
     pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
         if let Some(Ok(drain)) = self.drained {
             grow_capacity(&mut capacity.entries, drain.pending);
@@ -106,7 +107,8 @@ impl Captured {
                 len.saturating_add(unread_rows as usize),
             );
         }
-        hooks::resize(capacity.entries, 0);
+        // SAFETY: Caller guarantees live politics staging with `release` excluded; `resize` locks `LOGS`.
+        unsafe { hooks::resize(capacity.entries, 0) };
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [Outcome::Unavailable { reason: ASSEMBLED }; N]
@@ -117,11 +119,18 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, reason: &'static str) {
-        hooks::invalidate();
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live politics observation.
+    pub unsafe fn fail(&mut self, reason: &'static str) {
+        // SAFETY: Caller owns the politics capture or publication failure path.
+        unsafe { hooks::invalidate() };
         self.handoff = Some(Err(reason));
     }
-    pub fn capture(&mut self) -> u64 {
+    /// # Safety
+    /// Only the admitted hour's sole observer boundary (or an isolated test holding
+    /// `staging_test()`) may seal an offered generation and capture a handoff while staging lives.
+    pub unsafe fn capture(&mut self) -> u64 {
         let started = crate::clock::qpc();
         self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
         crate::clock::qpc().saturating_sub(started).max(0) as u64
@@ -166,8 +175,8 @@ pub struct Ledger {
 }
 impl Ledger {
     /// # Safety
-    /// Only the originating spool may consume this captured political interval, before its observer
-    /// storage is torn down.
+    /// Only the originating session's sole spool consumer may assemble this captured handoff, while
+    /// the politics log retained by `captured` remains live and before `politics_changes::release`.
     pub unsafe fn assemble_owned(
         &mut self,
         branch: BranchId,
@@ -210,7 +219,10 @@ impl Ledger {
             captured
                 .handoff
                 .unwrap_or(Err("politics handoff absent"))
-                .and_then(|h| h.drain(&captured.cursors, &mut scratch.events, &mut scratch.bytes)),
+                .and_then(|h| {
+                    // SAFETY: Caller guarantees sole spool ownership while the politics log stays live.
+                    unsafe { h.drain(&captured.cursors, &mut scratch.events, &mut scratch.bytes) }
+                }),
         );
         scratch.census = match outcome {
             Outcome::Rows { len } => {

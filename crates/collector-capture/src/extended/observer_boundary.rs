@@ -43,10 +43,13 @@ impl ObserverBoundaryRequest {
     pub fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
         let boundaries = qpc();
-        collector_observers::market_changes::boundary(
-            self.market_clock,
-            !self.continuous || self.recovery || self.market_refresh,
-        );
+        // SAFETY: Runs on the admitted hour's sole observer boundary while market observation lives.
+        unsafe {
+            collector_observers::market_changes::boundary(
+                self.market_clock,
+                !self.continuous || self.recovery || self.market_refresh,
+            );
+        }
         collector_air_relations::relation_changes::boundary(!self.continuous || self.recovery);
         collector_air_histories::history_changes::boundary(!self.continuous || self.recovery);
         collector_intel::flag_changes::boundary(!self.continuous || self.recovery);
@@ -70,7 +73,10 @@ impl ObserverBoundaryRequest {
         collector_observers::raid_changes::boundary(!self.continuous || self.recovery);
         collector_observers::naval_tree_changes::boundary(!self.continuous || self.recovery);
         collector_observers::unit_leader_changes::boundary(!self.continuous || self.recovery);
-        collector_naval_management::changes::boundary(!self.continuous || self.recovery);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while naval watches live.
+        unsafe {
+            collector_naval_management::changes::boundary(!self.continuous || self.recovery);
+        }
         collector_observers::census_changes::boundary(!self.continuous || self.recovery);
         collector_observers::orders_group_changes::boundary(!self.continuous || self.recovery);
         collector_observers::unit_leader_trait_changes::boundary(!self.continuous || self.recovery);
@@ -81,24 +87,35 @@ impl ObserverBoundaryRequest {
             !self.continuous || self.recovery,
         );
         collector_division_templates::template_changes::boundary(!self.continuous || self.recovery);
-        collector_factions::faction_goal_changes::boundary(!self.continuous || self.recovery);
-        collector_factions::faction_companion_changes::boundary(!self.continuous || self.recovery);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while faction watches live.
+        unsafe {
+            collector_factions::faction_goal_changes::boundary(!self.continuous || self.recovery);
+            collector_factions::faction_companion_changes::boundary(
+                !self.continuous || self.recovery,
+            );
+        }
         collector_ship_models::ship_model_changes::boundary(!self.continuous || self.recovery);
         collector_divisions::province_unit_changes::boundary(!self.continuous || self.recovery);
         collector_observers::province_combat_changes::boundary(!self.continuous || self.recovery);
         collector_observers::air_base_carry_changes::boundary(!self.continuous || self.recovery);
         collector_observers::character_changes::boundary(!self.continuous || self.recovery);
         collector_observers::war_changes::boundary(!self.continuous || self.recovery);
-        self.land.drain(self.hour, !self.continuous);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while land-event storage lives.
+        unsafe { self.land.drain(self.hour, !self.continuous) };
         self.finished[0] = true;
         report.ticks[0] = elapsed(boundaries);
         let begin = qpc();
-        self.feed
-            .drain(self.hour, !self.continuous || self.recovery);
+        // SAFETY: Runs on the admitted hour's sole observer boundary with teardown excluded
+        // (event-feed hooks may be stably disabled/absent).
+        unsafe {
+            self.feed
+                .drain(self.hour, !self.continuous || self.recovery);
+        }
         self.finished[1] = true;
         report.ticks[1] = elapsed(begin);
         let begin = qpc();
-        self.lines.drain();
+        // SAFETY: Admitted hour's sole observer boundary drains the line-output interval once.
+        unsafe { self.lines.drain() };
         self.finished[2] = true;
         report.ticks[2] = elapsed(begin);
         let begin = qpc();
@@ -107,9 +124,13 @@ impl ObserverBoundaryRequest {
         self.finished[3] = true;
         report.ticks[3] = elapsed(begin);
         let begin = qpc();
-        self.construction.drain();
-        collector_output::construction_ic::install_offered();
-        collector_output::line_output::install_offered();
+        // SAFETY: Admitted hour's sole observer boundary drains construction-IC and installs
+        // offered output logs under the capture gate.
+        unsafe {
+            self.construction.drain();
+            collector_output::construction_ic::install_offered();
+            collector_output::line_output::install_offered();
+        }
         self.finished[4] = true;
         report.ticks[4] = elapsed(begin);
         let begin = qpc();
@@ -117,9 +138,12 @@ impl ObserverBoundaryRequest {
         collector_peace::peace_settlements::install_offered();
         self.finished[5] = true;
         report.ticks[5] = elapsed(begin);
-        report.ticks[6] = self.operations.capture();
+        // SAFETY: Admitted hour's sole observer boundary seals operation-outcome and politics
+        // handoffs while their global staging logs remain live.
+        report.ticks[6] = unsafe { self.operations.capture() };
         self.finished[6] = true;
-        report.ticks[7] = self.politics.capture();
+        // SAFETY: Admitted hour's sole observer boundary seals the politics handoff while staging lives.
+        report.ticks[7] = unsafe { self.politics.capture() };
         self.finished[7] = true;
         report
     }
@@ -148,7 +172,8 @@ impl ObserverBoundaryRequest {
             collector_observers::raid_changes::boundary(true);
             collector_observers::naval_tree_changes::boundary(true);
             collector_observers::unit_leader_changes::boundary(true);
-            collector_naval_management::changes::boundary(true);
+            // SAFETY: Admitted hour's sole observer boundary invalidates naval watches on failure.
+            unsafe { collector_naval_management::changes::boundary(true) };
             collector_observers::census_changes::boundary(true);
             collector_observers::orders_group_changes::boundary(true);
             collector_observers::unit_leader_trait_changes::boundary(true);
@@ -157,8 +182,11 @@ impl ObserverBoundaryRequest {
             collector_model_inputs::local_subunit_changes::boundary(true);
             collector_production::production::design_changes::boundary(true);
             collector_division_templates::template_changes::boundary(true);
-            collector_factions::faction_goal_changes::boundary(true);
-            collector_factions::faction_companion_changes::boundary(true);
+            // SAFETY: Admitted hour's sole observer boundary invalidates faction watches on failure.
+            unsafe {
+                collector_factions::faction_goal_changes::boundary(true);
+                collector_factions::faction_companion_changes::boundary(true);
+            }
             collector_ship_models::ship_model_changes::boundary(true);
             collector_divisions::province_unit_changes::boundary(true);
             collector_observers::province_combat_changes::boundary(true);
@@ -169,24 +197,25 @@ impl ObserverBoundaryRequest {
         let lane_reason = lane_reason(&self.finished, reason);
         for (index, finished) in self.finished.into_iter().enumerate() {
             if !finished {
+                // SAFETY: Observer-boundary failure path owns invalidating unfinished live lanes.
                 match index {
-                    0 => self.land.fail(self.hour, reason),
-                    1 => self.feed.fail(self.hour, reason),
+                    0 => unsafe { self.land.fail(self.hour, reason) },
+                    1 => unsafe { self.feed.fail(self.hour, reason) },
                     2 => {
-                        collector_output::line_output::invalidate();
+                        unsafe { collector_output::line_output::invalidate() };
                         self.lines.fail(reason);
                     }
                     3 => self.fuel.fail(reason),
                     4 => {
-                        collector_output::construction_ic::invalidate();
+                        unsafe { collector_output::construction_ic::invalidate() };
                         self.construction.fail(reason);
                     }
                     5 => {
                         collector_peace::peace_settlements::lost_drain();
                         self.peace.fail(reason);
                     }
-                    6 => self.operations.fail(lane_reason),
-                    7 => self.politics.fail(lane_reason),
+                    6 => unsafe { self.operations.fail(lane_reason) },
+                    7 => unsafe { self.politics.fail(lane_reason) },
                     _ => unreachable!(),
                 }
             }
@@ -330,8 +359,12 @@ mod tests {
             }
         }
         for population in [1500u32, 5000] {
-            collector_output::construction_ic::reset_log_for_test(0);
-            collector_output::line_output::reset_log_for_test(0);
+            // SAFETY: Test holds both `construction_ic::test_lock()` and `line_output::test_lock()`
+            // with no live hooks installed.
+            unsafe {
+                collector_output::construction_ic::reset_log_for_test(0);
+                collector_output::line_output::reset_log_for_test(0);
+            }
             let mut memory = Loaded(kit::fixture());
             let set = |bytes: &mut [u8], address: usize, value: &[u8]| {
                 bytes[address - kit::BASE..address - kit::BASE + value.len()]
@@ -375,8 +408,11 @@ mod tests {
             );
             collector_output::construction_ic::presize_from_live(&memory, 0).unwrap();
             collector_test_support::with_allocations_denied(|| {
-                collector_output::line_output::install_offered();
-                collector_output::construction_ic::install_offered();
+                // SAFETY: Test holds output test locks with no live hooks running.
+                unsafe {
+                    collector_output::line_output::install_offered();
+                    collector_output::construction_ic::install_offered();
+                }
             });
             assert!(
                 serde_json::to_value(collector_output::line_output::status()).unwrap()["capacity"]

@@ -6,7 +6,7 @@ use crate::native_windows::NativeWindows;
 use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap};
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 
 use super::{
     native_gui::{
@@ -1392,7 +1392,7 @@ mod tests {
 
     #[test]
     fn combat_handles_keep_their_high_bits_in_pool_ownership() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let context = Context {
@@ -1452,7 +1452,7 @@ mod tests {
 
     #[test]
     fn replacement_keeps_the_clock_and_membership_and_cannot_create_a_first_frame() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let mut context = Context {
@@ -1479,7 +1479,7 @@ mod tests {
 
     #[test]
     fn registry_identity_rebuilds_even_when_the_template_bytes_match() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let first = windows(GUI);
         let second = windows(GUI);
@@ -1501,7 +1501,7 @@ mod tests {
 
     #[test]
     fn native_draws_nothing_diagnostics_keep_the_part_and_reason() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut resources = fixture();
         let mut sprite = resources.sprite(b"GFX_even").unwrap();
         sprite.texture = [0; 2];
@@ -1524,7 +1524,7 @@ mod tests {
 
     #[test]
     fn shared_region_linger_retains_slot_then_final_sweep_stops_requests_and_running() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use viewer_gpu::province_schedule::Schedule;
         for selected in [false, true] {
             let resources = fixture();
@@ -1646,7 +1646,7 @@ mod tests {
 
     #[test]
     fn a_pool_keeps_each_window_that_stood_still_and_writes_again_only_those_that_changed() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
@@ -1762,7 +1762,7 @@ mod tests {
 
     #[test]
     fn a_quiet_frame_moves_slots_as_a_drawn_frame_and_the_next_drawn_frame_shows_the_same_windows() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
@@ -1810,7 +1810,7 @@ mod tests {
 
     #[test]
     fn a_settled_pool_asks_for_no_frame_until_something_it_shows_or_holds_changes() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
@@ -1844,7 +1844,7 @@ mod tests {
 
     #[test]
     fn a_pool_window_s_layout_reads_no_screen_point() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let root = windows.gui_type(b"test_icon").expect("the fixture's window");
@@ -1869,7 +1869,7 @@ mod tests {
 
     #[test]
     fn a_recorded_pool_writes_again_only_the_owners_whose_values_changed() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owners = [
@@ -1924,7 +1924,7 @@ mod tests {
 
     #[test]
     fn a_growing_pool_keeps_the_windows_that_stood_still() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id: u32| Owner {

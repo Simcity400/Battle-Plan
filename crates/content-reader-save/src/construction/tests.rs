@@ -97,7 +97,7 @@ fn occupation_resistance_targets_keep_order_country_omissions_and_emitted_empty_
 }
 
 fn railway_fields(extra: &str) -> Vec<Item> {
-    content_reader_core::parser::parse(
+    content_reader_parser::parser::parse(
         format!(
             "id={{id=4294967295 type=4713}} cost=-90071992547.40993 priority=-9 amount=-2147483648 created_date=1936.1.1.12 base=-3 target=7 current_province=-1 remaining_hours=0.00001 {extra}"
         )
@@ -108,7 +108,7 @@ fn railway_fields(extra: &str) -> Vec<Item> {
 }
 
 fn pack(input: &str) -> io::Result<Pack> {
-    parse(&content_reader_core::parser::parse(input.as_bytes())?.items)
+    parse(&content_reader_parser::parser::parse(input.as_bytes())?.items)
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn malformed_or_duplicate_serialized_scope_is_never_silently_overwritten() {
 #[test]
 fn shared_manpower_reader_keeps_nonfaction_wrappers_unique() {
     let doc =
-        content_reader_core::parser::parse(b"manpower_pool={} manpower_pool={value={tag=MOD value=4}}")
+        content_reader_parser::parser::parse(b"manpower_pool={} manpower_pool={value={tag=MOD value=4}}")
             .unwrap();
     assert_eq!(
         manpower(&doc.items, b"manpower_pool")

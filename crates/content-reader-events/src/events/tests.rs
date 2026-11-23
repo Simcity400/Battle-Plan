@@ -1,3 +1,4 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -18,7 +19,7 @@ fn cached_event_index_and_trees_replay_their_own_reads_after_prefetch() {
     let layers = ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2).unwrap();
     let _ = layers.report_uncovered_reads();
     let read = |events: &LazyEvents| {
-        content_reader_core::content::diagnostics::observe(|| events.get(b"s.1").unwrap())
+        content_reader_layers::content::diagnostics::observe(|| events.get(b"s.1").unwrap())
     };
     let alone = LazyEvents::new(Arc::new(layers.clone()));
     let (expected, notes) = read(&alone);
@@ -30,7 +31,7 @@ fn cached_event_index_and_trees_replay_their_own_reads_after_prefetch() {
     assert_eq!(*actual, *expected);
     assert_eq!(warm, notes);
     let (_, option_notes) =
-        content_reader_core::content::diagnostics::observe(|| shared.options(b"OPTION").unwrap());
+        content_reader_layers::content::diagnostics::observe(|| shared.options(b"OPTION").unwrap());
     assert_eq!(option_notes, notes);
     drop(events);
     std::fs::remove_dir_all(root).unwrap();
@@ -38,7 +39,7 @@ fn cached_event_index_and_trees_replay_their_own_reads_after_prefetch() {
 
 #[test]
 fn event_presentation_keeps_description_picture_and_each_option_admission_trigger() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parsed=parse(b"add_namespace=synthetic country_event={id=synthetic.3 title=TITLE desc=BODY picture=FIRST picture=LAST option={name=CHOICE trigger={always=yes} original_recipient_only=yes custom_effect_tooltip=EFFECT}}", "synthetic.txt", &KeyNames::default());
     let event = parsed.get(b"synthetic.3").unwrap();
     assert_eq!(event.sole_description_key(), Ok(Some(b"BODY".as_slice())));
@@ -53,7 +54,7 @@ fn event_presentation_keeps_description_picture_and_each_option_admission_trigge
 
 #[test]
 fn any_original_recipient_assignment_gates_the_option_and_a_failed_read_keeps_the_mode() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let parsed = parse(
         b"add_namespace=synthetic country_event={id=synthetic.4 title=TITLE \
           option={name=KEPT original_recipient_only=yes original_recipient_only=invalid} \
@@ -175,7 +176,7 @@ fn sole_event_title_preserves_c_string_last_field_and_trigger_bypass() {
 }
 #[test]
 fn border_events_keep_immediate_and_option_order_through_effect_reader() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let input = b"add_namespace=synthetic country_event={id=synthetic.1 title=TITLE immediate={custom_effect_tooltip=FIRST} option={name=A custom_effect_tooltip=SECOND} option={name=B hidden_effect={custom_effect_tooltip=HIDDEN}}}";
     let events = parse(input, "events/synthetic.txt", &KeyNames::default());
     let event = &events.entries[b"synthetic.1".as_slice()];
@@ -190,7 +191,7 @@ fn border_events_keep_immediate_and_option_order_through_effect_reader() {
 
 #[test]
 fn border_event_identifiers_reduce_suffix_and_refuse_namespace_slot_aliases() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     assert_eq!(
         identifier_key(b"Synthetic.00001\0tail").unwrap(),
         b"synthetic.1"
@@ -228,7 +229,7 @@ fn border_event_identifiers_reduce_suffix_and_refuse_namespace_slot_aliases() {
 
 #[test]
 fn border_event_loader_skips_bom_before_namespace_and_title_reads_last_text() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let events = parse(
         b"\xef\xbb\xbfadd_namespace=s country_event={id=s.1 title={text=FIRST key=LAST}}",
         "synthetic.txt",
@@ -250,7 +251,7 @@ fn border_event_loader_skips_bom_before_namespace_and_title_reads_last_text() {
 
 #[test]
 fn operative_event_uses_common_reader_and_preserves_titles_and_effect_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let events = parse(
         b"add_namespace=s operative_leader_event={id=s.5 title=FIRST title={text=LAST trigger={always=no}} desc=DESCRIPTION is_triggered_only=yes major=no immediate={custom_effect_tooltip=ONE custom_effect_tooltip=TWO} option={name=A custom_effect_tooltip=THREE custom_effect_tooltip=FOUR} option={name=B hidden_effect={custom_effect_tooltip=FIVE}}}",
         "events/synthetic.txt",
@@ -307,7 +308,7 @@ fn operative_event_uses_common_reader_and_preserves_titles_and_effect_order() {
 
 #[test]
 fn operative_event_immediate_and_after_forward_character_parse_scope() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     for block in ["immediate", "after"] {
         let input = format!(
             "add_namespace=s operative_leader_event={{id=s.5 {block}={{promote_character={{character={{@ignored=LEAKED}} ideology=fixture}} remove_unit_leader_role=yes}} title=@ignored}}"
@@ -326,7 +327,7 @@ fn operative_event_immediate_and_after_forward_character_parse_scope() {
 
 #[test]
 fn operative_option_direct_role_uses_character_scope_and_skips_rejected_block() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let events = parse(
         b"add_namespace=s operative_leader_event={id=s.5 option={name=A remove_unit_leader_role={character=fixture @ignored=LEAKED}} title=@ignored}",
         "events/synthetic.txt",
@@ -342,7 +343,7 @@ fn operative_option_direct_role_uses_character_scope_and_skips_rejected_block() 
 
 #[test]
 fn operative_option_refuses_only_nested_readers_missing_inherited_scope() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     for effect in [
         "promote_character={character={@ignored=LEAKED} ideology=fixture}",
         "hidden_effect={remove_unit_leader_role={character=fixture}}",
@@ -374,7 +375,7 @@ fn operative_option_refuses_only_nested_readers_missing_inherited_scope() {
 
 #[test]
 fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!("hoi4-lazy-events-{}", std::process::id()));
     std::fs::create_dir_all(root.join("events")).unwrap();
     std::fs::write(root.join("events/a.txt"), b"add_namespace=s country_event={id=s.1 title=FIRST immediate={@next=s.2 custom_effect_tooltip=TEXT}} country_event={id=@next title=SECOND}").unwrap();
@@ -411,7 +412,7 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
 }
 
 fn option_index_fixture(files: &[(&str, &[u8])]) -> (LazyEvents, std::path::PathBuf) {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4-option-index-{}-{}-{}",
         std::process::id(),
@@ -443,7 +444,7 @@ fn prefetched_events_read_each_file_once_and_look_up_as_single_lookups_do() {
         let reads = Arc::clone(&reads);
         ResolvedLayers::from_folders(&[(&root, &[])])
             .unwrap()
-            .with_read_trace(Arc::new(move |read: content_reader_core::content::ContentRead| {
+            .with_read_trace(Arc::new(move |read: content_reader_layers::content::ContentRead| {
                 reads.lock().unwrap().push(String::from_utf8(read.path).unwrap());
             }))
     };
@@ -475,7 +476,7 @@ fn prefetched_events_read_apart_and_leave_unread_what_a_lookup_refuses_unread() 
         let reads = Arc::clone(&reads);
         ResolvedLayers::from_folders(&[(&root, &[])])
             .unwrap()
-            .with_read_trace(Arc::new(move |read: content_reader_core::content::ContentRead| {
+            .with_read_trace(Arc::new(move |read: content_reader_layers::content::ContentRead| {
                 reads.lock().unwrap().push(String::from_utf8(read.path).unwrap());
             }))
     };
@@ -489,7 +490,7 @@ fn prefetched_events_read_apart_and_leave_unread_what_a_lookup_refuses_unread() 
         let (cancel, reads) = (Arc::clone(&cancel), Arc::clone(&reads));
         ResolvedLayers::from_folders(&[(&root, &[])])
             .unwrap()
-            .with_read_trace(Arc::new(move |read: content_reader_core::content::ContentRead| {
+            .with_read_trace(Arc::new(move |read: content_reader_layers::content::ContentRead| {
                 reads.lock().unwrap().push(String::from_utf8(read.path).unwrap());
                 cancel.store(true, Ordering::Release);
             }))
@@ -609,7 +610,7 @@ fn lazy_option_index_shares_requested_trees_and_keeps_other_files_header_only() 
 
 #[test]
 fn lazy_option_index_skips_unrelated_unsettled_bodies_in_the_same_static_file() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let bytes = b"add_namespace=s country_event={id=s.0 option={name=Other promote_character={character={ignored}}}} country_event={id=s.1 option={name=Chosen custom_effect_tooltip=ONE}} country_event={id=s.2 option={name=Chosen custom_effect_tooltip=TWO}} country_event={id=s.3 option={name=Later custom_effect_tooltip=THREE}}";
     let (events, root) = option_index_fixture(&[("a.txt", bytes)]);
     let full = read_events(bytes, &KeyNames::default(), None);
@@ -683,7 +684,7 @@ fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
 
 #[test]
 fn event_lookup_diagnostics_name_the_shared_event_database() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     assert_eq!(
         identifier_key(b"42").unwrap_err(),
         "event 42 has no namespace; event lookup cannot resolve it"

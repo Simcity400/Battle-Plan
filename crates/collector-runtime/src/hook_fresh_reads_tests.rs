@@ -593,7 +593,8 @@ fn missing_land_observer_keeps_actual_incomplete_coverage_and_refuses_events() {
     .unwrap();
     let mut capture = collector_land_events::extended::land_events::Captured::vacant();
     for hour in [10, 11] {
-        capture.drain(hour, false);
+        // SAFETY: Isolated contract test owns this capture and the land-event observer boundary.
+        unsafe { capture.drain(hour, false) };
         let mut frame = source(hour);
         for (table, value) in collector_land_events::extended::land_events::TABLES
             .into_iter()

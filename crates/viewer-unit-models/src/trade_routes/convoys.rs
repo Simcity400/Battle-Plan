@@ -1,7 +1,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_gpu::ribbon_mesh::span;

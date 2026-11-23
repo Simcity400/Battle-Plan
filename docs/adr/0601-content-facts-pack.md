@@ -8,4 +8,4 @@ Compute equipment needs per archetype from the pack's own facts and executable t
 
 A fact can be streamed one chunk at a time for memory-bounded readers. Finish verifying its digest after delivery and invalidate every earlier piece if verification fails. Preserve the distinct states of a missing file, a withheld layer, uncovered recorded facts, and bytes that happen to be installed today.
 
-[Fact manifest and stream](../../crates/content-reader-core/src/content/facts.rs) · [Equipment fact](../../crates/content-reader-core/src/content/facts/equipment.rs)
+[Fact manifest and stream](../../crates/content-reader-layers/src/content/facts.rs) · [Equipment fact](../../crates/content-reader-key-names/src/equipment_facts.rs)

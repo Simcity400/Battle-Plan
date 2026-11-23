@@ -4,9 +4,10 @@ use dashboard_world::products::army_windows::ArmySpan;
 use dashboard_base::Source;
 use dashboard_base::catalogue::{self, Catalogue, CachedResult, Refusals, View};
 use dashboard_query::{Query, read};
-use content_reader_core::unit_leader::{SubUnits, sub_units};
+use content_reader_key_names::unit_leader::{SubUnits, sub_units};
 use content_reader_localisation::localisation::display_text;
-use replay::{at::Seeker, columnar_frames::Recording};
+use replay_lanes::at::Seeker;
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{SunkShipEntry, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -154,7 +155,7 @@ pub fn pruned<'a>(earlier: &'a [SunkShipEntry], later: &[SunkShipEntry], first_r
 }
 
 pub fn sinkings_at(recording: &Recording, run: u32, hour: i32) -> io::Result<Option<(i32, Vec<SunkShipEntry>)>> {
-    sinkings_in(&replay::at::frame(recording, run, hour, &[read::Read::all(TableId::SunkShips)])?)
+    sinkings_in(&replay_lanes::at::frame(recording, run, hour, &[read::Read::all(TableId::SunkShips)])?)
 }
 
 pub fn sinkings_seen(seeker: &mut Seeker<'_>, run: u32, hour: i32) -> io::Result<Option<(i32, Vec<SunkShipEntry>)>> {
@@ -253,7 +254,7 @@ fn class_info(token: u32, literal: Option<String>, content: &Content, refused: &
         }
         return info;
     };
-    match units.token_name(&content_reader_core::tokens::Token::c_str(literal.as_bytes())) {
+    match units.token_name(&content_reader_parser::tokens::Token::c_str(literal.as_bytes())) {
         Ok(spelling) if !spelling.is_empty() => {
             let spelling = spelling.to_owned();
             if cat.localisation.get(&spelling).is_some() {
@@ -430,9 +431,9 @@ pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Conten
     let Some((sampled, entries)) = sinkings_at(recording, run, last)? else { return Ok(reply) };
     reply.available = true;
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let mut reads = replay::lanes::reads(recording, run, TableId::SunkShips, (first - 720).max(stretch.first), last)?;
+    let mut reads = replay_lanes::lanes::reads(recording, run, TableId::SunkShips, (first - 720).max(stretch.first), last)?;
     if reads.first().is_none_or(|run| run.0 >= first) && stretch.first < first - 720 {
-        reads = replay::lanes::reads(recording, run, TableId::SunkShips, stretch.first, last)?;
+        reads = replay_lanes::lanes::reads(recording, run, TableId::SunkShips, stretch.first, last)?;
     }
     reply.first_read = known_at(&reads, first).filter(|&hour| hour <= last);
     let earlier = match reply.first_read {
@@ -509,7 +510,7 @@ impl Product for ShipsSunkManifest {
         for stretch in &query.timeline.stretches {
             dashboard_text::metadata::check_cancel(cancelled)?;
             if reply.first_read.is_none() {
-                reply.first_read = replay::lanes::reads(recording, stretch.run, TableId::SunkShips, stretch.first, stretch.last)?.first().map(|run| run.0);
+                reply.first_read = replay_lanes::lanes::reads(recording, stretch.run, TableId::SunkShips, stretch.first, stretch.last)?.first().map(|run| run.0);
             }
             let end = ends.entry(stretch.run).or_insert(stretch.last);
             *end = (*end).max(stretch.last);

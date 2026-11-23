@@ -1,8 +1,7 @@
 use dashboard_text::table_access::TokenKeys;
-use content_reader_core::{
-    buildings::BuildingType, buildings::Buildings, buildings::Slot, buildings::SpawnPoint,
-    map::MapData, map::ProvinceKind, mesh::Roster, positions::BuildingPosition,
-};
+use content_reader_key_names::buildings::{BuildingType, Buildings, Slot, SpawnPoint};
+use content_reader_map::{map::{MapData, ProvinceKind}, positions::BuildingPosition};
+use content_reader_mesh::mesh::Roster;
 use content_reader_states::states::StateDefinition;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -549,7 +548,7 @@ fn bucket_registered(spawn: &SpawnPoint, roster: &Roster) -> bool {
     if spawn.max <= 0 || spawn.meshes <= 0 {
         return false;
     }
-    let base = format!("{}{}", content_reader_core::buildings::ENTITY_PREFIX, spawn.name);
+    let base = format!("{}{}", content_reader_key_names::buildings::ENTITY_PREFIX, spawn.name);
     let names: Vec<String> = if spawn.meshes == 1 {
         vec![base]
     } else {
@@ -593,9 +592,9 @@ mod tests {
 
     #[test]
     fn state_sites_resolve_through_building_types() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ mod_airfield={ air_base=yes } shared={ air_base=yes spawn_point=hangar } rocket_site={ rocket_launch_capacity=1 spawn_point=site } gun={ gun_emplacement=yes spawn_point=site } } spawn_points={ hangar={ max=1 } site={ max=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let slot = |kind: &str, x: f32| BuildingPosition {
@@ -656,9 +655,9 @@ mod tests {
 
     #[test]
     fn first_state_province_keeps_list_order_when_the_position_finder_skips_it() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={field={air_base=yes spawn_point=hangar}} spawn_points={hangar={max=1}}",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [at(1, "hangar", 10.0), at(1, "field", 11.0)];
@@ -685,9 +684,9 @@ mod tests {
 
     #[test]
     fn the_air_base_icon_follows_type_order_then_record_order_per_province() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ airfield={ air_base=yes } airstrip={ air_base=yes } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [
@@ -706,9 +705,9 @@ mod tests {
         assert_eq!(icons.len(), 2);
         assert_eq!(icons[&10].anchor, Ok(IconAnchor::Record([2.0, 0.0, 0.0])));
         assert_eq!(icons[&11].anchor, Ok(IconAnchor::Record([3.0, 0.0, 0.0])));
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ airfield={ air_base=yes } hangar={ spawn_point=apron } } spawn_points={ apron={ max=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let sites = SiteSlots::build(
@@ -726,9 +725,9 @@ mod tests {
 
     #[test]
     fn rocket_sites_and_gun_emplacements_own_icons_per_province() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ airfield={ air_base=yes } rocket={ rocket_launch_capacity=1 spawn_point=pad } gun={ gun_emplacement=yes spawn_point=pit } radar_station={ radar=yes } } spawn_points={ pad={ max=1 } pit={ max=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [
@@ -774,9 +773,9 @@ mod tests {
 
     #[test]
     fn a_rocket_site_stands_in_the_bucket_its_type_spawns_in() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ rocket={ rocket_launch_capacity=1 spawn_point=pad } gun={ gun_emplacement=yes spawn_point=pit } } spawn_points={ pad={ max=1 } pit={ max=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [
@@ -794,9 +793,9 @@ mod tests {
 
     #[test]
     fn an_undecided_listing_that_reaches_the_same_record_decides_nothing() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ airfield={ air_base=yes } hangar={ air_base=yes spawn_point=apron } hangar={ air_base=no spawn_point=apron } } spawn_points={ apron={ max=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let positions = [at(1, "apron", 1.0), at(1, "airfield", 2.0)];
@@ -837,9 +836,9 @@ mod tests {
 
     #[test]
     fn repeats_that_place_identically_keep_their_icon() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ airfield={ air_base=yes icon_frame=1 } airfield={ air_base=yes icon_frame=2 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         assert!(types.repeated_types.contains_key("airfield"));
@@ -859,9 +858,9 @@ mod tests {
 
     #[test]
     fn a_site_type_without_an_explicit_spawn_point_matches_nothing() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ rocket={ rocket_launch_capacity=1 show_on_map=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         let sites = SiteSlots::build(
@@ -875,9 +874,9 @@ mod tests {
 
     #[test]
     fn repeated_declarations_bind_spawn_points_as_the_content_does() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ early={ air_base=yes spawn_point=decoy icon_frame=1 } early={ air_base=yes spawn_point=decoy icon_frame=2 } decoy={ show_on_map=1 } late={ air_base=yes spawn_point=apron } } spawn_points={ apron={ max=1 } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         assert!(types.repeated_types.contains_key("early"));
@@ -892,9 +891,9 @@ mod tests {
 
     #[test]
     fn only_admitted_records_that_could_change_an_answer_are_refused() {
-        let types = content_reader_core::buildings::parse(
+        let types = content_reader_key_names::buildings::parse(
             b"buildings={ airfield={ air_base=yes } warehouse={ show_on_map=1 } warehouse={ show_on_map=2 } hybrid={ air_base=yes } hybrid={ air_base=no } }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
         assert!(types.repeated_types.contains_key("warehouse"));
@@ -929,7 +928,7 @@ mod tests {
 
     #[test]
     fn ordinary_slots_require_land_in_their_declared_state() {
-        use content_reader_core::{map::CountryColors, map::ProvinceDefinition};
+        use content_reader_map::map::{CountryColors, ProvinceDefinition};
         let definition = |id, kind| ProvinceDefinition {
             id,
             rgb: [0, 0, 0],

@@ -12,13 +12,13 @@ export function measuredWidget(): string | null {
   return perfLog ? use(MeasuredWidget) : null;
 }
 
-export function useRecordedRows(source: string, read: StructureRead | undefined) {
+export function useRecordedRows(source: string, read: StructureRead | undefined, placement?: number) {
   const widget = measuredWidget(), previous = useRef<StructureRead>(undefined);
   useLayoutEffect(() => {
     if (widget && read && previous.current && previous.current.hour !== read.hour)
-      perfLog?.structure(widget, source, previous.current, read);
+      perfLog?.structure(widget, source, previous.current, read, placement);
     previous.current = read;
-  }, [widget, source, read]);
+  }, [widget, source, read, placement]);
 }
 
 export function countWork(widget: string | null, work: WidgetWork): void {

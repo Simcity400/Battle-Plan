@@ -10,16 +10,22 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-gui.workspace = true
+content-reader-image.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 engine-executable.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-image = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = ["content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
@@ -31,6 +37,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-settings = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }

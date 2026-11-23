@@ -214,9 +214,9 @@ fn clock(hour: i32, session: i64) -> Option<Clock> {
     })
 }
 fn ready() {
-    boundary(clock(1, 4));
-    assert!(drain(&mut Vec::new()).is_err());
-    boundary(clock(2, 4));
+    unsafe { boundary(clock(1, 4)) };
+    assert!(unsafe { drain(&mut Vec::new()) }.is_err());
+    unsafe { boundary(clock(2, 4)) };
 }
 #[test]
 fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
@@ -226,10 +226,10 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     ready();
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
     std::thread::spawn(|| {
-        boundary(clock(3, 4));
-        lost_drain();
-        lost_output(1);
-        assert!(drain(&mut Vec::new()).is_err());
+        unsafe { boundary(clock(3, 4)) };
+        unsafe { lost_drain() };
+        unsafe { lost_output(1) };
+        assert!(unsafe { drain(&mut Vec::new()) }.is_err());
     })
     .join()
     .unwrap();
@@ -238,7 +238,7 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     world.word(OUTPUT, 1);
     world.post(token);
     let mut output = Vec::with_capacity(capacity());
-    assert_eq!(drain(&mut output).unwrap(), 1);
+    assert_eq!(unsafe { drain(&mut output) }.unwrap(), 1);
     assert_eq!(output[0].attacker, None);
     assert_eq!(output[0].amount_raw, 14_000_000);
     assert_eq!(output[0].credited_raw, 1);
@@ -251,7 +251,7 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
     world.health(1, 0);
     world.post(token);
-    assert_eq!(drain(&mut output).unwrap(), 1);
+    assert_eq!(unsafe { drain(&mut output) }.unwrap(), 1);
     assert_eq!(output[0].attacker, None);
     assert_eq!(UNATTRIBUTED.load(Ordering::Relaxed), 2);
     assert_eq!(ATTRIBUTION_FAILURES.load(Ordering::Relaxed), 1);
@@ -259,7 +259,7 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
     world.word(STATE, 0);
     world.post(token);
-    assert_eq!(drain(&mut output).unwrap(), 0);
+    assert_eq!(unsafe { drain(&mut output) }.unwrap(), 0);
 }
 #[test]
 fn negative_modified_damage_is_a_signed_event_even_above_total_health() {
@@ -273,7 +273,7 @@ fn negative_modified_damage_is_a_signed_event_even_above_total_health() {
     world.word(OUTPUT, 1);
     world.post(token);
     let mut output = Vec::with_capacity(capacity());
-    assert_eq!(drain(&mut output).unwrap(), 1);
+    assert_eq!(unsafe { drain(&mut output) }.unwrap(), 1);
     assert_eq!(output[0].amount_raw, -1_000_000);
     assert_eq!(output[0].credited_raw, 1);
     assert_eq!(output[0].attacker, Some(6001));
@@ -294,7 +294,7 @@ fn failed_pre_observation_completes_its_claim_and_refuses_once() {
     assert_eq!(LEDGER.lost_events_unknown.load(Ordering::Relaxed), 1);
     assert_eq!(active(), 0);
     assert_eq!(
-        drain(&mut Vec::new()).unwrap_err(),
+        unsafe { drain(&mut Vec::new()) }.unwrap_err(),
         "building damage vtable mismatch"
     );
 }
@@ -512,10 +512,10 @@ fn building_bombing_scale_bench() {
                 world.post(token);
                 elapsed += started.elapsed();
             }
-            boundary(clock(3, 4));
+            unsafe { boundary(clock(3, 4)) };
             let mut output = vec![Entry::default(); countries];
             let started = Instant::now();
-            assert_eq!(drain(&mut output).unwrap(), countries);
+            assert_eq!(unsafe { drain(&mut output) }.unwrap(), countries);
             drains.push(started.elapsed().as_secs_f64() * 1e6);
             assert_eq!(output.last().unwrap().attacker, Some(countries as u32));
             assert_eq!(LEDGER.lost_events.load(Ordering::Relaxed), 0);
@@ -551,7 +551,7 @@ fn game_root_change_refuses_the_event_and_withholds_the_interval() {
     assert_eq!(active(), 0);
     assert_eq!(LEDGER.lost_events_unknown.load(Ordering::Relaxed), 1);
     assert!(
-        drain(&mut vec![Entry::default(); 8])
+        unsafe { drain(&mut vec![Entry::default(); 8]) }
             .unwrap_err()
             .contains("game root changed")
     );

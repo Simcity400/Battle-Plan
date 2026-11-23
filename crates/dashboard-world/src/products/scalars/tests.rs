@@ -123,7 +123,7 @@ fn a_game_score_part_is_its_value_or_the_named_reason_it_was_not_recorded_never_
 
 #[test]
 fn factory_groups_are_named_by_every_type_their_flag_counts_and_an_ambiguous_type_by_none() {
-    use content_reader_core::buildings::{Buildings, FactoryFlags};
+    use content_reader_key_names::buildings::{Buildings, FactoryFlags};
     let flags = |military, naval, general, rocket| FactoryFlags { military_production: military, naval_production: naval, general_production: general, rocket_production: rocket };
     let mut buildings = Buildings::default();
     for (token, held) in [("arms_factory", flags(1, 0, 0, 0)), ("dockyard", flags(0, 1, 0, 0)), ("industrial_complex", flags(0, 0, 1, 0)),

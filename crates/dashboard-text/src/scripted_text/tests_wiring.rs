@@ -477,7 +477,7 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
         |source: &str| content_reader_scripted_localisation::scripted_localisation::RandomMember {
             weight: 1_000_000,
             key: Vec::new(),
-            modifiers: content_reader_core::parser::parse(source.as_bytes())
+            modifiers: content_reader_parser::parser::parse(source.as_bytes())
                 .unwrap()
                 .items
                 .into_iter()

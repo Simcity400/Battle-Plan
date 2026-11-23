@@ -570,7 +570,7 @@ fn drawn_into(
 
 #[test]
 fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut view = IntelView::default();
     let windows = gui::windows(GUI);
     let top = 308.0 + 14.0 + 5.0;
@@ -659,7 +659,7 @@ fn a_free_eye_hits_the_nearest_shown_container_in_its_own_layout() {
 
 #[test]
 fn entries_take_the_list_places_and_hover_by_their_own_children() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (hits, count, report) = drawn(&[EntryKind::Operation; 4]);
     assert_eq!(count, 1, "{report:?}");
     assert_eq!(hits.len(), 4);
@@ -679,7 +679,7 @@ fn entries_take_the_list_places_and_hover_by_their_own_children() {
 
 #[test]
 fn compressed_entries_overlap_and_the_later_one_wins() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (hits, _, report) = drawn(&[EntryKind::More; 5]);
     assert_eq!(hits.len(), 5, "{report:?}");
     let top = 308.0 + 14.0 + 5.0;
@@ -691,7 +691,7 @@ fn compressed_entries_overlap_and_the_later_one_wins() {
 
 #[test]
 fn both_operative_frames_test_alpha_and_transparent_pixels_leave_lower_hits() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = gui::fixture();
     resources.physical = Some([2048, 1152]);
     resources.add_sprite("frame", [8, 8], 1);

@@ -1,5 +1,5 @@
 use super::{block, bytes, field, integer, invalid, null_permitted_handle, scalar};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use replay_data::rows::GlobalSavedEventTargetRow as Row;
 use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     #[test]
     fn repeated_names_order_and_omission_follow_writer() {
-        let items=content_reader_core::parser::parse(b"saved_event_target={ name=x country=AAA } saved_event_target={name=x state=3 character={id=8 type=54}} saved_event_target={}").unwrap();
+        let items=content_reader_parser::parser::parse(b"saved_event_target={ name=x country=AAA } saved_event_target={name=x state=3 character={id=8 type=54}} saved_event_target={}").unwrap();
         let rows = parse(&items.items).unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].country.as_deref(), Some(b"AAA".as_slice()));

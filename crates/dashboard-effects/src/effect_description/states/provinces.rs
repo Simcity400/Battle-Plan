@@ -1,6 +1,6 @@
 use super::*;
 use crate::triggers::scope_selector;
-use content_reader_core::{crt::Scanned, crt::scan_i32};
+use content_reader_parser::crt::{Scanned, scan_i32};
 use replay_data::rows::TableId;
 
 impl Renderer<'_, '_, '_> {

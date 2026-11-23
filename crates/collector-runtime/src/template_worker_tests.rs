@@ -72,7 +72,8 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
             .copy_from_slice(&priority.to_le_bytes());
         source.bytes[0x8400 + deployment::NEXT_HQ_ORDER..][..4]
             .copy_from_slice(&priority.to_le_bytes());
-        captured.capture_original(&source, 0, 0x1000, hour, false, &Observer);
+        // SAFETY: Isolated template worker test owns its synthetic fixture.
+        unsafe { captured.capture_original(&source, 0, 0x1000, hour, false, &Observer) };
         let mut input = FrameInput {
             branch: 1,
             hour,
@@ -115,6 +116,7 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
         ));
     }
     source.bytes[0x5000 + native::SUBUNIT_COUNTS..][..8].copy_from_slice(&0xf000_u64.to_le_bytes());
-    captured.capture_original(&source, 0, 0x1000, 3, false, &Observer);
+    // SAFETY: Isolated template worker test owns its synthetic fixture.
+    unsafe { captured.capture_original(&source, 0, 0x1000, 3, false, &Observer) };
     assert_eq!(displayed(captured.table_inputs()).model_unreadable, 1);
 }

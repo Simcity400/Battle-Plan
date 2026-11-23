@@ -30,20 +30,20 @@ unsafe extern "system-unwind" {
     fn land_foreign_commander(side: usize) -> usize;
 }
 unsafe extern "system" fn retain_log() {
-    assert_eq!(ACTIVE.load(Ordering::SeqCst), 1);
+    assert_eq!(LIVE.active.load(Ordering::SeqCst), 1);
     assert_eq!(
         TAP_IN_FLIGHT.load(Ordering::SeqCst),
         TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst) as usize + 1
     );
-    let storage = LOG.load(Ordering::SeqCst);
-    let enabled = ENABLED.swap(false, Ordering::SeqCst);
-    let retained = release();
-    ENABLED.store(enabled, Ordering::SeqCst);
+    let storage = LIVE.log.load(Ordering::SeqCst);
+    let enabled = LIVE.enabled.swap(false, Ordering::SeqCst);
+    let retained = unsafe { release() };
+    LIVE.enabled.store(enabled, Ordering::SeqCst);
     assert_eq!(
         retained,
         Err("land event storage release before callback quiescence")
     );
-    assert_eq!(LOG.load(Ordering::SeqCst), storage);
+    assert_eq!(LIVE.log.load(Ordering::SeqCst), storage);
 }
 unsafe extern "system-unwind" fn invoke(argument: usize) {
     let invocation = unsafe { &mut *(argument as *mut Invocation) };
@@ -65,16 +65,15 @@ fn registered(address: usize) -> bool {
 #[ignore = "parent-only real C++/SEH run; requires BATTLEPLAN_TAP_UNWIND_PROBE and reviewed shared Hook"]
 fn production_verdict_indirect_foreign_unwind() {
     let _probe_guard = probe::SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _guard = test_support::EXCLUSIVE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    test_support::reset();
+    let mut owned = test_support::own();
+    // SAFETY: Ignored probe test holds `test_support::own()` before installing its test hook.
+    unsafe { test_support::reset(&mut owned) };
     let probe = probe::Probe::load();
     let site = tests::land_leader_tap_test_site as *const () as usize;
     let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0].0;
     let previous_base = BASE.swap(base, Ordering::SeqCst);
     let previous_dispatch = DISPATCH.get();
-    let storage = LOG.load(Ordering::SeqCst);
+    let storage = LIVE.log.load(Ordering::SeqCst);
     let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
         .try_into()
         .unwrap();
@@ -121,7 +120,7 @@ fn production_verdict_indirect_foreign_unwind() {
             case.raise.map_or(0, |raise| raise as *const () as usize),
             Ordering::SeqCst,
         );
-        ENABLED.store(true, Ordering::SeqCst);
+        LIVE.enabled.store(true, Ordering::SeqCst);
         let side = std::ptr::addr_of_mut!(invocation.side) as usize;
         DISPATCH.set(Dispatch {
             combat: 0x7a11,
@@ -142,12 +141,12 @@ fn production_verdict_indirect_foreign_unwind() {
         );
         assert_eq!(
             (
-                ACTIVE.load(Ordering::SeqCst),
+                LIVE.active.load(Ordering::SeqCst),
                 TAP_IN_FLIGHT.load(Ordering::SeqCst)
             ),
             (1 - normal, 1 - normal)
         );
-        assert_eq!(LOG.load(Ordering::SeqCst), storage);
+        assert_eq!(LIVE.log.load(Ordering::SeqCst), storage);
         assert_eq!(DISPATCH.get().seen, [false, normal != 0]);
         if normal != 0 {
             assert_eq!(invocation.result, leader.as_ptr() as usize);
@@ -168,7 +167,7 @@ fn production_verdict_indirect_foreign_unwind() {
                 "unwind flight retains patch"
             );
             assert_eq!(unsafe { *(site as *const u8) }, 0xe8);
-            assert!(release().is_err());
+            assert!(unsafe { release() }.is_err());
             let mut output = vec![0; 16];
             for (hour, load) in [(10, false), (11, true), (12, false)] {
                 let refused = drain(&mut output, hour, load);
@@ -194,9 +193,9 @@ fn production_verdict_indirect_foreign_unwind() {
             assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 1);
             assert_eq!(DISPATCH.get().seen, [false; 2]);
             assert!(!observing());
-            assert_eq!(ACTIVE.load(Ordering::SeqCst), 1);
-            ACTIVE.store(0, Ordering::SeqCst);
-            CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
+            assert_eq!(LIVE.active.load(Ordering::SeqCst), 1);
+            LIVE.active.store(0, Ordering::SeqCst);
+            LIVE.call_escaped_unwinds.store(0, Ordering::SeqCst);
             TAP_IN_FLIGHT.store(0, Ordering::SeqCst);
             TAP_ESCAPED_UNWINDS.store(escaped, Ordering::SeqCst);
         }
@@ -209,7 +208,7 @@ fn production_verdict_indirect_foreign_unwind() {
             invocation.side.calls = 0;
             invocation.side.returned = 0;
             invocation.continued = 0;
-            ENABLED.store(true, Ordering::SeqCst);
+            LIVE.enabled.store(true, Ordering::SeqCst);
             DISPATCH.set(Dispatch {
                 combat: 0x7a11,
                 sides: [side + 8, side],
@@ -241,7 +240,7 @@ fn production_verdict_indirect_foreign_unwind() {
             );
             assert_eq!(
                 (
-                    ACTIVE.load(Ordering::SeqCst),
+                    LIVE.active.load(Ordering::SeqCst),
                     TAP_IN_FLIGHT.load(Ordering::SeqCst)
                 ),
                 (0, 0)
@@ -261,6 +260,6 @@ fn production_verdict_indirect_foreign_unwind() {
     BASE.store(previous_base, Ordering::SeqCst);
     DISPATCH.set(previous_dispatch);
     test_support::disable();
-    release().unwrap();
-    assert!(LOG.load(Ordering::SeqCst).is_null());
+    unsafe { release() }.unwrap();
+    assert!(LIVE.log.load(Ordering::SeqCst).is_null());
 }

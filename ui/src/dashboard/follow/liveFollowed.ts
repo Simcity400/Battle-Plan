@@ -7,14 +7,14 @@ import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts'
 import type { FollowedAnswer } from './message';
 import type { FollowEntry, FollowQuery, FollowStore } from './store';
 
-export function liveFollowed<T>(store: Pick<FollowStore, 'watch'>, entry: FollowEntry, read: (entry: FollowEntry) => T): Live<T> {
+export function liveFollowed<T>(entry: FollowEntry, read: (entry: FollowEntry) => T): Live<T> {
   let made: { version: number; value: T } | null = null;
   return {
     read: () => {
       if (made?.version !== entry.version) made = { version: entry.version, value: read(entry) };
       return made.value;
     },
-    subscribe: changed => store.watch(entry, changed),
+    subscribe: changed => entry.subscribe(changed),
   };
 }
 
@@ -30,7 +30,7 @@ export function useLiveFollow<T>(store: FollowStore | null, query: FollowQuery |
   reading.current = read;
   const followed = useFollow(store, query, target, NO_PAINT, structureOf);
   const entry = followed.entry;
-  const live = useMemo(() => store && entry ? liveFollowed(store, entry, held => reading.current(held)) : undefined, [store, entry]);
+  const live = useMemo(() => store && entry ? liveFollowed(entry, held => reading.current(held)) : undefined, [store, entry]);
   return { ...followed, live };
 }
 
@@ -53,29 +53,4 @@ export function answerValues(answer: FollowedAnswer | undefined, keys: readonly 
     },
     missing,
   };
-}
-
-export interface Handoff<T> { key: readonly unknown[]; lives: readonly Live<T>[] }
-
-type Handed<T> = Pick<Followed, 'status' | 'entry'> & { live: Live<T> | undefined };
-
-const sameKey = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((item, at) => Object.is(item, b[at]));
-
-export function handoffLives<T>(items: readonly Handed<T>[], ready: boolean, held: Handoff<T> | null, key: readonly unknown[]):
-  { lives: (Live<T> | undefined)[]; held: Handoff<T> | null } {
-  const none = items.map(() => undefined);
-  if (ready && items.every(item => item.status === 'followed' && item.live && item.entry?.answer !== undefined)) {
-    const lives = items.map(item => item.live!);
-    return { lives, held: { key, lives } };
-  }
-  const waiting = ready && items.every(item => item.status === 'pending' || item.status === 'followed');
-  if (waiting && held && sameKey(held.key, key) && held.lives.length === items.length) return { lives: [...held.lives], held };
-  return { lives: none, held: waiting ? held : null };
-}
-
-export function useHandoff<T>(items: readonly Handed<T>[], ready: boolean, ...key: unknown[]): (Live<T> | undefined)[] {
-  const held = useRef<Handoff<T> | null>(null);
-  const handed = handoffLives(items, ready, held.current, key);
-  held.current = handed.held;
-  return handed.lives;
 }

@@ -35,7 +35,7 @@ export function answerValues(answer: FollowedAnswer | undefined, asked: readonly
   return out;
 }
 
-export const membersPushed = (status: 'off' | 'pending' | 'followed' | 'unavailable', answer: FollowedAnswer | undefined) =>
+export const membersPushed = (status: 'off' | 'pending' | 'followed' | 'unavailable' | 'failed', answer: FollowedAnswer | undefined) =>
   status === 'followed' && answer !== undefined;
 
 export const answerShape = (answer: FollowedAnswer | undefined) => answer === undefined ? '' : answer.kind === 'notRecorded' ? `refused:${answer.reason}` : 'rows';

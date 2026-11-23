@@ -1,7 +1,7 @@
 
 use dashboard_base::catalogue::{self, Catalogue, View};
 pub(super) use dashboard_text::occupation_law::{GroupLaw, LawInputs, admitted, law_for};
-use content_reader_core::occupation_laws::Laws;
+use content_reader_politics::occupation_laws::Laws;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;

@@ -1,4 +1,4 @@
-use content_reader_core::parser::c_string;
+use content_reader_parser::parser::c_string;
 use content_reader_localisation::{localisation::Localisation, localisation::Unlocalised};
 use std::collections::BTreeMap;
 

@@ -72,7 +72,9 @@ test('CellGroup and sectionValues preserve unsafe 64-bit integers through raw()'
     states: 8,
     reasons: 4,
     names: 4,
-    texts: new Uint32Array(0),
+    canonical: true,
+    ends: new Uint32Array(1),
+    text: 0,
     decoded: [],
   };
   const group = new CellGroup();

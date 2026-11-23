@@ -116,7 +116,7 @@ pub unsafe fn capture(
     let mut shared =
     // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
     // boundary or detach.
-    unsafe { Shared::with_sizing(0, 0, 10_000_000, &sizing) }.unwrap();
+    unsafe { Shared::with_fixture_sizing(0, 0, 10_000_000, &sizing, 0) }.unwrap();
     shared.capture_mode = mode;
     // SAFETY: This is the unpublished attachment's own roster.
     unsafe {

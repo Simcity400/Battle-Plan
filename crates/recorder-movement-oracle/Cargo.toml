@@ -10,16 +10,19 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
 engine-dlc.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
 engine-sites.workspace = true
-content-reader-core.workspace = true
 serde_json.workspace = true
 recorder-platform.workspace = true
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
@@ -28,11 +31,9 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-content-reader-province-area = { workspace = true, features = ["test-support"] }
-content-reader-regions = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-recorder-derive-framework = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
-replay-derive = { workspace = true, features = ["test-support"] }
+replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

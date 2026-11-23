@@ -172,18 +172,18 @@ fn empty(branch: u64, hour: i32) -> DecodedFrame {
     DecodedFrame { branch, hour, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() }
 }
 
-fn converted<'a>(reads: &'a [Read], fields: &'a [Option<Vec<usize>>]) -> Vec<replay::at::Read<'a>> {
+fn converted<'a>(reads: &'a [Read], fields: &'a [Option<Vec<usize>>]) -> Vec<replay_lanes::at::Read<'a>> {
     reads
         .iter()
         .zip(fields)
-        .map(|(read, fields)| replay::at::Read {
+        .map(|(read, fields)| replay_lanes::at::Read {
             table: read.table,
             columns: fields.as_deref(),
             keys: match &read.keys {
-                Keys::All => replay::at::Keys::All,
-                Keys::These(keys) => replay::at::Keys::These(keys),
-                Keys::Range(lo, hi) => replay::at::Keys::Range(*lo, *hi),
-                Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                Keys::All => replay_lanes::at::Keys::All,
+                Keys::These(keys) => replay_lanes::at::Keys::These(keys),
+                Keys::Range(lo, hi) => replay_lanes::at::Keys::Range(*lo, *hi),
+                Keys::Ranges(ranges) => replay_lanes::at::Keys::Ranges(ranges),
             },
         })
         .collect()
@@ -211,17 +211,17 @@ fn count_frame(frame: &DecodedFrame, reads: &[Read]) {
 
 fn frame_at(query: &Query<'_>, run: u32, hour: i32, reads: &[Read], columns: fn(TableId) -> Option<Vec<usize>>) -> io::Result<DecodedFrame> {
     let fields: Vec<Option<Vec<usize>>> = reads.iter().map(|read| columns(read.table)).collect();
-    replay::at::frame(query.replay.recording(), run, hour, &converted(reads, &fields)).inspect(|frame| count_frame(frame, reads))
+    replay_lanes::at::frame(query.replay.recording(), run, hour, &converted(reads, &fields)).inspect(|frame| count_frame(frame, reads))
 }
 
 pub struct Frames<'q> {
     query: &'q Query<'q>,
-    seeker: replay::at::Seeker<'q>,
+    seeker: replay_lanes::at::Seeker<'q>,
 }
 
 impl<'q> Frames<'q> {
     pub fn new(query: &'q Query<'q>) -> io::Result<Self> {
-        Ok(Self { query, seeker: replay::at::Seeker::new(query.replay.recording())? })
+        Ok(Self { query, seeker: replay_lanes::at::Seeker::new(query.replay.recording())? })
     }
 
     pub fn frame(&mut self, hour: i32, reads: &[Read], title: &str) -> io::Result<DecodedFrame> {

@@ -3,8 +3,8 @@ use super::ordinals;
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, at_hour::{self, Read}}, queries::country_ids::Names, span::HourSpan};
 use dashboard_text::scripted_text::ScriptedText;
 use dashboard_query::{Query, read, timeline::Join};
-use content_reader_core::content::diagnostics::Once;
-use replay::lanes::{self, Cell, Keys};
+use content_reader_layers::content::diagnostics::Once;
+use replay_lanes::lanes::{self, Cell, Keys};
 use replay_data::rows::{TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -393,7 +393,7 @@ impl Naming<'_, '_> {
         };
         let name = (|| {
             let cat = self.cat.clone()?;
-            let definitions = content_reader_core::faction_upgrades::cached(&cat.content.layers)?;
+            let definitions = content_reader_politics::faction_upgrades::cached(&cat.content.layers)?;
             let definition = definitions.upgrade(spelling.as_bytes())?;
             let text = localise(cat, definition.name.as_deref().unwrap_or(spelling.as_bytes()))?;
             if text.contains('[') {
@@ -407,7 +407,7 @@ impl Naming<'_, '_> {
     fn group(&mut self, hour: i32, group: u32) -> Result<String, String> {
         let spelling = self.lexicon.spelling(self.query, hour, group)?;
         let cat = self.cat.clone().map_err(|why| format!("Faction upgrade group {spelling}: {why}"))?;
-        let definitions = content_reader_core::faction_upgrades::cached(&cat.content.layers)?;
+        let definitions = content_reader_politics::faction_upgrades::cached(&cat.content.layers)?;
         let definition = definitions.group(spelling.as_bytes())?;
         let key = definition.name.as_deref().ok_or_else(|| format!("Faction upgrade group {spelling}: authored name is unavailable"))?;
         let text = localise(cat, key)?;
@@ -442,8 +442,8 @@ impl Naming<'_, '_> {
         let catalog = cat
             .content
             .layers
-            .derived::<Once<Result<Arc<content_reader_core::special_projects::Catalog>, String>>>()
-            .get_or_init(|| content_reader_core::special_projects::Catalog::read(&cat.content.layers).map(Arc::new).map_err(|why| why.to_string()))
+            .derived::<Once<Result<Arc<content_reader_military::special_projects::Catalog>, String>>>()
+            .get_or_init(|| content_reader_military::special_projects::Catalog::read(&cat.content.layers).map(Arc::new).map_err(|why| why.to_string()))
             .clone()?;
         if let Some(reason) = &catalog.unsettled {
             return Err(reason.clone());

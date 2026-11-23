@@ -11,8 +11,10 @@ use dashboard_text::{
     identity::{NamingCountry, built_template},
     idea_names::IdeaCountry,
 };
-use content_reader_core::{characters::BuiltTemplate, coverage::Gap, modifiers::Modifier, modifiers::Modifiers};
-use replay::lanes::{self, Cell, History, Keys};
+use content_reader_key_names::characters::BuiltTemplate;
+use content_reader_parser::coverage::Gap;
+use content_reader_script::modifiers::{Modifier, Modifiers};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{CharacterRow, LexicalTokenRow, ModifierDefinitionRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -579,13 +581,13 @@ pub(crate) fn recorded_definitions(source: &Source, query: &Query<'_>) -> io::Re
 
 fn definitions_at(query: &Query<'_>, run: u32, hour: i32) -> io::Result<RecordedDefinitions> {
     let recording = query.replay.recording();
-    let definitions = cost::storage(|| replay::at::frame(recording, run, hour, &[replay::at::Read::all(TableId::ModifierDefinitions)]))?;
+    let definitions = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read::all(TableId::ModifierDefinitions)]))?;
     let Ok(rows) = definitions.complete::<tables::ModifierDefinitions>() else { return Ok(None) };
     let mut words: Vec<u128> = rows.iter().map(|row| u128::from(row.token)).collect();
     words.sort_unstable();
     words.dedup();
-    let reads = [replay::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay::at::Keys::These(&words) }];
-    let lexicon = cost::storage(|| replay::at::frame(recording, run, hour, &reads))?;
+    let reads = [replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&words) }];
+    let lexicon = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
     let Ok(lexical) = lexicon.complete::<tables::LexicalTokens>() else { return Ok(None) };
     Ok(Some(idea_format::index_recorded(rows, lexical)))
 }
@@ -601,11 +603,11 @@ fn known<'a, T>(found: Result<Option<&'a T>, &Gap>) -> (Option<&'a T>, Option<St
     }
 }
 
-fn targeted(groups: &[content_reader_core::modifiers::TargetedModifier]) -> Vec<EffectGroup> {
+fn targeted(groups: &[content_reader_script::modifiers::TargetedModifier]) -> Vec<EffectGroup> {
     groups.iter().map(|group| EffectGroup { target: group.tag.clone(), instant: false, lines: lines(&group.modifiers), tooltips: group.modifiers.tooltips() }).collect()
 }
 
-fn equipment(bonuses: &[content_reader_core::modifiers::EquipmentBonus]) -> Vec<EffectGroup> {
+fn equipment(bonuses: &[content_reader_script::modifiers::EquipmentBonus]) -> Vec<EffectGroup> {
     bonuses
         .iter()
         .map(|bonus| EffectGroup { target: Some(bonus.equipment.clone()), instant: bonus.instant, lines: bonus.values.iter().map(|m| line(m, false)).collect(), tooltips: Vec::new() })

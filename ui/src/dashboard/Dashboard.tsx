@@ -48,13 +48,18 @@ import { recordingDisplayName, recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
 import { LiveMotion } from '../charts/liveMotion.ts';
 import { commitZone } from '../shell/commitCount';
+import { keepLatest } from '../shell/latest.ts';
+import type { Latest } from '../shell/latest.ts';
+import { unsavedDrafts } from './layoutDrafts.ts';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   onBranch?: (branch: BranchChoice | null) => void;
   onMapError?: (operation: string, error: string | null) => void;
+  onMapWarning?: (warning: string) => void;
   mapRetry?: number;
   onUnsaved?: (pages: readonly PageId[]) => void;
+  unsavedReader?: Latest<(() => readonly PageId[]) | null>;
   saveRequest?: number;
   pages?: readonly PageEntry[]; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void;
   flyAircraft?: FlyAircraftStatus | null;
@@ -62,26 +67,29 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onMapWarning, mapRetry = 0, onUnsaved, unsavedReader, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   useEffect(() => {
     const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
     preloadWidgetRenderers(shown?.template.widgets.map(widget => widget.kind) ?? []);
     preloadAllWidgetRenderers();
   }, [restored]);
-  const [library, setLibrary] = useState(restored.library);
-  const [shownPage, setShownPage] = useState(page);
-  const pageRef = useRef(shownPage);
-  pageRef.current = shownPage;
+  const [library, showLibrary] = useState(restored.library);
   const libraryRef = useRef(library);
-  libraryRef.current = library;
+  const setLibrary = useMemo(() => keepLatest(libraryRef, showLibrary), []);
+  const [shownPage, showPage] = useState(page);
+  const pageRef = useRef(shownPage);
+  const setShownPage = useMemo(() => keepLatest(pageRef, showPage), []);
   const selectedLayout = library.layouts.find((entry) => entry.id === library.activeId)!;
-  const [draftTemplate, setTemplate] = useState<DashboardTemplate>(selectedLayout.template);
+  const [draftTemplate, showTemplate] = useState<DashboardTemplate>(selectedLayout.template);
   const templateRef = useRef(draftTemplate);
-  templateRef.current = draftTemplate;
+  const setTemplate = useMemo(() => keepLatest(templateRef, showTemplate), []);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const campaignsRef = useRef(campaigns);
   campaignsRef.current = campaigns;
+  const pageIds = useMemo(() => pages?.map(entry => entry.id), [pages]);
+  const pagesRef = useRef(pageIds);
+  pagesRef.current = pageIds;
   const [defaultRoleId, setDefaultRoleId] = useState<string | null>(null);
   const [selectedCountries, setSelectedCountries] = useState<Record<string, CountryChoice | null>>({});
   const [observed, setObserved] = useState<Record<string, number>>({});
@@ -156,6 +164,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [library, draftTemplate, shownPage, campaigns, pageList]);
   useEffect(() => { onUnsaved?.(unsavedKey ? unsavedKey.split('\n') as PageId[] : []); }, [unsavedKey, onUnsaved]);
   useEffect(() => () => onUnsaved?.([]), [onUnsaved]);
+  useLayoutEffect(() => {
+    if (!unsavedReader) return;
+    const drafts = { page: pageRef, library: libraryRef, template: templateRef, kept: pageStates, pages: pagesRef, campaigns: campaignsRef };
+    unsavedReader.current = () => unsavedDrafts(drafts);
+    return () => { unsavedReader.current = null; };
+  }, [unsavedReader]);
   const layoutAtDefault = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns))
     === stableJson(includeCampaigns({ ...defaultTemplate(shownPage), name: draftTemplate.name }, campaigns)), [draftTemplate, campaigns, shownPage]);
   const [actionError, setActionError] = useState<PlainFailure | null>(null);
@@ -164,8 +178,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const roles = useSourceRoles(client);
   const clock = useMemo(() => new PlaybackController(), []);
   const mapErrors = useRef(onMapError);
+  const mapWarnings = useRef(onMapWarning);
+  mapWarnings.current = onMapWarning;
   mapErrors.current = onMapError;
-  const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error)), []);
+  const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error),
+    warning => mapWarnings.current?.(`The map change was made, but Windows didn’t confirm it was saved: ${warning}`)), []);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   useEffect(() => {
     maps.onToggle = (view, toggle) => view.id === CAMPAIGN_MAP_VIEW
@@ -297,9 +314,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (!parseLayoutLibrary(next)) { setWarning('This setting applies now and is saved with the layout when you press Save.'); return; }
     const error = saveLayouts(next, undefined, pageRef.current);
     if (error) { setWarning(error); return; }
-    libraryRef.current = next;
     setLibrary(next);
-  }, []);
+  }, [setLibrary]);
   const applyWidget = useCallback((widget: WidgetSpec, view = false) => {
     const before = templateRef.current.widgets.find(item => item.id === widget.id);
     update((previous) => ({ ...previous, widgets: previous.widgets.map((item) => item.id === widget.id ? (before ? rebaseWidget(item, before, widget) : widget) : item) }));

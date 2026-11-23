@@ -29,7 +29,7 @@ import { useAtHead } from '../../dashboard/atHead';
 import { useKeyedSeries } from '../../dashboard/keyedSeries';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { settledHour, trackHourOf } from '../../dashboard/settledHour';
-import { measuredWidget, useShownEachFrame } from '../../dashboard/widgetPerf';
+import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { readTokens, subscribeTokens } from '../../charts/tokens';
 import { OPTIONS } from './definition';
 import { POPULARITY_FAMILY, POPULARITY_PART_BITS, bandKeys, bands, formatPopularity, formatShare, leaderAt, leaderShown,
@@ -163,7 +163,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const detail = data ? [leaderShown(data, leaderAt(data, head)).ideology, partyNameAt(data, head)].filter(Boolean).join(' · ') : '';
   const latest = useRef({ data, list, headValue, detail }); latest.current = { data, list, headValue, detail };
   const followedHead = popularity.followed;
-  const measured = measuredWidget();
   const share = useMemo(() => liveTexts(runtime.clock, () => live ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) ?? head : head, hour => {
     const { data, list, headValue, detail } = latest.current;
     const band = data ? list.find(item => item.token === rulingAt(data, hour)) : undefined;
@@ -173,10 +172,9 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     version: () => [latest.current, followedHead?.entry.version],
     subscribe: changed => {
       if (!followedHead) return () => {};
-      const painter = followedHead.store.painter(followedHead.entry, changed, true, measured);
-      return () => painter.dispose();
+      return followedHead.entry.subscribe(changed);
     },
-  }), [runtime.clock, live, track, head, JSON.stringify(widget.time), followedHead?.store, followedHead?.entry, measured]);
+  }), [runtime.clock, live, track, head, JSON.stringify(widget.time), followedHead?.entry]);
   const [peopleWarnings, setPeopleWarnings] = useState<string[]>([]);
   const menu = useContextMenu('Chart actions');
   useEffect(() => {

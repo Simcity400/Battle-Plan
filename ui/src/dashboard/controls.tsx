@@ -15,7 +15,6 @@ import { desktopAvailable } from '../shell/api';
 import { Popover, usePopover } from '../components/Popover';
 import { menuKeys } from '../components/ContextMenu';
 import { commitZone } from '../shell/commitCount';
-import { attachDateFace } from '../draw/dateFaceHost.ts';
 import { gapText } from '../shell/recordingNotice';
 
 export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined; selectedSlot: number | null }
@@ -36,7 +35,7 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
 }
 
 function MapMuteButton() {
-  const { muted, error, set, retry } = useMapMuted();
+  const { muted, error, warning, set, retry } = useMapMuted();
   if (!desktopAvailable) return null;
   if (muted == null && !error) return <span className="header-mute-slot" aria-hidden="true" />;
   if (muted == null) return <button type="button" className="icon-button header-mute is-unavailable" onClick={retry}
@@ -44,8 +43,8 @@ function MapMuteButton() {
     <Icon name="volume" /><span className="header-mute-alert" aria-hidden="true" /></button>;
   const label = muted ? 'Unmute map audio' : 'Mute map audio';
   return <button type="button" className="icon-button header-mute" aria-pressed={muted} onClick={() => set(!muted)}
-    aria-label={label} aria-description={error ? 'Couldn’t change map audio.' : undefined} data-detail={error ?? undefined}
-    data-tooltip={error ? `${label} · Couldn’t change map audio` : label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
+    aria-label={label} aria-description={error ? 'Couldn’t change map audio.' : warning ? 'Changed, but Windows didn’t confirm it was saved.' : undefined} data-detail={error ?? warning ?? undefined}
+    data-tooltip={error ? `${label} · Couldn’t change map audio` : warning ? `${label} · Changed, but not confirmed saved` : label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
 }
 
 export function LayoutMenu({ layouts, activeId, disabled, onChoose, onEdit }: {
@@ -98,8 +97,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
   const axisOffset = reference?.axisOffset;
   const liveDate = useMemo(() => axisOffset == null ? undefined
-    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame, settled: clock.subscribe,
-      face: (host: HTMLElement, date: Element, hour: Element) => attachDateFace(host, date, hour, clock, axisOffset) }, [clock, axisOffset]);
+    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame, settled: clock.subscribe }, [clock, axisOffset]);
   const timeline = useRef<HTMLInputElement>(null);
   const previous = useRef<HTMLButtonElement>(null);
   const play = useRef<HTMLButtonElement>(null);

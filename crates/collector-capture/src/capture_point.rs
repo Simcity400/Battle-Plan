@@ -141,21 +141,20 @@ pub(crate) fn batch_left() {
         }
         return;
     }
-    if !
-    // SAFETY: The admitted producer owns this hour's gate and settles it on completion or refusal.
-    unsafe { capture_gate::begin() }
-    {
+    // SAFETY: Capture-point admission opens the gate and pairs every true return with end() on
+    // early return or via `Gate` in `serve()`.
+    if !unsafe { capture_gate::begin() } {
         unread(full);
         return;
     }
     if crate::command_batch::others_batching() {
-        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        // SAFETY: Releases the gate opened above before abandoning beside dispatch.
         unsafe { capture_gate::end() };
         unread(full);
         return;
     }
     if !BESIDE.load(Ordering::SeqCst) {
-        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        // SAFETY: Releases the gate opened above before falling back to held capture.
         unsafe { capture_gate::end() };
         if held(full) != Held::Read {
             unread(full);
@@ -265,10 +264,8 @@ enum Held {
 }
 
 fn held(full: bool) -> Held {
-    if !
-    // SAFETY: The admitted producer owns this hour's gate and settles it on completion or refusal.
-    unsafe { capture_gate::begin() }
-    {
+    // SAFETY: Paired immediately with the `Gate` RAII guard below.
+    if !unsafe { capture_gate::begin() } {
         return Held::Refused;
     }
     let _gate = Gate;
@@ -301,7 +298,7 @@ fn hurry() {
         let thread = unsafe { BorrowedHandle::borrow_raw(thread as _) };
         unsafe { SetThreadPriority(thread.as_raw_handle(), THREAD_PRIORITY_ABOVE_NORMAL) };
         if CONFINED.swap(false, Ordering::SeqCst) {
-            // SAFETY: This policy controls the target collector worker and its handle is live.
+            // SAFETY: `thread` is the live collector-owned capture thread held until waiters finish.
             unsafe { collector_workers::cpu_sets::select_away(thread, None) };
         }
     }
@@ -329,7 +326,8 @@ impl Thread {
     /// Keep the returned handle through detach and stop it after closing hourly admission and
     /// draining the capture point.
     pub unsafe fn start(stack_bytes: usize) -> io::Result<Self> {
-        capture_gate::on_wait(hurry);
+        // SAFETY: Runtime attach starts the capture thread once and registers its wait hurry callback.
+        unsafe { capture_gate::on_wait(hurry) };
         WORK.store(IDLE, Ordering::Release);
         let handle = std::thread::Builder::new()
             .name("hoi4-capture".into())
@@ -389,7 +387,7 @@ impl Drop for Thread {
 struct Gate;
 impl Drop for Gate {
     fn drop(&mut self) {
-        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        // SAFETY: `Gate` is constructed only after a matching `capture_gate::begin()` returned true.
         unsafe { capture_gate::end() };
     }
 }
@@ -397,18 +395,21 @@ impl Drop for Gate {
 fn beside(away: &mut collector_workers::cpu_sets::AwayFromGame, game: Option<u32>) -> bool {
     let own = unsafe { GetCurrentThread() };
     unsafe { SetThreadPriority(own, THREAD_PRIORITY_BELOW_NORMAL) };
-    away.follow(game);
+    // SAFETY: Called on the collector-owned beside capture thread applying session affinity policy.
+    unsafe { away.follow(game) };
     CONFINED.store(away.confined(), Ordering::SeqCst);
     if HURRIED.load(Ordering::SeqCst) {
         unsafe { SetThreadPriority(own, THREAD_PRIORITY_ABOVE_NORMAL) };
         CONFINED.store(false, Ordering::SeqCst);
-        away.follow(None);
+        // SAFETY: Called on the collector-owned beside capture thread clearing affinity on hurry.
+        unsafe { away.follow(None) };
     }
     away.confined()
 }
 
 fn run() {
-    capture_gate::reader();
+    // SAFETY: This dedicated thread is the collector-owned capture thread that reads under the gate.
+    unsafe { capture_gate::reader() };
     let mut away = collector_workers::cpu_sets::AwayFromGame::default();
     let idle = IDLE;
     loop {
@@ -463,7 +464,8 @@ fn capture_beside(away: &mut collector_workers::cpu_sets::AwayFromGame, full: bo
     // pre-images `_images` keeps for this read.
     let admitted = unsafe { read(Placement::Beside(game), full) };
     CONFINED.store(false, Ordering::SeqCst);
-    away.follow(None);
+    // SAFETY: Called on the collector-owned beside capture thread clearing affinity after capture.
+    unsafe { away.follow(None) };
     if !admitted {
         unread(full);
         return;
@@ -804,11 +806,8 @@ pub mod tests {
         record(true, 3);
         BESIDE.store(true, Ordering::SeqCst);
         hour_ended(Update::Uncounted);
-        assert!(
-            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
-            // refusal.
-            unsafe { capture_gate::begin() }
-        );
+        // SAFETY: Serialized test opens the gate and `serve` releases it via `Gate`.
+        assert!(unsafe { capture_gate::begin() });
         serve(|_| {
             assert_eq!(account(), 0);
             panic!("synthetic capture failure")
@@ -820,11 +819,8 @@ pub mod tests {
         // SAFETY: Attach selects the capture mode before hourly hook publication.
         unsafe { set_beside(true) };
         assert!(!BESIDE.load(Ordering::SeqCst));
-        assert!(
-            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
-            // refusal.
-            unsafe { capture_gate::begin() }
-        );
+        // SAFETY: Serialized test opens the gate and `serve` releases it via `Gate`.
+        assert!(unsafe { capture_gate::begin() });
         serve(|_| unreachable!("a failed capture thread reads no more"));
         assert!(!capture_gate::running());
         assert!(PENDING.load(Ordering::SeqCst));

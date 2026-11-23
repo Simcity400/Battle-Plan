@@ -3,7 +3,7 @@ use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{K
 use dashboard_base::products::equipment_icon::{self, Icon, IconChoice, IconContent, IconHour};
 use dashboard_core::config::LoadContext;
 use dashboard_text::variant_names::{self, Tags, Texts};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{LexicalTokenRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use std::{
@@ -119,20 +119,20 @@ pub fn spelling_reads(held: &DecodedFrame, mut tokens: BTreeSet<u32>, pictured: 
 }
 
 fn read_into(recording: &Recording, run: u32, hour: i32, frame: &mut DecodedFrame, reads: &[Read]) -> io::Result<()> {
-    let keyed: Vec<replay::at::Read<'_>> = reads
+    let keyed: Vec<replay_lanes::at::Read<'_>> = reads
         .iter()
-        .map(|read| replay::at::Read {
+        .map(|read| replay_lanes::at::Read {
             table: read.table,
             columns: None,
             keys: match &read.keys {
-                Keys::All => replay::at::Keys::All,
-                Keys::These(keys) => replay::at::Keys::These(keys),
-                Keys::Range(low, high) => replay::at::Keys::Range(*low, *high),
-                Keys::Ranges(ranges) => replay::at::Keys::Ranges(ranges),
+                Keys::All => replay_lanes::at::Keys::All,
+                Keys::These(keys) => replay_lanes::at::Keys::These(keys),
+                Keys::Range(low, high) => replay_lanes::at::Keys::Range(*low, *high),
+                Keys::Ranges(ranges) => replay_lanes::at::Keys::Ranges(ranges),
             },
         })
         .collect();
-    let read = dashboard_query::cost::storage(|| replay::at::frame(recording, run, hour, &keyed))?;
+    let read = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &keyed))?;
     for asked in reads {
         frame.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
     }

@@ -178,7 +178,7 @@ fn text_inputs(
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_parts_fan_animation_and_text_bake() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (_install, mut library) = models::effects();
     let circular = library
         .load(b"gfx/FX/circularprogressbar.shader", &[])

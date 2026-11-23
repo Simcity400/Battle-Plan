@@ -6,13 +6,9 @@ use std::{
     io,
 };
 
-use content_reader_core::content::diagnostics::{self, Diagnostics};
-use content_reader_core::{
-    ResolvedLayers, gui::native::fonts, gui::native::fonts::TextColors, gui::native::resources,
-    gui::native::resources::Lookup, gui::native::resources::NoTexture,
-    gui::native::resources::Registry, gui::native::sprites::Plain,
-    gui::native::sprites::SpriteFacts, gui::native::sprites::SpriteKind as Declared,
-};
+use content_reader_layers::content::diagnostics::{self, Diagnostics};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::gui::native::{fonts::{self, TextColors}, resources::{self, Lookup, NoTexture, Registry}, sprites::{Plain, SpriteFacts, SpriteKind as Declared}};
 use content_reader_image::{dds, native::Decode};
 
 use super::{
@@ -29,7 +25,7 @@ pub const TEXT_EFFECT: &str = "gfx/FX/text.lua";
 
 pub const CIRCULAR_EFFECT: &str = "gfx/FX/circularprogressbar.shader";
 
-pub use content_reader_core::gui::native::resources::SHIELD_OVERLAY_EFFECT;
+pub use content_reader_gui::gui::native::resources::SHIELD_OVERLAY_EFFECT;
 
 pub const DEFAULT_SPRITE_EFFECT: &str = "gfx/FX/buttonstate.lua";
 
@@ -303,7 +299,7 @@ impl GuiResources {
         let (effect, fallbacks) = self.effects[usize::from(masked)]
             .entry(file.to_vec())
             .or_insert_with(|| {
-                let file = content_reader_core::parser::c_string(file);
+                let file = content_reader_parser::parser::c_string(file);
                 diagnostics::observe(|| {
                     Effect::load(
                         library,

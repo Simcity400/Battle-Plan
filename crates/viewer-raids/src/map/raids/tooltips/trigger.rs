@@ -1,6 +1,7 @@
 use super::super::rules::Lines;
 use super::*;
-use content_reader_core::{parser::Item, scope::Scope as Parsed};
+use content_reader_parser::parser::Item;
+use content_reader_script::scope::Scope as Parsed;
 use dashboard_text::triggers::{
     Evaluator,
     description::{self, Host},

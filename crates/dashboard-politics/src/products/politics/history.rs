@@ -9,7 +9,7 @@ use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContex
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, timeline::Stretch};
 use dashboard_text::catalogue::View;
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -348,7 +348,7 @@ fn tokens(history: &History, runs: &[(i32, i32, Option<Cell>)], first: i32, last
 
 struct Presentation<'a> {
     catalogue: Option<&'a Catalogue>,
-    balances: Option<&'a content_reader_core::power_balance::Database>,
+    balances: Option<&'a content_reader_politics::power_balance::Database>,
 }
 
 impl Presentation<'_> {

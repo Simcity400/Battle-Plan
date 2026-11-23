@@ -100,7 +100,8 @@ fn owned_template_tails_match_synchronous_rows_and_survive_later_writer_marks() 
     let mut synchronous = Captured::with_capacities(&capacity());
     let mut deferred = Captured::with_capacities(&capacity());
     for hour in 0..3 {
-        synchronous.capture_original(&source, 0, 0x1000, hour, false, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { synchronous.capture_original(&source, 0, 0x1000, hour, false, &changes) };
         deferred.capture_observed(&source, 0, 0x1000, hour, false, &changes, None);
         drop(changes.templates.notify(0x5000, 1));
         source.bytes[0x6008..0x600c].copy_from_slice(&(hour + 7).to_le_bytes());
@@ -114,8 +115,10 @@ fn owned_template_tails_match_synchronous_rows_and_survive_later_writer_marks() 
     deferred.capture_observed(&source, 0, 0x1000, 3, false, &changes, None);
     deferred.reset();
     assert!(!deferred.pending_owned);
-    deferred.capture_original(&source, 0, 0x1000, 4, false, &changes);
-    synchronous.capture_original(&source, 0, 0x1000, 4, true, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { deferred.capture_original(&source, 0, 0x1000, 4, false, &changes) };
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { synchronous.capture_original(&source, 0, 0x1000, 4, true, &changes) };
     assert_eq!(deferred.tables(), synchronous.tables());
 }
 
@@ -124,7 +127,7 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     use crate::template_changes::Changes;
     use engine_deployment::cdeployment_status as deployment;
     use engine_occupation::ccountry_occupation_status as occupation;
-    use replay::{spool::Record, spool::encode_record};
+    use replay_capture_spool::spool::{Record, encode_record};
     use replay_frame::{
         frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,
     };
@@ -184,11 +187,13 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     source.bytes[0x3000 + ccountry::LOCK_ALL_TEMPLATES] = 1;
 
     let mut capacities = Capacities::default();
-    capacities.presize(&source, 0, 0x1000).unwrap();
+    // SAFETY: synthetic memory fixture with no live template observer hooks.
+    unsafe { capacities.presize(&source, 0, 0x1000) }.unwrap();
     collector_model_inputs::local_subunit_changes::boundary(true);
     crate::template_changes::boundary(true);
     let mut capture = Captured::with_capacities(&capacities);
-    capture.capture_original(&source, 0, 0x1000, 1, true, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture_original(&source, 0, 0x1000, 1, true, &changes) };
     let mut input = FrameInput {
         branch: 1,
         hour: 1,
@@ -241,7 +246,7 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
 #[test]
 fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals() {
     use crate::template_changes::Watches;
-    use replay::{spool::Record, spool::encode_record};
+    use replay_capture_spool::spool::{Record, encode_record};
     use replay_data::{rows::RowCodec, rows::TableRows};
     use replay_frame::{
         frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,
@@ -319,7 +324,8 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
             let mut capture = Captured::with_capacities(&capacity());
             let mut encoder = FrameEncoder::new();
             if post_gap {
-                capture.capture_original(&source, 0, 0x1000, 0, true, &watches);
+                // SAFETY: Unit test runs against an isolated fixture.
+                unsafe { capture.capture_original(&source, 0, 0x1000, 0, true, &watches) };
                 admit(&capture, &mut encoder, 0);
                 capture.fail_capture(1, false, "synthetic spool gap");
                 encoder = FrameEncoder::new();
@@ -364,7 +370,8 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
             } else {
                 &watches
             };
-            capture.capture_original(&source, 0, 0x1000, 2, true, changes);
+            // SAFETY: Unit test runs against an isolated fixture.
+            unsafe { capture.capture_original(&source, 0, 0x1000, 2, true, changes) };
             let decoded = admit(&capture, &mut encoder, 2);
             let icons = decoded.complete::<tables::DivisionTemplateIcons>().unwrap();
             if case == "empty roster" {
@@ -425,7 +432,8 @@ fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals(
                 }
             }
             drop(writer);
-            capture.capture_original(&source, 0, 0x1000, 3, false, &watches);
+            // SAFETY: Unit test runs against an isolated fixture.
+            unsafe { capture.capture_original(&source, 0, 0x1000, 3, false, &watches) };
             let retry = admit(&capture, &mut encoder, 3);
             if case != "deployment failure" {
                 assert_eq!(
@@ -551,7 +559,8 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
     for (hour, force) in (-24..24).map(|hour| (hour, false)).chain([(0, true)]) {
         assert!(replay_data::cadence::should_walk(TABLES[0], hour, force));
         let reads = collector_memory::read_accounting::Capture::new();
-        capture.capture(&present, 0, 0x1000, hour, force);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture(&present, 0, 0x1000, hour, force) };
         let read = reads.finish();
         assert!(read[TABLES[1].index()].spans > 0);
         assert_eq!(read[TABLES[0].index()].spans, 0, "{hour}");
@@ -559,7 +568,8 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
             template_outcomes(&capture),
             [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
         );
-        capture.capture(&missing, 0, 0x1000, hour, force);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture(&missing, 0, 0x1000, hour, force) };
         let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] =
             template_outcomes(&capture)
         else {
@@ -606,7 +616,8 @@ fn edit_finishing_between_fixed_record_copy_and_demand_cannot_certify_old_settin
         edited: false.into(),
     };
     let mut capture = Captured::with_capacities(&capacity());
-    capture.capture_original(&source, 0, 0x1000, 1, true, &watches);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture_original(&source, 0, 0x1000, 1, true, &watches) };
     assert!(source.edited.get());
     let [
         _,
@@ -616,7 +627,8 @@ fn edit_finishing_between_fixed_record_copy_and_demand_cannot_certify_old_settin
         panic!("icons");
     };
     assert!(matches!(icons[0].settings, Recorded::Value(None)));
-    capture.capture_original(&source, 0, 0x1000, 2, false, &watches);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture_original(&source, 0, 0x1000, 2, false, &watches) };
     let [
         _,
         TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
@@ -654,7 +666,8 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
         ..0x5000 + native::REGIMENTAL_SUPPORT_DATA - 4]
         .copy_from_slice(&(1_u32 | (1 << 16)).to_le_bytes());
     let watches = crate::template_changes::Watches::enabled(32);
-    capture.capture_original(&source, 0, 0x1000, 3, true, &watches);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture_original(&source, 0, 0x1000, 3, true, &watches) };
     let [
         TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(rows)),
         TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
@@ -817,7 +830,8 @@ fn border_effect_template_key_scale_bench() {
             rows
         };
         for (shape, changed) in [("quiet", 0), ("typical", 1), ("all_changed", templates)] {
-            captured.capture(&memory, 0, 0x1000, 3, true);
+            // SAFETY: Unit test runs against an isolated fixture.
+            unsafe { captured.capture(&memory, 0, 0x1000, 3, true) };
             let mut previous = rows(&captured);
             let mut times = Vec::new();
             let mut delta_sizes = Vec::new();
@@ -826,7 +840,8 @@ fn border_effect_template_key_scale_bench() {
                     memory.bytes[objects + index * 0x240 + native::NAME_KEY + 7] = b'0' + pass;
                 }
                 let started = Instant::now();
-                captured.capture(&memory, 0, 0x1000, 3, true);
+                // SAFETY: Unit test runs against an isolated fixture.
+                unsafe { captured.capture(&memory, 0, 0x1000, 3, true) };
                 times.push(started.elapsed());
                 let current = rows(&captured);
                 let mut bytes = Vec::new();
@@ -844,7 +859,8 @@ fn border_effect_template_key_scale_bench() {
             assert!(delta_sizes.iter().all(|size| *size == delta_sizes[0]));
             let counted = CountedMemory::new(memory);
             let accounting = collector_memory::read_accounting::Capture::new();
-            captured.capture(&counted, 0, 0x1000, 3, true);
+            // SAFETY: Unit test runs against an isolated fixture.
+            unsafe { captured.capture(&counted, 0, 0x1000, 3, true) };
             let requests = accounting.finish()[TABLES[0].index()];
             println!(
                 "TEMPLATE_KEY_BENCH templates={templates} shape={shape} whole_capture_p50_us={} dictionary_requests={requests:?} added_header_bytes={} prior_requested_bytes={} baseline_delta_bytes=0 delta_bytes={} initial_field_bytes={}",
@@ -889,7 +905,8 @@ pub fn set_name(source: &mut Fixture, literal: &[u8], key: &[u8]) {
 fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
     let mut capture = Captured::with_capacities(&capacity());
     let mut source = fixture();
-    capture.capture(&source, 0, 0x1000, 9, true);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&source, 0, 0x1000, 9, true) };
     assert!(matches!(
         displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
@@ -897,7 +914,8 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
             ..
         }))
     ));
-    capture.capture(&source, 0, 0x1000, 10, false);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&source, 0, 0x1000, 10, false) };
     assert!(matches!(
         displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
@@ -906,7 +924,8 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
         }))
     ));
     set_name(&mut source, b"Renamed", b"unused");
-    capture.capture(&source, 0, 0x1000, 11, false);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&source, 0, 0x1000, 11, false) };
     let [
         TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(dictionary)),
         _,
@@ -930,7 +949,8 @@ fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
 fn every_hour_certifies_against_the_same_frame_and_a_failed_dictionary_overrides() {
     let mut capture = Captured::with_capacities(&capacity());
     let source = fixture();
-    capture.capture(&source, 0, 0x1000, 10, false);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&source, 0, 0x1000, 10, false) };
     assert!(matches!(
         displayed(capture.table_inputs()).display_name,
         Recorded::Value(Some(TemplateDisplayName {
@@ -941,7 +961,8 @@ fn every_hour_certifies_against_the_same_frame_and_a_failed_dictionary_overrides
     let mut small = capacity();
     small.rows = 0;
     let mut capture = Captured::with_capacities(&small);
-    capture.capture(&source, 0, 0x1000, 9, true);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&source, 0, 0x1000, 9, true) };
     capture.rows.outcome = Outcome::Unavailable {
         reason: "synthetic dictionary failure",
     };
@@ -959,7 +980,8 @@ fn name_arena_growth_keeps_the_first_heading_and_counts_exact_demand() {
     let mut size = capacity();
     size.name_bytes = 0;
     let mut capture = Captured::with_capacities(&size);
-    capture.capture(&fixture(), 0, 0x1000, 9, true);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&fixture(), 0, 0x1000, 9, true) };
     let row = displayed(capture.table_inputs());
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
     assert_eq!(row.priority_unit_name, b"infantry");
@@ -1158,7 +1180,8 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
                 _ => {}
             }
             let force = hour == 0;
-            direct.capture_original(&source, 0, 0x1000, hour, force, &changes);
+            // SAFETY: Unit test runs against an isolated fixture.
+            unsafe { direct.capture_original(&source, 0, 0x1000, hour, force, &changes) };
             let mut shares = Vec::new();
             let mut walk = |mut parts: Vec<WalkPart>| {
                 std::thread::scope(|scope| {
@@ -1234,16 +1257,19 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
 fn live_template_demand_and_same_capture_growth_keep_every_country() {
     let source = large_content(20, 4);
     let mut capacity = Capacities::default();
-    capacity.presize(&source, 0, 0x1000).unwrap();
+    // SAFETY: synthetic memory fixture with no live template observer hooks.
+    unsafe { capacity.presize(&source, 0, 0x1000) }.unwrap();
     assert!(capacity.rows >= 80 && capacity.icon_rows >= 80);
     assert!(capacity.bytes >= 80 * 11);
     assert!(capacity.icon_bytes >= 80 * 20);
     assert!(capacity.counts >= 80);
     let mut captured = Captured::with_capacities(&capacity);
-    captured.capture(&source, 0, 0x1000, 9, true);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture(&source, 0, 0x1000, 9, true) };
     assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 80 }; 2]);
     let grown = large_content(20, 5);
-    captured.capture(&grown, 0, 0x1000, 10, true);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture(&grown, 0, 0x1000, 10, true) };
     assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 100 }; 2]);
     assert_eq!(captured.name_bytes.len, 100 * (3 + 8));
     assert_eq!(captured.counts.len, 100);
@@ -1257,7 +1283,8 @@ fn optional_model_failure_does_not_remove_fresh_name_inputs() {
         .copy_from_slice(&1_u32.to_le_bytes());
     source.bytes[0x5000 + native::SUBUNIT_COUNTS + 12..0x5000 + native::SUBUNIT_COUNTS + 16]
         .copy_from_slice(&2_u32.to_le_bytes());
-    capture.capture(&source, 0, 0x1000, 9, true);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture(&source, 0, 0x1000, 9, true) };
     let row = displayed(capture.table_inputs());
     assert_eq!(row.model_unreadable, 1);
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
@@ -1462,9 +1489,11 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
             _ => &[],
         };
         let recording = Recording::new(&source);
-        capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture_original(&recording, 0, 0x1000, hour, false, &changes) };
         let mut fresh = Captured::with_capacities(&capacity());
-        fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { fresh.capture_original(&source, 0, 0x1000, hour, true, &changes) };
         assert_eq!(capture.tables(), fresh.tables(), "hour {hour}");
         assert_eq!(
             capture.model_failures(),
@@ -1513,7 +1542,8 @@ fn a_writer_that_changes_no_template_keeps_the_witness_and_one_that_does_renews_
             _ => {}
         }
         let recording = Recording::new(&source);
-        capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture_original(&recording, 0, 0x1000, hour, false, &changes) };
         assert_eq!(recording.template(A) > 0, matches!(hour, 0 | 2 | 3), "hour {hour}");
         assert_eq!(capture.witness.is_some(), hour > 0, "hour {hour}");
         witnesses.push(capture.witness);
@@ -1546,7 +1576,8 @@ fn country_refusal_recovery_and_loss_renew_the_template_witness() {
             }
             drop(changes.templates.notify(1, site("rebuild_template_caches")));
         }
-        capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture_original(&source, 0, 0x1000, hour, false, &changes) };
         let known = (2..5).contains(&hour);
         assert_eq!(capture.model_failures.rows, u32::from(!known), "hour {hour}");
         let TableView::Complete(TableRows::CountryTemplateState(rows)) = capture.country_state()
@@ -1590,7 +1621,8 @@ fn fresh_only_observation_reads_every_template() {
     for hour in 0_i32..3 {
         source.bytes[0x5000 + native::CUSTOM_ICON..][..4].copy_from_slice(&hour.to_le_bytes());
         let recording = Recording::new(&source);
-        capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture_original(&recording, 0, 0x1000, hour, false, &changes) };
         assert!(recording.template(0x5000) > 0, "hour {hour}");
         assert_eq!(displayed(capture.table_inputs()).custom_icon, hour);
     }
@@ -1619,7 +1651,8 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
         source.bytes[0x6200 + index * 8..][..8].copy_from_slice(&(pointer as u64).to_le_bytes());
     }
     let mut captured = Captured::with_capacities(&capacity());
-    captured.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture_original(&source, 0, 0x1000, 1, false, &changes) };
     assert_eq!(
         displayed(captured.table_inputs()).excluded_variants,
         handles[1..]
@@ -1639,9 +1672,11 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
         source.bytes[header + 12..][..4].copy_from_slice(&2_u32.to_le_bytes());
     }
     assert_eq!(&source.bytes[0x5000..0x5400], fixed.as_slice());
-    captured.capture_original(&source, 0, 0x1000, 2, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture_original(&source, 0, 0x1000, 2, false, &changes) };
     let mut fresh = Captured::with_capacities(&capacity());
-    fresh.capture_original(&source, 0, 0x1000, 2, true, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { fresh.capture_original(&source, 0, 0x1000, 2, true, &changes) };
     assert_eq!(captured.tables(), fresh.tables());
     assert_eq!(
         displayed(captured.table_inputs()).excluded_variants,
@@ -1651,8 +1686,10 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
         let _writer = site.map(|site| changes.templates.notify(0x5000, site));
         source.bytes[0x6208..][..8].copy_from_slice(&0xf000_u64.to_le_bytes());
     }
-    captured.capture_original(&source, 0, 0x1000, 3, false, &changes);
-    fresh.capture_original(&source, 0, 0x1000, 3, true, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture_original(&source, 0, 0x1000, 3, false, &changes) };
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { fresh.capture_original(&source, 0, 0x1000, 3, true, &changes) };
     assert_eq!(captured.tables(), fresh.tables());
     let refused = displayed(captured.table_inputs());
     assert_eq!(refused.model_unreadable, 1);
@@ -1665,9 +1702,11 @@ fn the_custom_icon_command_reads_every_template_again() {
     let mut source = fixture();
     add_second_template(&mut source);
     let mut captured = Captured::with_capacities(&capacity());
-    captured.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture_original(&source, 0, 0x1000, 1, false, &changes) };
     let recording = Recording::new(&source);
-    captured.capture_original(&recording, 0, 0x1000, 2, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture_original(&recording, 0, 0x1000, 2, false, &changes) };
     assert_eq!(recording.template(0x5000) + recording.template(0x7800), 0);
     source.bytes[0x5000 + native::CUSTOM_ICON..][..4].copy_from_slice(&17_i32.to_le_bytes());
     source.bytes[0x5000 + native::CUSTOM_ICON_NATO] = 1;
@@ -1678,10 +1717,12 @@ fn the_custom_icon_command_reads_every_template_again() {
         0,
     ));
     let recording = Recording::new(&source);
-    captured.capture_original(&recording, 0, 0x1000, 3, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { captured.capture_original(&recording, 0, 0x1000, 3, false, &changes) };
     assert!(recording.template(0x5000) > 0 && recording.template(0x7800) > 0);
     let mut fresh = Captured::with_capacities(&capacity());
-    fresh.capture_original(&source, 0, 0x1000, 3, true, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { fresh.capture_original(&source, 0, 0x1000, 3, true, &changes) };
     assert_eq!(captured.tables(), fresh.tables());
     let [
         _,
@@ -1702,12 +1743,15 @@ fn missing_local_certificate_withdraws_a_held_core_without_withholding_fresh_mod
     let changes = CoreChanges::new();
     let mut source = fixture();
     let mut capture = Captured::with_capacities(&capacity());
-    capture.capture_original(&source, 0, 0x1000, 0, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture_original(&source, 0, 0x1000, 0, false, &changes) };
     source.bytes[0x6008..0x600c].copy_from_slice(&9_i32.to_le_bytes());
     let running = changes.locals.notify(None, 4);
-    capture.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { capture.capture_original(&source, 0, 0x1000, 1, false, &changes) };
     let mut fresh = Captured::with_capacities(&capacity());
-    fresh.capture_original(&source, 0, 0x1000, 1, true, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { fresh.capture_original(&source, 0, 0x1000, 1, true, &changes) };
     assert_eq!(capture.tables(), fresh.tables());
     assert!(
         !changes.templates.poisoned(),
@@ -1773,11 +1817,13 @@ fn certified_template_core_scale_bench() {
         ("held_core", &changes),
     ] {
         let mut capture = Captured::with_capacities(&capacities);
-        capture.capture_original(&source, 0, 0x1000, 0, false, observer);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture_original(&source, 0, 0x1000, 0, false, observer) };
         let mut elapsed = Vec::new();
         for hour in 1..31 {
             let start = Instant::now();
-            capture.capture_original(&source, 0, 0x1000, hour, false, observer);
+            // SAFETY: Unit test runs against an isolated fixture.
+            unsafe { capture.capture_original(&source, 0, 0x1000, hour, false, observer) };
             elapsed.push(start.elapsed());
         }
         elapsed.sort_unstable();
@@ -1810,7 +1856,8 @@ fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_share
     for hour in 0..4 {
         let frame = &mut frames[hour as usize % 2];
         let recording = Recording::new(&source);
-        frame.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { frame.capture_original(&recording, 0, 0x1000, hour, false, &changes) };
         assert_eq!(recording.template(A) > 0, hour == 0, "hour {hour}");
         witnesses.push(frame.witness);
         tables.push(frame.tables());
@@ -1825,7 +1872,8 @@ fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_share
     drop(home.lock().unwrap().stores.take());
     assert_eq!(super::home_allocated_bytes(&home), bytes);
     let recording = Recording::new(&source);
-    frames[0].capture_original(&recording, 0, 0x1000, 4, false, &changes);
+    // SAFETY: Unit test runs against an isolated fixture.
+    unsafe { frames[0].capture_original(&recording, 0, 0x1000, 4, false, &changes) };
     assert!(recording.template(A) > 0);
     assert_ne!(frames[0].witness, witnesses[3]);
     assert_eq!(frames[0].tables(), tables[3]);

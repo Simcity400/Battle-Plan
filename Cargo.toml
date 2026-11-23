@@ -48,6 +48,10 @@ product-codec = { path = "crates/product-codec" }
 content-witness = { path = "crates/content-witness" }
 map-products = { path = "crates/map-products" }
 map-content = { path = "crates/map-content" }
+viewer-counter-kit = { path = "crates/viewer-counter-kit" }
+viewer-counters-naval = { path = "crates/viewer-counters-naval" }
+viewer-counters-land = { path = "crates/viewer-counters-land" }
+viewer-counters = { path = "crates/viewer-counters" }
 viewer-playback = { path = "crates/viewer-playback" }
 viewer-layer-core = { path = "crates/viewer-layer-core" }
 viewer-layers-counters = { path = "crates/viewer-layers-counters" }
@@ -296,7 +300,16 @@ content-reader-focus = { path = "crates/content-reader-focus" }
 content-reader-events = { path = "crates/content-reader-events" }
 content-reader-division-names = { path = "crates/content-reader-division-names" }
 content-reader-abilities = { path = "crates/content-reader-abilities" }
-content-reader-core = { path = "crates/content-reader-core" }
+content-reader-parser = { path = "crates/content-reader-parser" }
+content-reader-layers = { path = "crates/content-reader-layers" }
+content-reader-defines = { path = "crates/content-reader-defines" }
+content-reader-script = { path = "crates/content-reader-script" }
+content-reader-key-names = { path = "crates/content-reader-key-names" }
+content-reader-gui = { path = "crates/content-reader-gui" }
+content-reader-mesh = { path = "crates/content-reader-mesh" }
+content-reader-map = { path = "crates/content-reader-map" }
+content-reader-military = { path = "crates/content-reader-military" }
+content-reader-politics = { path = "crates/content-reader-politics" }
 content-reader-image = { path = "crates/content-reader-image" }
 content-reader-save = { path = "crates/content-reader-save" }
 libmimalloc-sys = { version = "0.1.49", default-features = false }
@@ -304,6 +317,13 @@ png = "0.18"
 pollster = "1"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay", default-features = false }
+replay-settings = { path = "crates/replay-settings" }
+replay-recording = { path = "crates/replay-recording" }
+replay-journal = { path = "crates/replay-journal" }
+replay-capture-spool = { path = "crates/replay-capture-spool" }
+replay-lanes = { path = "crates/replay-lanes" }
+replay-files = { path = "crates/replay-files" }
+replay-tools = { path = "crates/replay-tools", default-features = false }
 replay-looks = { path = "crates/replay-looks" }
 recorder-derive = { path = "crates/recorder-derive" }
 recorder-derive-air = { path = "crates/recorder-derive-air" }

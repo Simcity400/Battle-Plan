@@ -144,7 +144,7 @@ fn cell<'a>(field: Field<'a>, strings: &BTreeMap<Vec<u8>, u32>) -> Cell<'a> {
 }
 
 fn record(name: &str, frame: &DecodedFrame) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut strings = BTreeMap::new();
     for view in &frame.tables {
         match &**view {
@@ -203,7 +203,7 @@ fn music() -> Arc<viewer_audio::Content> {
     let mut music = Music::default();
     for (index, body) in ["base=1", "base=7 modifier={has_war_with=ENG factor=2}"].into_iter().enumerate() {
         music.tracks.push(Track { name: format!("t{index}"), path: format!("music/t{index}.ogg"), volume: 1.0, source: String::new() });
-        music.songs.push(Song { track: index, station: "on".into(), chance: content_reader_core::parser::parse(body.as_bytes()).unwrap().items, source: String::new() });
+        music.songs.push(Song { track: index, station: "on".into(), chance: content_reader_parser::parser::parse(body.as_bytes()).unwrap().items, source: String::new() });
     }
     Arc::new(viewer_audio::Content::new(Default::default(), None).with_music(music, Some(vec!["on".into()]), 0))
 }
@@ -227,7 +227,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let tables = content_reader_core::test_game::enter();
+        let tables = content_reader_script::test_game::enter();
         let mut raids = test_support::unnamed_assets();
         test_support::set_counts(&mut raids);
         let raids = Arc::new(raids);

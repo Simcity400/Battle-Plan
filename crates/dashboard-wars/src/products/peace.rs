@@ -951,7 +951,7 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
 }
 
 fn is_keyword(spelling: &str, keyword: &str) -> bool {
-    content_reader_core::parser::native::Token { kind: content_reader_core::parser::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
+    content_reader_script::native::Token { kind: content_reader_script::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
 }
 
 fn takes_states(spelling: &str) -> bool {
@@ -1112,9 +1112,9 @@ impl Product for PeaceDeals {
         for stretch in &query.timeline.stretches {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let (first, last, run) = (stretch.first, stretch.last, stretch.run);
-            complement(&replay::lanes::reads(recording, run, TableId::PeaceSettlements, first, last)?, first, last, &mut unobserved.settlements);
-            complement(&replay::lanes::reads(recording, run, TableId::PeaceConferences, first, last)?, first, last, &mut unobserved.conferences);
-            complement(&replay::lanes::reads(recording, run, TableId::PeaceOutcomes, first, last)?, first, last, &mut unobserved.ownership);
+            complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceSettlements, first, last)?, first, last, &mut unobserved.settlements);
+            complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceConferences, first, last)?, first, last, &mut unobserved.conferences);
+            complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceOutcomes, first, last)?, first, last, &mut unobserved.ownership);
         }
         let span_columns = SPAN_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceConferenceSpans, name).unwrap_or(usize::MAX));
         if span_columns.contains(&usize::MAX) {
@@ -1317,7 +1317,7 @@ fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Se
     let tokens: BTreeSet<u32> = settled.iter().flat_map(|settled| settled.row.actions.iter().map(|action| action.token)).collect();
     let transfers = !settled.is_empty() || outcomes.iter().any(|row| row.change == PeaceOutcomeRow::TRANSFER);
     if transfers && let Some(stretch) = query.timeline.stretches.last() {
-        let frame = replay::at::frame(recording, stretch.run, stretch.last, &[read::Read::all(TableId::LexicalTokens)])?;
+        let frame = replay_lanes::at::frame(recording, stretch.run, stretch.last, &[read::Read::all(TableId::LexicalTokens)])?;
         match frame.complete::<tables::LexicalTokens>() {
             Ok(rows) => {
                 let mut found: Option<&[u8]> = None;
@@ -1362,7 +1362,7 @@ fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Se
             read::Read::all(TableId::PoliticalParties),
             read::Read { table: TableId::CountryAppearance, columns: None, keys: read::Keys::These(&keys) },
         ];
-        let frame = replay::at::frame(recording, stretch.run, hour, &reads)?;
+        let frame = replay_lanes::at::frame(recording, stretch.run, hour, &reads)?;
         let (politics, parties, appearances) = match (frame.complete::<tables::Politics>(), frame.complete::<tables::PoliticalParties>(), frame.complete::<tables::CountryAppearance>()) {
             (Ok(politics), Ok(parties), Ok(appearances)) => (politics, parties, appearances),
             _ => {

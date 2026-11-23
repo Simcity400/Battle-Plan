@@ -92,7 +92,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
         frames: 1,
         index: 0,
         paced: false,
-        request: None,
+        export: None,
     });
 }
 
@@ -286,6 +286,44 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     let state = viewer.map_state(&target);
     assert_eq!(state.hour, Some(fixture.input.hour));
     assert_eq!(state.sequence, state.requested_sequence);
+    Ok(())
+}
+
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
+fn a_widget_export_writes_the_frame_it_draws_at_the_widgets_own_size() -> std::io::Result<()> {
+    let fixture = Fixture::load("viewer-export")?;
+    let request = fixture.request([256, 144]);
+    let document = Document::from_shared_content(
+        fixture.document.content.clone(),
+        fixture.document.playback.replay_handle(),
+        &InitialHour { branch: Some(fixture.input.branch), hour: Some(fixture.input.hour), hour_fraction: 0. },
+    )?;
+    let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, Some((fixture.state.device.clone(), fixture.state.queue.clone())));
+    viewer.dashboard_map = true;
+    viewer.diagnostics = false;
+    viewer.graphics.samples = 1;
+    viewer.camera_manual = true;
+    viewer.camera = Some(Placement { center: request.camera.center, height: request.camera.height, pose: viewer_gpu::camera::Pose::Map });
+    viewer.install_map(document, fixture.scene()?, "fixture".into());
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    frame.wgpu_render_state = Some(fixture.state.clone());
+    let target = target(&fixture);
+    until(&mut viewer, &ctx, &frame, &target, |v| v.rendered.is_some() || v.error.is_some() || v.map_error.is_some());
+    let path = fixture.output.join("widget-export.png");
+    let (job, answers) = crate::host::tests::job(&path.display().to_string());
+    viewer.host_export(job, &ctx, &mut frame);
+    until(&mut viewer, &ctx, &frame, &target, |v| v.capture.is_none() || v.error.is_some());
+    let answered = crate::host::tests::taken(&answers);
+    assert!(matches!(answered.as_slice(), [Ok(saved)] if saved.starts_with("Saved ")), "{answered:?}");
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path)?));
+    let mut reader = decoder.read_info().map_err(std::io::Error::other)?;
+    let mut pixels = vec![0; reader.output_buffer_size().ok_or_else(|| std::io::Error::other("the PNG has no size"))?];
+    let info = reader.next_frame(&mut pixels).map_err(std::io::Error::other)?;
+    assert_eq!((info.width, info.height), (target.bounds.width, target.bounds.height), "the picture is the widget’s own size");
+    let first = &pixels[..4];
+    assert!(pixels[..info.buffer_size()].chunks_exact(4).any(|pixel| pixel != first), "the picture holds the drawn map, not one flat colour");
     Ok(())
 }
 

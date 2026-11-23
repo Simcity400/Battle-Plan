@@ -551,17 +551,20 @@ impl Scale {
         air.stats_raw_mode = true;
         air.install_owned_mission_identities(&mut job);
         air.finish_wings(parent);
-        air.capture_missions(
-            &self.world,
-            BASE,
-            self.world.game_state,
-            MissionSources {
-                parent,
-                histories: &mut [],
-                changes: &collector_air_histories::history_changes::Unobserved,
-                carry: None,
-            },
-        );
+        // SAFETY: Unit test runs an isolated fixture without carried session watches.
+        unsafe {
+            air.capture_missions(
+                &self.world,
+                BASE,
+                self.world.game_state,
+                MissionSources {
+                    parent,
+                    histories: &mut [],
+                    changes: &collector_air_histories::history_changes::Unobserved,
+                    carry: None,
+                },
+            );
+        }
         air.capture(
             &self.world,
             BASE,
@@ -696,17 +699,20 @@ fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
     air.stats_raw_mode = true;
     air.install_owned_mission_identities(&mut job);
     air.finish_wings(parent);
-    air.capture_missions(
-        memory,
-        BASE,
-        scale.world.game_state,
-        MissionSources {
-            parent,
-            histories: &mut [],
-            changes: &collector_air_histories::history_changes::Unobserved,
-            carry: None,
-        },
-    );
+    // SAFETY: Unit test runs an isolated fixture without carried session watches.
+    unsafe {
+        air.capture_missions(
+            memory,
+            BASE,
+            scale.world.game_state,
+            MissionSources {
+                parent,
+                histories: &mut [],
+                changes: &collector_air_histories::history_changes::Unobserved,
+                carry: None,
+            },
+        );
+    }
     air
 }
 

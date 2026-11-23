@@ -911,15 +911,16 @@ fn a_failed_write_stops_the_pushed_answers_by_name() {
 fn push_queues_charge_one_budget_and_count_only_pressure_merges() {
     use crate::push::Push;
     let packet = one(7, 24, 1);
-    let budget = playhead::ByteBudget::new(packet.len() * 2);
+    let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
     let first = Push::with_budget(budget.clone());
     let second = Push::with_budget(budget.clone());
     first.offer(packet.clone());
+    second.head(0, 0, 100);
     second.offer(packet.clone());
     second.offer(packet);
     assert_eq!(second.counters().pressure_merges, 0);
     second.offer(one(7, 48, 2));
-    assert_eq!(second.counters().pressure_merges, 1);
+    assert_eq!((second.counters().pressure_merges, second.counters().merges), (0, 2), "hours the clock passed merge before any pressure");
     assert!(second.failed().is_none());
     first.take_waiting();
     drop(second);
@@ -1026,7 +1027,7 @@ fn the_message_bytes_are_the_ones_the_ui_reads() {
     assert_eq!(hex, GOLDEN);
 }
 
-const GOLDEN: &str = "464f4c3201000000d204000003000000000000000000000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000";
+const GOLDEN: &str = "464f4c3301000000d204000003000000000000000000000007000000b0040000d000000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff02000000040000000000000000000000010000000300000000000000000000000300000006000000160000001900000032000000474552534f56534f5620686173206e6f2076616c75654954414954412069732068656c64206279206e6f20636f756e74727900000000000008000000d20400004000000000000000000000000000000000000000010000000000000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f75720009000000d204000058000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff000000000000000000000000";
 
 #[test]
 fn a_table_never_recorded_in_the_files_is_not_held() {
@@ -1406,4 +1407,288 @@ fn completed_product_step_has_constant_size_when_every_product_stands() {
     let (merged, _) = dated::merge(&first, &next).unwrap();
     let rows = dated::records(&merged).unwrap();
     assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::DATA, 10), (0, dated::COMPLETED, 34)]);
+}
+
+#[test]
+fn an_answer_says_when_its_rows_ascend_by_key_and_reads_any_text_by_its_offset() {
+    let mut table = crate::answer::Table::default();
+    table.clear(1, false);
+    for (key, name) in [(3, "Third"), (9, "Ninth"), (1u128 << 100, "Wide")] {
+        table.row(key);
+        table.cell(1, State::Value);
+        table.name(name);
+    }
+    table.explain("This country was not recorded at this hour");
+    let mut body = Vec::new();
+    table.encode(&mut body);
+    let answer = Answer::parse(&body).unwrap();
+    assert!(answer.canonical, "keys ascend: the reader may merge rows by walking keys");
+    assert_eq!((answer.name(1), answer.reason(2), answer.name(2)), (Some("Ninth"), Some("This country was not recorded at this hour"), Some("Wide")));
+    table.clear(1, false);
+    for key in [9, 3] {
+        table.row(key);
+        table.cell(1, State::Value);
+    }
+    body.clear();
+    table.encode(&mut body);
+    assert!(!Answer::parse(&body).unwrap().canonical, "rows in another order say so");
+}
+
+#[test]
+fn rows_changed_twice_merge_in_key_order() {
+    let merged = crate::answer::merge(&rows_message(10, true, &[(5, 1), (9, 1)]), &rows_message(11, true, &[(1, 2), (9, 2)])).unwrap().0;
+    let decoded = decode(&merged).unwrap();
+    let answer = Answer::parse(decoded.answers[0].2).unwrap();
+    assert_eq!((answer.keys.clone(), answer.values.clone(), answer.canonical, answer.changed), (vec![1, 5, 9], vec![2, 1, 2], true, true));
+}
+
+#[test]
+fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_flight() {
+    use crate::push::Push;
+    let packet = one(7, 24, 1);
+    let cost = crate::answer::charge(&packet);
+    let budget = playhead::ByteBudget::new(cost * 4);
+    let push = Push::with_budget(budget.clone());
+    push.offer(packet.clone());
+    push.offer(one(7, 48, 2));
+    push.offer(one(7, 72, 3));
+    assert!(push.try_take().is_some());
+    assert!(push.try_take().is_some(), "two packets fit the credit of half the budget");
+    assert!(push.try_take().is_none(), "the third waits until the lanes release bytes");
+    assert_eq!((push.in_flight(), budget.used()), (cost * 2, cost * 3), "credit is reserved from send until release");
+    push.credit(0, cost as u64);
+    assert!(push.try_take().is_some());
+    push.credit(0, cost as u64 * 3);
+    assert_eq!(budget.used(), 0);
+    push.credit(0, cost as u64);
+    assert_eq!(push.in_flight(), 0, "a retried release of a total already counted releases nothing again");
+    let large: Vec<u8> = vec![0; cost * 3];
+    push.offer(large);
+    assert!(push.try_take().is_some(), "a message larger than the credit still goes alone");
+}
+
+#[test]
+fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_picture_it_replaces() {
+    use crate::push::Push;
+    let packet = one(7, 10, 1);
+    let cost = crate::answer::charge(&packet);
+    let budget = playhead::ByteBudget::new(cost * 5);
+    let push = Push::with_budget(budget.clone());
+    push.offer(packet.clone());
+    push.offer(one(7, 20, 2));
+    push.offer(one(7, 30, 3));
+    assert!(push.try_take().is_some() && push.try_take().is_some());
+    assert!(push.try_take().is_none(), "ahead of the clock, a message waits for credit");
+    push.head(0, 0, 30);
+    assert!(push.try_take().is_some(), "the lanes keep their current picture until its replacement arrives: a reached hour always goes");
+    let session = push.restart();
+    assert_eq!((push.in_flight(), budget.used()), (0, 0), "a closed page's held bytes are forgotten once, by the one queue that charged them");
+    push.offer(one(7, 40, 4));
+    let (.., sent) = push.take_sent().unwrap();
+    assert_eq!(sent, session, "a message names the session it was sent to");
+    push.credit(session - 1, cost as u64);
+    assert_eq!(push.in_flight(), cost, "an old page's late refund releases nothing of the new page's");
+    push.credit(session, cost as u64);
+    assert_eq!(push.in_flight(), 0);
+    push.offer(one(7, 50, 5));
+    assert!(push.try_take().is_some());
+    push.credit(session, cost as u64);
+    assert_eq!(push.in_flight(), cost, "review 6 A: the release total is idempotent, so a retry whose acknowledgement was lost frees nothing twice");
+    push.offer(one(7, 60, 6));
+    let retired = push.restart();
+    assert!(push.try_take().is_none(), "review 6 A: a record queued for the old page is retired with its session, never sent as the new page's");
+    assert_eq!((push.in_flight(), budget.used(), push.session()), (0, 0, retired));
+}
+
+fn routed(route: u32, hour: Hour, value: i64, held: u32) -> Vec<u8> {
+    let mut message = Vec::new();
+    crate::answer::begin(&mut message, route, 0, hour, 0, false);
+    crate::answer::push_held(&mut message, 7, hour, &body(7, value), held);
+    message
+}
+
+#[test]
+fn a_changed_answer_reserves_the_table_it_lands_on_when_queued_so_sending_it_never_exceeds_the_budget() {
+    use crate::push::Push;
+    let small = routed(0, 5, 1, 0);
+    let budget = playhead::ByteBudget::new(small.len() * 10);
+    let push = Push::with_budget(budget.clone());
+    push.offer(small.clone());
+    assert!(push.try_take().is_some());
+    push.head(0, 0, 100);
+    push.offer(routed(0, 10, 2, (small.len() * 12) as u32));
+    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "a table past the budget is refused by name when it is queued");
+    assert!(push.try_take().is_some(), "the drain thread takes the failure notice and never panics");
+    let push = Push::with_budget(budget);
+    push.offer(routed(0, 10, 2, (small.len() * 4) as u32));
+    assert_eq!(push.in_flight(), 0);
+    assert!(push.try_take().is_some());
+    assert_eq!(push.in_flight(), 24 + 16 + 2 * small.len() * 4, "what was reserved while queued is what is held in flight");
+}
+
+#[test]
+fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_own() {
+    use crate::push::Push;
+    let small = routed(1, 5, 1, 0);
+    let push = Push::with_budget(playhead::ByteBudget::new(small.len() * 30));
+    push.offer(small.clone());
+    assert!(push.try_take().is_some());
+    push.offer(routed(1, 50, 2, (small.len() * 8) as u32));
+    assert!(push.try_take().is_none(), "the future update of route 1 waits for credit");
+    push.offer(routed(2, 10, 3, 0));
+    push.head(2, 0, 10);
+    let (_, sent, ..) = push.try_take().expect("route 2's reached update goes past it");
+    assert_eq!(crate::answer::decode(&sent).unwrap().route, 2);
+    push.offer(routed(1, 11, 4, 0));
+    push.head(1, 0, 11);
+    assert!(push.try_take().is_none(), "route 1's later update never overtakes route 1's waiting one");
+}
+
+#[test]
+fn an_answer_is_charged_at_the_size_its_lane_holds_and_merges_keep_that_size() {
+    use crate::push::Push;
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    let changed = routed(0, 10, 1, 4096);
+    push.offer(changed.clone());
+    push.try_take().unwrap();
+    assert_eq!(push.in_flight(), 24 + 16 + 2 * 4096, "a changed answer is charged at the whole table it lands on");
+    assert_eq!(crate::answer::charge(&changed), 24 + 16 + 2 * 4096, "the lane's copy and the page's one copy");
+    let mut table = crate::answer::Table::default();
+    table.clear(1, false);
+    for key in [1u128, 5, 9] { table.row(key); table.cell(key as i64, State::Value); table.name("TAG"); }
+    let mut body = Vec::new();
+    table.encode(&mut body);
+    assert_eq!(table.encoded_len(), body.len(), "the held size is the whole table's encoded size");
+    let merged = crate::answer::merge(&rows_message(10, true, &[(1, 1)]), &rows_message(11, true, &[(1, 2)])).unwrap().0;
+    assert_eq!(crate::answer::decode(&merged).unwrap().held.len(), 1);
+}
+
+#[test]
+fn only_hours_the_clock_has_passed_merge_into_one_answer() {
+    use crate::push::Push;
+    let push = Push::default();
+    push.offer(rows_message(20, false, &[(1, 1)]));
+    push.offer(rows_message(30, false, &[(1, 2)]));
+    push.head(0, 0, 10);
+    assert_eq!(push.counters().merges, 0, "never merged ahead of the clock");
+    push.head(0, 0, 35);
+    assert_eq!(push.counters().merges, 1, "both passed: one complete answer at the later hour");
+    let (_, bytes, ..) = push.try_take().unwrap();
+    let decoded = decode(&bytes).unwrap();
+    assert_eq!((decoded.hour, Answer::parse(decoded.answers[0].2).unwrap().values), (30, vec![2]));
+}
+
+#[test]
+fn pressure_never_merges_ahead_of_the_clock() {
+    use crate::push::Push;
+    let packet = rows_message(20, false, &[(1, 1)]);
+    let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
+    let push = Push::with_budget(budget);
+    push.head(0, 0, 0);
+    push.offer(rows_message(20, false, &[(1, 1)]));
+    push.offer(rows_message(30, false, &[(1, 2)]));
+    push.offer(rows_message(40, false, &[(1, 3)]));
+    assert_eq!(push.counters().pressure_merges, 0);
+    assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "past the budget ahead of the clock is a named failure, never a lost hour");
+}
+
+#[test]
+fn a_panel_cell_group_takes_an_id_of_its_owners_lane() {
+    for (lane, lanes) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+        for _ in 0..50 {
+            let id = crate::live::cells_id(lane, lanes);
+            assert_eq!((id & crate::live::CELLS, (id & !crate::live::CELLS) % lanes), (crate::live::CELLS, lane));
+        }
+    }
+}
+
+#[test]
+fn a_follow_names_lanes_its_id_belongs_to() {
+    let registry = crate::registry::Registry::new(None);
+    let ask = |params: serde_json::Value| registry.answer(std::path::Path::new("x"), "follow", &params, |_| Ok(nobody()), Box::new(|_| None));
+    let wrong = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 0, "lanes": 3 }));
+    assert!(wrong.unwrap_err().to_string().contains("not of lane 0 among 3"));
+    let right = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 1, "lanes": 3 })).unwrap();
+    assert_eq!(right["available"], false, "no playhead here, but the lane class is accepted");
+}
+
+fn at_seek(route: u32, seek: u32, hour: Hour, value: i64) -> Vec<u8> {
+    let mut message = Vec::new();
+    crate::answer::begin(&mut message, route, 0, hour, seek, false);
+    crate::answer::push(&mut message, 7, hour, &body(7, value));
+    message
+}
+
+#[test]
+fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
+    use crate::push::{FOLLOW, PANEL, Push};
+    let registry = crate::registry::Registry::new(None);
+    registry.restart("new page");
+    let ask = |session: &str| registry.answer(std::path::Path::new("x"), "follow", &serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "session": session }),
+        |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    assert_eq!(ask("old page")["reason"], "This page was replaced by a newer one; its follows ended with it", "a follow of the retired page changes nothing");
+    assert_ne!(ask("new page")["reason"], ask("old page")["reason"], "the current page's follow goes on");
+
+    let push = Push::default();
+    push.head(0, 0, 1000);
+    push.offer(at_seek(0, 1, 100, 1));
+    push.offer(at_seek(0, 1, 124, 2));
+    let (_, first, ..) = push.try_take().expect("the rewind's first answer");
+    assert_eq!(crate::answer::decode(&first).unwrap().hour, 100, "a head of the old seek never merges away the new seek's destination answer");
+
+    let push = Push::default();
+    push.offer_kind(PANEL, crate::panel::dated::encoded(0, 0, 1, 3, 50, crate::panel::dated::STANDS, &[]));
+    push.offer(at_seek(0, 2, 10, 3));
+    let (kind, ..) = push.try_take().expect("the new seek's answer");
+    assert!(kind == FOLLOW && push.try_take().is_none(), "an older seek's panel packet is retired with the follow answers of that seek");
+
+    let small = at_seek(0, 0, 5, 1);
+    let push = Push::with_budget(playhead::ByteBudget::new(crate::answer::charge(&small) * 2));
+    let mut huge = Vec::new();
+    crate::answer::begin(&mut huge, 0, 0, 6, 0, false);
+    crate::answer::push_held(&mut huge, 7, 6, &body(7, 1), 1 << 20);
+    push.offer(huge);
+    assert!(push.failed().is_some() && push.try_take().is_some(), "past the budget the stream fails by name");
+    push.restart();
+    push.offer(small);
+    assert!(push.failed().is_none() && push.try_take().is_some(), "a new page after an overflow plays again, with its drain still taking messages");
+}
+
+#[test]
+fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
+    use crate::push::{FOLLOW, Push};
+    let held = paper();
+    let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), Arc::clone(&held))])))));
+    let path = std::path::Path::new("a");
+    registry.restart("page 1");
+    let mut asked = follow_request(1, "country-measure", "politicalPower");
+    asked["session"] = "page 1".into();
+    assert_eq!(registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap()["available"], true);
+    registry.restart("page 2");
+    let clock = |session: &str| registry.answer(path, "follow-clock", &serde_json::json!({ "branchId": "1", "clock": 0, "frameRate": 60.0, "seek": 1, "hour": 5.0, "speed": 1.0, "session": session }),
+        |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    asked["session"] = "page 2".into();
+    asked["id"] = 2.into();
+    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    assert_eq!(clock("page 1")["reason"], "This page was replaced by a newer one; its follows ended with it", "a retired page's clock never anchors the new page's host");
+    assert!(held.anchors.lock().unwrap().is_empty());
+    assert_eq!(clock("page 2")["available"], true);
+
+    let push = Push::default();
+    let old = push.session();
+    push.restart();
+    push.offer_from(old, FOLLOW, at_seek(0, 0, 5, 1));
+    assert!(push.try_take().is_none(), "work a retired session started is never sent to the new page");
+    push.offer(at_seek(0, 2, 10, 2));
+    assert!(push.try_take().is_some());
+    push.offer(at_seek(0, 1, 11, 3));
+    assert!(push.try_take().is_none(), "an older seek stays retired after the newer seek's packet has drained");
+
+    let pages = record(quiet);
+    let mut harness = harness(&pages);
+    harness.follow.serve(4);
+    harness.follow.follow(6, keys(&[100], &[1])).unwrap();
+    harness.seek(0);
+    let played = harness.play(48);
+    assert!(!played.is_empty() && played.iter().all(|played| played.stats.session == 4), "each step names the session its subscriptions were registered in");
 }

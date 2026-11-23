@@ -1,36 +1,56 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { isMenuKey, rowDescriptionId, rowPoint } from './rowTooltips.ts';
 import { hideTooltip, showTooltip } from './tooltip';
 import type { TooltipContent } from './tooltip';
+import { heldAt, watchHeld } from '../draw/bitmapSurface.ts';
 
-export function useRowTooltips<K extends string | number>({ owner, active, held = false, content, revision, onMenu }: {
-  owner: string; active: boolean; held?: boolean; content: (key: K) => TooltipContent | null; revision: string;
+interface Hovered<K> { key: K; x: number; y: number; row: Element }
+
+export function useRowTooltips<K extends string | number>({ owner, active, content, revision, onMenu, refresh }: {
+  owner: string; active: boolean; content: (key: K) => TooltipContent | null; revision: string;
   onMenu: (key: K, x: number, y: number) => void;
+  refresh?: (changed: () => void) => () => void;
 }) {
-  const [hovered, setHovered] = useState<{ key: K; x: number; y: number } | null>(null);
+  const [hovered, setHovered] = useState<Hovered<K> | null>(null);
+  const [held, setHeld] = useState(false);
+  const now = useRef({ hovered, active, content, revision });
+  now.current = { hovered, active, content, revision };
+  const row = hovered?.row ?? null;
+  useEffect(() => {
+    if (!row) { setHeld(false); return; }
+    setHeld(heldAt(row));
+    return watchHeld(row, () => setHeld(heldAt(row)));
+  }, [row]);
+  useEffect(() => refresh?.(() => {
+    const { hovered: at, active: on, content: read, revision: shown } = now.current;
+    const tip = at && on && !heldAt(at.row) ? read(at.key) : null;
+    if (at && tip) showTooltip(owner, tip, at.x, at.y, `${at.key}:${shown}`); else hideTooltip(owner);
+  }), [refresh, owner]);
   useEffect(() => { if (!active) { setHovered(null); hideTooltip(owner); } }, [active, owner]);
   useEffect(() => {
     const shown = hovered && active && !held ? content(hovered.key) : null;
     if (hovered && shown) showTooltip(owner, shown, hovered.x, hovered.y, `${hovered.key}:${revision}`);
     else hideTooltip(owner);
-  }, [hovered, active, held, owner, content, revision]);
+  }, [hovered, held, active, owner, content, revision]);
   useEffect(() => () => hideTooltip(owner), [owner]);
   const descriptionId = (key: K) => rowDescriptionId(owner, key);
+  const menu = (key: K, target: Element, x: number, y: number) => { if (!heldAt(target)) onMenu(key, x, y); };
   const rowProps = (key: K) => ({
     tabIndex: 0,
-    'aria-describedby': held ? undefined : descriptionId(key),
-    onPointerMove: (event: ReactPointerEvent) => setHovered({ key, x: event.clientX, y: event.clientY }),
+    'aria-describedby': descriptionId(key),
+    onPointerMove: (event: ReactPointerEvent) => setHovered({ key, x: event.clientX, y: event.clientY, row: event.currentTarget }),
     onPointerLeave: () => setHovered(null),
-    onFocus: (event: { currentTarget: HTMLElement }) => setHovered({ key, ...rowPoint(event.currentTarget.getBoundingClientRect()) }),
+    onFocus: (event: { currentTarget: HTMLElement }) => setHovered({ key, ...rowPoint(event.currentTarget.getBoundingClientRect()), row: event.currentTarget }),
     onBlur: () => setHovered(null),
-    onContextMenu: (event: { preventDefault: () => void; clientX: number; clientY: number }) => { event.preventDefault(); if (!held) onMenu(key, event.clientX, event.clientY); },
+    onContextMenu: (event: { preventDefault: () => void; clientX: number; clientY: number; currentTarget: Element }) => {
+      event.preventDefault(); menu(key, event.currentTarget, event.clientX, event.clientY);
+    },
     onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
       if (isMenuKey(event)) {
         event.preventDefault();
-        if (held) return;
         const point = rowPoint(event.currentTarget.getBoundingClientRect());
-        onMenu(key, point.x, point.y);
+        menu(key, event.currentTarget, point.x, point.y);
       } else if (event.key === 'Escape') setHovered(null);
     },
   });

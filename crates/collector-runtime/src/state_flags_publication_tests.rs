@@ -57,15 +57,16 @@ fn state_flags_pool_failure_restores_all_three_buffers_without_native_retry() {
         let calls = Arc::new(AtomicUsize::new(0));
         let runner_calls = Arc::clone(&calls);
         let bytes = memory();
-        let pool =
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { Pool::start(0, 1, move |request: &mut Request| {
-            request.run(&PanicAtRoot {
-                bytes: &bytes,
-                roots: Cell::new(0),
-                calls: &runner_calls,
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            Pool::start(0, 1, move |request: &mut Request| {
+                request.run(&PanicAtRoot {
+                    bytes: &bytes,
+                    roots: Cell::new(0),
+                    calls: &runner_calls,
+                })
             })
-        }) }
+        }
         .unwrap();
         let mut pending = Some(request);
         let ticket = unsafe { pool.submit(&mut pending) }.unwrap();

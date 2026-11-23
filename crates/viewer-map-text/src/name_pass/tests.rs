@@ -3,7 +3,7 @@ use std::cell::Cell;
 use viewer_gpu::camera::MapDefines;
 
 const W: f32 = 5632.0;
-use content_reader_core::{adjacencies::Adjacency, adjacencies::IMPASSABLE, adjacencies::SEA_CROSSING};
+use content_reader_map::adjacencies::{Adjacency, IMPASSABLE, SEA_CROSSING};
 
 fn link(from: u32, to: u32, kind: u8) -> Adjacency {
     Adjacency {
@@ -308,7 +308,7 @@ fn names_keep_the_camera_side_margin() {
 
 #[test]
 fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let placements = many_names(30);
     let (chunks, names) = static_names(&placements, u64::MAX);
     assert_eq!(chunks.len(), 1);
@@ -452,10 +452,10 @@ fn named_areas_change_with_control_and_nothing_else() {
             .map(|id| {
                 (
                     id,
-                    content_reader_core::map::ProvinceDefinition {
+                    content_reader_map::map::ProvinceDefinition {
                         id,
                         rgb: [0; 3],
-                        kind: content_reader_core::map::ProvinceKind::Land,
+                        kind: content_reader_map::map::ProvinceKind::Land,
                         continent: 0,
                     },
                 )
@@ -539,10 +539,10 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
             .map(|id| {
                 (
                     id,
-                    content_reader_core::map::ProvinceDefinition {
+                    content_reader_map::map::ProvinceDefinition {
                         id,
                         rgb: [0; 3],
-                        kind: content_reader_core::map::ProvinceKind::Land,
+                        kind: content_reader_map::map::ProvinceKind::Land,
                         continent: 0,
                     },
                 )
@@ -592,7 +592,7 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
 
 #[test]
 fn strategic_names_group_land_and_sea_by_content_and_withhold_unresolved_names() {
-    use content_reader_core::{map::CountryColors, map::ProvinceDefinition, map::ProvinceKind};
+    use content_reader_map::map::{CountryColors, ProvinceDefinition, ProvinceKind};
     use content_reader_regions::regions::StrategicRegion;
     let map = MapData {
         width: 3,
@@ -826,7 +826,7 @@ fn lookup_graph(
             graph.entry(b).or_default().insert(a);
         }
     };
-    for (id, neighbours) in content_reader_core::movement::raster_neighbours(width, height, ids)
+    for (id, neighbours) in content_reader_map::movement::raster_neighbours(width, height, ids)
         .unwrap()
         .iter()
         .enumerate()
@@ -929,7 +929,7 @@ fn sparse_authored_ids_and_absent_members_use_compact_ordinals() {
 
 #[test]
 fn authored_localized_name_color_runs_survive_glyph_emission() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_name_pass_colors_{}",
         std::process::id()
@@ -970,7 +970,7 @@ fn authored_localized_name_color_runs_survive_glyph_emission() {
     );
     write("gfx/fonts/f.dds", &dds);
 
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
         .unwrap();
     let interface = viewer_native_gui::sprites::Interface::load(
         &layers,
@@ -993,10 +993,10 @@ fn authored_localized_name_color_runs_survive_glyph_emission() {
         province_ids: ids,
         definitions: BTreeMap::from([(
             1,
-            content_reader_core::map::ProvinceDefinition {
+            content_reader_map::map::ProvinceDefinition {
                 id: 1,
                 rgb: [0; 3],
-                kind: content_reader_core::map::ProvinceKind::Land,
+                kind: content_reader_map::map::ProvinceKind::Land,
                 continent: 0,
             },
         )]),
@@ -1065,10 +1065,10 @@ fn stock_signature_mapname_shader_renders_authored_color_run_pixels() {
     use eframe::wgpu::util::DeviceExt;
     use shader_pipeline::{Compiled, ScalarKind, Shader, VertexInput, gpu, library::Effect};
     use viewer_gpu::gpu_contract::{DEPTH_FORMAT, read_texture};
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
     let source = Arc::new(
-        content_reader_core::pdxshader::program::read_with(b"mapname.shader", &|path| {
+        content_reader_gui::pdxshader::program::read_with(b"mapname.shader", &|path| {
             Some(if path == b"mapname.shader" {
                 b"BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha }\n\
                   DepthStencilState DepthStencilState { DepthEnable = no DepthWriteMask = depth_write_zero StencilEnable = no }\n\

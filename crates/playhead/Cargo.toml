@@ -14,10 +14,11 @@ bench = ["dep:serde_json"]
 test-support = []
 
 [dependencies]
+replay.workspace = true
+replay-recording.workspace = true
 replay-columnar.workspace = true
 replay-frame.workspace = true
 replay-data.workspace = true
-replay.workspace = true
 serde_json = { workspace = true, optional = true }
 
 [[bin]]
@@ -29,6 +30,9 @@ name = "log-lane-bench"
 required-features = ["bench"]
 
 [dev-dependencies]
+replay = { workspace = true, features = ["test-support"] }
+replay-capture-spool.workspace = true
+replay-journal = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 
 [lints]
@@ -39,14 +43,17 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 playhead = { path = ".", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

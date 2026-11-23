@@ -6,12 +6,9 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
-use content_reader_core::{
-    ResolvedLayers,
-    content::diagnostics::{self, Diagnostics},
-    image::{Rgba8Image, dds, native::Decode},
-    pdxshader::program::{self, Stage},
-};
+use content_reader_layers::{ResolvedLayers, content::diagnostics::{self, Diagnostics}};
+use content_reader_image::{Rgba8Image, dds, native::Decode};
+use content_reader_gui::pdxshader::program::{self, Stage};
 use sha2::{Digest, Sha256};
 
 use crate::{cache, gpu, library, stream, vertices};
@@ -63,13 +60,13 @@ fn noted<T>(drawn: Result<T, String>) -> Result<T, String> {
 
 #[derive(Default)]
 struct Inputs {
-    map_size: content_reader_core::content::diagnostics::Once<Result<[u32; 2], String>>,
+    map_size: content_reader_layers::content::diagnostics::Once<Result<[u32; 2], String>>,
     programs: Mutex<BTreeMap<Vec<u8>, Arc<ParsedProgram>>>,
     retried: OnceLock<()>,
 }
 
 type ParsedProgram =
-    content_reader_core::content::diagnostics::Once<Result<Arc<program::Program>, String>>;
+    content_reader_layers::content::diagnostics::Once<Result<Arc<program::Program>, String>>;
 
 pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Program>, String> {
     let inputs = layers.derived::<Inputs>();
@@ -268,10 +265,10 @@ pub fn map_size(layers: &ResolvedLayers) -> Result<[u32; 2], String> {
         .map_size
         .get_or_init(|| {
             let files =
-                content_reader_core::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
+                content_reader_key_names::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
             let path = files.file("provinces").map_err(|e| e.to_string())?;
             let (prefix, length) = layers.read_prefix(&path, 138).map_err(|e| e.to_string())?;
-            content_reader_core::image::bmp::rgb_dimensions_prefix(&prefix, length)
+            content_reader_image::bmp::rgb_dimensions_prefix(&prefix, length)
                 .map_err(|e| e.to_string())
         })
         .clone()
@@ -776,7 +773,7 @@ mod tests {
     #[test]
     #[ignore = "requires DXC and a GPU; synthetic content only"]
     fn batched_targets_match_independent_draws_and_reuse_uploaded_texels() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let scratch = crate::Scratch::new().unwrap();
         let root = &scratch.0;
         std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
@@ -879,7 +876,7 @@ Effect Up { VertexShader=V PixelShader=P }
 
     #[test]
     fn sprite_inputs_are_read_once_per_resolved_stack_and_keep_reporting_reads() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let scratch = crate::Scratch::new().unwrap();
         let root = &scratch.0;
         std::fs::create_dir_all(root.join("gfx/FX")).unwrap();

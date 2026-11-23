@@ -23,10 +23,10 @@ import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
@@ -223,6 +223,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   }, [top, followKey]);
   const followed = useFollow(store, followQuery, root, () => liveRef.current?.wake(), rowsShape);
   const followedHead = followsHead(followed) && followed.entry !== null;
+  const refused = followRefusal(followed);
   followedRace.current = followedHead && view === 'race';
   const followedNow = followedRace.current ? followed.entry : null;
   followedAnswer.current = followedNow ? () => rowsShape(followedNow.answer) : null;
@@ -266,6 +267,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const referenceLabel = config.referenceLabel?.(options);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if (gate.outside) return <GateState gate={gate} loading={`Loading ${config.subject}…`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (failure) return <WidgetState kind="error" failure={failure} onRetry={() => { manifest.retry(); history.retry(); }} />;

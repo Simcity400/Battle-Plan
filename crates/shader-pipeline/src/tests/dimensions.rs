@@ -6,7 +6,7 @@ fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let (device, queue) = device();
     let arena = gpu::Arena::new(&device);
-    let program = content_reader_core::pdxshader::program::read_with(b"dimension.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"dimension.shader", &|path| {
         Some(if path == b"dimension.shader" {
             b"PixelShader={Samplers={Image={Index=7 MagFilter=Point MinFilter=Point MipFilter=Point}}} Effect Cube{} Effect Plane{}".to_vec()
         } else { Vec::new() })
@@ -174,7 +174,7 @@ fn texture_binding_errors_name_the_effect_and_technique() {
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let (device, _queue) = device();
     let arena = gpu::Arena::new(&device);
-    let program = content_reader_core::pdxshader::program::read_with(b"named.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"named.shader", &|path| {
         Some(if path == b"named.shader" {
             b"Effect Water{}".to_vec()
         } else {

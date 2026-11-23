@@ -57,7 +57,7 @@ pub(crate) fn settings(bytes: &[u8], ordinal: impl Fn(&[u8]) -> i32) -> io::Resu
     settings_from(&document, ordinal)
 }
 
-fn settings_from(document: &crate::parser::native::Read, ordinal: impl Fn(&[u8]) -> i32) -> io::Result<Settings> {
+fn settings_from(document: &content_reader_script::native::Read, ordinal: impl Fn(&[u8]) -> i32) -> io::Result<Settings> {
     let mut settings = Settings::default();
     for item in &document.items {
         if item.keyword_is("terrain_modifiers") {

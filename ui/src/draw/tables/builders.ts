@@ -1,5 +1,5 @@
 import { occupiedDetail, validateOccupiedStates } from '../../widgets/occupied-states/occupiedStatesData.ts';
-import { filterStretch, occupiedTable, type OccupiedTableContext } from '../../widgets/occupied-states/occupiedTable.ts';
+import { filterNext, filterStretch, occupiedTable, type OccupiedTableContext } from '../../widgets/occupied-states/occupiedTable.ts';
 import type { TableRowModel } from './surface';
 
 export interface BuiltTable { rows: TableRowModel[]; empty: string | null }
@@ -9,6 +9,12 @@ export type TableBuild = { kind: 'occupied-states'; context: OccupiedTableContex
 export function buildStretch(build: TableBuild, hour: number): number {
   switch (build.kind) {
     case 'occupied-states': return filterStretch(build.context.filter, hour);
+  }
+}
+
+export function buildNext(build: TableBuild, hour: number): number {
+  switch (build.kind) {
+    case 'occupied-states': return filterNext(build.context.filter, hour);
   }
 }
 

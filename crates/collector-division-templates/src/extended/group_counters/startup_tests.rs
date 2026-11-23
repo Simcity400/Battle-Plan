@@ -3,7 +3,7 @@ use engine_native::{
     cequipment_variant_pool, creference_registry as registry, reference_bucket as bucket,
     template_hq_context as hq,
 };
-use replay::{spool::Record, spool::encode_record};
+use replay_capture_spool::spool::{Record, encode_record};
 use replay_frame::{
     frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics, frame::TableInput,
 };
@@ -115,7 +115,8 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
     assert!(observer.sequence(GROUPS).is_none());
     crate::template_changes::prepare(1, 1);
     let mut capacity = Capacities::default();
-    capacity.presize(&world, 0, 0).unwrap();
+    // SAFETY: test runs in a dedicated child process with no live template hooks.
+    unsafe { capacity.presize(&world, 0, 0) }.unwrap();
     assert_eq!(capacity.rows, count);
     crate::template_changes::boundary(true);
     for receiver in [0x5000, 1, 0x8400, 0x8000] {
@@ -127,11 +128,13 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
     for hour in 0..3 {
         if hour != 0 {
             crate::template_changes::prepare(0, 1);
-            crate::template_changes::presize();
+            // SAFETY: test runs in a dedicated child process with no live template hooks.
+            unsafe { crate::template_changes::presize() };
             crate::template_changes::boundary(false);
         }
         capture.prepare_hour(hour == 0);
-        capture.capture(&world, 0, 0);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture(&world, 0, 0) };
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: count }]);
         let mut input = FrameInput {
             branch: 1,
@@ -187,7 +190,8 @@ fn group_sizing_prepares_retreat_ban_watches_before_the_first_capture() {
     collector_observers::retreat_ban_changes::forwarder(true);
     assert!(Observer.sequence(GROUPS).is_none());
     let mut capacity = Capacities::default();
-    capacity.presize(&world, 0, 0).unwrap();
+    // SAFETY: synthetic memory fixture with no live group-counter observer hooks.
+    unsafe { capacity.presize(&world, 0, 0) }.unwrap();
     collector_observers::retreat_ban_changes::boundary(true);
     for ordinal in 0..COUNT {
         assert!(Observer.sequence(GROUPS + ordinal * GROUP_STRIDE).is_some());

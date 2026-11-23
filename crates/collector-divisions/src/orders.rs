@@ -34,7 +34,11 @@ pub struct Orders {
 }
 
 impl Orders {
-    pub fn new(rows: usize, geometry: usize, groups: usize, visits: usize) -> Self {
+    /// # Safety
+    /// Supply capacities measured for the active session's sizing pass, or call from an isolated
+    /// fixture without a live attachment. Allocation failure invokes the process-wide collector
+    /// allocation-failure handler.
+    pub unsafe fn new(rows: usize, geometry: usize, groups: usize, visits: usize) -> Self {
         Self {
             rows: CaptureRows::new(rows),
             geometry: engine_allocation::owned_vec(engine_allocation::default_vec(geometry)),
@@ -61,7 +65,8 @@ impl Orders {
         }
     }
     pub fn vacant() -> Self {
-        Self::new(0, 0, 0, 0)
+        // SAFETY: Zero capacities perform no heap allocation and cannot invoke the failure handler.
+        unsafe { Self::new(0, 0, 0, 0) }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
@@ -91,7 +96,11 @@ impl Orders {
             .map(|part| part.allocated_bytes())
             .sum()
     }
-    pub fn grow(
+    /// # Safety
+    /// Run only at the map sizing or frame-growth boundary with exclusive `&mut` access to this
+    /// buffer (or in an isolated fixture). Nonzero growth invokes the process-wide collector
+    /// allocation-failure handler on OOM.
+    pub unsafe fn grow(
         &mut self,
         rows: &mut usize,
         geometry: &mut usize,
@@ -158,7 +167,7 @@ impl Orders {
         let (plan_reads, plan_ticks) = self.successors.plan_gathers();
         self.ticks = self.ticks.saturating_sub(plan_ticks);
         reads.select(TableId::ArmyOrderPlans);
-        plan_reads.add_current();
+        memory.add_deferred_reads(plan_reads);
     }
     pub fn fail(&mut self, reason: &'static str) {
         let outcome = Outcome::Unavailable { reason };

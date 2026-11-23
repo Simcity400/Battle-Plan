@@ -7,7 +7,7 @@ use super::{
     native_windows::NativeWindows,
     sprites::SpriteSheet,
 };
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 
 pub type PortraitTextures<'a> = &'a dyn Fn(&[u8]) -> Option<Texture>;
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn separated_container_backgrounds_return_individual_hit_rectangles() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(
             br#"guiTypes = {
             containerWindowType = { name = split_panel size = { width = 80 height = 20 } clipping = no
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn unnamed_separated_container_backgrounds_hit_independently() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(
             br#"guiTypes = {
             containerWindowType = { name = split_unnamed size = { width = 80 height = 20 } clipping = no

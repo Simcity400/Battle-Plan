@@ -3,7 +3,7 @@ use std::{
     io,
     ops::{Deref, DerefMut},
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
 struct Node<T> {
@@ -13,6 +13,7 @@ struct Node<T> {
 
 pub struct SpillStack<T> {
     head: AtomicPtr<Node<T>>,
+    len: AtomicUsize,
 }
 
 unsafe impl<T: Send> Send for SpillStack<T> {}
@@ -28,7 +29,12 @@ impl<T> SpillStack<T> {
     pub const fn new() -> Self {
         Self {
             head: AtomicPtr::new(ptr::null_mut()),
+            len: AtomicUsize::new(0),
         }
+    }
+
+    pub const fn node_size() -> usize {
+        size_of::<Node<T>>()
     }
 
     pub fn push(&self, value: T) -> io::Result<()> {
@@ -46,6 +52,7 @@ impl<T> SpillStack<T> {
     }
 
     fn link(&self, node: *mut Node<T>) {
+        self.len.fetch_add(1, Ordering::AcqRel);
         let mut head = self.head.load(Ordering::Relaxed);
         loop {
             unsafe { (*node).next = head };
@@ -63,6 +70,10 @@ impl<T> SpillStack<T> {
         self.head.load(Ordering::Acquire).is_null()
     }
 
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
     pub fn take(&self) -> Taken<T> {
         let mut node = self.head.swap(ptr::null_mut(), Ordering::Acquire);
         let mut oldest = ptr::null_mut();
@@ -73,6 +84,9 @@ impl<T> SpillStack<T> {
             oldest = node;
             node = next;
             len += 1;
+        }
+        if len != 0 {
+            self.len.fetch_sub(len, Ordering::AcqRel);
         }
         Taken { head: oldest, len }
     }
@@ -212,6 +226,7 @@ mod tests {
         }
         producers.into_iter().for_each(|producer| producer.join().unwrap());
         assert!(stack.is_empty());
+        assert_eq!(stack.len(), 0);
         for thread in 0..THREADS {
             let own: Vec<u64> = taken
                 .iter()
@@ -220,5 +235,17 @@ mod tests {
                 .collect();
             assert_eq!(own, (0..EACH).collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn len_observes_pending_records_without_popping() {
+        let stack = SpillStack::new();
+        assert_eq!(stack.len(), 0);
+        stack.push(10_u64).unwrap();
+        stack.push(20_u64).unwrap();
+        assert_eq!(stack.len(), 2);
+        assert_eq!(stack.len(), 2);
+        assert_eq!(stack.take().collect::<Vec<_>>(), [10, 20]);
+        assert_eq!(stack.len(), 0);
     }
 }

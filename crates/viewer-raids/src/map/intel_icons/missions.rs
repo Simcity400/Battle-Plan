@@ -23,7 +23,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn read(d: &content_reader_core::defines::Defines) -> Result<Self, String> {
+    pub fn read(d: &content_reader_defines::defines::Defines) -> Result<Self, String> {
         let fixed = |name: &str| {
             d.fixed5("NOperatives", name)
                 .map_err(|error| format!("NOperatives.{name}: {error}"))
@@ -557,7 +557,7 @@ fn sources(
         let number = if matches!(mission.variant, ROOT_OUT | PROPAGANDA)
             || (mission.variant == DIPLOMATIC_PRESSURE && negative)
         {
-            content_reader_core::fixed5::fixed5_percent(
+            content_reader_parser::fixed5::fixed5_percent(
                 value,
                 if mission.variant == ROOT_OUT {
                     0
@@ -567,7 +567,7 @@ fn sources(
                 true,
             )
         } else {
-            content_reader_core::fixed5::fixed5_to_string(value, precision)
+            content_reader_parser::fixed5::fixed5_to_string(value, precision)
         };
         let colour = if value == 0 {
             'Y'
@@ -661,7 +661,7 @@ fn scaled(hour: &Hour<'_, '_>, contribution: Contribution) -> Result<String, Str
     let percent = |value| {
         values::coloured(
             'Y',
-            &content_reader_core::fixed5::fixed5_percent(
+            &content_reader_parser::fixed5::fixed5_percent(
                 if contribution.q15 {
                     q15_to_fixed5(value)
                 } else {
@@ -847,7 +847,7 @@ pub(super) fn append<'f>(
                         source.push_str(&loc("MODIFIER_OPERATING_IN_FOREIGN_COUNTRY", &[])?);
                         source.push_str(&values::coloured(
                             'Y',
-                            &content_reader_core::fixed5::fixed5_percent(
+                            &content_reader_parser::fixed5::fixed5_percent(
                                 ONE.wrapping_add(d.foreign_agent),
                                 2,
                                 true,

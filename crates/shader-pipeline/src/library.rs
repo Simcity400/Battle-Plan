@@ -1,12 +1,8 @@
 use super::{Compiled, cache};
-use content_reader_core::content::diagnostics::{
-    Diagnostics as ContentDiagnostics, Observed, Once as OnceLock,
-};
-use content_reader_core::{
-    ResolvedLayers,
-    image::native::Decode,
-    pdxshader::program::{self, Program},
-};
+use content_reader_layers::content::diagnostics::{Diagnostics as ContentDiagnostics, Observed, Once as OnceLock};
+use content_reader_layers::ResolvedLayers;
+use content_reader_image::native::Decode;
+use content_reader_gui::pdxshader::program::{self, Program};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -537,7 +533,7 @@ mod tests {
             fn compile(
                 &self,
                 source: &Program,
-                technique: &content_reader_core::pdxshader::program::Technique,
+                technique: &content_reader_gui::pdxshader::program::Technique,
                 defines: &[String],
             ) -> Result<super::super::Compiled, String> {
                 if source.identity == self.1 && defines.iter().any(|define| define == "ANIMATED") {

@@ -74,7 +74,7 @@ fn state_border_flag_preserves_absence_and_strict_boolean_witness() {
 
 #[test]
 fn faction_advisor_slots_keep_slot_order_and_empty_slots() {
-    let faction = content_reader_core::parser::parse(
+    let faction = content_reader_parser::parser::parse(
         br#"id={ id=1 type=88 } upgrades={ slots={
             { modifier={ name="fixture_modifier" } }
             { country="ZZZ" advisor=fixture_advisor modifier={ } }
@@ -85,20 +85,20 @@ fn faction_advisor_slots_keep_slot_order_and_empty_slots() {
         parse_faction(&faction.items).unwrap().advisor_slots,
         [None, Some(b"fixture_advisor".to_vec())]
     );
-    let bare = content_reader_core::parser::parse(br#"id={ id=1 type=88 }"#).unwrap();
+    let bare = content_reader_parser::parser::parse(br#"id={ id=1 type=88 }"#).unwrap();
     assert!(parse_faction(&bare.items).unwrap().advisor_slots.is_empty());
     for broken in [
         br#"id={ id=1 type=88 } upgrades={ slots={ } }"#.as_slice(),
         br#"id={ id=1 type=88 } upgrades={ slots={ slot={ advisor=x } } }"#,
     ] {
-        let broken = content_reader_core::parser::parse(broken).unwrap();
+        let broken = content_reader_parser::parser::parse(broken).unwrap();
         assert!(parse_faction(&broken.items).is_err());
     }
 }
 
 #[test]
 fn civil_war_targets_are_every_written_tag_in_order() {
-    let country = content_reader_core::parser::parse(
+    let country = content_reader_parser::parser::parse(
         b"civil_war_target=\"ITA\" major=yes civil_war_target=\"D01\" cores={ 5 }",
     )
     .unwrap();
@@ -114,14 +114,14 @@ fn civil_war_targets_are_every_written_tag_in_order() {
             .civil_war_targets
             .is_empty()
     );
-    let broken = content_reader_core::parser::parse(b"civil_war_target={ ITA }").unwrap();
+    let broken = content_reader_parser::parser::parse(b"civil_war_target={ ITA }").unwrap();
     assert!(parse_country(b"GER", &broken.items).is_err());
 }
 
 #[test]
 fn country_cores_are_the_saved_state_ids_in_order() {
     let country =
-        content_reader_core::parser::parse(b"major=yes cores={ 5 42 50 978 } num_ships=66").unwrap();
+        content_reader_parser::parser::parse(b"major=yes cores={ 5 42 50 978 } num_ships=66").unwrap();
     assert!(parse_country(b"GER", &country.items).unwrap().major);
     assert!(!parse_country(b"GER", &[]).unwrap().major);
     assert_eq!(
@@ -134,7 +134,7 @@ fn country_cores_are_the_saved_state_ids_in_order() {
 #[test]
 fn country_original_tag_preserves_conditional_presence_and_exact_scalar_bytes() {
     let parse = |text: &[u8]| {
-        let doc = content_reader_core::parser::parse(text).unwrap();
+        let doc = content_reader_parser::parser::parse(text).unwrap();
         parse_country(b"OWN", &doc.items)
     };
     assert_eq!(parse(b"").unwrap().original_tag, None);
@@ -160,18 +160,18 @@ fn country_original_tag_preserves_conditional_presence_and_exact_scalar_bytes() 
 
 #[test]
 fn map_input_fields_preserve_literal_bytes_and_writer_omissions() {
-    let country = content_reader_core::parser::parse(b"cosmetic_tag=BRM_british").unwrap();
+    let country = content_reader_parser::parser::parse(b"cosmetic_tag=BRM_british").unwrap();
     assert_eq!(
         parse_country(b"BRM", &country.items).unwrap().cosmetic_tag,
         Some(b"BRM_british".to_vec())
     );
     assert_eq!(parse_country(b"GER", &[]).unwrap().cosmetic_tag, None);
-    let empty = content_reader_core::parser::parse(b"cosmetic_tag=\"\"").unwrap();
+    let empty = content_reader_parser::parser::parse(b"cosmetic_tag=\"\"").unwrap();
     assert_eq!(
         parse_country(b"GER", &empty.items).unwrap().cosmetic_tag,
         Some(Vec::new())
     );
-    let division = content_reader_core::parser::parse(b"id={id=1 type=51} logical_country=GER strength=1 organisation=1 leader=yes fake_intel_division_template_id={id=4294967295 type=50}").unwrap();
+    let division = content_reader_parser::parser::parse(b"id={id=1 type=51} logical_country=GER strength=1 organisation=1 leader=yes fake_intel_division_template_id={id=4294967295 type=50}").unwrap();
     let row = parse_division(b"GER", &division.items).unwrap();
     assert!(row.separate_counter);
     assert_eq!(
@@ -179,7 +179,7 @@ fn map_input_fields_preserve_literal_bytes_and_writer_omissions() {
         Some((u64::from(u32::MAX) << 32) | 50)
     );
     assert_eq!(row.template, None);
-    let ship = content_reader_core::parser::parse(b"id={id=1 type=51} strength=1 organisation=1 equipment={equipment={id={id=3 type=70} amount=-1} equipment={id={id=4 type=70} amount=0}}").unwrap();
+    let ship = content_reader_parser::parser::parse(b"id={id=1 type=51} strength=1 organisation=1 equipment={equipment={id={id=3 type=70} amount=-1} equipment={id={id=4 type=70} amount=0}}").unwrap();
     let row = parse_ship(9, &ship.items).unwrap();
     let pool = row.equipment.unwrap();
     assert_eq!(pool.equipment.len(), 2);
@@ -190,7 +190,7 @@ fn map_input_fields_preserve_literal_bytes_and_writer_omissions() {
 #[test]
 fn regional_convoys_keep_only_written_efficiencies() {
     let read = |navy: &str| {
-        let doc = content_reader_core::parser::parse(navy.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(navy.as_bytes()).unwrap();
         parse_country(b"GER", &doc.items).map(|country| country.regional_convoy_efficiency)
     };
     let efficiency = read(
@@ -217,7 +217,7 @@ fn regional_convoys_keep_only_written_efficiencies() {
 #[test]
 fn naval_region_access_reads_flat_pairs_and_refuses_a_broken_list() {
     let parse = |text: &str| {
-        let doc = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
         parse_country(b"GER", &doc.items).map(|country| country.naval_region_access)
     };
     assert_eq!(parse("").unwrap(), None);
@@ -241,7 +241,7 @@ fn naval_region_access_reads_flat_pairs_and_refuses_a_broken_list() {
 #[test]
 fn map_input_fields_refuse_ambiguous_or_malformed_saved_operands() {
     for fields in ["cosmetic_tag=x cosmetic_tag=y", "cosmetic_tag={}"] {
-        let doc = content_reader_core::parser::parse(fields.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(fields.as_bytes()).unwrap();
         assert!(parse_country(b"GER", &doc.items).is_err());
     }
     for field in [
@@ -253,7 +253,7 @@ fn map_input_fields_refuse_ambiguous_or_malformed_saved_operands() {
     ] {
         let source =
             format!("id={{id=1 type=51}} logical_country=GER strength=1 organisation=1 {field}");
-        let doc = content_reader_core::parser::parse(source.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(source.as_bytes()).unwrap();
         assert!(parse_division(b"GER", &doc.items).is_err(), "{field}");
     }
     for field in [
@@ -262,7 +262,7 @@ fn map_input_fields_refuse_ambiguous_or_malformed_saved_operands() {
         "equipment={equipment={id={id=1 type=70} amount=0.000001}}",
     ] {
         let source = format!("id={{id=1 type=51}} strength=1 organisation=1 {field}");
-        let doc = content_reader_core::parser::parse(source.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(source.as_bytes()).unwrap();
         assert!(parse_ship(9, &doc.items).is_err(), "{field}");
     }
 }
@@ -1924,7 +1924,7 @@ fn malformed_country_intel_lists_are_refused_rather_than_normalized() {
 
 #[test]
 fn manpower_recruitment_exile_and_ship_crews_preserve_saved_signed_words() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"manpower={ratio=-312500 exile_manpower=-9 max_exile_manpower=8123}",
     )
     .unwrap();
@@ -1932,7 +1932,7 @@ fn manpower_recruitment_exile_and_ship_crews_preserve_saved_signed_words() {
     assert_eq!(country.recruitment_ratio.unwrap(), -312_500);
     assert_eq!(country.exile_manpower, Some(-9));
     assert_eq!(country.exile_manpower_cap, Some(8123));
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"id={id=1 type=51} strength=1 organisation=1 manpower=-17 max_manpower=512",
     )
     .unwrap();

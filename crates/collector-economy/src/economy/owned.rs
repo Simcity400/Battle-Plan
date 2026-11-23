@@ -1,7 +1,10 @@
 use super::*;
 use crate::raw::CountrySlots;
 
-pub fn copy_economy_rest_refresh(
+/// # Safety
+/// Run only during admitted economy acquisition (or an isolated test) while market observer
+/// storage remains live and teardown is excluded.
+pub unsafe fn copy_economy_rest_refresh(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
     job: &mut EconomyRestJob,
@@ -1047,7 +1050,10 @@ fn copy_economy_market_contracts(
         }
     }
     match event_demand {
-        Some(demand) => collector_observers::market_changes::prepare_contract_events(demand),
+        // SAFETY: Admitted economy capture prepares contract event storage while observer storage lives.
+        Some(demand) => unsafe {
+            collector_observers::market_changes::prepare_contract_events(demand)
+        },
         None => collector_observers::market_changes::held::refuse(
             "market contract event demand overflow",
         ),

@@ -1,4 +1,4 @@
-use content_reader_core::{ResolvedLayers, content::LayerSource};
+use content_reader_layers::{ResolvedLayers, content::LayerSource};
 use content_reader_image::native::Decode;
 use std::{
     cmp::Ordering,
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn content_session_and_its_shards_share_the_namespace_allocation() {
-        let stack = content_reader_core::test_support::Stack::new("model_namespace");
+        let stack = content_reader_layers::test_support::Stack::new("model_namespace");
         let layers = stack.layers(&[]);
         let cloned = layers.clone();
         let a = namespace(&layers);
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn session_namespace_cache_keeps_the_full_value_when_a_mount_is_edited() {
-        let stack = content_reader_core::test_support::Stack::new("model_namespace_edit");
+        let stack = content_reader_layers::test_support::Stack::new("model_namespace_edit");
         let layers = stack.layers(&[]);
         let original = namespace(&layers);
         let mut changed = layers.clone();

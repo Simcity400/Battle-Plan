@@ -4,9 +4,9 @@ use crate::content::Content;
 use crate::tooltips::{hover_text, set_hover};
 use content_reader_localisation::localisation::Argument;
 use dashboard_text::occupation_law::{self, GroupLaw, LawInputs};
-use content_reader_core::occupation_laws::Law;
+use content_reader_politics::occupation_laws::Law;
 use viewer_foundation::tooltip_text::ensure_newlines;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use replay_data::rows::{GarrisonTemplateSelection, Recorded, StateResistanceRow, tables};
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::templates::{counter_custom_icon, custom_icon_index};
@@ -144,7 +144,7 @@ fn bar_percent(value: i64) -> i32 {
 fn bar_values(percent: i32) -> crate::Values {
     let mut values = crate::Values::new();
     values.entry("progress".into()).or_default().frame = Some(percent.max(1) as u32 - 1);
-    binding::text(&mut values, "progress_text", content_reader_core::fixed5::fixed5_percent(i64::from(percent) * 100_000, 0, false));
+    binding::text(&mut values, "progress_text", content_reader_parser::fixed5::fixed5_percent(i64::from(percent) * 100_000, 0, false));
     values
 }
 
@@ -178,7 +178,7 @@ fn law<'l>(
     frame: &DecodedFrame,
     facts: &Facts<'_>,
     resistance: &StateResistanceRow,
-    laws: &'l content_reader_core::occupation_laws::Laws,
+    laws: &'l content_reader_politics::occupation_laws::Laws,
 ) -> Result<Picked<'l>, String> {
     let state = facts.state.id;
     let controller = facts.slot(facts.state.controller)?;
@@ -295,8 +295,8 @@ fn law_hover(content: &Content, frame: &DecodedFrame, law: &Law, controller: u32
     let definitions = crate::modifier_text::Definitions::read(frame, &content.modifier_names)
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    let modifiers = |items: &[content_reader_core::parser::Item]| -> Result<String, String> {
-        let (block, _) = crate::modifier_text::Block::build(&definitions, &content_reader_core::modifiers::values(items)).map_err(|e| e.to_string())?;
+    let modifiers = |items: &[content_reader_parser::parser::Item]| -> Result<String, String> {
+        let (block, _) = crate::modifier_text::Block::build(&definitions, &content_reader_script::modifiers::values(items)).map_err(|e| e.to_string())?;
         block
             .describe_at(&definitions, content.assets.as_ref(), &content.localisation, crate::fixed::ONE, "  ", u32::MAX, 3)
             .map_err(|e| e.to_string())
@@ -376,7 +376,7 @@ fn need_text(amount: i64) -> String {
     match amount {
         ..0 => "\u{11}R ! \u{11}!".into(),
         0 => " - ".into(),
-        _ => content_reader_core::fixed5::fixed5_to_string(amount, 2),
+        _ => content_reader_parser::fixed5::fixed5_to_string(amount, 2),
     }
 }
 

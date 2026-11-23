@@ -10,4 +10,4 @@ The current content defines which newly read groups hold officer corps advisor t
 
 A native reader that stops short leaves an unknown suffix. A stop within a group can leave its earlier entries unsettled because the rest of the group may change their flags. A later reread of the same held object can settle an earlier gap. Appending a duplicate or a same-token entry in a different group cannot rule out a hidden first match. Refuse a lookup only when the incomplete path could change its answer, and keep the responsible file and reason.
 
-[Idea reader](../../crates/content-reader-core/src/ideas.rs) · [Name load points](../../crates/content-reader-core/src/key_names.rs)
+[Idea reader](../../crates/content-reader-politics/src/ideas.rs) · [Name load points](../../crates/content-reader-script/src/key_names.rs)

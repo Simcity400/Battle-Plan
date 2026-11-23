@@ -39,7 +39,6 @@ export interface LiveRace {
 const SPOKEN_MS = 1000;
 
 export interface RaceChartProps {
-  present?: () => void;
   label: string;
   items: readonly RaceItem[];
   live?: LiveRace;
@@ -187,7 +186,6 @@ export default function RaceChart(props: RaceChartProps) {
       for (const row of inView) picture.push(row.key, row.y, row.alpha, row.widths, row.inset, row.item.label, row.item.segments);
       if (p.live && !forced.current && painted && painted.length === picture.length && painted.every((value, at) => Object.is(value, picture[at]))) {
         shown.current = { layout, rows, items, min, max, height: layoutHeight, owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
-        p.present?.();
         return raceMoving(state);
       }
       painted = picture; forced.current = false;
@@ -286,7 +284,6 @@ export default function RaceChart(props: RaceChartProps) {
         if (text !== spokenText.current) { spokenText.current = text; setSpoken(text); }
       } else { tooltipFor = null; hideTooltip(owner); }
       keyIntent.current = false;
-      p.present?.();
       return raceMoving(state) || grew;
     };
     const current: FrameTask = { frame: draw };
@@ -378,7 +375,7 @@ export default function RaceChart(props: RaceChartProps) {
         } else if (index >= 0) requestRange(remote, index, 1);
         keyIntent.current = true; wake(); return;
       }
-      const items = shown.current?.items ?? props.items;
+      const items = shown.current?.items ?? (props.live ? props.live.items() : props.items);
       const keyed = keyedEntry(event.key, from, items);
       hover.current = { ...hover.current, pointer: null, keyed };
       const box = scroller.current, layout = shown.current?.layout;

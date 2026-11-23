@@ -1,10 +1,11 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 
 use viewer_gpu::gpu_contract::Targets;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use content_reader_core::{
-    ResolvedLayers, buildings::Buildings, map::MapData, positions::BuildingPosition,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_key_names::buildings::Buildings;
+use content_reader_map::{map::MapData, positions::BuildingPosition};
 use content_reader_image::native::Decode;
 use content_reader_image::{IndexedImage, dds};
 use replay_data::{rows::NavalBaseRow, rows::ProvinceSupplyRow, rows::RailEdgeRow, rows::tables};
@@ -78,7 +79,7 @@ pub struct RailDefines {
 }
 
 impl RailDefines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let number = |name| defines.number("NGraphics", name).map(|value| value as f32);
         let levels = defines.number("NSupply", "MAX_RAILWAY_LEVEL")?;
         if !(1.0..=f64::from(u16::MAX)).contains(&levels) {
@@ -569,7 +570,7 @@ impl RailGeometry {
             .collect();
         let mut ports = BTreeMap::new();
         for p in buildings {
-            let Some(content_reader_core::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
+            let Some(content_reader_key_names::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
                 continue;
             };
             let id = at(p.x as i32, p.z as i32);
@@ -585,10 +586,10 @@ impl RailGeometry {
         for (&(a, b), boundary) in &mut boundaries {
             if !matches!(
                 map.definitions.get(&a).map(|d| d.kind),
-                Some(content_reader_core::map::ProvinceKind::Land)
+                Some(content_reader_map::map::ProvinceKind::Land)
             ) || !matches!(
                 map.definitions.get(&b).map(|d| d.kind),
-                Some(content_reader_core::map::ProvinceKind::Land)
+                Some(content_reader_map::map::ProvinceKind::Land)
             ) {
                 continue;
             }
@@ -1408,8 +1409,8 @@ impl Bridges {
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
-        defines: &content_reader_core::defines::Defines,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        defines: &content_reader_defines::defines::Defines,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
         let entities = [
             defines.text("NGraphics", "RAILWAY_BRIDGE_ENTITY")?,

@@ -1,4 +1,4 @@
-use content_reader_core::terrain::TerrainCategory;
+use content_reader_key_names::terrain::TerrainCategory;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;

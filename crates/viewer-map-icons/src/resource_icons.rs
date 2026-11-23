@@ -4,7 +4,8 @@ use std::{
     io,
 };
 
-use content_reader_core::{defines::Defines, gui::native};
+use content_reader_defines::defines::Defines;
+use content_reader_gui::gui::native;
 use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
 use replay_frame::frame::DecodedFrame;
 use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
@@ -54,7 +55,7 @@ pub struct ResourceIconContent {
 }
 
 impl ResourceIconContent {
-    pub fn load(layers: &content_reader_core::ResolvedLayers, defines: &Defines) -> io::Result<Self> {
+    pub fn load(layers: &content_reader_layers::ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         Ok(Self {
             origins: resource_origins::Content::load(layers, defines)?,
             defines: ResourceIconDefines::load(defines)?,

@@ -6,7 +6,7 @@ import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { UpdateState } from './api';
 import { actionFailure } from '../dashboard/queryError';
-import { blockedReason, confirmInstall, restartQuestion, shownNotes, updateAction, updateDisabled, updateFailure, updateNews, updateTooltip } from './logic';
+import { blockedReason, confirmInstall, restartLabel, restartQuestion, shownNotes, updateAction, updateDisabled, updateFailure, updateNews, updateTooltip } from './logic';
 import './update.css';
 
 const RING_RADIUS = 14;
@@ -122,15 +122,15 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
         const { version } = notice;
         const blocked = state.installBlocked;
         return <>
-          <strong className="update-popover-title">{restartQuestion(version)}</strong>
-          <p className="update-popover-text">{blocked ? blockedReason(state) : confirmInstall(version)}</p>
+          <strong className="update-popover-title">{restartQuestion(version, state.downgrade)}</strong>
+          <p className="update-popover-text">{blocked ? blockedReason(state) : confirmInstall(version, state.downgrade)}</p>
           <UpdateNotes state={state} />
           <div className="update-popover-actions">
             {state.enabled && <button type="button" className="button small quiet update-popover-link" onClick={() => void actions.openRelease(version)}>Release notes</button>}
             <span className="update-grow" />
             <button type="button" className="button small quiet" data-popover-autofocus onClick={menu.close}>{notice.kind === 'downloaded' ? 'Later' : 'Cancel'}</button>
             <button type="button" className="button small primary" disabled={blocked != null || actions.pending}
-              onClick={() => { menu.close(); actions.install(menu.trigger.current); }}>Restart to update</button>
+              onClick={() => { menu.close(); actions.install(menu.trigger.current); }}>{restartLabel(state)}</button>
           </div>
         </>;
       }}</PopoverBody>

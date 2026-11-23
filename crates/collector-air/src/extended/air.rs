@@ -533,7 +533,10 @@ impl Captured {
         self.missions.is_some()
     }
 
-    pub fn capture_missions(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// when carrying mission reuse so global `mission_changes` demand updates belong to this pass.
+    pub unsafe fn capture_missions(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -562,7 +565,8 @@ impl Captured {
             identities.sort_unstable_by_key(|wing| wing.mission_pointer);
             let original = match carry {
                 Some(MissionCarry { store, changes }) => {
-                    let mut reuse = MissionReuse::begin(store, changes);
+                    // SAFETY: Caller holds hourly capture admission for this mission carry pass.
+                    let mut reuse = unsafe { MissionReuse::begin(store, changes) };
                     let walked = cair_regional_mission::walk_carried(
                         memory,
                         base,
@@ -572,12 +576,15 @@ impl Captured {
                         &mut self.registration_failure,
                         &mut reuse,
                     );
-                    reuse.finish_with_order(
-                        matches!(walked, Outcome::Rows { .. }),
-                        memory,
-                        identities,
-                        &mut self.mission_order,
-                    );
+                    // SAFETY: Caller holds hourly capture admission for this mission carry pass.
+                    unsafe {
+                        reuse.finish_with_order(
+                            matches!(walked, Outcome::Rows { .. }),
+                            memory,
+                            identities,
+                            &mut self.mission_order,
+                        );
+                    }
                     walked
                 }
                 None => cair_regional_mission::walk_with_diagnostic(
@@ -1618,6 +1625,8 @@ pub use bases::{
     AirBasesMemoContext, AirBasesMemoReport, HeldSegment,
     copy_air_bases_refresh,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use bases::copy_air_bases_fixture;
 #[cfg(test)]
 use bases::{
     AIR_REGISTRATIONS_MASK, CarryRun, bases_pool_u32, bspan, copy_air_bases_pass, resolve_link,

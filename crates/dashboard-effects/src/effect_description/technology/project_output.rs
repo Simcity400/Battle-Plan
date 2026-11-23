@@ -67,7 +67,7 @@ impl Renderer<'_, '_, '_> {
     )]
     pub(in crate::effect_description) fn project_output_body(
         &mut self,
-        output: &content_reader_core::special_projects::Output,
+        output: &content_reader_military::special_projects::Output,
         item: &Item,
         scopes: Scopes,
         owner: u32,
@@ -151,9 +151,9 @@ impl Renderer<'_, '_, '_> {
         if !output.equipment_bonus.is_empty() {
             let mut bonus = item.clone();
             bonus.key = Some(b"bonus".to_vec());
-            bonus.value = content_reader_core::parser::Value::Block(output.equipment_bonus.clone());
+            bonus.value = content_reader_parser::parser::Value::Block(output.equipment_bonus.clone());
             let mut adapter = item.clone();
-            adapter.value = content_reader_core::parser::Value::Block(vec![bonus]);
+            adapter.value = content_reader_parser::parser::Value::Block(vec![bonus]);
             match self.units_equipment_bonus(&adapter, scopes) {
                 Ok(bonus) => text.push_str(&bonus),
                 Err(why) => self.project_output_refusal(why),
@@ -385,7 +385,7 @@ impl Renderer<'_, '_, '_> {
                         .collect()
                 });
             for entry in entries {
-                let token = content_reader_core::parser::c_string(entry);
+                let token = content_reader_parser::parser::c_string(entry);
                 let name: &[u8] = match kind {
                     1 => {
                         let equipment = self

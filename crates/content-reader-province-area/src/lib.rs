@@ -1,4 +1,6 @@
 
-use content_reader_core::{ResolvedLayers, province_geometry, terrain};
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::province_geometry;
+use content_reader_key_names::terrain;
 
 pub mod province_area;

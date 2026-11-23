@@ -7,7 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { OPTIONS } from './definition';
-import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { arsenalStructure, nukeParts, validateNuclearArsenal } from './nuclearArsenalData.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -25,9 +25,8 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const end = useCampaignGate(runtime, widget, active && !race).hour;
   const names = useProduct(runtime.client, !race && track && end !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'nuclear-arsenal',
     params: { branchId: track.branch.id, hour: end } }) : null, active, validateNuclearArsenal, track?.source);
-  const strict = useHeadProduct(runtime, useGate(runtime, widget), 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
-  const head = withHeld(strict);
-  const metadata = race ? head.data : names.data, shown = race ? strict.data : names.data;
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'nuclear-arsenal', race ? {} : null, { active: active && race, validate: validateNuclearArsenal, structure: arsenalStructure });
+  const metadata = race ? head.data : names.data, shown = metadata;
   const parts = useMemo(() => nukeParts(metadata), [metadata]);
   const onWarnings = useCallback((warnings: readonly string[]) => {
     const all = [...warnings, ...(shown?.warnings ?? []), ...(!race && names.error ? [`Weapon type names could not be loaded: ${names.error.message}`] : [])];

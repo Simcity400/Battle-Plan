@@ -26,7 +26,11 @@ pub struct Observation;
 impl output_continuity::Observation for Observation {
     type Entry = Entry;
     const ASSEMBLED_BY_SPOOL: &'static str = ASSEMBLED_BY_SPOOL;
-    fn drain(entries: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+    /// # Safety
+    /// Only the admitted hour's sole observer boundary (or an isolated test holding
+    /// `line_output::test_lock()`) may drain the live line-output interval once while its storage
+    /// remains live.
+    unsafe fn drain(entries: &mut Vec<Entry>) -> Result<Drained, &'static str> {
         crate::line_output::drain(entries)
     }
 }

@@ -4,7 +4,8 @@ use dashboard_base::products::Country;
 use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, country_key, needs_scope, scoped_at};
 use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}}};
 use dashboard_query::{Index, Query, cost, identity::Holder};
-use replay::{campaign::Replay, lanes};
+use replay::campaign::Replay;
+use replay_lanes::lanes;
 use replay_data::{
     cadence::STAGGER_PERIOD,
     rows::{CharacterRoleTraitRow, ProjectRow, ProjectRuntime, Recorded, ScientistDailyRow, TableId, tables},
@@ -241,7 +242,7 @@ fn branch(id: &str) -> io::Result<u64> {
 fn spelled(frame: &DecodedFrame, id: u32) -> Result<String, String> {
     let rows = frame.complete::<tables::LexicalTokens>().map_err(|why| format!("lexical tokens: {why}"))?;
     let row = rows.binary_search_by_key(&id, |row| row.token).ok().map(|at| &rows[at]).ok_or_else(|| format!("lexical tokens lacks token {id}"))?;
-    std::str::from_utf8(content_reader_core::parser::c_string(&row.literal)).map(str::to_owned).map_err(|_| format!("Token {id} is not UTF-8"))
+    std::str::from_utf8(content_reader_parser::parser::c_string(&row.literal)).map(str::to_owned).map_err(|_| format!("Token {id} is not UTF-8"))
 }
 
 fn held_since(query: &Query<'_>, tag: &Country, holder: Owner, read: i32, hour: i32) -> bool {
@@ -755,11 +756,11 @@ fn programs(frame: &DecodedFrame, owners: &BTreeSet<u32>, reads: &Reads<'_, '_>,
     Some(out)
 }
 
-fn definition<'c>(content: &'c ProjectContent, token: &str) -> Option<&'c content_reader_core::special_projects::Project> {
+fn definition<'c>(content: &'c ProjectContent, token: &str) -> Option<&'c content_reader_military::special_projects::Project> {
     content.definitions.projects.iter().find(|(name, _)| name.eq_ignore_ascii_case(token)).map(|(_, definition)| definition)
 }
 
-fn project_name_key<'a>(definition: &'a content_reader_core::special_projects::Project, token: &'a str) -> &'a str {
+fn project_name_key<'a>(definition: &'a content_reader_military::special_projects::Project, token: &'a str) -> &'a str {
     definition.name.as_deref().filter(|name| !name.is_empty()).unwrap_or(token)
 }
 
@@ -889,7 +890,7 @@ fn effects(
     frame: &DecodedFrame,
     slot: u32,
     project: &ProjectRow,
-    output: &content_reader_core::special_projects::Output,
+    output: &content_reader_military::special_projects::Output,
     scientist: &Result<Option<u32>, String>,
 ) -> ProjectEffects {
     let render = || -> Result<_, String> {

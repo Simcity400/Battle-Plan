@@ -7,10 +7,9 @@ use crate::test_support::GPU_TESTS;
 use std::io;
 
 use eframe::wgpu;
-use content_reader_core::{
-    gui::native::resources, gui::native::resources::NoTexture, map::MapData, map::ProvinceKind,
-    terrain::TerrainDefinitions,
-};
+use content_reader_gui::gui::native::resources::{self, NoTexture};
+use content_reader_map::map::{MapData, ProvinceKind};
+use content_reader_key_names::terrain::TerrainDefinitions;
 use content_reader_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 
 use super::{camera::MapSize, gradient_math};
@@ -168,7 +167,7 @@ fn sixteen_bit_texels(format: dds::TextureFormat, data: &[u8]) -> Option<Vec<u8>
     Some(out)
 }
 
-pub type Read<'a, B = content_reader_core::content::Bytes> = &'a dyn Fn(&[u8]) -> io::Result<B>;
+pub type Read<'a, B = content_reader_layers::content::Bytes> = &'a dyn Fn(&[u8]) -> io::Result<B>;
 
 pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<dds::Texture> {
     match resources::texture(name.as_bytes(), read, decode)? {
@@ -745,7 +744,7 @@ fn write_texels(
 pub fn terrain_flag_mask(
     definitions: &TerrainDefinitions,
     terrain: &IndexedImage,
-    flag: impl Fn(&content_reader_core::terrain::TerrainType) -> bool,
+    flag: impl Fn(&content_reader_key_names::terrain::TerrainType) -> bool,
 ) -> Vec<bool> {
     let mut lookup = [false; 256];
     for (&index, kind) in &definitions.palette {

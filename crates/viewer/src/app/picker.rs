@@ -149,7 +149,7 @@ fn dump_toggles(document: &Document, options: &crate::Options) -> Toggles {
         day_night: None,
         player_counters: Some(dashboard_core::map_display::option_defaults::PLAYER_COUNTERS),
         counter_colors: Some(
-            settings.color_mode == viewer_counters::map::counters::CounterColorMode::Country,
+            settings.color_mode == viewer_counter_kit::CounterColorMode::Country,
         ),
         allied_plans: None,
         fog: viewer_foundation::perspective::fog_recorded(document.capture_mode())
@@ -338,8 +338,8 @@ pub fn mode_hover(
     }
 }
 
-pub fn picks_region(kind: Option<content_reader_core::map::ProvinceKind>, region: Option<u32>) -> bool {
-    kind == Some(content_reader_core::map::ProvinceKind::Sea) && region.is_some()
+pub fn picks_region(kind: Option<content_reader_map::map::ProvinceKind>, region: Option<u32>) -> bool {
+    kind == Some(content_reader_map::map::ProvinceKind::Sea) && region.is_some()
 }
 
 pub fn four_buttons(document: &Document) -> bool {
@@ -589,7 +589,7 @@ impl Viewer {
             player_counters: Some(self.player_counters),
             counter_colors: Some(
                 self.counter_view.settings.color_mode
-                    == viewer_counters::map::counters::CounterColorMode::Country,
+                    == viewer_counter_kit::CounterColorMode::Country,
             ),
             allied_plans: host.then_some(self.graphics.show_allied_plans),
             fog: self
@@ -695,7 +695,7 @@ impl Viewer {
             "button_fog" if !hosted => self.perspective.fog = !self.perspective.fog,
             "player_counters_toggle" => self.player_counters = !self.player_counters,
             "button_counters_color_mode" => {
-                use viewer_counters::map::counters::CounterColorMode;
+                use viewer_counter_kit::CounterColorMode;
                 self.counter_view.settings.color_mode =
                     if self.counter_view.settings.color_mode == CounterColorMode::Country {
                         CounterColorMode::Allegiance
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn a_loaded_recording_takes_settings_options_below_the_command_line() {
         use content_reader_settings::settings::MapOptions;
-        use viewer_counters::map::counters::CounterColorMode;
+        use viewer_counter_kit::CounterColorMode;
         let game = MapOptions {
             day_night: false,
             allied_plans: true,
@@ -1183,7 +1183,7 @@ mod tests {
 
     #[test]
     fn a_picked_region_hovers_as_the_region_builder_answers_its_mode() {
-        use content_reader_core::map::ProvinceKind::*;
+        use content_reader_map::map::ProvinceKind::*;
         use viewer_counter_products::map::province_tooltips::ModeHover;
         assert!(picks_region(Some(Sea), Some(40)));
         assert!(!picks_region(Some(Sea), None));

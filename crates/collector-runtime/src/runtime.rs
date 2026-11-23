@@ -66,8 +66,11 @@ use windows_sys::Win32::{
 macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
         let reason = $reason;
-        collector_land_events::land_events::stop_observation();
-        collector_combat_log::history_events::stop();
+        // SAFETY: Session detach refusal owns teardown of land-event and combat-history observation.
+        unsafe {
+            collector_land_events::land_events::stop_observation();
+            collector_combat_log::history_events::stop();
+        }
         ($retain)(reason);
         return Err(reason);
     }};
@@ -648,7 +651,8 @@ fn run(
     for campaign in &config.without_history {
         history.without_history(campaign);
     }
-    collector_politics::politics_changes::restore_epoch(history.politics_epoch())?;
+    // SAFETY: Attach owns restoring the politics observation epoch before enabling hooks.
+    unsafe { collector_politics::politics_changes::restore_epoch(history.politics_epoch()) }?;
     collector_operation_outcomes::operation_outcomes::restore_sequence(
         history.completion_sequence(),
     )?;
@@ -968,29 +972,32 @@ fn run(
             ),
         )
     })?;
-    collector_politics::politics_changes::resize(
-        collector_capture::country_scale::observe_politics_demand(
-            &memory,
-            base,
-            slots,
-            sampling::BUFFERS,
-        )
-        .unwrap_or(slots),
-        processor
-            .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
-                &memory, base,
-            ))
-            .unwrap_or(0),
-    );
+    // SAFETY: Runtime attach owns the authenticated image and sizes politics staging before capture.
+    unsafe {
+        collector_politics::politics_changes::resize(
+            collector_capture::country_scale::observe_politics_demand(
+                &memory,
+                base,
+                slots,
+                sampling::BUFFERS,
+            )
+            .unwrap_or(slots),
+            processor
+                .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
+                    &memory, base,
+                ))
+                .unwrap_or(0),
+        );
+    }
     collector_observers::country_input_changes::presize_countries(slots);
     collector_air_relations::relation_changes::presize(slots);
     collector_observers::world_input_changes::presize(slots);
     collector_air_histories::history_changes::presize(slots, strategic_regions(&memory, base));
     let mut sizing = collector_capture::country_scale::Sizing::for_slots(slots);
-    match
     // SAFETY: Attach or the isolated fixture owns this authenticated census and its observer
     // demand.
-    unsafe { collector_capture::country_scale::source_demand::Demand::observe(&memory, base) } {
+    match unsafe { collector_capture::country_scale::source_demand::Demand::observe(&memory, base) }
+    {
         Ok(Some(demand)) => demand.apply(&mut sizing),
         Ok(None) => {}
         Err(reason) => processor.observe_input_demand_error(reason),
@@ -1017,7 +1024,8 @@ fn run(
     {
         processor.observe_input_demand_error(reason);
     }
-    collector_land_events::land_events::install_offered();
+    // SAFETY: Runtime attach installs initial land-event storage before callback publication.
+    unsafe { collector_land_events::land_events::install_offered() };
     sizing.extended.logistics.raise(logistics_rows);
     collector_fuel_awards::fuel_awards::presize(&memory, base);
     collector_fuel_awards::fuel_awards::install_offered();
@@ -1036,16 +1044,22 @@ fn run(
         collector_equipment_destruction::equipment_destruction::demand();
     collector_naval_results::naval_result_sources::prepare(&memory, base);
     sizing.extended.naval_result_sources = collector_naval_results::naval_result_sources::demand();
-    collector_observers::air_losses::prepare(&memory, base, slots);
-    collector_observers::building_bombing::prepare(&memory, base, slots);
+    // SAFETY: Runtime attach prepares live observer storage against the authenticated image before
+    // callback publication.
+    unsafe {
+        collector_observers::air_losses::prepare(&memory, base, slots);
+        collector_observers::building_bombing::prepare(&memory, base, slots);
+    }
     collector_observers::nuclear_strikes::presize(
         collector_observers::building_bombing::buildings().saturating_add(slots),
     );
-    collector_map_events::presize(slots)?;
+    // SAFETY: Runtime attach presizes map-event lanes before callback publication.
+    unsafe { collector_map_events::presize(slots) }?;
     sizing.extended.air_losses.events = collector_observers::air_losses::capacity();
     sizing.extended.building_bombing = collector_observers::building_bombing::capacity();
     sizing.extended.nuclear_strikes = collector_observers::nuclear_strikes::capacity();
-    collector_observers::market_changes::presize(slots, slots);
+    // SAFETY: Runtime attach presizes market observer storage before callback publication.
+    unsafe { collector_observers::market_changes::presize(slots, slots) };
     sizing.extended.market = collector_observers::market_changes::capacity();
     sizing.content = engine_dlc::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = processor
@@ -1184,7 +1198,7 @@ fn run(
             .demand
             .raise(demand);
     }
-    // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+    // SAFETY: Runtime attach prepares operation-log storage before callback publication.
     unsafe { sizing.extended.operation_outcomes.prepare() };
     progress.step("inputs_sized", None);
     let combat_hints = CombatHints::observe(&memory, base);
@@ -2130,9 +2144,10 @@ fn run(
             collector_politics::politics_changes::release();
             collector_map_events::lanes::release();
         }
-        if let Err(reason) = collector_land_events::land_events::release()
-            .and_then(|()| collector_combat_log::history_events::release_storage())
-            .and_then(|()| collector_combat_log::combat_log_prune::release_storage())
+        // SAFETY: Detach has disabled hooks and quiesced callbacks before releasing observer storage.
+        if let Err(reason) = unsafe { collector_land_events::land_events::release() }
+            .and_then(|()| unsafe { collector_combat_log::history_events::release_storage() })
+            .and_then(|()| unsafe { collector_combat_log::combat_log_prune::release_storage() })
             .and_then(|()| collector_equipment_destruction::equipment_destruction::release())
             .and_then(|()| collector_naval_results::naval_result_sources::release())
             .and_then(|()| collector_fuel_awards::fuel_awards::release())
@@ -2311,16 +2326,16 @@ impl ObserverState for RestoreFamily {
                 "opinion callbacks did not quiesce; collector retained",
             ),
             Self::Construction => (
-                collector_output::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_output::construction_ic::active() != 0,
                 "construction callbacks did not quiesce; collector retained",
             ),
             Self::LineOutput => (
-                collector_output::line_output::ACTIVE.load(Ordering::SeqCst) != 0
+                collector_output::line_output::active() != 0
                     || collector_output::line_output::native_retention_required(),
                 "production output callbacks did not quiesce; collector retained",
             ),
             Self::CombatLogPrune => (
-                collector_combat_log::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
+                collector_combat_log::combat_log_prune::active() != 0
                     || collector_combat_log::history_events::active() != 0
                     || collector_combat_log::history_events::retention_required(),
                 "combat log prune callbacks did not quiesce; collector retained",
@@ -2494,12 +2509,11 @@ impl ObserverState for RestoreFamily {
                 "fuel callbacks did not quiesce; collector retained",
             ),
             Self::OperationOutcomes => (
-                collector_operation_outcomes::operation_outcomes::ACTIVE.load(Ordering::SeqCst)
-                    != 0,
+                collector_operation_outcomes::operation_outcomes::active() != 0,
                 "operation completion callbacks did not quiesce; collector retained",
             ),
             Self::Politics => (
-                collector_politics::politics_changes::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_politics::politics_changes::active() != 0,
                 "politics callbacks did not quiesce; collector retained",
             ),
             Self::Logistics => (
@@ -4247,7 +4261,8 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
             // SAFETY: This is the runtime's frame pool for the current session.
             shared.frames()[idle_index].captured_mut()
         };
-        // SAFETY: The sizing path owns this frame exclusively while the observer storage is live.
+        // SAFETY: Sizing holds exclusive `&mut` access to this idle frame while session observer
+        // storage stays live and teardown is excluded; shared observers synchronize concurrent growth.
         unsafe { capacities.grow_frame(idle) };
         sizing.account_homes(shared);
         // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
@@ -4670,15 +4685,18 @@ fn spool_loop(
                         collector_equipment_destruction::equipment_destruction::lost_drain();
                         collector_naval_results::naval_result_sources::lost_drain();
                         collector_experience_gains::experience_gains::lost_drain();
-                        collector_observers::event_feed_observer::lost_drain();
-                        collector_operation_outcomes::operation_outcomes::lost_drain();
-                        collector_politics::politics_changes::invalidate();
-                        collector_land_events::land_events::fail();
-                        collector_observers::air_losses::lost_drain();
-                        collector_observers::building_bombing::lost_drain();
-                        collector_observers::nuclear_strikes::lost_drain();
-                        collector_observers::market_changes::lost_drain();
-                        collector_map_events::interval::lost_output();
+                        // SAFETY: Spool publication failure owns invalidating live observer intervals.
+                        unsafe {
+                            collector_observers::event_feed_observer::lost_drain();
+                            collector_operation_outcomes::operation_outcomes::lost_drain();
+                            collector_politics::politics_changes::invalidate();
+                            collector_land_events::land_events::fail();
+                            collector_observers::air_losses::lost_drain();
+                            collector_observers::building_bombing::lost_drain();
+                            collector_observers::nuclear_strikes::lost_drain();
+                            collector_observers::market_changes::lost_drain();
+                            collector_map_events::interval::lost_output();
+                        }
                         last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     }
                     None
@@ -4690,15 +4708,18 @@ fn spool_loop(
                     collector_equipment_destruction::equipment_destruction::lost_drain();
                     collector_naval_results::naval_result_sources::lost_drain();
                     collector_experience_gains::experience_gains::lost_drain();
-                    collector_observers::event_feed_observer::lost_drain();
-                    collector_operation_outcomes::operation_outcomes::lost_drain();
-                    collector_politics::politics_changes::invalidate();
-                    collector_land_events::land_events::fail();
-                    collector_observers::air_losses::lost_drain();
-                    collector_observers::building_bombing::lost_drain();
-                    collector_observers::nuclear_strikes::lost_drain();
-                    collector_observers::market_changes::lost_drain();
-                    collector_map_events::interval::lost_output();
+                    // SAFETY: Spool publication failure owns invalidating live observer intervals.
+                    unsafe {
+                        collector_observers::event_feed_observer::lost_drain();
+                        collector_operation_outcomes::operation_outcomes::lost_drain();
+                        collector_politics::politics_changes::invalidate();
+                        collector_land_events::land_events::fail();
+                        collector_observers::air_losses::lost_drain();
+                        collector_observers::building_bombing::lost_drain();
+                        collector_observers::nuclear_strikes::lost_drain();
+                        collector_observers::market_changes::lost_drain();
+                        collector_map_events::interval::lost_output();
+                    }
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     None
                 }
@@ -4738,15 +4759,18 @@ fn spool_loop(
                 collector_equipment_destruction::equipment_destruction::lost_drain();
                 collector_naval_results::naval_result_sources::lost_drain();
                 collector_experience_gains::experience_gains::lost_drain();
-                collector_observers::event_feed_observer::lost_drain();
-                collector_operation_outcomes::operation_outcomes::lost_drain();
-                collector_politics::politics_changes::invalidate();
-                collector_land_events::land_events::fail();
-                collector_observers::air_losses::lost_drain();
-                collector_observers::building_bombing::lost_drain();
-                collector_observers::nuclear_strikes::lost_drain();
-                collector_observers::market_changes::lost_drain();
-                collector_map_events::interval::lost_output();
+                // SAFETY: Spool publication failure owns invalidating live observer intervals.
+                unsafe {
+                    collector_observers::event_feed_observer::lost_drain();
+                    collector_operation_outcomes::operation_outcomes::lost_drain();
+                    collector_politics::politics_changes::invalidate();
+                    collector_land_events::land_events::fail();
+                    collector_observers::air_losses::lost_drain();
+                    collector_observers::building_bombing::lost_drain();
+                    collector_observers::nuclear_strikes::lost_drain();
+                    collector_observers::market_changes::lost_drain();
+                    collector_map_events::interval::lost_output();
+                }
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
@@ -4791,15 +4815,18 @@ fn spool_loop(
             collector_equipment_destruction::equipment_destruction::lost_drain();
             collector_naval_results::naval_result_sources::lost_drain();
             collector_experience_gains::experience_gains::lost_drain();
-            collector_observers::event_feed_observer::lost_drain();
-            collector_operation_outcomes::operation_outcomes::lost_drain();
-            collector_politics::politics_changes::invalidate();
-            collector_land_events::land_events::fail();
-            collector_observers::air_losses::lost_drain();
-            collector_observers::building_bombing::lost_drain();
-            collector_observers::nuclear_strikes::lost_drain();
-            collector_observers::market_changes::lost_drain();
-            collector_map_events::interval::lost_output();
+            // SAFETY: Spool flush failure owns invalidating live observer intervals.
+            unsafe {
+                collector_observers::event_feed_observer::lost_drain();
+                collector_operation_outcomes::operation_outcomes::lost_drain();
+                collector_politics::politics_changes::invalidate();
+                collector_land_events::land_events::fail();
+                collector_observers::air_losses::lost_drain();
+                collector_observers::building_bombing::lost_drain();
+                collector_observers::nuclear_strikes::lost_drain();
+                collector_observers::market_changes::lost_drain();
+                collector_map_events::interval::lost_output();
+            }
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         span.finish();
@@ -5186,6 +5213,18 @@ impl SizingShared {
     }
 
     fn recycle_frame(&self, shared: &Shared, index: usize) {
+        self.recycle_frame_with(shared, index, |surplus| {
+            // SAFETY: The frame was removed from its slot after every previous use ended.
+            unsafe { shared.free_surplus(surplus) };
+        });
+    }
+
+    fn recycle_frame_with(
+        &self,
+        shared: &Shared,
+        index: usize,
+        free: impl FnOnce(Option<Box<sampling::Captured>>),
+    ) {
         // SAFETY: This stage owns the installed frame slot.
         unsafe { shared.frame_stage(index, sampling::FrameStage::Recycle) };
         let mut proposal = *self.capacities.lock();
@@ -5209,8 +5248,9 @@ impl SizingShared {
                     // SAFETY: This is the runtime's frame pool for the current session.
                     shared.frames()[index].captured_mut()
                 };
-                // SAFETY: The sizing path owns this frame exclusively while the observer storage
-                // is live.
+                // SAFETY: Spool recycling holds exclusive `&mut` access to this frame while session
+                // observer storage stays live and teardown is excluded; shared observers synchronize
+                // concurrent growth.
                 unsafe { proposal.grow_frame(frame) };
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     // SAFETY: This is the sizing pass for the active session's cache.
@@ -5238,8 +5278,7 @@ impl SizingShared {
                     self.settled_world.store(generation, Ordering::Release);
                 }
                 drop(capacities);
-                // SAFETY: The frame was removed from its slot after every previous use ended.
-                unsafe { shared.free_surplus(surplus) };
+                free(surplus);
                 return;
             }
             proposal = *capacities;
@@ -5426,6 +5465,14 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 }
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
+    frame_builder_observing(shared, sizing, |_| {});
+}
+
+fn frame_builder_observing(
+    shared: &Shared,
+    sizing: &SizingShared,
+    observe: impl FnMut(sampling::BuildAhead),
+) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
     let mut priority =
     // SAFETY: This is the dedicated worker applying its own session's priority policy.
@@ -5433,13 +5480,13 @@ fn frame_builder(shared: &Shared, sizing: &SizingShared) {
     let built =
     // SAFETY: This is the session's designated builder, which the runtime joins before releasing
     // Shared.
-    unsafe { shared.build_ahead_until(&sizing.stop, || {
+    unsafe { shared.build_ahead_until_observing(&sizing.stop, || {
         priority.follow_pipeline(
             shared.frame_priority(),
             collector_workers::frame_priority::Role::Builder,
         ) ;
         collector_memory::terminal::set_context(*lock(&sizing.context));
-    }) };
+    }, observe) };
     if let Err(error) = built {
         let _ = sizing
             .failure
@@ -5546,7 +5593,8 @@ fn sizing_pass(
     collector_intel::flag_changes::collect();
     collector_construction::building_changes::presize();
     collector_construction::building_changes::collect();
-    collector_observers::advisor_pool_changes::presize();
+    // SAFETY: The session's sole serial sizing pass runs while observer storage stays live.
+    unsafe { collector_observers::advisor_pool_changes::presize() };
     collector_observers::advisor_pool_changes::collect();
     collector_governance::party_leader_changes::presize();
     collector_governance::party_leader_changes::collect();
@@ -5556,7 +5604,8 @@ fn sizing_pass(
     collector_governance::party_changes::collect();
     collector_observers::wing_changes::presize();
     collector_observers::wing_changes::collect();
-    collector_missions::mission_changes::presize();
+    // SAFETY: The session's sole serial sizing pass runs while mission watches stay live.
+    unsafe { collector_missions::mission_changes::presize() };
     collector_missions::mission_changes::collect();
     collector_observers::rail_changes::presize();
     collector_observers::rail_changes::collect();
@@ -5587,11 +5636,14 @@ fn sizing_pass(
     collector_divisions::province_unit_changes::collect();
     collector_observers::province_combat_changes::presize();
     collector_observers::province_combat_changes::collect();
-    collector_factions::faction_goal_changes::presize();
+    // SAFETY: The session's sole serial sizing pass offers watch storage while watches stay live.
+    unsafe { collector_factions::faction_goal_changes::presize() };
     collector_factions::faction_goal_changes::collect();
-    collector_factions::faction_companion_changes::presize();
+    // SAFETY: The session's sole serial sizing pass offers watch storage while watches stay live.
+    unsafe { collector_factions::faction_companion_changes::presize() };
     collector_factions::faction_companion_changes::collect();
-    collector_division_templates::template_changes::presize();
+    // SAFETY: The session's sole serial sizing pass offers watch storage while watches stay live.
+    unsafe { collector_division_templates::template_changes::presize() };
     collector_division_templates::template_changes::collect();
     collector_ship_models::ship_model_changes::presize();
     collector_ship_models::ship_model_changes::collect();
@@ -5601,21 +5653,31 @@ fn sizing_pass(
         collector_characters::extended::characters::census::initial_len(),
     );
     collector_observers::character_changes::collect();
-    collector_politics::politics_changes::prepare();
-    collector_observers::air_losses::presize(0);
-    collector_observers::building_bombing::presize(0);
+    // SAFETY: The session's sole serial sizing pass prepares live observer logs before detach.
+    unsafe {
+        collector_politics::politics_changes::prepare();
+        collector_observers::air_losses::presize(0);
+        collector_observers::building_bombing::presize(0);
+    }
     collector_observers::nuclear_strikes::presize(0);
-    collector_observers::market_changes::presize(
-        0,
-        collector_primitives::country_slots::census_rows(0),
-    );
-    if let Err(reason) =
+    // SAFETY: The session's sole serial sizing pass prepares live observer logs before detach.
+    unsafe {
+        collector_observers::market_changes::presize(
+            0,
+            collector_primitives::country_slots::census_rows(0),
+        );
+    }
+    // SAFETY: The session's sole serial sizing pass presizes live map-event lanes before detach.
+    if let Err(reason) = unsafe {
         collector_map_events::presize(collector_primitives::country_slots::census_rows(0))
-    {
+    } {
         sizing.error(reason);
     }
-    collector_land_events::land_events::prepare();
-    collector_combat_log::history_events::prepare(0);
+    // SAFETY: The session's sole serial sizing pass prepares live land and history-event logs.
+    unsafe {
+        collector_land_events::land_events::prepare();
+        collector_combat_log::history_events::prepare(0);
+    }
     let air_loss_capacity = collector_observers::air_losses::capacity();
     let bombing_capacity = collector_observers::building_bombing::capacity();
     let nuclear_capacity = collector_observers::nuclear_strikes::capacity();
@@ -5629,7 +5691,7 @@ fn sizing_pass(
     });
     let operations =
         sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-    // SAFETY: The caller owns the session and runs preparation before admitting consumers.
+    // SAFETY: The session's sole serial sizing pass prepares live operation-log storage.
     unsafe { operations.prepare() };
     collector_experience_gains::experience_gains::prepare(registry.slots);
     collector_output::line_output::collect();
@@ -5645,7 +5707,8 @@ fn sizing_pass(
             // SAFETY: This is the runtime's frame pool for the current session.
             unsafe { shared.frames() }.live(),
         ) {
-            collector_politics::politics_changes::resize(entries, 0);
+            // SAFETY: The session's sole serial sizing pass resizes live politics staging.
+            unsafe { collector_politics::politics_changes::resize(entries, 0) };
         }
         collector_fuel_awards::fuel_awards::presize(&live, base);
     }
@@ -5660,7 +5723,8 @@ fn sizing_pass(
             frames,
         )
     {
-        collector_politics::politics_changes::resize(entries, 0);
+        // SAFETY: The session's sole serial sizing pass resizes live politics staging.
+        unsafe { collector_politics::politics_changes::resize(entries, 0) };
         state.politics_frames = frames;
     }
     if capacity_census {
@@ -5736,22 +5800,26 @@ fn sizing_pass(
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
         collector_primitives::country_slots::note_slots(slots);
-        collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
-        collector_politics::politics_changes::resize(
-            collector_capture::country_scale::observe_politics_demand(
-                &live,
-                base,
-                slots,
-                // SAFETY: This is the runtime's frame pool for the current session.
-                unsafe { shared.frames() }.live(),
-            )
-            .unwrap_or(slots),
-            sizing
-                .demand(engine_events::politics_sites::lexical_key_demand(
-                    &live, base,
-                ))
-                .unwrap_or(0),
-        );
+        // SAFETY: This is the runtime's frame pool for the current session.
+        let live_frames = unsafe { shared.frames() }.live();
+        // SAFETY: The session's sole serial sizing pass resizes live operation and politics logs.
+        unsafe {
+            collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
+            collector_politics::politics_changes::resize(
+                collector_capture::country_scale::observe_politics_demand(
+                    &live,
+                    base,
+                    slots,
+                    live_frames,
+                )
+                .unwrap_or(slots),
+                sizing
+                    .demand(engine_events::politics_sites::lexical_key_demand(
+                        &live, base,
+                    ))
+                    .unwrap_or(0),
+            );
+        }
         collector_observers::country_input_changes::presize_countries(slots);
         collector_air_relations::relation_changes::presize(slots);
         collector_observers::world_input_changes::presize(slots);
@@ -5780,8 +5848,12 @@ fn sizing_pass(
         if let Err(reason) = collector_output::construction_ic::presize_from_live(&live, base) {
             sizing.error(reason);
         }
-        collector_observers::air_losses::prepare(&live, base, registry.slots);
-        collector_observers::building_bombing::prepare(&live, base, registry.slots);
+        // SAFETY: The session's sole serial sizing pass prepares live observer storage against the
+        // authenticated session image before detach.
+        unsafe {
+            collector_observers::air_losses::prepare(&live, base, registry.slots);
+            collector_observers::building_bombing::prepare(&live, base, registry.slots);
+        }
         collector_observers::nuclear_strikes::presize(
             collector_observers::building_bombing::buildings().saturating_add(registry.slots),
         );
@@ -5794,7 +5866,8 @@ fn sizing_pass(
         ) };
         let air_loss_capacity = collector_observers::air_losses::capacity();
         let bombing_capacity = collector_observers::building_bombing::capacity();
-        collector_observers::market_changes::presize(0, registry.slots);
+        // SAFETY: The session's sole serial sizing pass presizes live market observer storage.
+        unsafe { collector_observers::market_changes::presize(0, registry.slots) };
         let market_capacity = collector_observers::market_changes::capacity();
         let nuclear_capacity = collector_observers::nuclear_strikes::capacity();
         sizing.raise(shared, |capacities| {
@@ -5837,7 +5910,9 @@ fn sizing_pass(
             ]
         });
         if collector_lifetime::world_lifetime::token().is_some() {
-            collector_naval_management::changes::presize(&live, base);
+            // SAFETY: Periodic sizing runs for the active session against the authenticated `base`
+            // while naval-management watch storage stays live and teardown is excluded.
+            unsafe { collector_naval_management::changes::presize(&live, base) };
         }
         let destruction_demand = collector_equipment_destruction::equipment_destruction::demand();
         sizing.raise(shared, |capacities| {
@@ -6000,7 +6075,7 @@ fn sizing_pass(
         });
         let operations =
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        // SAFETY: Background sizing runs while attached with `operation_outcomes::release` excluded.
         unsafe { operations.prepare() };
     }
     if capacity_census
@@ -7117,7 +7192,7 @@ mod tests {
         let shared =
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { Shared::with_sizing(0, 0, 1, &sizing) }.unwrap();
+        unsafe { Shared::with_fixture_sizing(0, 0, 1, &sizing, 0) }.unwrap();
         let capacities = BufferCapacities {
             core: sizing.core,
             map: sizing.map,
@@ -7475,14 +7550,11 @@ mod tests {
         }));
         let (built, spare) = mpsc::channel::<()>();
         let built = Mutex::new(built);
-        let installed =
-            // SAFETY: This is the test's fixture and its builder has not started.
-            unsafe { shared.build_ahead_seam_for_test() }.set(Box::new(move |at| {
+        let observe = move |at| {
             if at == sampling::BuildAhead::Free {
                 let _ = built.lock().unwrap().send(());
             }
-        }));
-        assert!(installed.is_ok());
+        };
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
             move || {
@@ -7498,7 +7570,7 @@ mod tests {
                 let builder = {
                     let fixture = Arc::clone(&fixture);
                     collector_test_support::spawn_ending(move || {
-                        frame_builder(&fixture.0, &fixture.1.sizing)
+                        frame_builder_observing(&fixture.0, &fixture.1.sizing, observe)
                     })
                 };
                 struct End<'a>(
@@ -7686,16 +7758,16 @@ mod tests {
         let (freeing, free_held) = mpsc::channel::<()>();
         let (release, released) = mpsc::channel::<()>();
         let released = Mutex::new(released);
-        let installed =
-            // SAFETY: This is the test's fixture and no fixture frame is being recycled.
-            unsafe { fixture.0.surplus_free_seam() }.set(Box::new(move || {
-            let _ = freeing.send(());
-            let _ = released
-                .lock()
-                .unwrap()
-                .recv_timeout(collector_test_support::TEST_HANG_GUARD);
-        }));
-        assert!(installed.is_ok());
+        let free = move |surplus: Option<Box<sampling::Captured>>| {
+            if surplus.is_some() {
+                let _ = freeing.send(());
+                let _ = released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD);
+            }
+            drop(surplus);
+        };
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
             move || {
@@ -7739,7 +7811,7 @@ mod tests {
                 let spool = {
                     let fixture = Arc::clone(&fixture);
                     collector_test_support::spawn_ending(move || {
-                        fixture.1.sizing.recycle_frame(&fixture.0, surplus)
+                        fixture.1.sizing.recycle_frame_with(&fixture.0, surplus, free)
                     })
                 };
                 steps.at("waiting for the spool to free the surplus frame");

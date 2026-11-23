@@ -224,7 +224,7 @@ fn calculate(reads: &RegionalDetection<'_>, ours: u32) -> Result<(i64, String), 
             &tables.air_detection_override_prefix
         })
         .map_err(|withheld| withheld.to_string())?;
-        let amount = content_reader_core::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
+        let amount = content_reader_parser::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
         return Ok((raw, format!("{prefix}{amount}%\n")));
     }
     replay_derive::fixed_layout::validate_recording(

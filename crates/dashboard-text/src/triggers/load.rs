@@ -1,6 +1,6 @@
 use crate::triggers::Failure;
 
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 
 use super::{
     Eval, Scopes,

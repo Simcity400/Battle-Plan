@@ -26,7 +26,7 @@ fn cached_text(
     status: &DivisionStatusRow,
     panel: Option<&DivisionPanelStatsRow>,
 ) -> (String, Vec<String>) {
-    let metadata = content_reader_core::equipment::stat_metadata();
+    let metadata = content_reader_script::equipment_stats::stat_metadata();
     let mut text = String::new();
     let mut refused = Vec::new();
     let stored = DivisionPanelStatsRow::PANEL_STAT_SELECTORS
@@ -108,7 +108,7 @@ pub(super) fn text(
         Ok(format!(
             "{}: {}",
             builtin(icons, loc, "COMBAT_WIDTH", &[])?,
-            content_reader_core::fixed5::fixed5_to_string(value, 2)
+            content_reader_parser::fixed5::fixed5_to_string(value, 2)
         ))
     }) {
         Ok(line) => {
@@ -124,7 +124,7 @@ pub(super) fn text(
         .and_then(|stats| stats.as_ref())
         .map(|stats| stats.fuel_rate);
     if let Some(fuel) = fuel {
-        let label = content_reader_core::equipment::stat_metadata()
+        let label = content_reader_script::equipment_stats::stat_metadata()
             .get(0x10)
             .ok_or("fuel stat metadata unavailable")?
             .1;
@@ -206,7 +206,7 @@ fn stat_line(
     selector: usize,
     value: i64,
 ) -> Result<String, String> {
-    let label = content_reader_core::equipment::stat_metadata()
+    let label = content_reader_script::equipment_stats::stat_metadata()
         .get(selector)
         .ok_or("stat metadata unavailable")?
         .1;

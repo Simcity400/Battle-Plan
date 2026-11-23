@@ -1,5 +1,5 @@
 use super::{LandSpeedContent, MovementContent, MovementMap, RailMovementDefines};
-use content_reader_core::movement::{Neighbour, ProvinceTerrain};
+use content_reader_map::movement::{Neighbour, ProvinceTerrain};
 use replay_data::rows::{DivisionMovementRow, DivisionPanelStatsRow, DivisionRow, ProvinceRow};
 use replay_derive::eta_derive::Defines;
 use replay_frame::frame::Metrics;

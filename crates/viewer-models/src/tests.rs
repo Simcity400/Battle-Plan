@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use crate::test_support::{MESHES_GFX, PLANE_ASSET, library_with_one_mesh, triangle_mesh, visual_stack};
 use crate::*;
 use std::collections::BTreeSet;
@@ -190,7 +191,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
         bound: 0.0,
         convoy_radius: None,
         attachments: 0,
-        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     };
     let mut shard = ModelLibrary {
         palette: vec![joint; 3],
@@ -532,7 +533,7 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     assert!(warnings.iter().all(|(_, line)| !line.contains("sound")));
     if !meshed {
         assert!(warnings.iter().any(|(kind, line)| *kind
-            == content_reader_core::DiagnosticKind::Warning
+            == content_reader_parser::DiagnosticKind::Warning
             && line.contains("geometry-less entities")));
     }
     let scenario = descriptors.inherit("scenario").unwrap();
@@ -1115,7 +1116,7 @@ fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
 
 #[test]
 fn a_recorded_counterparts_mesh_read_reaches_the_presentation_trace() {
-    use content_reader_core::content::{ContentRead, ReadOutcome};
+    use content_reader_layers::content::{ContentRead, ReadOutcome};
     let (root, layers) = visual_stack(
         "counterpart_trace",
         &[
@@ -1546,7 +1547,7 @@ fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_s
         x: 0.,
         pad: 0.,
     };
-    let default = content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    let default = content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     assert_eq!(cull.test([400., 0., 0.], 1., default), None);
     assert_eq!(cull.test([420., 0., 0.], 1., default), Some(Culled::Distance));
     assert_eq!(cull.test([420., 0., 0.], 1., 600. * 600.), None, "a mesh's own cull distance");
@@ -1578,7 +1579,7 @@ fn a_pan_draws_a_moved_figure_by_its_own_camera_s_cull_and_its_held_one_only_gat
     let own = |x: f32| GameCull { eye: [x, 0.5, 0.], sides, x, pad: 0. };
     let camera = |x: f32| viewer_gpu::camera::Camera { center: [x, 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_gpu::camera::Pose::Map };
     let at = |x: f32| ModelInstance { position: [x, 0., 0.], scale: 1.0, ..ModelInstance::default() };
-    let default = content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    let default = content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     assert_eq!(held.test([1434., 0.5, 0.], 1., default), None, "the held cull, moved by the pan, admits it");
     pass.set_cull(Some(held), Some(own(1000.)));
     assert_eq!(pass.game_culled(0, &at(1427.), 0., &camera(1000.)), None, "drawn while in range");

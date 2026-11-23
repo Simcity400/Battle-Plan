@@ -5,10 +5,8 @@ use std::{
     sync::Arc,
 };
 
-use content_reader_core::{
-    defines::Defines, map::MapData, map::ProvinceKind, scripted_map_modes::GameLayer,
-    scripted_map_modes::LayerType, scripted_map_modes::MapModes, scripted_map_modes::MapText,
-};
+use content_reader_defines::defines::Defines;
+use content_reader_map::{map::{MapData, ProvinceKind}, scripted_map_modes::{GameLayer, LayerType, MapModes, MapText}};
 use replay_data::{
     rows::{TableId, tables},
     scope::{self, CaptureMode},
@@ -436,10 +434,10 @@ pub struct Content {
     styles: std::sync::Mutex<style_fold::Styles>,
     scripts: std::sync::Mutex<colour_script::Fold>,
     pub defines: ModeDefines,
-    ideologies: Arc<content_reader_core::ideologies::Ideologies>,
+    ideologies: Arc<content_reader_key_names::ideologies::Ideologies>,
     category_colors: BTreeMap<Vec<u8>, Result<Option<[f32; 4]>, String>>,
     pub scripted: MapModes,
-    faction_templates: Result<Arc<content_reader_core::faction_templates::Catalog>, String>,
+    faction_templates: Result<Arc<content_reader_politics::faction_templates::Catalog>, String>,
     recorded_language: String,
     terrain: Result<terrain::Built, String>,
     pub infrastructure: infrastructure::Content,
@@ -468,10 +466,10 @@ impl Content {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         defines: &Defines,
-        ideologies: Arc<content_reader_core::ideologies::Ideologies>,
+        ideologies: Arc<content_reader_key_names::ideologies::Ideologies>,
         categories: &content_reader_state_categories::state_categories::Database,
         scripted: MapModes,
-        faction_templates: Result<Arc<content_reader_core::faction_templates::Catalog>, String>,
+        faction_templates: Result<Arc<content_reader_politics::faction_templates::Catalog>, String>,
         recorded_language: String,
         terrain: Result<terrain::Sources, String>,
         infrastructure: infrastructure::Content,

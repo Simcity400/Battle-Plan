@@ -4,7 +4,8 @@ use super::{air_mission_counters::{AirMissionCounters, Passes}, base_counters::B
 use viewer_layer_core::playhead_host::{COUNTER_LAYERS, LayerParts};
 use replay_data::BranchId;
 use std::sync::Arc;
-use viewer_counters::map::counters::{HourTables, Kinds, Layered};
+use viewer_counter_kit::Kinds;
+use viewer_counters::counters::{HourTables, layered::Layered};
 use viewer_foundation::perspective::{Choice, Vision};
 
 pub fn draws(side: LayerParts<'_>) -> Kinds {

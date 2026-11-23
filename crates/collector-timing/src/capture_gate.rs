@@ -19,17 +19,24 @@ static WAIT_NS: AtomicU64 = AtomicU64::new(0);
 static HURRY: OnceLock<fn()> = OnceLock::new();
 thread_local!(static READER: Cell<bool> = const { Cell::new(false) });
 
-pub fn reader() {
+/// # Safety
+/// Call only on a designated collector reader or worker thread owned by the active session; this
+/// permanently exempts the current thread from waiting on the capture gate.
+pub unsafe fn reader() {
     READER.set(true);
 }
 
-pub fn on_wait(hurry: fn()) {
+/// # Safety
+/// Only the attaching runtime (or an isolated test owning the capture gate) may register the
+/// process-wide wait callback once during initialization.
+pub unsafe fn on_wait(hurry: fn()) {
     let _ = HURRY.set(hurry);
 }
 
 /// # Safety
-/// Only the admitted hourly capture may take the process-wide gate. A successful acquisition must
-/// be released once after capture finishes, including if the beside worker takes ownership.
+/// Only the active session's capture-point guard (or an isolated test owning the capture gate) may
+/// open the gate, and every `true` return must be paired with `end()` so writers are not blocked
+/// indefinitely.
 pub unsafe fn begin() -> bool {
     STATE
         .compare_exchange(IDLE, RUNNING, Ordering::SeqCst, Ordering::SeqCst)
@@ -37,8 +44,8 @@ pub unsafe fn begin() -> bool {
 }
 
 /// # Safety
-/// Release only the live gate acquired by this hour's successful begin, after the protected capture
-/// finishes or is refused and before allowing the next hour.
+/// Only the owner that opened the gate with `begin()`, or the beside worker to which that callback
+/// transferred gate ownership for `serve`, may release it once the guarded capture window finishes.
 pub unsafe fn end() {
     STATE.store(IDLE, Ordering::SeqCst);
     if WAITING.load(Ordering::SeqCst) != 0 {
@@ -50,7 +57,10 @@ pub fn running() -> bool {
     STATE.load(Ordering::SeqCst) == RUNNING
 }
 
-pub fn exempt(slot: usize, exempt: bool) {
+/// # Safety
+/// Only the owning hook family's attach/detach lifecycle may toggle its slot's capture-gate
+/// exemption while maintaining that family's concurrency contract.
+pub unsafe fn exempt(slot: usize, exempt: bool) {
     EXEMPT[slot.min(SLOTS - 1)].store(exempt, Ordering::SeqCst);
 }
 
@@ -125,20 +135,16 @@ mod tests {
         const EXEMPT_WRITER: usize = SLOTS - 1;
         thread_local!(static IS_WRITER: Cell<bool> = const { Cell::new(false) });
         static ARRIVED: AtomicBool = AtomicBool::new(false);
-        on_wait(|| {
-            if IS_WRITER.get() {
-                ARRIVED.store(true, Ordering::Release);
-            }
-        });
-        assert!(
-            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
-            // refusal.
-            unsafe { begin() }
-        );
-        assert!(!
-        // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
-        // refusal.
-        unsafe { begin() });
+        // SAFETY: This isolated unit test owns the capture gate and pairs every begin() with end().
+        unsafe {
+            on_wait(|| {
+                if IS_WRITER.get() {
+                    ARRIVED.store(true, Ordering::Release);
+                }
+            });
+            assert!(begin());
+            assert!(!begin());
+        }
         let waiter = std::thread::spawn(|| {
             IS_WRITER.set(true);
             drop(enter(Family::CommandBatch));
@@ -148,18 +154,17 @@ mod tests {
         }
         assert!(running());
         assert_ne!(waiting(), 0);
-        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        // SAFETY: Pairs with the begin() above after observing the waiting writer.
         unsafe { end() };
         waiter.join().unwrap();
         assert_eq!(waits(WRITER), 1);
         drop(enter(Family::CommandBatch));
         assert_eq!(waits(WRITER), 1);
-        assert!(
-            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
-            // refusal.
-            unsafe { begin() }
-        );
-        exempt(EXEMPT_WRITER, true);
+        // SAFETY: Isolated unit test exercising slot exemption and reader thread bypass.
+        unsafe {
+            assert!(begin());
+            exempt(EXEMPT_WRITER, true);
+        }
         pass(EXEMPT_WRITER);
         assert_eq!(waits(EXEMPT_WRITER), 0);
         let holder = std::thread::spawn(|| {
@@ -170,13 +175,14 @@ mod tests {
             std::thread::yield_now();
         }
         std::thread::spawn(|| {
-            reader();
+            // SAFETY: Dedicated test reader thread that exits immediately after this check.
+            unsafe { reader() };
             drop(enter(Family::CommandBatch));
         })
         .join()
         .unwrap();
         assert_eq!(waits(WRITER), 1);
-        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        // SAFETY: Pairs with the second begin() above.
         unsafe { end() };
         holder.join().unwrap();
         assert_eq!(waits(EXEMPT_WRITER), 1);

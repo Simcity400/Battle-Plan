@@ -9,7 +9,7 @@ pub struct SupplyThresholds {
 }
 
 impl SupplyThresholds {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> std::io::Result<Self> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> std::io::Result<Self> {
         let value = |name| defines.fixed5("NGraphics", name);
         Ok(Self {
             very_low: value("SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD")?,

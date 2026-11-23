@@ -1,13 +1,14 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import {
-  closeDiscardingUnsavedWork,
+  answerCloseQuestion,
+  closeRequests,
   desktopAvailable,
   errorMessage,
-  onCloseRequested,
+  leaveApp,
   openReplay,
   selectNativeView,
-  setUnsavedWork,
 } from './api.ts';
 import { Icon } from '../components/Icons';
 import EmptyState from '../components/EmptyState';
@@ -19,8 +20,8 @@ import { clearLayouts, layoutsAtDefault } from '../dashboard/storage';
 import { widgetDefinitions } from '../dashboard/definitions';
 import { stableJson } from '../dashboard/model';
 import { sameCampaignPath } from '../dashboard/campaigns';
-import { actionFailure, type PlainFailure } from '../dashboard/queryError.ts';
-import { FailureLine } from '../components/FailureLine';
+import { actionFailure } from '../dashboard/queryError.ts';
+import { DismissButton, FailureLine } from '../components/FailureLine';
 import AnalyticsNav from './AnalyticsNav';
 import BrandMark from '../components/BrandMark';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
@@ -45,7 +46,10 @@ import { RecordingNotice } from './recordingNotice';
 import { commitZone } from './commitCount';
 import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
 import type { RestartGuard } from '../update/UpdateControl';
-import { leavePrompt, unsavedDetail } from './unsaved';
+import { leavePrompt, leavingTitle, RESTARTING, unsavedDetail } from './unsaved';
+import { draftSection, registerDraft, retryFailed, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
+import { closeGuard, type CloseGuard, type CloseGuardFailure, type LeavingFor } from './closeGuard.ts';
+import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
 
@@ -156,38 +160,40 @@ function SidebarUpdate() {
   return <UpdateButton state={state} />;
 }
 
-function LeaveConfirm({ prompt, onCancel, onSave, onDiscard }: { prompt: LeavePrompt | null; onCancel: () => void; onSave: () => void; onDiscard: () => Promise<void> }) {
+function LeaveConfirm({ prompt, closing, confirming, failures, onCancel, onSave, onDiscard }: { prompt: LeavePrompt | null; closing: LeavingFor | null; confirming: boolean;
+  failures: readonly CloseGuardFailure[]; onCancel: () => void; onSave: () => void; onDiscard: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
-  const [failure, setFailure] = useState<PlainFailure | null>(null);
-  const [pending, setPending] = useState(false);
+  const open = !!prompt || closing !== null;
   useLayoutEffect(() => {
     const element = dialog.current;
-    if (!prompt || !element) return;
-    setFailure(null);
+    if (!open || !element) return;
     if (!element.open) element.showModal();
     cancel.current?.focus({ preventScroll: true });
     return () => { if (element.open) element.close(); };
-  }, [!!prompt]);
-  const discard = () => {
-    if (!prompt) return;
-    setPending(true); setFailure(null);
-    void onDiscard().catch(cause => setFailure(actionFailure(prompt.failed, errorMessage(cause)))).finally(() => setPending(false));
-  };
-  return <dialog ref={dialog} role="alertdialog" aria-labelledby="leave-confirm-title" aria-describedby="leave-confirm-detail" className="leave-confirm"
+  }, [open]);
+  const shownFailures = failures.map(failure => <FailureLine key={failure.key} className="is-top" message={failure.message} detail={failure.detail} onRetry={failure.retry} />);
+  return <dialog ref={dialog} role="alertdialog" aria-labelledby="leave-confirm-title" aria-describedby={closing === null && prompt ? 'leave-confirm-detail' : undefined} className="leave-confirm"
     onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); }}
-    onCancel={event => { event.preventDefault(); onCancel(); }} onClose={() => { if (prompt) onCancel(); }}>
-    {prompt && <div className="menu-confirm">
+    onCancel={event => { event.preventDefault(); if (closing === null) onCancel(); }} onClose={() => { if (prompt && closing === null) onCancel(); }}>
+    {closing !== null ? <div className="menu-confirm" role="status">
+      <strong id="leave-confirm-title">{leavingTitle(closing)}</strong>
+      {shownFailures}
+    </div> : prompt && <div className="menu-confirm">
       <strong id="leave-confirm-title">{prompt.title}</strong>
       <p id="leave-confirm-detail">{prompt.detail}</p>
-      {failure && <FailureLine className="is-top" message={failure.text} detail={failure.detail} onRetry={discard} retryDisabled={pending} />}
+      {shownFailures}
       <div className="menu-confirm-actions">
         <button ref={cancel} type="button" className="button small quiet" onClick={onCancel}>Cancel</button>
-        <button type="button" className="button small is-danger" disabled={pending} onClick={discard}>{prompt.discard}</button>
-        <button type="button" className="button small primary" disabled={pending} onClick={onSave}>Save…</button>
+        <button type="button" className="button small is-danger" disabled={confirming} onClick={onDiscard}>{confirming ? RESTARTING : prompt.discard}</button>
+        <button type="button" className="button small primary" disabled={confirming} onClick={onSave}>Save…</button>
       </div>
     </div>}
   </dialog>;
+}
+
+function themeUnsaved(editing: ThemeEditing | null): boolean {
+  return !!editing && (!!editing.typing || JSON.stringify([editing.draft.name, editing.draft.variants]) !== JSON.stringify([editing.original.name, editing.original.variants]));
 }
 
 function MapState({ icon = 'map', title, children, busy = false, alert = false }: { icon?: IconName; title: string; children?: ReactNode; busy?: boolean; alert?: boolean }) {
@@ -210,6 +216,8 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('folders');
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | null>(null);
   const [themeEditing, setThemeEditing] = useState<ThemeEditing | null>(null);
+  const themeRef = useRef<ThemeEditing | null>(null);
+  const editTheme = useMemo(() => keepLatest(themeRef, setThemeEditing), []);
   const lastView = useRef<Tab>(desktopAvailable ? 'map' : 'analytics');
   const clearSettingsTarget = useCallback(() => setSettingsTarget(null), []);
   const client = browserRecordings ? browserDashboardClient : nativeDashboardClient;
@@ -220,6 +228,7 @@ export default function App() {
   const [page, setPage] = useState<PageId>(() => { try { const saved = localStorage.getItem(PAGE_KEY); return pages.find(entry => entry.id === saved)?.id ?? pages[0].id; } catch { return pages[0].id; } });
   const [layoutReset, setLayoutReset] = useState(0);
   const [pageStorageWarning, setPageStorageWarning] = useState<string | null>(null);
+  const [mapWarning, setMapWarning] = useState<string | null>(null);
   const choosePage = (next: PageId) => { setPage(next); try { localStorage.setItem(PAGE_KEY, next); } catch {  } };
   const changePages = (next: PageEntry[]) => { setPages(next); setPageStorageWarning(savePages(next)); };
   const deletePage = (id: PageId) => {
@@ -241,7 +250,19 @@ export default function App() {
   const [unsavedPages, setUnsavedPages] = useState<readonly PageId[]>([]);
   const layoutsUnsaved = unsavedPages.length > 0;
   const [saveRequest, setSaveRequest] = useState(0);
-  const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: () => Promise<boolean> } | null>(null);
+  const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: () => Promise<boolean>; confirmed?: boolean } | null>(null);
+  const [closing, setClosing] = useState<LeavingFor | null>(null);
+  const [guardFailures, setGuardFailures] = useState<readonly CloseGuardFailure[]>([]);
+  const restartConfirmed = useRef(false);
+  const guard = useRef<CloseGuard | null>(null);
+  const layoutReader = useRef<(() => readonly PageId[]) | null>(null);
+  const unsavedNow = useCallback(() => pendingUnsaved(), []);
+  useEffect(() => {
+    const layouts = registerDraft(() => (layoutReader.current?.().length ?? 0) > 0);
+    const theme = registerDraft(() => themeUnsaved(themeRef.current));
+    return () => { layouts(); theme(); };
+  }, []);
+  const writes = useSyncExternalStore(watchWrites, writesState);
   useEffect(() => {
     if (tab !== 'settings' || widgetDefinitions().length) return;
     import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
@@ -313,7 +334,7 @@ export default function App() {
   }, [folders?.contentReady]);
   const shellError = actionError ?? native.error;
   const mapSurface = tab === 'map' && !!path && !shellError && !sidebar.peek;
-  const boundsError = useMapSurface(content, mapSurface && !popoverOpen && !leaving, retry, tab === 'map');
+  const boundsError = useMapSurface(content, mapSurface && !popoverOpen && !leaving && !closing, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
   const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;
 
@@ -377,52 +398,79 @@ export default function App() {
     setRetry(value => value + 1);
   }
 
-  const themeUnsaved = !!themeEditing && (!!themeEditing.typing || JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]));
-  const unsavedWork = layoutsUnsaved || themeUnsaved;
-  useEffect(() => { void setUnsavedWork(unsavedWork).catch(() => {}); }, [unsavedWork]);
+  const themeChanged = themeUnsaved(themeEditing);
+  const unsavedWork = layoutsUnsaved || themeChanged || writes !== null;
+  const leavingNow = useRef(leaving);
+  leavingNow.current = leaving;
+  const editingToLeave = useRef<typeof leaving>(null);
   useEffect(() => {
-    if (!unsavedWork) { setLeaving(null); return; }
+    if (!unsavedWork) {
+      const asked = leavingNow.current ?? editingToLeave.current;
+      if (restartConfirmed.current || unsavedNow()) return;
+      editingToLeave.current = null;
+      setLeaving(null);
+      if (asked?.kind === 'update' && asked.restart) void asked.restart().then(restarted => { if (!restarted) guard.current?.recheck(); });
+      else if (asked) guard.current?.leave();
+      return;
+    }
     if (desktopAvailable) return;
-    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
-    window.addEventListener('beforeunload', guard);
-    return () => window.removeEventListener('beforeunload', guard);
-  }, [unsavedWork]);
-  useEffect(() => {
-    let stop: (() => void) | null = null, live = true;
-    void onCloseRequested(() => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement })).then(unlisten => { if (live) stop = unlisten; else unlisten(); }, () => {});
-    return () => { live = false; stop?.(); };
-  }, []);
-  const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeUnsaved ? themeEditing!.draft.name.trim() : null);
+    const unloading = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', unloading);
+    return () => window.removeEventListener('beforeunload', unloading);
+  }, [unsavedWork, unsavedNow]);
+  const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeChanged ? themeEditing!.draft.name.trim() : null, writes);
   const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
-  const unsavedRef = useRef(unsavedNames);
-  unsavedRef.current = unsavedNames;
+  const leaveShown = !!prompt || closing !== null;
+  useEffect(() => {
+    const created = closeGuard({ requests: closeRequests, answer: answerCloseQuestion, leave: leaveApp }, {
+      unsaved: unsavedNow,
+      confirmed: () => restartConfirmed.current,
+      prompt: () => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement }),
+      leaving: leavingFor => flushSync(() => setClosing(leavingFor)),
+    }, setGuardFailures);
+    guard.current = created;
+    return () => { created.end(); if (guard.current === created) guard.current = null; };
+  }, [unsavedNow]);
   const guardRestart = useCallback<RestartGuard>((restart, opener) => {
-    if (!unsavedRef.current) { void restart(); return; }
+    if (!unsavedNow()) { void restart().then(restarted => { if (!restarted) guard.current?.recheck(); }); return; }
     setLeaving({ kind: 'update', opener, restart });
-  }, []);
+  }, [unsavedNow]);
   const stayHere = () => {
+    if (closing) return;
+    editingToLeave.current = null;
+    restartConfirmed.current = false;
     const back = leaving?.opener;
     setLeaving(null);
     if (back instanceof HTMLElement && back.isConnected) requestAnimationFrame(() => back.focus({ preventScroll: true }));
   };
-  const discardAndLeave = async () => {
-    if (leaving?.kind !== 'update' || !leaving.restart) return closeDiscardingUnsavedWork();
+  const discardAndLeave = () => {
+    if (leaving?.kind !== 'update' || !leaving.restart) { guard.current?.leave(); return; }
     const { restart } = leaving;
-    await setUnsavedWork(false);
-    if (await restart()) return;
-    await setUnsavedWork(true).catch(() => {});
-    stayHere();
+    restartConfirmed.current = true;
+    setLeaving(previous => previous && { ...previous, confirmed: true });
+    void restart().then(restarted => {
+      if (!restarted) guard.current?.recheck();
+      if (restarted || !restartConfirmed.current) return;
+      restartConfirmed.current = false;
+      setLeaving(null);
+    });
   };
   const saveBeforeClose = () => {
-    setLeaving(null);
+    const section = draftSection() as SettingsSection | null;
+    if (unsavedPages.length || themeChanged || section) { editingToLeave.current = leaving; setLeaving(null); }
     if (unsavedPages.length) {
       choosePage(unsavedPages[0]);
       setSaveRequest(count => count + 1);
       void changeTab('analytics');
       return;
     }
-    setThemeEditing(previous => previous && { ...previous, focus: true });
-    openSettings('appearance');
+    if (themeChanged) {
+      editTheme(previous => previous && { ...previous, focus: true });
+      openSettings('appearance');
+      return;
+    }
+    if (section) { openSettings(section); return; }
+    retryFailed();
   };
   const everReady = useRef(false);
 
@@ -446,6 +494,11 @@ export default function App() {
     setSettingsTarget(target);
     if (tab !== 'settings') void changeTab('settings');
   };
+  useEffect(() => {
+    if (!editingToLeave.current || layoutsUnsaved || themeChanged) return;
+    const section = draftSection() as SettingsSection | null;
+    if (section) openSettings(section);
+  }, [layoutsUnsaved, themeChanged]);
   const sectionLabel = settingsSections.find(item => item.id === settingsSection)?.label;
 
   return (
@@ -494,15 +547,17 @@ export default function App() {
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
         {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{pageStorageWarning}</span></div>}
+        {mapWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{mapWarning}</span><DismissButton onDismiss={() => setMapWarning(null)} /></div>}
         {switchFailure && <FailureLine className="shell-switch-failure" message={`Couldn’t show ${TAB_NAMES[switchFailure.tab]}.`}
           detail={switchFailure.message} retryDisabled={switching} onRetry={() => void changeTab(switchFailure.tab)} />}
+        {!leaveShown && guardFailures.map(failure => <FailureLine key={failure.key} className="shell-guard-failure" message={failure.message} detail={failure.detail} onRetry={failure.retry} />)}
       </header>
 
       <main className="workspace" ref={content}>
         {workspaceBackdrop.kind !== 'same' && <Backdrop className="is-workspace" backdrop={{ ...workspaceBackdrop, kind: workspaceBackdrop.kind }} image={appearance.workspaceImage} />}
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
           {tab === 'settings' && <RestartGuardContext.Provider value={guardRestart}><Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersRetry={() => setFolderReads(count => count + 1)} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
-            onResetPages={pagesReset()} themeEditing={themeEditing} onThemeEditing={setThemeEditing} /></RestartGuardContext.Provider>}
+            onResetPages={pagesReset()} themeEditing={themeEditing} onThemeEditing={editTheme} /></RestartGuardContext.Provider>}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}
           className="map-panel" hidden={tab !== 'map'}>
@@ -538,11 +593,12 @@ export default function App() {
 
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
-          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setUnsavedPages} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
+          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} onMapWarning={setMapWarning} mapRetry={retry} onUnsaved={setUnsavedPages} unsavedReader={layoutReader} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
         </section>
       </main>
       <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />
-      <LeaveConfirm prompt={prompt} onCancel={stayHere} onSave={saveBeforeClose} onDiscard={discardAndLeave} />
+      <LeaveConfirm prompt={prompt} closing={closing} confirming={!!leaving?.confirmed} failures={leaveShown ? guardFailures : []}
+        onCancel={stayHere} onSave={saveBeforeClose} onDiscard={discardAndLeave} />
     </div>
   );
 }

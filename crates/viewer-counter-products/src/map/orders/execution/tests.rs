@@ -324,7 +324,7 @@ fn air_fixture() -> paradrop_counts::tests::Fixture {
 
 #[test]
 fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);
     let defs = defines();
@@ -381,7 +381,7 @@ fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution()
 
 #[test]
 fn signed_invalid_source_and_ineligible_units_skip_later_demand_operands() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);
     let mut orders = fixture

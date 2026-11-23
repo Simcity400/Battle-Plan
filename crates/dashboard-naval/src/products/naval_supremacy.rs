@@ -6,7 +6,7 @@ use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}};
 use dashboard_world::products::sea_regions::Choice;
 use dashboard_base::{Source, catalogue::Refusals};
 use dashboard_query::identity::Holder;
-use replay::{lanes, points::Cell};
+use replay_lanes::{lanes, points::Cell};
 use replay_data::rows::{NavalRegionControlRow, TableId};
 use replay_derive::naval_region_control;
 use serde::{Deserialize, Serialize};
@@ -307,7 +307,7 @@ impl Product for NavalSupremacy {
             let ranges = [(u128::from(viewer) << 32, u128::from(viewer) << 32 | u128::from(u32::MAX)), (every, every | u128::from(u32::MAX))];
             let history = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&ranges), from, to))?;
             let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::NavalRegionControl, from, to))?;
-            let available = |hour: i32| statuses.iter().any(|status| status.first <= hour && hour <= status.last && replay::columnar_frames::available(status.status));
+            let available = |hour: i32| statuses.iter().any(|status| status.first <= hour && hour <= status.last && replay_recording::columnar_frames::available(status.status));
             let (shown, unavailable): (Vec<(u32, i32)>, Vec<(u32, i32)>) = segment.drain(..).partition(|&(_, hour)| available(hour));
             refused.extend(unavailable.into_iter().map(|(day, _)| (day, "Naval region control was not available on this day".to_owned())));
             known.extend(shown.iter().map(|(day, _)| *day));

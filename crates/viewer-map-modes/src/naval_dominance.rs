@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, sync::OnceLock};
 use replay_derive::naval_math::dominance_value;
 
-use content_reader_core::{
-    defines::Defines, map::MapData, map::ProvinceKind, terrain::TerrainDefinitions,
-};
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::{MapData, ProvinceKind};
+use content_reader_key_names::terrain::TerrainDefinitions;
 use content_reader_regions::regions::StrategicRegion;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -988,8 +988,8 @@ mod tests {
 
     #[test]
     fn mod_terrain_and_control_ratio_supply_the_minimum() {
-        content_reader_core::test_game::enter();
-        let terrain = content_reader_core::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
+        content_reader_script::test_game::enter();
+        let terrain = content_reader_key_names::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
         let defines = Defines::new().unwrap();
         defines
             .load(
@@ -1011,7 +1011,7 @@ mod tests {
                 .map(|id| {
                     (
                         id,
-                        content_reader_core::map::ProvinceDefinition {
+                        content_reader_map::map::ProvinceDefinition {
                             id,
                             rgb: [0; 3],
                             kind: ProvinceKind::Sea,

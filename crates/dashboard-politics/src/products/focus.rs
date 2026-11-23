@@ -5,7 +5,7 @@ use crate::products::focus_dto::{FocusEntry, FocusHistory, FocusOrder, FocusProg
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use dashboard_query::{Query, cost, identity::Holder};
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{FocusRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
@@ -314,7 +314,7 @@ impl Fold {
     }
 }
 
-fn written_rows(recording: &replay::columnar_frames::Recording, run: u32, key: u128, steps: &[lanes::Step], places: [usize; 3]) -> io::Result<BTreeMap<i32, FocusRow>> {
+fn written_rows(recording: &replay_recording::columnar_frames::Recording, run: u32, key: u128, steps: &[lanes::Step], places: [usize; 3]) -> io::Result<BTreeMap<i32, FocusRow>> {
     let stored = recording.run(run)?;
     let mut asks: Vec<(i32, u128)> = steps
         .iter()

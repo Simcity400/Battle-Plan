@@ -26,9 +26,9 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { followAtHead } from '../../dashboard/tiles/head.ts';
 import { useHeadHour } from '../army-size/headHour';
 import { useIdentityKey } from '../../dashboard/atHead';
@@ -143,6 +143,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [followsClock, active, track?.branch.id, tags, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const entry = followsHead(followed) ? followed.entry : null;
+  const refused = followRefusal(followed);
   const places = series.decimals;
   useEffect(() => {
     const stops = entry && places !== null ? tags.map((tag, row) => followAtHead(series.head(tag), () => rowAmount(entry.answer, row, places))) : [];
@@ -209,6 +210,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
     if (groupFailure && !groups.data) return groupFailure;

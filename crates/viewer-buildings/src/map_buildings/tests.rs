@@ -5,7 +5,7 @@ use viewer_gpu::camera::Placement;
 use viewer_gpu::province_admission::edge_boxes;
 #[test]
 fn only_states_the_building_producer_cannot_select_are_refused() {
-    let descriptors = content_reader_core::mesh::parse_descriptors(br#"
+    let descriptors = content_reader_mesh::mesh::parse_descriptors(br#"
             entity = { name = ruin state = { name = destroyed event = { particle = smoke light = alarm } } }
             entity = { name = default_ruin clone = ruin default_state = destroyed }
             entity = { name = linked_ruin clone = ruin state = { name = idle next_state = destroyed } }
@@ -21,7 +21,7 @@ fn only_states_the_building_producer_cannot_select_are_refused() {
 }
 
 use super::*;
-use content_reader_core::buildings;
+use content_reader_key_names::buildings;
 use replay_data::{
     rows::BuildingRow, rows::CountryLinkRow, rows::LexicalTokenRow, rows::LocalPlayerRow,
     rows::RaidScope, rows::RaidTargetStatusRow, rows::TableId, rows::TableRows,
@@ -41,7 +41,7 @@ buildings = {
 "#;
 
 fn types() -> Buildings {
-    buildings::parse(SAMPLE, &content_reader_core::key_names::KeyNames::default()).unwrap()
+    buildings::parse(SAMPLE, &content_reader_script::key_names::KeyNames::default()).unwrap()
 }
 
 fn defines() -> Defines {
@@ -99,7 +99,7 @@ fn installed_building_snapshots_share_immutable_slots() {
     );
     let mut next = input.clone();
     next.hour += 1;
-    next.slots.get_mut(0).entity = None;
+    next.slots.edit(0, |slot| slot.entity = None);
     assert!(input.slots[0].entity.is_some());
     assert!(history.prepared.as_ref().unwrap().slots[0].entity.is_some());
 }
@@ -110,7 +110,7 @@ fn destruction_hysteresis_survives_hide_and_resets_on_seek() {
     history.set(prepared(10, 6_000_000, false), true);
     assert_eq!(at(&mut history, 50.0, 0.0)[0].0, 2);
     let mut hidden = prepared(11, 9_000_000, false);
-    hidden.slots.get_mut(0).entity = None;
+    hidden.slots.edit(0, |slot| slot.entity = None);
     assert!(!history.set(hidden, true));
     assert!(at(&mut history, 50.0, 1.0).is_empty());
     history.set(prepared(12, 7_000_000, false), true);
@@ -266,7 +266,7 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
 
     let mut history = BuildingHistory::default();
     let mut same_mesh = prepared(10, 0, false);
-    same_mesh.slots.get_mut(0).entity_mut().ruined.mesh = 1;
+    same_mesh.slots.edit(0, |slot| slot.entity_mut().ruined.mesh = 1);
     history.set(same_mesh, true);
     let before = at(&mut history, 50.0, 0.0)[0].1.animation_epoch;
     history.set(prepared(11, 10_000_000, false), true);
@@ -461,9 +461,9 @@ fn one_row_frame(row: BuildingRow, byte: Option<u8>) -> (DecodedFrame, Vision) {
 
 #[test]
 fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let types = buildings::parse(
-            b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &content_reader_core::key_names::KeyNames::default(),
+            b"buildings={ arms_factory={ show_on_map=1 show_on_map_meshes=2 has_destroyed_mesh=yes level_cap={ state_max=20 } } }", &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
     let assets = one_slot_assets(
@@ -494,7 +494,7 @@ fn a_ruin_with_its_own_mesh_keeps_variant_selector_zero_across_levels() {
 
 #[test]
 fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let assets = one_slot_assets(
         &types(),
         BTreeMap::from([(("arms_factory".to_owned(), 0), 0)]),
@@ -535,7 +535,7 @@ fn the_fog_loop_hides_below_fifty_and_keeps_the_undecided() {
 
 #[test]
 fn the_level_uses_the_content_denominator() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let types = types();
     let factory = &types.types["arms_factory"];
     for (level, slots) in [(0, 0), (-3, 0), (1, 1), (4, 2), (10, 4), (20, 6), (99, 6)] {
@@ -672,7 +672,7 @@ fn assets_of(ordered: Vec<BuildingType>) -> MapBuildingAssets {
 
 #[test]
 fn province_sites_are_indexed_and_ambiguous_facility_tokens_are_refused() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut types = types();
     let factory = types.types.get_mut("arms_factory").unwrap();
     factory.air_base = true;
@@ -765,7 +765,7 @@ fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {
 
 #[test]
 fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let assets = MapBuildingAssets::assemble(
         ModelLibrary::default(),
         &types(),
@@ -999,8 +999,8 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
             for history in [&mut cached, &mut reference] {
                 let mut next = history.prepared.as_ref().unwrap().clone();
                 next.hour += 1;
-                next.slots.get_mut(1).entity_mut().damaged = true;
-                next.slots.get_mut(3).entity = None;
+                next.slots.edit(1, |slot| slot.entity_mut().damaged = true);
+                next.slots.edit(3, |slot| slot.entity = None);
                 history.set(next, true);
             }
         }
@@ -1069,7 +1069,7 @@ fn repeated_slot_assets(types: &Buildings) -> MapBuildingAssets {
 
 #[test]
 fn missing_building_meshes_are_counted_per_reached_slot() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut types = types();
     types
         .types
@@ -1119,7 +1119,7 @@ fn missing_building_meshes_are_counted_per_reached_slot() {
 
 #[test]
 fn damaged_only_building_meshes_supply_definition_fallback_per_slot() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut types = types();
     let building = types.types.get_mut("arms_factory").unwrap();
     building.show_on_map_meshes = 3;
@@ -1208,7 +1208,9 @@ fn symbolic_buildings_preserve_the_independent_local_history_schedule() {
         .enumerate()
     {
         let mut source = prepared(10 + index as i32, health, false);
-        source.slots.get_mut(0).drawn_at_distance = (index != 2).then_some(false);
+        source.slots.edit(0, |slot| {
+            slot.drawn_at_distance = (index != 2).then_some(false);
+        });
         let closed = source
             .display_with(
                 [9; 32],
@@ -1500,7 +1502,7 @@ fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
     let kind = BuildingType { name: "infrastructure".into(), show_on_map: Some(1), show_on_map_meshes: 1, ..Default::default() };
     let types = Buildings { declaration_order: vec![kind.name.clone()], types: BTreeMap::from([(kind.name.clone(), kind)]), ..Default::default() };
     let defines = Defines { shrink_distance: 180.0, destroyed: 6_000_000, recovered: 8_000_000, damaged: 80_000, max_levels: 10, popup_speed: 5.0 };
-    let at = |x: f32| content_reader_core::positions::BuildingPosition { state: 100, kind: "infrastructure".into(), x, y: 0.0, z: x, rotation: 0.0, adjacent_sea: 0 };
+    let at = |x: f32| content_reader_map::positions::BuildingPosition { state: 100, kind: "infrastructure".into(), x, y: 0.0, z: x, rotation: 0.0, adjacent_sea: 0 };
     let authored = (0..150).map(|id| (100, "infrastructure".to_owned(), at(id as f32), None)).collect();
     let assets = MapBuildingAssets::stub(&types, defines, authored, Vec::new(), Vec::new(), None);
     let hour = |at: i32| WireHour { branch: 0, hour: at, perspective: 1, fog: true, warnings: Vec::new(), city_damage: Arc::default() };

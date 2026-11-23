@@ -1,4 +1,5 @@
-use replay::{compression::Compression, recompress, recorder_settings::RecorderSettings};
+use replay_settings::{compression::Compression, recorder_settings::RecorderSettings};
+use replay_files::recompress;
 use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
@@ -15,13 +16,13 @@ use windows_sys::Win32::{
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject,
+            SetInformationJobObject, TerminateJobObject,
         },
         Threading::{BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW},
     },
 };
 
-pub const LEVEL: i32 = replay::columnar_file::Settings::HIGH.level;
+pub const LEVEL: i32 = replay_settings::compression::Settings::HIGH.level;
 
 pub const ARGUMENT: &str = "--recompress";
 
@@ -118,6 +119,9 @@ pub fn child(path: Option<OsString>) -> i32 {
 
 struct Bound(HANDLE);
 
+// SAFETY: a job object handle may be used and closed from any thread.
+unsafe impl Send for Bound {}
+
 impl Bound {
     fn new() -> io::Result<Self> {
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -147,6 +151,10 @@ impl Bound {
         }
         Ok(())
     }
+
+    fn stop(&self) {
+        unsafe { TerminateJobObject(self.0, 1) };
+    }
 }
 
 impl Drop for Bound {
@@ -155,23 +163,13 @@ impl Drop for Bound {
     }
 }
 
-fn run(path: &Path, bound: &Bound, mut tell: impl FnMut(Line)) -> Result<(), Job> {
-    let kept = |reason: String| Job::Kept { reason };
+fn kept(reason: String) -> Job {
+    Job::Kept { reason }
+}
+
+fn run(path: &Path, jobs: &Jobs, mut tell: impl FnMut(Line)) -> Result<(), Job> {
     let program = std::env::current_exe().map_err(|error| kept(format!("compression couldn’t start: BattlePlan Recorder couldn’t find itself: {error}")))?;
-    let mut child = Command::new(program)
-        .arg(ARGUMENT)
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
-        .spawn()
-        .map_err(|error| kept(format!("compression couldn’t start: {error}")))?;
-    if let Err(error) = bound.bind(&child) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(kept(format!("compression couldn’t start: it couldn’t be tied to BattlePlan Recorder: {error}")));
-    }
+    let mut child = jobs.start(program, path)?;
     let mut ended = None;
     if let Some(output) = child.stdout.take() {
         for line in BufReader::new(output).lines().map_while(Result::ok) {
@@ -206,6 +204,14 @@ struct State {
     queue: VecDeque<PathBuf>,
     running: Option<(PathBuf, u64, u64)>,
     ended: HashMap<PathBuf, Job>,
+    bound: Option<Bound>,
+    closed: bool,
+}
+
+const QUITTING: &str = "BattlePlan Recorder is quitting, so recordings aren’t compressed now.";
+
+fn named(path: &Path) -> String {
+    path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
 
 impl Jobs {
@@ -222,10 +228,13 @@ impl Jobs {
                 path.display()
             )
         })?;
-        if !path.is_file() || !replay::recording_files::is_recording(&path) {
+        if !path.is_file() || !replay_files::recording_files::is_recording(&path) {
             return Err("Choose a BattlePlan recording to compress.".into());
         }
         let mut state = self.lock();
+        if state.closed {
+            return Err(QUITTING.into());
+        }
         state.ended.remove(&path);
         if state.running.as_ref().is_some_and(|(running, ..)| *running == path) || state.queue.contains(&path) {
             return Ok(());
@@ -259,12 +268,54 @@ impl Jobs {
         state.ended.get(path).cloned()
     }
 
-    fn next(&self) -> PathBuf {
+    pub fn close(&self) -> Vec<String> {
+        let mut state = self.lock();
+        state.closed = true;
+        let mut notices: Vec<String> = state.queue.drain(..).map(|path| format!("Compression of {} was cancelled; the recording is unchanged.", named(&path))).collect();
+        if let Some((path, ..)) = &state.running {
+            notices.push(format!("Compression of {} stopped; the recording remains usable.", named(path)));
+            if let Some(bound) = &state.bound {
+                bound.stop();
+            }
+        }
+        self.wake.notify_all();
+        notices
+    }
+
+    fn start(&self, program: PathBuf, path: &Path) -> Result<std::process::Child, Job> {
+        let state = self.lock();
+        if state.closed {
+            return Err(kept(QUITTING.into()));
+        }
+        let Some(bound) = &state.bound else {
+            return Err(kept("compression couldn’t start: it couldn’t be tied to BattlePlan Recorder".into()));
+        };
+        let mut child = Command::new(program)
+            .arg(ARGUMENT)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
+            .spawn()
+            .map_err(|error| kept(format!("compression couldn’t start: {error}")))?;
+        if let Err(error) = bound.bind(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(kept(format!("compression couldn’t start: it couldn’t be tied to BattlePlan Recorder: {error}")));
+        }
+        Ok(child)
+    }
+
+    fn next(&self) -> Option<PathBuf> {
         let mut state = self.lock();
         loop {
+            if state.closed {
+                return None;
+            }
             if let Some(path) = state.queue.pop_front() {
                 state.running = Some((path.clone(), 0, 0));
-                return path;
+                return Some(path);
             }
             state = self
                 .wake
@@ -318,17 +369,16 @@ impl Jobs {
         std::thread::Builder::new()
             .name("recording-compress".into())
             .spawn(move || {
-                let bound = match Bound::new() {
-                    Ok(bound) => bound,
+                match Bound::new() {
+                    Ok(bound) => jobs.lock().bound = Some(bound),
                     Err(error) => {
                         eprintln!("Recordings cannot be compressed: {error}");
                         return;
                     }
-                };
-                loop {
-                    let path = jobs.next();
+                }
+                while let Some(path) = jobs.next() {
                     changed();
-                    let result = run(&path, &bound, |line| {
+                    let result = run(&path, &jobs, |line| {
                         jobs.told(&path, &line);
                         changed();
                     });
@@ -373,11 +423,11 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join("Germany 1936.battleplan");
-        let bytes = replay::columnar_frames::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
+        let bytes = replay_journal::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
         fs::write(&path, &bytes).unwrap();
         let jobs = Jobs::default();
         jobs.request(&path).unwrap();
-        let path = jobs.next();
+        let path = jobs.next().unwrap();
         assert_eq!(
             jobs.job(&path),
             Some(Job::Compressing { units: 0, total: 0 })
@@ -402,6 +452,34 @@ mod tests {
         drop(desktop);
         jobs.request(&path).unwrap();
         assert_eq!(jobs.job(&path), Some(Job::Queued));
+        fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_quit_cancels_queued_compression_and_names_each_job_it_stops() {
+        let folder = std::env::temp_dir().join(format!("recorder-app-compress-close-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        let bytes = replay_journal::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
+        let (running, queued) = (folder.join("Germany 1936.battleplan"), folder.join("Japan 1936.battleplan"));
+        for path in [&running, &queued] {
+            fs::write(path, &bytes).unwrap();
+        }
+        let jobs = Jobs::default();
+        jobs.request(&running).unwrap();
+        jobs.request(&queued).unwrap();
+        jobs.next().unwrap();
+        assert_eq!(
+            jobs.close(),
+            [
+                "Compression of Japan 1936.battleplan was cancelled; the recording is unchanged.",
+                "Compression of Germany 1936.battleplan stopped; the recording remains usable."
+            ]
+        );
+        assert_eq!(jobs.next(), None, "the worker takes nothing more once the recorder quits");
+        assert_eq!(jobs.request(&queued), Err(QUITTING.to_owned()));
+        assert!(matches!(jobs.start(PathBuf::from("unused"), &queued), Err(Job::Kept { .. })), "no compressor starts after the quit, even one taken before it");
+        assert_eq!(fs::read(&queued).unwrap(), bytes);
         fs::remove_dir_all(&folder).unwrap();
     }
 }

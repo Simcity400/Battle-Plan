@@ -420,7 +420,7 @@ fn transfer_demands_no_land_families_but_shared_land_keys_remain() {
         Outcome::Rows { len: 0 }
     );
     assert_eq!(
-        capture.capture_rivers(&world, 0, GAME, &countries),
+        capture.capture_rivers_using(&world, 0, GAME, &countries, &Mutex::new(None)),
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.counts[..4], [[0; 3]; 4]);
@@ -533,7 +533,7 @@ fn transfer_branch_prepares_without_any_readable_land_state_or_template() {
         Outcome::Rows { len: 0 }
     );
     assert_eq!(
-        capture.capture_rivers(&world, 0, GAME, &countries),
+        capture.capture_rivers_using(&world, 0, GAME, &countries, &Mutex::new(None)),
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.counts[..4], [[0; 3]; 4]);
@@ -752,6 +752,49 @@ fn river_demand_is_only_inside_native_crossing_kinds_and_survives_later_refusal(
         }
         assert_eq!(capture.counts[3][2], 2);
     }
+}
+
+#[test]
+fn river_crossing_answers_follow_work_across_threads() {
+    use engine_native::{province_definition, province_neighbour};
+
+    let slots = 0x12000;
+    let province = 0x13000;
+    let definition = 0x14000;
+    let neighbour = 0x15000;
+    let crossing = neighbour + province_neighbour::CROSSING_KIND;
+    let (from, to) = (1, 12_345);
+    let mut world = World::new(2);
+    world.header(GAME + cgame_state::PROVINCES, slots, 2);
+    world.u64(slots + 8, province as u64);
+    world.u64(province, cprovince::VTABLE_RVA.0 as u64);
+    world.u32(province + cprovince::ID, from);
+    world.u64(province + cprovince::DEFINITION, definition as u64);
+    world.u32(definition + province_definition::ID, from);
+    world.header(definition + province_definition::NEIGHBOURS, neighbour, 1);
+    world.u32(neighbour + province_neighbour::PROVINCE_ID, to);
+    world.bytes[crossing] = 3;
+
+    let capture = move |world: World| {
+        let mut capture = SpeedTerms::default();
+        movers(&mut capture, 1);
+        capture.route = vec![Ok(to)];
+        capture.movers[0].route = Ok((0, 1));
+        capture.provinces = vec![(from, route_facts(false)), (to, route_facts(false))];
+        let countries = ccountry::Reader::new(&world, 0, GAME);
+        assert_eq!(
+            capture.capture_rivers(&world, 0, GAME, &countries),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(capture.rivers[0].entry, Some(None));
+        world
+    };
+    let mut world = std::thread::spawn(move || capture(world)).join().unwrap();
+    assert!(world.reads.get_mut().contains(&crossing));
+    world.reads.get_mut().clear();
+    world.fault = Some(crossing);
+    let mut world = std::thread::spawn(move || capture(world)).join().unwrap();
+    assert!(!world.reads.get_mut().contains(&crossing));
 }
 
 #[test]
@@ -1066,7 +1109,7 @@ fn river_refusals_have_one_owner_across_preparation_and_capture() {
     capture.prepare_land_demand(&world, 0, GAME).unwrap();
     assert_eq!(capture.counts[3][2], 1);
     assert_eq!(
-        capture.capture_rivers(&world, 0, GAME, &countries),
+        capture.capture_rivers_using(&world, 0, GAME, &countries, &Mutex::new(None)),
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.counts[3][2], 1);

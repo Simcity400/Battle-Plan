@@ -14,7 +14,8 @@ use std::{
 use content_reader_image::{Rgba8Image, dds};
 
 use viewer_gpu::atlas_pages::{CellPages, page_limit};
-use content_reader_core::{ResolvedLayers, flags, flags::FlagSet};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::flags::{self, FlagSet};
 
 pub const DYNAMIC_BASE: usize = 1 << 40;
 
@@ -1079,7 +1080,7 @@ mod tests {
 
     #[test]
     fn flags_open_as_the_engine_requests_them_beside_unrelated_unicode_paths() {
-        use content_reader_core::test_support::{Record, zip_records};
+        use content_reader_layers::test_support::{Record, zip_records};
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_flag_index_{}_{:?}",
             std::process::id(),

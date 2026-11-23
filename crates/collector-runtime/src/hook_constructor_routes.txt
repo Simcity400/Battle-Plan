@@ -224,7 +224,7 @@ call:wait_quiet
 call:world_restore_ready
 call:write_status
 call:write_status_bytes
-macro-definition:refuse_detach:9d440c9e26d76929
+macro-definition:refuse_detach:408a3fa7f6e721c7
 macro-definition:retain_detach:5fdda758088583b2
 macro:collector_status::status::status
 macro:format

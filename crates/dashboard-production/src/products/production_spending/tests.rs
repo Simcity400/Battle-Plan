@@ -101,7 +101,7 @@ fn a_repaired_design_is_zero_where_the_split_is_known_and_unknown_where_it_is_no
 
 #[test]
 fn the_rocket_source_is_the_one_building_content_classifies_and_ambiguity_names_none() {
-    use content_reader_core::buildings::{Buildings, FactoryFlags};
+    use content_reader_key_names::buildings::{Buildings, FactoryFlags};
     let mut buildings = Buildings {
         declaration_order: vec!["mod_launch_works".into()],
         factory_flags: BTreeMap::from([("mod_launch_works".into(), FactoryFlags { rocket_production: 7, ..Default::default() })]),

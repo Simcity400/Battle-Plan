@@ -1,7 +1,8 @@
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Arc};
 
-use content_reader_core::{adjacency_rules::AdjacencyRule, defines::Defines};
+use content_reader_map::adjacency_rules::AdjacencyRule;
+use content_reader_defines::defines::Defines;
 use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
 use viewer_native_gui::{
     gui_resources::{count_refused, viewport as gui_viewport},

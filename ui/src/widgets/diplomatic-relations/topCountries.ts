@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { axisAt } from '../../dashboard/regionTime.ts';
 import type { Gate } from '../../dashboard/regionGate';
 import type { RefObject } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import type { FollowQuery } from '../../dashboard/follow/store';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
@@ -43,25 +41,26 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
   const entry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => {
-    if (!store || !entry) return undefined;
-    return store.watch(entry, () => { for (const wake of [...woken]) wake(); });
-  }, [store, entry, woken]);
-  const followed = following && rankQuery !== null && !ranking.reason;
+    if (!entry) return undefined;
+    return entry.subscribe(() => { for (const wake of [...woken]) wake(); });
+  }, [entry, woken]);
+  const followed = following && rankQuery !== null;
   const structure = useCallback(() => entry?.answer ? rankedTags(entry.answer).join('\u0000') : '\u0001', [entry]);
   useHeadHour(runtime.clock, followed, structure, woken);
   const followedText = followed ? structure() : '\u0001';
 
-  const playbackHour = useFallbackHour(runtime.clock, following && !followed);
-  const moment = widget.time.mode === 'follow' ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
-  const params = !followed && track && rank && moment !== null ? scoreboardParams(track.branch.id, moment, [rank], [], top, rank) : null;
+  const moment = gate.hour;
+  const params = !following && track && rank && moment !== null ? scoreboardParams(track.branch.id, moment, [rank], [], top, rank) : null;
   const request = params && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params }) : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, 1), []);
   const reply = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour'], active, validate, track?.source);
 
+  const refused = ranking.reason ?? ranking.failure ?? (entry?.answer?.kind === 'notRecorded' ? entry.answer.reason : undefined);
   const replyData = followed ? undefined : reply.data;
   const tags = useMemo(() => followed ? (followedText === '\u0001' ? null : followedText ? followedText.split('\u0000') : [])
     : replyData ? replyTopTags(replyData) : null, [followed, followedText, replyData]);
-  const unavailable = asked && columns && !rank ? 'No measure to rank the top countries by is in this recording.' : null;
+  const unavailable = asked && columns && !rank ? 'No measure to rank the top countries by is in this recording.'
+    : followed && refused ? `The top countries are not followed here: ${refused}` : null;
   const retry = useCallback(() => { registry.retry(); reply.retry(); }, [registry.retry, reply.retry]);
   return { tags: asked ? tags : null, unavailable, error: asked ? registry.error ?? (followed ? undefined : reply.error) : undefined, retry };
 }

@@ -16,8 +16,10 @@ replay-frame.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
+content-reader-parser.workspace = true
+replay-capture-spool.workspace = true
+replay-recording.workspace = true
 recorder-derive.workspace = true
-content-reader-core.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -28,13 +30,16 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

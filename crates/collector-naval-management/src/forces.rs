@@ -147,11 +147,21 @@ pub struct Session<'a, M: Memory> {
     navies: Option<Result<engine_native::cpdx_array::Array, &'static str>>,
 }
 impl<'a, M: Memory> Session<'a, M> {
-    pub fn begin(memory: &'a M, base: usize, state: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn begin(memory: &'a M, base: usize, state: usize) -> Self {
         Self::begin_inner(memory, base, state, None)
     }
 
-    pub fn begin_owned(memory: &'a M, base: usize, state: usize, stopped: fn() -> bool) -> Self {
+    /// # Safety
+    /// Only the admitted naval capture (or an isolated fixture owning the global naval-force store)
+    /// may open a session against the authenticated image, and must settle or drop any returned
+    /// `Owned` loan before reusing its frame or detaching.
+    pub unsafe fn begin_owned(
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        stopped: fn() -> bool,
+    ) -> Self {
         Self::begin_inner(memory, base, state, Some(stopped))
     }
 
@@ -1266,7 +1276,8 @@ mod tests {
         memory.reads.set(0);
         let _ = Session::begin(&memory, 0, 0).finish(complete());
         assert_eq!(memory.reads.get(), 0);
-        changes::boundary(true);
+        // SAFETY: Unit test exclusively owns naval-management watch tables.
+        unsafe { changes::boundary(true) };
         memory.fleet(0x10000, 90_000, 9);
         let mut reset = Session::begin(&memory, 0, 0);
         reset.visit(native::CensusVisit::Fleet {
@@ -1289,7 +1300,8 @@ mod tests {
         memory.put(BASE + native::BASE_REPAIR_PRIORITY, &1_i32.to_le_bytes());
         memory.put(BASE + native::BASE_REPAIR_DOCKYARDS, &0_i32.to_le_bytes());
         memory.put(BASE + native::BASE_REPAIR_QUEUE, &[0; 16]);
-        let mut bases = crate::bases::Session::begin(&memory, 0);
+        // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
+        let mut bases = unsafe { crate::bases::Session::begin(&memory, 0) };
         bases.visit(
             BASE,
             &engine_native::cnaval_base::Row {
@@ -1299,7 +1311,8 @@ mod tests {
         );
         let initial = bases.finish(engine_native::walk::Outcome::Rows { len: 1 });
         memory.reads.set(0);
-        let mut bases = crate::bases::Session::begin(&memory, 0);
+        // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
+        let mut bases = unsafe { crate::bases::Session::begin(&memory, 0) };
         bases.visit(
             BASE,
             &engine_native::cnaval_base::Row {
@@ -1315,7 +1328,8 @@ mod tests {
         ));
         memory.put(BASE + native::BASE_REPAIR_DOCKYARDS, &3_i32.to_le_bytes());
         changes::fixture::mark(BASE, true, false);
-        let changed = crate::bases::Session::begin(&memory, 0)
+        // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
+        let changed = unsafe { crate::bases::Session::begin(&memory, 0) }
             .finish(engine_native::walk::Outcome::Rows { len: 1 });
         assert!(memory.reads.get() > 0);
         assert!(!Arc::ptr_eq(
@@ -1325,7 +1339,8 @@ mod tests {
         memory.reads.set(0);
         changes::fixture::mark(BASE, true, false);
         changes::fixture::mark(BASE, true, true);
-        let gone = crate::bases::Session::begin(&memory, 0)
+        // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
+        let gone = unsafe { crate::bases::Session::begin(&memory, 0) }
             .finish(engine_native::walk::Outcome::Rows { len: 0 });
         assert_eq!(memory.reads.get(), 0);
         assert_eq!(gone.tables[0].as_ref().unwrap().len(), 0);

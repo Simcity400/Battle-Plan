@@ -12,7 +12,7 @@ use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use dashboard_base::{ResearchFolder, ResearchTechnologyFolder};
 use dashboard_query::{Query, cost, identity::Holder};
-use replay::lanes::{self, Cell, History, Keys, Step};
+use replay_lanes::lanes::{self, Cell, History, Keys, Step};
 use replay_data::rows::{ResearchAppliedBonusRow, ResearchAssignmentRow, ResearchCoverageRow, ResearchInputRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -372,8 +372,8 @@ fn last_read(source: &Source, query: &Query<'_>, span: &Span) -> io::Result<Opti
         return Ok(None);
     }
     keys.sort_unstable();
-    let reads = [replay::at::Read { table: TableId::SliceReads, columns: None, keys: replay::at::Keys::These(&keys) }];
-    let frame = cost::storage(|| replay::at::frame(query.replay.recording(), span.run, span.last, &reads))?;
+    let reads = [replay_lanes::at::Read { table: TableId::SliceReads, columns: None, keys: replay_lanes::at::Keys::These(&keys) }];
+    let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), span.run, span.last, &reads))?;
     Ok(frame.complete::<tables::SliceReads>().ok().and_then(|rows| rows.iter().map(|row| row.sample_hour).filter(|&read| read <= span.last).max()))
 }
 

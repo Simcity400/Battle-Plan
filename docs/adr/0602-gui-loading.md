@@ -10,4 +10,4 @@ Inheritance uses the parent's tree where the source element does. Backgrounds ou
 
 Keep the distinction between an undefined field, an undefined walk that makes subsequent element boundaries unknowable, and a session operand the recording does not hold. Record refusals against element labels before all names are known, then build their full paths at the end. Child paths, external parts and descendants remain available through the same tree model. An element poisoned by undefined consumption cannot be treated as merely absent.
 
-[GUI loader](../../crates/content-reader-core/src/gui/native.rs) · [Keyword classification](../../crates/content-reader-core/src/gui/native/keywords.rs) · [Inheritance](../../crates/content-reader-core/src/gui/native/inherit.rs)
+[GUI loader](../../crates/content-reader-gui/src/gui/native.rs) · [Keyword classification](../../crates/content-reader-gui/src/gui/native/keywords.rs) · [Inheritance](../../crates/content-reader-gui/src/gui/native/inherit.rs)

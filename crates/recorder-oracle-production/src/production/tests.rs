@@ -1,6 +1,6 @@
 use super::super::lexical_tokens;
 use super::*;
-use content_reader_core::parser;
+use content_reader_parser::parser;
 use content_reader_save::Decimal;
 use replay_data::{
     rows::ArmyUpgradeDeliveryRow, rows::ArmyUpgradeGroupRow, rows::ArmyUpgradeProducedRow,
@@ -130,7 +130,7 @@ fn output_frame(
 }
 
 fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::{
         identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
     };
@@ -1613,7 +1613,7 @@ fn lexical_writers_keep_exact_bytes_and_scope_unproved_nul_literals() {
 
 #[test]
 fn variant_archetypes_follow_the_content_equipment_types() {
-    let (equipment, _) = content_reader_core::equipment::fixture::load(&[(
+    let (equipment, _) = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             airframe = { is_archetype = yes }
@@ -1671,8 +1671,8 @@ fn variant_archetypes_follow_the_content_equipment_types() {
 
 #[test]
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
-    content_reader_core::test_game::enter();
-    let (equipment, _) = content_reader_core::equipment::fixture::load(&[
+    content_reader_script::test_game::enter();
+    let (equipment, _) = content_reader_key_names::equipment::fixture::load(&[
         (
             "common/units/equipment/plane_airframes.txt",
             "equipments = {

@@ -45,8 +45,8 @@ impl DailyObservers {
 }
 static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn test_globals() -> std::sync::MutexGuard<'static, ()> {
+#[cfg(test)]
+pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     *DAILY_OBSERVERS
@@ -158,7 +158,10 @@ impl Captured {
         grow_vec(&mut self.pointers, capacity.variants);
         grow_vec(&mut self.identities, capacity.variants);
     }
-    pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+    /// # Safety
+    /// Only the admitted hour's combat capture setup (or an isolated fixture holding
+    /// `test_globals()`) may clear the process-wide daily observer baseline for a refresh hour.
+    pub unsafe fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.daily_refresh = force_full
             || replay_data::cadence::Cadence::Daily(replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT)
                 .is_refresh(hour);
@@ -172,7 +175,11 @@ impl Captured {
         }
     }
 
-    pub fn begin(&mut self) {
+    /// # Safety
+    /// Only the admitted hour's sole combat capture (or an isolated fixture holding
+    /// `test_globals()`) may take the process-wide daily observer baseline loan; pair with
+    /// [`Self::finish`] to return it.
+    pub unsafe fn begin(&mut self) {
         let previous = DAILY_OBSERVERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -320,11 +327,18 @@ impl Captured {
             self.observer_cursor = cursor.get();
         }
     }
-    pub fn finish(&mut self, parent: Outcome) {
+    /// # Safety
+    /// Only the admitted hour's sole combat capture (or an isolated fixture holding
+    /// `test_globals()`) may publish the updated daily observer baseline and report observer sizing
+    /// demand while observer storage remains live.
+    pub unsafe fn finish(&mut self, parent: Outcome) {
         crate::land_events::observe_observer_rows(self.observers.len());
-        collector_combat_log::history_events::prepare_active(
-            self.observers.len().saturating_add(self.equipment.len),
-        );
+        // SAFETY: Caller guarantees admitted combat capture while history-event storage is live.
+        unsafe {
+            collector_combat_log::history_events::prepare_active(
+                self.observers.len().saturating_add(self.equipment.len),
+            );
+        }
         let missing = match parent {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,

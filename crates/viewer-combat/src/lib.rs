@@ -14,7 +14,7 @@ pub type NavySourcesOf = Arc<dyn Fn(&replay_frame::frame::DecodedFrame, u32, u32
 pub type RuleRelations = Arc<
     dyn Fn(
             &replay_frame::frame::DecodedFrame,
-            &content_reader_core::adjacency_rules::AdjacencyRule,
+            &content_reader_map::adjacency_rules::AdjacencyRule,
             u32,
         ) -> Result<viewer_unit_reads::movement_reads::RuleReason, String>
         + Send
@@ -1290,7 +1290,7 @@ pub enum TooltipAnchor {
     #[default]
     Pointer,
     NavalWindow,
-    Authored(content_reader_core::gui::native::TooltipAnchor),
+    Authored(content_reader_gui::gui::native::TooltipAnchor),
     At { x: i32, y: i32, below: bool },
 }
 
@@ -1834,7 +1834,7 @@ mod tests {
     }
 
     fn roster_recording() -> Arc<replay::campaign::Replay> {
-        use replay::spool::Record;
+        use replay_capture_spool::spool::Record;
         use replay_data::identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification};
         use replay_data::rows::{AirDailyRosterRow, CampaignRow, CountryLinkRow, TableId, TableRows};
         use replay_frame::branches::{BranchReason, BranchStart, Parentage};

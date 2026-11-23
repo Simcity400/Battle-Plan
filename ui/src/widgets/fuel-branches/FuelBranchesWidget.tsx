@@ -33,7 +33,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { useKeyedSeries, useSeriesParts } from '../../dashboard/keyedSeries';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 import { CONSUMPTION, OPTIONS } from './definition';
 import { FUEL_BRANCHES, FUEL_CONSUMERS, barWidths, branchName, branchesAt, fuelAmount, fuelDecimals, fuelStructure, percentText, ratioAxis,
   validateFuelBranches } from './fuelBranchesData';
@@ -188,7 +188,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const playbackHour = useFallbackHour(runtime.clock, active && following);
+  const playbackHour = usePlaybackHour(runtime.clock, active && following);
   const window = resolveWindow(widget, track, runtime.tracks, playbackHour);
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];

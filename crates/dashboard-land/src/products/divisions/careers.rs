@@ -308,7 +308,7 @@ fn history_of(rows: &[SharedDivisionHistoryRow], division: u64) -> &[SharedDivis
 }
 
 struct Levels {
-    experience: Result<content_reader_core::unit_leader::DivisionExperience, String>,
+    experience: Result<content_reader_key_names::unit_leader::DivisionExperience, String>,
     names: BTreeMap<i32, Option<String>>,
 }
 
@@ -318,7 +318,7 @@ impl Levels {
             .cat
             .as_ref()
             .map_err(|_| "Experience levels need the recorded content stack".to_owned())
-            .and_then(|cat| content_reader_core::unit_leader::DivisionExperience::read(cat.defines()?).map_err(|why| why.to_string()));
+            .and_then(|cat| content_reader_key_names::unit_leader::DivisionExperience::read(cat.defines()?).map_err(|why| why.to_string()));
         Self { experience, names: BTreeMap::new() }
     }
 }

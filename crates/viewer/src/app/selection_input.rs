@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
-use viewer_counters::map::{box_selection, selection_sounds};
+use viewer_counters::{box_selection, selection_sounds};
 use viewer_native_gui::counter_hovers::unit_hits::Kind;
 use viewer_runtime::unit_handle::Unit;
 use super::unit_pick;

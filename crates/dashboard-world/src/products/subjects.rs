@@ -2,8 +2,9 @@
 use dashboard_base::{products::{BranchParams, LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, span::HourSpan};
 use dashboard_query::{read, timeline::Stretch};
-use content_reader_core::autonomy::AutonomyStates;
-use replay::{columnar_frames::Recording, lanes};
+use content_reader_politics::autonomy::AutonomyStates;
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::lanes;
 use replay_columnar::summary::{Cells, Source as Column};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
@@ -286,7 +287,7 @@ fn subject_content(source: &Source, options: &dashboard_base::products::ContentO
     {
         return Ok(Arc::clone(cached));
     }
-    let (states, warnings) = content_reader_core::autonomy::read(&catalogue.content.layers)?;
+    let (states, warnings) = content_reader_politics::autonomy::read(&catalogue.content.layers)?;
     let loaded = Arc::new(SubjectContent { catalogue, states, warnings: warnings.into_iter().map(|(_, message)| message).collect() });
     *state = Some(Arc::clone(&loaded));
     Ok(loaded)

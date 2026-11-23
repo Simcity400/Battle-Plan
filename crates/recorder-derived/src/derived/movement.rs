@@ -1,7 +1,7 @@
 
 use std::collections::BTreeMap;
 
-use content_reader_core::movement::MovementMap;
+use content_reader_map::movement::MovementMap;
 use replay_data::{rows::DivisionRow, rows::Recorded, rows::tables};
 use replay_derive::{
     eta_derive, eta_derive::Defines, eta_derive::OrganisationDefines, eta_derive::RailDefines,
@@ -15,14 +15,14 @@ pub struct Content {
     pub defines: Defines,
     pub terrain_movement: Vec<i64>,
     pub regions: BTreeMap<u32, u32>,
-    pub sub_units: Result<content_reader_core::unit_leader::SubUnits, String>,
+    pub sub_units: Result<content_reader_script::sub_units::SubUnits, String>,
 }
 
 impl Content {
-    pub fn read(layers: &content_reader_core::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = content_reader_core::defines::read(layers)?;
-        let movement = content_reader_core::movement::MovementDefines::read(&defines)?;
-        let terrain = content_reader_core::terrain::read_definitions(layers)?;
+    pub fn read(layers: &content_reader_layers::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = content_reader_defines::defines::read(layers)?;
+        let movement = content_reader_map::movement::MovementDefines::read(&defines)?;
+        let terrain = content_reader_key_names::terrain::read_definitions(layers)?;
         let regions = content_reader_regions::regions::read(layers)?;
         Ok(Self {
             map: MovementMap::read(layers, &defines)?,
@@ -57,7 +57,7 @@ impl Content {
                 .iter()
                 .flat_map(|(&id, region)| region.provinces.iter().map(move |&p| (p, id)))
                 .collect(),
-            sub_units: content_reader_core::unit_leader::sub_units(layers)
+            sub_units: content_reader_key_names::unit_leader::sub_units(layers)
                 .map_err(|error| error.to_string()),
         })
     }
@@ -516,7 +516,7 @@ mod tests {
         out_of_fuel_speed: Option<i64>,
         base_speed: i64,
     ) -> (DecodedFrame, Content) {
-        use content_reader_core::movement::{Neighbour, ProvinceTerrain};
+        use content_reader_map::movement::{Neighbour, ProvinceTerrain};
         use engine_executable::{build::FIXED_MODIFIER_GAP, executable_tables as exec_tables};
         use replay_data::rows::{
             CoreSupplyAccessRow, CountryCounterInputRow, CountryLinkRow, CountryMovementModifiers,
@@ -530,9 +530,9 @@ mod tests {
         static TABLES: std::sync::OnceLock<exec_tables::Tables> = std::sync::OnceLock::new();
         if !exec_tables::is_initialized() {
             let tables = TABLES.get_or_init(|| {
-                let defaults = content_reader_core::test_game::tables();
+                let defaults = content_reader_script::test_game::tables();
                 let first = defaults.keywords.as_ref().unwrap().modifier_names.len();
-                content_reader_core::test_game::executable()
+                content_reader_script::test_game::executable()
                     .modifiers(
                         (first..FIXED_MODIFIER_GAP as usize)
                             .map(|index| format!("fixture_modifier_{index}")),

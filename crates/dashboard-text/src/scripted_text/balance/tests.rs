@@ -235,7 +235,7 @@ impl<'a> BalanceEffectScopes<'a> {
     pub fn describe(
         &self,
         text: &ScriptedText<'a>,
-        effects: &[content_reader_core::parser::Item],
+        effects: &[content_reader_parser::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,

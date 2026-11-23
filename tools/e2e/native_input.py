@@ -48,6 +48,7 @@ u.ScreenToClient.argtypes = [w.HWND, c.POINTER(w.POINT)]
 u.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageW.restype = w.LPARAM
 WM_SETTEXT, BM_CLICK = 0x000C, 0x00F5
+APP_TITLES = ("BattlePlan (Alpha)", "BattlePlan (Nightly)")
 MAP_TITLE = "BattlePlan map"
 
 
@@ -130,7 +131,7 @@ class Desktop:
 
     def point(self, x, y):
         """The app client point (x, y) in client pixels of the map's window under it."""
-        main = next((hwnd for hwnd, pid, _, title, _, _ in self.windows() if pid == self.app_pid and title == "BattlePlan"), None)
+        main = next((hwnd for hwnd, pid, _, title, _, _ in self.windows() if pid == self.app_pid and title in APP_TITLES), None)
         if main is None:
             raise RuntimeError("the app's window is gone")
         point = w.POINT(round(x), round(y))

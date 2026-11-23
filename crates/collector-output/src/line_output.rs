@@ -97,7 +97,11 @@ fn presize_storage(events: usize) {
     }
 }
 
-pub fn install_offered() {
+/// # Safety
+/// Caller must hold exclusive pre-publication attach ownership (before enabling hooks), run on
+/// the admitted post-drain observer boundary under the capture gate, or hold `test_lock()` in an
+/// isolated test with hooks quiesced as the sole log-swap consumer.
+pub unsafe fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
     };
@@ -143,7 +147,10 @@ static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
-pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
 static ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static CREDIT_CALLERS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -310,7 +317,10 @@ thread_local! {
     static PENDING: Cell<Pending> = const { Cell::new(NOTHING_PENDING) };
 }
 
-pub fn invalidate() {
+/// # Safety
+/// Caller must own the active session's capture or publication failure path (or hold `test_lock()`
+/// in an isolated test) when invalidating line-output observation.
+pub unsafe fn invalidate() {
     OBSERVATION.invalidate();
 }
 
@@ -423,7 +433,7 @@ fn observe_credit(frozen: Option<Entry>) {
         Some(entry) => append(entry),
         None => {
             COUNTERS[9].fetch_add(1, Ordering::Relaxed);
-            invalidate();
+            OBSERVATION.invalidate();
         }
     }
 }
@@ -465,7 +475,7 @@ fn entry(slot: &Slot) -> Entry {
     let counts = slot.counts.load(Ordering::SeqCst);
     Entry {
         kind: OutputKind::from_raw(slot.kind.load(Ordering::SeqCst)).unwrap_or_else(|| {
-            invalidate();
+            OBSERVATION.invalidate();
             OutputKind::Equipment
         }),
         line: slot.line.load(Ordering::SeqCst),
@@ -485,7 +495,7 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+pub(crate) fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
@@ -564,7 +574,8 @@ impl Hooks {
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize, events: usize) -> Self {
         presize(events);
-        install_offered();
+        // SAFETY: Caller exclusively owns this hook family during attach before enabling hooks.
+        unsafe { install_offered() };
         let domain = output_hooks::Domain {
             failure: output_hooks::Failure::Propagate,
             observation: &OBSERVATION,
@@ -625,21 +636,26 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn observe_for_test(enabled: bool) {
+#[cfg(test)]
+pub(crate) fn observe_for_test(enabled: bool) {
     crate::world_lifetime::observe_for_test(enabled);
+    ENABLED.store(false, Ordering::SeqCst);
     BASE.store(0, Ordering::Relaxed);
     bind_callers(0).unwrap();
-    ENABLED.store(enabled, Ordering::SeqCst);
-    CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
     if enabled {
-        reset_log_for_test(4096);
+        // SAFETY: In-crate tests hold `test_lock()` with `ENABLED` false before enabling.
+        unsafe { reset_log_for_test(4096) };
     }
+    CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
+    ENABLED.store(enabled, Ordering::SeqCst);
     PENDING.set(NOTHING_PENDING);
 }
 
+/// # Safety
+/// Caller holds [`test_lock()`] (or exclusive fixture ownership) with line-output hooks disabled
+/// and quiescent.
 #[cfg(any(test, feature = "test-support"))]
-pub fn reset_log_for_test(capacity: usize) {
+pub unsafe fn reset_log_for_test(capacity: usize) {
     OBSERVATION.required.store(0, Ordering::Relaxed);
     SPILL.clear();
     let mut current = Storage::new(capacity).unwrap();
@@ -651,8 +667,8 @@ pub fn reset_log_for_test(capacity: usize) {
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
+#[cfg(test)]
+fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
     if let Some(amount) = delivered {
         observe_delivery(
             DELIVERY.callers[producer].0,
@@ -790,7 +806,8 @@ mod tests {
     fn a_live_population_larger_than_the_log_presizes_a_full_serial_pass() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(8);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(8) };
         let population = 70_000;
         let before = drained(0).0.unwrap();
         let swaps = serde_json::to_value(status()).unwrap()["swaps"]
@@ -807,7 +824,7 @@ mod tests {
             offered
         );
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
             population * 2
@@ -837,7 +854,8 @@ mod tests {
     fn a_burst_into_an_empty_log_is_handed_over_whole_and_grows_the_next_log() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(0);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(0) };
         assert_eq!(capacity_for_lines(0), 0);
         let overflows = serde_json::to_value(status()).unwrap()["overflowed_logs"]
             .as_u64()
@@ -853,7 +871,7 @@ mod tests {
         assert_eq!(OBSERVATION.required.load(Ordering::Relaxed), 5000);
         assert!(SPILL.is_empty());
         presize(0);
-        install_offered();
+        unsafe { install_offered() };
         collect();
         assert_eq!(CAPACITY.load(Ordering::Acquire), 5000);
         for line in 5001..=10_000 {
@@ -879,37 +897,38 @@ mod tests {
     fn swaps_wait_for_pending_entries_and_writers_without_losing_or_duplicating_ticks() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(8);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(8) };
         for line in 1..=3 {
             let _writer = Call::enter();
             append(tick(line));
         }
         presize(20);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         let (first, mut entries) = drained(2);
         let first = first.unwrap();
         assert!(first.complete());
         let writer = Call::enter();
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         drop(writer);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
             capacity_for_lines(20)
         );
         assert!(LOG_SWAP.lock().unwrap().retired.is_some());
         presize(2000);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
             capacity_for_lines(20)
         );
         collect();
-        install_offered();
+        unsafe { install_offered() };
         collect();
         for line in 4..=6 {
             let _writer = Call::enter();
@@ -1184,7 +1203,8 @@ mod tests {
     fn bursts_past_the_log_disabled_hooks_and_epochs_are_handed_over_as_they_are() {
         let _lock = test_lock();
         observe_for_test(true);
-        reset_log_for_test(8);
+        // SAFETY: Test holds `test_lock()` with line-output hooks quiescent.
+        unsafe { reset_log_for_test(8) };
         let a = Line::new(0x41_0000_0021, 0xa_0000_0046, 0);
         let (before, _) = drained(1);
         let before = before.unwrap();
@@ -1195,7 +1215,7 @@ mod tests {
             produce_for_test(a.address(), NAVAL, count, None);
         }
         presize(20);
-        install_offered();
+        unsafe { install_offered() };
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         let (result, entries) = drained(4);
         let whole = result.unwrap();
@@ -1209,7 +1229,7 @@ mod tests {
             serde_json::to_value(status()).unwrap()["overflowed_logs"],
             overflows
         );
-        install_offered();
+        unsafe { install_offered() };
         collect();
         assert_eq!(
             serde_json::to_value(status()).unwrap()["capacity"],
@@ -1217,7 +1237,7 @@ mod tests {
         );
         let grown = drained(4).0.unwrap();
         assert_eq!((grown.epoch, grown.first), (whole.epoch, whole.cursor));
-        invalidate();
+        unsafe { invalidate() };
         let (result, _) = drained(4);
         assert!(result.unwrap().epoch > whole.epoch);
         ENABLED.store(false, Ordering::SeqCst);

@@ -228,8 +228,8 @@ impl Product for ThreatEvents {
         let mut unreadable = 0usize;
         for stretch in &timeline.stretches {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            let reads = [replay::at::Read { table: TableId::ThreatSources, columns: None, keys: replay::at::Keys::All }, replay::at::Read { table: TableId::CountryLinks, columns: None, keys: replay::at::Keys::All }];
-            let frame = dashboard_query::cost::storage(|| replay::at::frame(recording, stretch.run, stretch.first, &reads))?;
+            let reads = [replay_lanes::at::Read { table: TableId::ThreatSources, columns: None, keys: replay_lanes::at::Keys::All }, replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: replay_lanes::at::Keys::All }];
+            let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, stretch.first, &reads))?;
             let listed = match frame.complete::<tables::ThreatSources>() {
                 Ok(sources) => {
                     let links = frame.complete::<tables::CountryLinks>().ok();

@@ -1,2 +1,0 @@
-[data-held] { transition: opacity var(--t-fast) var(--ease); }
-[data-held='stale']:not([data-held='stale'] *) { opacity: var(--muted-row-opacity); }

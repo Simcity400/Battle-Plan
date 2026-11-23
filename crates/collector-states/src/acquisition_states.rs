@@ -672,14 +672,15 @@ pub mod tests {
     fn states_pool_returns_single_census_storage_and_visitor() {
         for workers in [0, 1, 3] {
             let bytes = fixture();
-            let pool =
-            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-            unsafe { Pool::start(workers, 1, move |request: &mut Request| {
-                request.run(&Movement(SliceMemory {
-                    base: 0,
-                    bytes: &bytes,
-                }))
-            }) }
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                Pool::start(workers, 1, move |request: &mut Request| {
+                    request.run(&Movement(SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    }))
+                })
+            }
             .unwrap();
             let owned = request(3);
             let pointer = owned.census.payload.as_ptr();

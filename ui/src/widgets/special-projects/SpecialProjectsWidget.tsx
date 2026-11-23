@@ -24,7 +24,7 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useHeadProduct, withHeld } from '../../dashboard/headProduct';
+import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
@@ -37,7 +37,7 @@ import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries,
   projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName,
-  validateSpecialProjectsReply } from './specialProjectsData';
+  validateSpecialProjectsReply, progressStyle } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import type { PlaybackController } from '../../dashboard/playback';
@@ -64,7 +64,7 @@ type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
 
 type HourNow = () => number;
 
-function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
+function CurrentList({ reply, at, item, clock, feed, placement }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; placement?: number; feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
   const widths = useMemo(() => {
@@ -78,13 +78,14 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
       .concat([...iterations].map(text => <small key={text}>{text}</small>));
   }, [reply]);
   const exactRead = feed?.exactRead;
+  const painted = !!feed?.pipeline && feed.pipe !== undefined && feed.follow !== undefined;
   useDrawnPanel(list, clock, feed, true);
   const groups = useMemo(() => currentProjects(reply, at), [reply, at]);
   const { running, completed, earlier, cancelled } = groups;
   const rows = (g: typeof groups) => (['running', 'completed', 'earlier', 'cancelled'] as const).flatMap(section =>
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
   useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
-    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
+    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined, placement);
   if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
   const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`special-project-row${className}`} {...item(card)}>
     <ProjectTile icon={card.info.icon} /><span className="special-project-label"><strong data-panel-label={card.project.id}>{card.info.name}</strong><span>{line}</span></span></div>;
@@ -92,9 +93,10 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
     {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
       const { run, info } = card;
       return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
-        style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
+        style={progressStyle(run.progress, painted) as CSSProperties | undefined} {...item(card)} aria-label={undefined}
+        aria-labelledby={['name', 'progress', 'iterations'].map(part => `${valueId}-${card.project.id}-${part}`).join(' ')}>
         <ProjectTile icon={info.icon} />
-        <span className="special-project-now-text"><strong>{info.name}</strong><span>
+        <span className="special-project-now-text"><strong id={`${valueId}-${card.project.id}-name`}>{info.name}</strong><span>
           {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}
           {run.state === 'unknown' && <><b className="special-project-state">State unknown</b>·</>}
           <Scientist reply={reply} info={info} /></span></span>
@@ -151,8 +153,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
   const gate = useGate(runtime, widget);
-  const live = withHeld(useHeadProduct(runtime, gate, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateSpecialProjectsReply, structure: projectStructure }));
+  const live = useHeadProduct(runtime, gate, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateSpecialProjectsReply, structure: projectStructure });
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const data = view === 'history' ? history.data : currentData;
   const { error, retry } = view === 'history' ? history : live;
@@ -265,7 +267,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     else {
       const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
-      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
+      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} placement={live.placement} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
         reply={reply} at={at} item={item(reply)} />{details}</>
         : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}</>;
     }

@@ -50,7 +50,7 @@ fn required_project_freeze_failure_is_terminal_before_ready_publication() {
 }
 
 fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMemo) {
-    process_job(shared, job, memo);
+    process_job(shared, job, memo, failure::stage);
     if !collector_memory::terminal::failed() {
         shared.frames.push_ready(job.index);
         shared
@@ -109,9 +109,10 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
     job.force_full = true;
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         failure::worker(|| {
-            // SAFETY: The test fixture exclusively owns this panic injection.
-            unsafe { failure::fail_at("air copies") };
-            process_owned_job(&shared, job, &mut AirBasesMemo::default());
+            process_owned_job_with_stage(&shared, job, &mut AirBasesMemo::default(), |stage, part| {
+                failure::stage(stage, part);
+                assert_ne!(stage, "air copies", "synthetic decode failure");
+            });
         });
     }))
     .unwrap_err();
@@ -1545,9 +1546,13 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
     for (missing, missing_mask) in CHARACTER_MASKS.into_iter().enumerate() {
         let bytes = kit::mapped_fixture();
         let memory = kit::memory(&bytes);
-        characters::advisors::note_modifier_demand(
-            engine_native::cadvisor::modifier_demand(&memory, kit::BASE, kit::GAME_STATE).unwrap(),
-        );
+        // SAFETY: Isolated test holds `characters::test_globals()` for advisor modifier demand.
+        unsafe {
+            characters::advisors::note_modifier_demand(
+                engine_native::cadvisor::modifier_demand(&memory, kit::BASE, kit::GAME_STATE)
+                    .unwrap(),
+            );
+        }
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.characters_pilot();
         *captured = characters::Captured::with_capacities(&capacities);
@@ -2443,7 +2448,8 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
             }
         }
         drop(trace);
-        frame.table_reads = counts;
+        #[cfg(feature = "acquisition_profile")]
+        { frame.table_reads = counts; }
         frame.extended.release_unit_inputs();
         drop(lease);
         assert_eq!(
@@ -2512,6 +2518,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
             frame.divisions_result,
             Outcome::Unavailable { reason: failure }
         );
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(frame.table_reads, counts);
         let detail = frame.extended.test_division_detail();
         for outcome in [
@@ -3465,7 +3472,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
                 hour: if (9..=10).contains(&step) { 21 } else { 0 },
                 force_full: false,
             };
-            let report = collector_air::extended::air::copy_air_bases_refresh(
+            let report = collector_air::extended::air::copy_air_bases_fixture(
                 &kit::memory(&bytes),
                 ctx,
                 &mut payload,
@@ -3538,7 +3545,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_air_bases_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report = collector_air::extended::air::copy_air_bases_refresh(&memory, ctx, &mut first);
+    let report = collector_air::extended::air::copy_air_bases_fixture(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.air_bases_pilot().bases_raw_mode = true;
     frame.extended.radar_pilot().registrations_raw_mode = true;

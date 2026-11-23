@@ -64,7 +64,10 @@ impl Captured {
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
-    pub fn capture(
+    /// # Safety
+    /// Caller must hold hourly capture admission as the sole consumer of market events while
+    /// observer storage stays live and teardown is excluded.
+    pub unsafe fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -74,7 +77,8 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let begin = crate::clock::qpc();
-        self.event_refusal = producer::drain(&mut self.events).err();
+        // SAFETY: Caller holds hourly capture admission as the sole market-events consumer.
+        self.event_refusal = unsafe { producer::drain(&mut self.events) }.err();
         let full = full || held::full_publication_required();
         if !full && let Some(reason) = self.event_refusal {
             held::refuse(reason);
@@ -252,14 +256,14 @@ mod tests {
                 panic!("failed shared bootstrap must not be retried");
             }
         }
-        let _session = producer::test_support::Session::default();
-        producer::boundary(
+        let _session = unsafe { producer::test_support::Session::new() };
+        unsafe { producer::boundary(
             Some(engine_native::cgame_state::Clock {
                 hour: 100,
                 ..Default::default()
             }),
             false,
-        );
+        ) };
         held::discover_country(
             &Unreadable,
             0,
@@ -274,7 +278,7 @@ mod tests {
         held::finish_seed(true);
         held::recover_contracts(&NoRetry, 0, 0x100);
         let mut pack = Captured::vacant();
-        pack.capture(&NoRetry, 0, 0x100, 100, false);
+        unsafe { pack.capture(&NoRetry, 0, 0x100, 100, false) };
         for outcome in &pack.outcomes()[..3] {
             assert_eq!(
                 *outcome,
@@ -317,14 +321,14 @@ mod tests {
             }
         }
         for daily in [true, false] {
-            let _session = producer::test_support::Session::default();
-            producer::boundary(
+            let _session = unsafe { producer::test_support::Session::new() };
+            unsafe { producer::boundary(
                 Some(engine_native::cgame_state::Clock {
                     hour: 100,
                     ..Default::default()
                 }),
                 false,
-            );
+            ) };
             if daily {
                 held::finish_contract_seed(false);
             }
@@ -337,7 +341,7 @@ mod tests {
             held::recover_contracts(&NoRetry, 0, 0x100);
             held::recover_contracts(&NoRetry, 0, 0x100);
             let mut pack = Captured::vacant();
-            pack.capture(&NoRetry, 0, 0x100, 100, false);
+            unsafe { pack.capture(&NoRetry, 0, 0x100, 100, false) };
             assert_eq!(pack.outcomes()[0], Outcome::Rows { len: 0 });
             assert!(matches!(pack.outcomes()[1], Outcome::Unavailable { .. }));
             assert_eq!(pack.outcomes()[2], Outcome::Rows { len: 0 });
@@ -356,7 +360,7 @@ mod tests {
             }
         }
         for populated in [false, true] {
-            let session = producer::test_support::Session::default();
+            let session = unsafe { producer::test_support::Session::new() };
             let mut encoder = FrameEncoder::new();
             let mut decoder = FrameDecoder::for_tables(&TABLES);
             let scratch = ProjectionScratch::default();
@@ -367,13 +371,13 @@ mod tests {
                     encoder = FrameEncoder::new();
                     decoder = FrameDecoder::for_tables(&TABLES);
                 }
-                producer::boundary(
+                unsafe { producer::boundary(
                     Some(engine_native::cgame_state::Clock {
                         hour,
                         ..Default::default()
                     }),
                     false,
-                );
+                ) };
                 let reseeded = held::full_publication_required();
                 assert_eq!(reseeded, matches!(hour, 100 | 102));
                 if reseeded {
@@ -443,7 +447,7 @@ mod tests {
                     });
                 }
                 let mut pack = Captured::vacant();
-                pack.capture(&NoReads, 0, 0, hour, false);
+                unsafe { pack.capture(&NoReads, 0, 0, hour, false) };
                 for outcome in &pack.outcomes()[..3] {
                     assert!(
                         matches!(outcome, Outcome::Rows { len } if !reseeded || *len == usize::from(populated)),
@@ -469,7 +473,7 @@ mod tests {
                 let wire = encoder.encode_bytes(frame, false).unwrap();
                 let frame = wire.decode().unwrap();
                 assert_eq!(frame.keyframe, matches!(hour, 100 | 102));
-                replay::spool::encode_record(&replay::spool::Record::Frame(frame.clone())).unwrap();
+                replay_capture_spool::spool::encode_record(&replay_capture_spool::spool::Record::Frame(frame.clone())).unwrap();
                 let decoded = decoder.apply(&frame).unwrap();
                 for table in TABLES {
                     match &*decoded.tables[table.index()] {

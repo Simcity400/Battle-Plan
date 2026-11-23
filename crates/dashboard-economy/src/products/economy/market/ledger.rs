@@ -256,11 +256,11 @@ impl Product for MarketLedger {
     }
 }
 
-fn plain_names(recording: &replay::columnar_frames::Recording, run: u32, hour: i32, variants: &[u64], context: &names::Context) -> io::Result<BTreeMap<u64, Option<String>>> {
+fn plain_names(recording: &replay_recording::columnar_frames::Recording, run: u32, hour: i32, variants: &[u64], context: &names::Context) -> io::Result<BTreeMap<u64, Option<String>>> {
     let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
-    let mut reads: Vec<replay::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens].into_iter().map(replay::at::Read::all).collect();
-    reads.push(replay::at::Read { table: TableId::VariantDefinitions, columns: None, keys: replay::at::Keys::These(&keys) });
-    let frame = dashboard_query::cost::storage(|| replay::at::frame(recording, run, hour, &reads))?;
+    let mut reads: Vec<replay_lanes::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens].into_iter().map(replay_lanes::at::Read::all).collect();
+    reads.push(replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: replay_lanes::at::Keys::These(&keys) });
+    let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
     Ok(names::plain_names(&frame, variants, context))
 }
 

@@ -923,12 +923,12 @@ fn states_branches() {
             active: 0,
             ..Default::default()
         }]));
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names
         .countries
         .extend([b"AAA".to_vec(), b"BBB".to_vec(), b"CCC".to_vec()]);
     names.counts.buildings.insert(b"syn_mill".to_vec());
-    let resources = [content_reader_core::resources::Resource {
+    let resources = [content_reader_key_names::resources::Resource {
         token: "syn_ore".into(),
         icon_frame: Some(7),
     }];
@@ -1532,7 +1532,7 @@ fn states_branches() {
             out.refusals
         );
         if let Some(reason) = refusal {
-            let parsed = content_reader_core::parser::parse(body.as_bytes()).unwrap();
+            let parsed = content_reader_parser::parser::parse(body.as_bytes()).unwrap();
             let effect_key = key(&parsed.items[0]);
             assert!(
                 out.refusals
