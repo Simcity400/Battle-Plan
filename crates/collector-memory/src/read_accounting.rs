@@ -192,6 +192,8 @@ mod counted {
 
         fn restore(&mut self, tables: Option<&mut TableCounts>) {
             if let Some((previous, observer)) = self.previous.take() {
+                #[cfg(not(feature = "acquisition_profile"))]
+                let _ = ReadCounts::take_current();
                 ReadCounts::replace_observer(observer);
                 COUNTS.with_borrow_mut(|counts| {
                     if let Some(tables) = tables {
