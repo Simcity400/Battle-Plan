@@ -5,7 +5,7 @@ use crate::{
 };
 use replay_data::{BranchId, Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
-use viewer_counters::map::counters::Shown;
+use viewer_counters::counters::Shown;
 
 
 #[cfg(test)]
