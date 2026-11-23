@@ -111,6 +111,26 @@ fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], r
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FixtureHistory(History);
+
+#[cfg(test)]
+impl FixtureHistory {
+    pub(crate) fn gather(
+        &mut self,
+        roles: &mut RoleCensus,
+        memory: &impl Memory,
+        scope: (usize, usize),
+        census: &[PortraitIdentity],
+        historical: usize,
+    ) -> bool {
+        roles.gather_using(memory, scope, census, historical, |scope, historical, pointers, rows| {
+            self.0.generation(scope, historical, pointers, rows)
+        })
+    }
+}
+
 static LIVE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static LIVE_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -198,11 +218,22 @@ impl RoleCensus {
         census: &[PortraitIdentity],
         historical: usize,
     ) -> bool {
+        LIVE_LEN.store(census.len(), std::sync::atomic::Ordering::Relaxed);
+        self.gather_using(memory, scope, census, historical, generation_of)
+    }
+
+    fn gather_using(
+        &mut self,
+        memory: &impl Memory,
+        scope: (usize, usize),
+        census: &[PortraitIdentity],
+        historical: usize,
+        generation: impl FnOnce((usize, usize), usize, &[usize], &[u8]) -> u64,
+    ) -> bool {
         self.scope = scope;
         self.complete = false;
         self.generation = 0;
         self.required = census.len();
-        LIVE_LEN.store(census.len(), std::sync::atomic::Ordering::Relaxed);
         self.historical = historical;
         self.grow();
         if census.len() > self.fits() || historical > census.len() {
@@ -217,7 +248,7 @@ impl RoleCensus {
         let completed = memory.copy_records(RecordSources::Pointers(&self.pointers), &LAYOUT, rows);
         self.complete = completed == census.len() * FIELDS.len();
         if self.complete {
-            self.generation = generation_of(scope, historical, &self.pointers, rows);
+            self.generation = generation(scope, historical, &self.pointers, rows);
         }
         self.complete
     }

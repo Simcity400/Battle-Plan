@@ -420,7 +420,7 @@ fn transfer_demands_no_land_families_but_shared_land_keys_remain() {
         Outcome::Rows { len: 0 }
     );
     assert_eq!(
-        capture.capture_rivers(&world, 0, GAME, &countries),
+        capture.capture_rivers_using(&world, 0, GAME, &countries, &Mutex::new(None)),
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.counts[..4], [[0; 3]; 4]);
@@ -533,7 +533,7 @@ fn transfer_branch_prepares_without_any_readable_land_state_or_template() {
         Outcome::Rows { len: 0 }
     );
     assert_eq!(
-        capture.capture_rivers(&world, 0, GAME, &countries),
+        capture.capture_rivers_using(&world, 0, GAME, &countries, &Mutex::new(None)),
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.counts[..4], [[0; 3]; 4]);
@@ -757,9 +757,9 @@ fn river_demand_is_only_inside_native_crossing_kinds_and_survives_later_refusal(
 #[test]
 fn river_crossing_answers_follow_work_across_threads() {
     let key = (u32::MAX, u32::MAX);
-    held_crossings(|cache| cache.answers.insert(key, Some(3)));
+    held_crossings(&HELD_CROSSINGS, |cache| cache.answers.insert(key, Some(3)));
     assert_eq!(
-        std::thread::spawn(move || held_crossings(|cache| cache.answers.remove(&key)))
+        std::thread::spawn(move || held_crossings(&HELD_CROSSINGS, |cache| cache.answers.remove(&key)))
             .join()
             .unwrap(),
         Some(Some(3))
@@ -1078,7 +1078,7 @@ fn river_refusals_have_one_owner_across_preparation_and_capture() {
     capture.prepare_land_demand(&world, 0, GAME).unwrap();
     assert_eq!(capture.counts[3][2], 1);
     assert_eq!(
-        capture.capture_rivers(&world, 0, GAME, &countries),
+        capture.capture_rivers_using(&world, 0, GAME, &countries, &Mutex::new(None)),
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.counts[3][2], 1);

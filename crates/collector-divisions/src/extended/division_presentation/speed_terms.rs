@@ -123,9 +123,12 @@ struct HeldCrossings {
 }
 static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = Mutex::new(None);
 
-fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
+fn held_crossings<R>(
+    cache: &Mutex<Option<HeldCrossings>>,
+    visit: impl FnOnce(&mut HeldCrossings) -> R,
+) -> R {
     visit(
-        HELD_CROSSINGS
+        cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_or_insert_with(HeldCrossings::default),
@@ -1228,12 +1231,23 @@ impl SpeedTerms {
         game: usize,
         countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
     ) -> Outcome {
+        self.capture_rivers_using(memory, base, game, countries, &HELD_CROSSINGS)
+    }
+
+    fn capture_rivers_using(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game: usize,
+        countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
+        cache: &Mutex<Option<HeldCrossings>>,
+    ) -> Outcome {
         if !self.movers.iter().any(|mover| mover.land == Ok(true)) {
             return self.finish(Ok(0), 3);
         }
         let mut crossings = std::mem::take(&mut self.crossings);
         let ready = crossings.begin(memory, base, game);
-        let result = held_crossings(|held| {
+        let result = held_crossings(cache, |held| {
             let world = collector_lifetime::world_lifetime::generation();
             if held.world != Some(world) || world == u64::MAX {
                 held.answers.clear();

@@ -592,6 +592,7 @@ impl Writer {
         Self::start_scheduled(root, Unrestricted)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn start_with<B: SegmentBackend + 'static>(
         create: impl FnMut(&CampaignId) -> io::Result<B> + Send + 'static,
     ) -> io::Result<Self> {
