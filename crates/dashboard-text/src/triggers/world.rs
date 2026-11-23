@@ -2276,10 +2276,11 @@ impl<'a> World<'a> {
     fn completed_project_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         const COMPLETED: u64 =
             mask::<replay_data::rows::ProjectRow>(&["completed", "definition_id"]);
-        let Some(token) = self.token_of(name)? else {
-            return Ok(false);
-        };
+        let token = self.token_of(name)?;
         if let Some(accepted) = self.accepted_projects() {
+            let Some(token) = token else {
+                return Err(format!("project {} has no recorded spelling at this hour, so whether it was completed is not recorded", String::from_utf8_lossy(name)).into());
+            };
             if accepted.rows.values().any(|row| row.completed != 0 && row.definition_id == token && self.slot(row.owner) == Some(slot)) {
                 return Ok(true);
             }
@@ -2288,6 +2289,9 @@ impl<'a> World<'a> {
             }
             return Err(format!("whether country slot {slot} completed this project is not recorded: not every owner of that country has a Projects read supplying this hour").into());
         }
+        let Some(token) = token else {
+            return Ok(false);
+        };
         let (projects, unresolved) = get(&self.projects, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;

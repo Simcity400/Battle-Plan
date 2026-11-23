@@ -511,32 +511,72 @@ fn stamped(reads: &Reads<'_, '_>, table: TableId, owner: u32) -> Result<(i32, De
         Withheld::Partial => partial,
         Withheld::Owner => OTHER_OWNER,
     })?;
-    let rows = dashboard_base::products::at_hour::frame(reads.query, read, &[Read { table, keys: owner_ranges(&BTreeSet::from([owner]), shift) }], SpecialProjectDetailsAt::TITLE)
+    let mut rows = dashboard_base::products::at_hour::frame(reads.query, read, &[Read { table, keys: owner_ranges(&BTreeSet::from([owner]), shift) }], SpecialProjectDetailsAt::TITLE)
         .map_err(|why| format!("The read at hour {read} is unavailable: {why}"))?;
+    if table == TableId::Projects {
+        let mut ids = BTreeSet::new();
+        for row in rows.complete::<tables::Projects>().unwrap_or(&[]) {
+            ids.insert(row.definition_id);
+            if let Recorded::Value(runtime) = &row.runtime {
+                ids.extend(runtime.pending_reward);
+            }
+        }
+        let lexical = dashboard_base::products::at_hour::frame(reads.query, read, &[Read::these(TableId::LexicalTokens, ids.into_iter().map(u128::from))], SpecialProjectDetailsAt::TITLE)
+            .map_err(|why| format!("Project spellings at hour {read} are unavailable: {why}"))?;
+        rows.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
+    }
     Ok((read, rows))
 }
 
-fn supplied_project(reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(ProjectRow, i32), String> {
+fn stamped_project(reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(ProjectRow, i32, DecodedFrame), String> {
     let (read, frame) = stamped(reads, TableId::Projects, owner)?;
     let rows = frame.complete::<tables::Projects>().map_err(|why| format!("Projects are unavailable: {why}"))?;
-    rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| (rows[at].clone(), read)).ok_or_else(|| "The project is not recorded at this hour".to_owned())
+    let row = rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| rows[at].clone()).ok_or_else(|| "The project is not recorded at this hour".to_owned())?;
+    Ok((row, read, frame))
+}
+
+fn supplied_project(reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(ProjectRow, i32), String> {
+    stamped_project(reads, owner, id).map(|(row, read, _)| (row, read))
 }
 
 fn accepted_projects(reads: &Reads<'_, '_>, frame: &DecodedFrame) -> dashboard_text::triggers::AcceptedProjects {
     let mut accepted = dashboard_text::triggers::AcceptedProjects::default();
-    let owners = owners_of(frame, reads.holder.slot).unwrap_or_default();
-    let mut whole = true;
-    for &owner in &owners {
-        match stamped(reads, TableId::Projects, owner).and_then(|(_, rows)| rows.complete::<tables::Projects>().map(|rows| prefixed(rows, owner, |row| row.owner).to_vec()).map_err(|why| why.to_string())) {
-            Ok(rows) => {
-                accepted.owners.insert(owner);
-                accepted.rows.extend(rows.into_iter().map(|row| ((row.owner, row.local_id), row)));
+    let Ok(links) = frame.complete::<tables::CountryLinks>() else { return accepted };
+    let slices = frame.complete::<tables::SliceReads>().unwrap_or(&[]);
+    let mut by_slot: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (raw, slot) in dashboard_text::metadata::link_slots(links) {
+        by_slot.entry(slot).or_default().push(raw);
+    }
+    let mut by_stamp: BTreeMap<i32, BTreeSet<u32>> = BTreeMap::new();
+    for (&slot, owners) in &by_slot {
+        let country = Country::Slot(slot);
+        let Some(dashboard_query::identity::Holder::Found { id, .. }) = reads.query.holders.at(&country, reads.hour).map(|run| run.holder) else { continue };
+        let at = Reads { tag: &country, holder: Owner { slot, id }, ..*reads };
+        let mut whole = true;
+        for &owner in owners {
+            match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| at.usable(TableId::Projects, owner, read).is_ok()) {
+                Some(read) => {
+                    by_stamp.entry(read).or_default().insert(owner);
+                    accepted.owners.insert(owner);
+                }
+                None => whole = false,
             }
-            Err(_) => whole = false,
+        }
+        if whole {
+            accepted.slots.insert(slot);
         }
     }
-    if whole {
-        accepted.slots.insert(reads.holder.slot);
+    for (read, owners) in by_stamp {
+        let found = dashboard_base::products::at_hour::frame(reads.query, read, &[Read { table: TableId::Projects, keys: owner_ranges(&owners, 32) }], SpecialProjectDetailsAt::TITLE)
+            .ok()
+            .and_then(|stamp| stamp.complete::<tables::Projects>().ok().map(|rows| rows.iter().filter(|row| owners.contains(&row.owner)).cloned().collect::<Vec<_>>()));
+        match found {
+            Some(rows) => accepted.rows.extend(rows.into_iter().map(|row| ((row.owner, row.local_id), row))),
+            None => {
+                accepted.owners.retain(|owner| !owners.contains(owner));
+                accepted.slots.retain(|slot| by_slot[slot].iter().all(|owner| !owners.contains(owner)));
+            }
+        }
     }
     accepted
 }
@@ -570,12 +610,6 @@ fn scientist_references(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> (BTreeS
 
 fn tokens(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
-    for row in frame.complete::<tables::Projects>().unwrap_or(&[]) {
-        out.insert(row.definition_id);
-        if let Recorded::Value(runtime) = &row.runtime {
-            out.extend(runtime.pending_reward);
-        }
-    }
     out.extend(frame.complete::<tables::ProjectBreakthroughs>().unwrap_or(&[]).iter().map(|row| row.specialization));
     out.extend(frame.complete::<tables::ScientistSkills>().unwrap_or(&[]).iter().map(|row| row.token));
     out.extend(frame.complete::<tables::CharacterRoleTraits>().unwrap_or(&[]).iter().flat_map(|row| row.tokens.iter().copied()));
@@ -735,7 +769,7 @@ impl AtHour for SpecialProjectDetailsAt {
         out.scientists = scientists(frame, &owners, &reads, &mut namer, at.context, &mut out.unavailable)?;
         out.breakthroughs = breakthroughs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
         out.programs = programs(&owners, &reads, &mut namer, &mut out.unavailable);
-        out.projects = projects(frame, &owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
+        out.projects = projects(&owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
         if !namer.scoped.is_empty() { at.context.scoped_details.store(true, std::sync::atomic::Ordering::Relaxed); }
         out.warnings = namer.warnings();
         Ok(out)
@@ -1126,7 +1160,6 @@ fn choices(listed: &Listed, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>,
 }
 
 fn projects(
-    frame: &DecodedFrame,
     owners: &BTreeSet<u32>,
     reads: &Reads<'_, '_>,
     namer: &mut Namer<'_, '_, '_>,
@@ -1167,7 +1200,7 @@ fn projects(
             unavailable.push(why.clone());
         }
         for project in owned {
-            let token = spelled(frame, project.definition_id);
+            let token = spelled(stamp, project.definition_id);
             if let Err(why) = &token {
                 unavailable.push(why.clone());
             }
@@ -1196,7 +1229,7 @@ fn projects(
                 label: ProjectLabel { name, token: token.clone().unwrap_or_else(|_| project.definition_id.to_string()) },
                 read_hour: read,
                 pending_known: runtime.is_some_and(|runtime| runtime.pending_known),
-                pending: runtime.and_then(|runtime| runtime.pending_reward.map(|id| pending(frame, runtime, token.as_deref().map_err(String::as_str), id, namer))),
+                pending: runtime.and_then(|runtime| runtime.pending_reward.map(|id| pending(stamp, runtime, token.as_deref().map_err(String::as_str), id, namer))),
                 seed: runtime.and_then(|runtime| runtime.variables.as_ref()).map(|store| store.seed),
                 variables,
                 history_read_hour: history.as_ref().ok().map(|(read, _)| *read).filter(|_| choices.is_some()),
@@ -1317,10 +1350,10 @@ impl AtHour for SpecialProjectEffectsAt {
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
         let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
-        let project = match supplied_project(&reads, params.owner, params.project) {
-            Ok((project, read)) => {
+        let (project, spellings) = match stamped_project(&reads, params.owner, params.project) {
+            Ok((project, read, spellings)) => {
                 out.read_hour = Some(read);
-                project
+                (project, spellings)
             }
             Err(why) => {
                 out.unavailable = Some(why);
@@ -1328,7 +1361,7 @@ impl AtHour for SpecialProjectEffectsAt {
             }
         };
         let content = at.context.content.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
-        let token = match spelled(frame, project.definition_id) {
+        let token = match spelled(&spellings, project.definition_id) {
             Ok(token) => token,
             Err(why) => {
                 out.unavailable = Some(why);
@@ -1347,7 +1380,7 @@ impl AtHour for SpecialProjectEffectsAt {
             && let Some(id) = runtime.pending_reward
         {
             let found = runtime.pending_ordinal.ok_or_else(|| "Pending reward object occurrence is unavailable".to_owned()).and_then(|ordinal| {
-                let reward = spelled(frame, id)?;
+                let reward = spelled(&spellings, id)?;
                 content.definitions.reward_at(&token, ordinal, &reward).map(|found| (reward, ordinal, found))
             });
             match found {

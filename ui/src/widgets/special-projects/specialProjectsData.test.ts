@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyProject, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -542,4 +542,17 @@ test('R3-S5: a project seen only in history shows its dated completions with sta
   assert.equal(lane?.label, 'Status not recorded');
   assert.deepEqual(lane?.spans.map(span => [span.firstHour, span.lastHour, span.label]), [[118, 118, 'Completed']]);
   assert.equal(projectHistory(data, 119).lanes.find(lane => lane.id === 'history-only'), undefined, 'not before the read that first listed it');
+});
+
+test('R5-S3: a project seen only in history has a tooltip with status unknown and a menu to jump to its completion', () => {
+  const data = fixture();
+  data.projects.push({ id: 'history-only', owner: 9, local: 4, firstRead: 120, firstState: 'unknown', statuses: [], entries: [marker(118, 120)], attempts: [] });
+  const tip = historyTooltip(data, 'history-only', { id: 'x', firstHour: 118, lastHour: 118, label: 'Completed' }, 118, 130);
+  assert.deepEqual(tip?.rows, [{ label: 'Completed', value: dayLabel(118) }, { label: 'State', value: 'Not recorded' }]);
+  assert.match(tip?.note ?? '', /status is unknown/);
+  const project = historyProject(data, 'history-only', 130);
+  assert.equal(project?.id, 'history-only');
+  assert.deepEqual(completions(project!, 130).map(entry => entry.date), [118], 'the menu lists its completion to jump to');
+  assert.equal(historyProject(data, 'history-only', 119), null, 'no menu before the read that first listed it');
+  assert.equal(historyTooltip(data, 'history-only', null, 118, 119), null);
 });

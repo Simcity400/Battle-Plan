@@ -861,6 +861,10 @@ fn a_completed_project_is_known_only_from_the_countrys_accepted_project_rows() {
     });
     with_world_accepted(&f, accepted(Vec::new(), &[1]), |world| {
         assert_eq!(limit(world), Eval::False, "every owner read and none completed proves the else branch");
+        assert!(
+            matches!(world.evaluate(&items("is_special_project_completed = sp:never_spelled"), Scopes::of(Scope::Country(1))), Eval::Unknown(_)),
+            "a project with no recorded spelling is unknown, never false"
+        );
     });
     with_world_accepted(&f, accepted(Vec::new(), &[]), |world| {
         assert!(

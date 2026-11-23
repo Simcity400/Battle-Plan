@@ -35,7 +35,7 @@ import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
-import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
+import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyProject, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
   observedAt, completions, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
@@ -45,7 +45,7 @@ import ProjectDetails from './ProjectDetails';
 import ProjectWindow from './ProjectWindow';
 import { Scientist } from './projectParts';
 import './specialProjects.css';
-import type { SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectRecord, SpecialProjectsReply } from '../../generated/dashboard';
 
 const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 
@@ -211,9 +211,9 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     report();
     return subscribe(report);
   }, [view, data, now, subscribe, shown]);
-  const openMenu = (card: ProjectCard, x: number, y: number, hour: number) => {
+  const openMenu = (shown: ProjectRecord, x: number, y: number, hour: number) => {
     if (!track) return;
-    const project = (view === 'live' ? live.current()?.projects.find(project => project.id === card.project.id) : undefined) ?? card.project;
+    const project = (view === 'live' ? live.current()?.projects.find(project => project.id === shown.id) : undefined) ?? shown;
     const start = jumpItem(runtime, track.id, project.firstRead);
     menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(project.firstRead)}` },
       ...completions(project, hour).map(entry => ({ ...jumpItem(runtime, track.id, entry.date), label: `Jump to completion · ${dayLabel(entry.date)}` }))]);
@@ -228,13 +228,13 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(projectTooltip(reply, card, at)),
       onPointerMove: event => show(event.clientX, event.clientY, event.target), onPointerLeave: () => hideTooltip(owner),
       onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top, null); }, onBlur: () => hideTooltip(owner),
-      onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY, now()); },
+      onContextMenu: event => { event.preventDefault(); openMenu(card.project, event.clientX, event.clientY, now()); },
       onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
         if (event.key === 'Enter') {
           event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); if (track) setOpened({ on: openedOn(track, reply.tag), id: card.project.id, x: box.left + 48, y: box.bottom });
         }
         else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
-          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(atNow(), box.left, box.bottom, now());
+          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(card.project, box.left, box.bottom, now());
         }
       } };
   };
@@ -290,8 +290,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       if (!lane) return;
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
       const reply = notes[country];
-      const card = id === null || !reply ? null : historyCard(reply, id, at, resolved.memberships.get(reply.tag));
-      if (card) openMenu(card, x, y, at);
+      const project = id === null || !reply ? null : historyProject(reply, id, at, resolved.memberships.get(reply.tag));
+      if (project) openMenu(project, x, y, at);
     }} />;
   return <div className="special-projects" ref={view === 'live' ? live.root : undefined}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
 }

@@ -461,13 +461,21 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     const REPLACED: i32 = 35;
     const BEFORE: i32 = 30;
     const OWN: i32 = 38;
+    const TRANSFERRED: i32 = 39;
     const LISTED: i32 = 40;
+    const RIVAL_OWNER: u32 = 9003;
     let root = std::env::temp_dir().join(format!("special-project-iteration-{}-{:?}", std::process::id(), std::thread::current().id()));
     for (path, text) in [
         ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5}}"),
         ("common/special_projects/specialization/test.txt", "mod_science={}"),
-        ("common/special_projects/prototype_rewards/test.txt", "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE}}}}"),
-        ("common/special_projects/projects/test.txt", "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward}}"),
+        (
+            "common/special_projects/prototype_rewards/test.txt",
+            "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE if={limit={is_special_project_completed=sp:rival} add_political_power=5} else={add_political_power=7}}}}}",
+        ),
+        (
+            "common/special_projects/projects/test.txt",
+            "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward}} rival={specialization=mod_science generic_prototype_rewards={mod_reward}}",
+        ),
         ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"PP$VAL|0$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n"),
     ] {
         let file = root.join(path);
@@ -487,18 +495,23 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, runtime, program_reference: 1, started: 1, ..Default::default() };
         project.state.current_offset = 0x18;
         project.state.not_completed = 1;
-        set(&mut frame, TableId::Projects, TableRows::Projects(vec![project]));
+        let rival = ProjectRow { owner: RIVAL_OWNER, local_id: 1, definition_id: 79, completed: 1, ..Default::default() };
+        set(&mut frame, TableId::Projects, TableRows::Projects(vec![project, rival]));
+        if hour >= TRANSFERRED {
+            let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+            links.push(CountryLinkRow { id: RIVAL_OWNER, canonical_slot: 7 });
+        }
         let choice = |ordinal, date| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() };
-        let history = if replaced { [(0, BEFORE), (1, OWN)].into_iter().filter(|&(_, date)| date <= hour).map(|(ordinal, date)| choice(ordinal, date)).collect() } else { vec![choice(0, 24)] };
+        let history =
+            if replaced { [(0, BEFORE), (1, OWN), (2, TRANSFERRED)].into_iter().filter(|&(_, date)| date <= hour).map(|(ordinal, date)| choice(ordinal, date)).collect() } else { vec![choice(0, 24)] };
         set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(history));
-        let spelled: Vec<LexicalTokenRow> = if hour == LISTED {
-            [(41, "mod_reward"), (42, "mod_option"), (78, "replacement")].map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).into()
-        } else {
-            Vec::new()
-        };
-        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled));
-        let mut slices: Vec<SliceReadRow> =
-            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: hour })).collect();
+        let listed: &[(u32, &str)] = if hour == LISTED { &[(41, "mod_reward"), (42, "mod_option"), (78, "replacement")] } else { &[] };
+        let spelled = listed.iter().chain(&[(79, "rival")]).map(|&(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() });
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.collect()));
+        let mut slices: Vec<SliceReadRow> = [TableId::Projects, TableId::ProjectHistory]
+            .into_iter()
+            .flat_map(|table| [(11, hour), (9001, hour), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
+            .collect();
         slices.sort_by_key(|row| (row.table, row.owner));
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
         frame
@@ -525,6 +538,11 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     let own = iteration(1, OWN);
     assert_eq!(own["unavailable"], Value::Null, "{own}");
     assert!(own["sections"].to_string().contains("Variable 2"), "a choice made by the project the listing names shows its own values: {own}");
+    assert!(own["sections"].to_string().contains("PP7") && !own["sections"].to_string().contains("PP5"), "every owner of the country supplies its read and none completed the rival, so the else branch is shown: {own}");
+    let transferred = iteration(2, TRANSFERRED);
+    let shown = transferred["sections"].to_string();
+    assert!(!shown.contains("PP5") && !shown.contains("PP7"), "O-S1: the second owner's completed rival was read before it joined the country, so neither branch is shown: {transferred}");
+    assert!(transferred["refusals"].as_object().is_some_and(|refusals| !refusals.is_empty()), "and the reward is refused by name: {transferred}");
     let before = iteration(0, BEFORE);
     assert!(before["unavailable"].as_str().is_some_and(|why| why.contains("not proven to be this one")), "a choice whose project the choice-hour read does not prove is withheld whole, before anything is rendered: {before}");
     assert_eq!(before["sections"], json!([]), "nothing of it is shown, not even effects that read no project value: {before}");
@@ -636,7 +654,7 @@ fn owned_frame(hour: i32, linked: impl Fn(i32) -> bool, definition: impl Fn(i32)
     let spelled = [(41, "mod_reward"), (42, "mod_option"), (77, "project"), (78, "replacement")].into_iter().filter(|&(token, _)| token != 78 || hour >= 35);
     set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect()));
     let (projects, history) = read(hour);
-    let mut slices: Vec<SliceReadRow> = [11, MOVED_OWNER]
+    let mut slices: Vec<SliceReadRow> = [11, 9001, MOVED_OWNER]
         .into_iter()
         .flat_map(|owner| [(TableId::Projects, projects), (TableId::ProjectHistory, history)].map(|(table, read)| read.map(|sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
         .flatten()
@@ -671,4 +689,13 @@ fn details_label_choices_by_the_definition_read_with_their_history() {
     let reply = details(&source, 40);
     assert!(reply["projects"][0]["choices"].is_array(), "{reply}");
     assert!(!has(&reply, "lacks token 78"), "P-S8, X-S5: choices read at 30 belong to the definition read with them at 30, never the one the project holds at 40: {reply}");
+}
+
+#[test]
+fn details_spell_a_project_from_the_read_that_supplies_it() {
+    let read = |hour: i32| (Some(hour.min(30)), Some(hour.min(30)));
+    let source = owned_source("special-project-stamp-spelling", |hour| owned_frame(hour, |_| true, |at| if at >= 40 { 78 } else { 77 }, read));
+    let reply = details(&source, 41);
+    assert_eq!(reply["projects"][0]["label"]["token"], json!("project"), "R5-S4: the project read at 30 is spelled from that read, never from the playhead's rows: {reply}");
+    assert!(!has(&reply, "lacks token 77"), "{reply}");
 }
