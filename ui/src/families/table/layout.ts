@@ -7,8 +7,8 @@ import {
   type TableLayout,
   type TableOverflow,
   type TableSettings,
-} from '../../draw/tables/logic.ts';
-import type { TableTheme } from '../../draw/tables/surface.ts';
+  type TableTheme,
+} from './settings.ts';
 import { defaultWidestSamples, type ValueFormat } from '../valueFormat.ts';
 import type { TableColumnSpec } from './model.ts';
 

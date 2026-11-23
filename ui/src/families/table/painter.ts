@@ -15,9 +15,11 @@ import {
   scrollBounds,
   showsIcon,
   type GlideOffset,
+  type RankMarker,
+  type TableCanvasContext,
   type TableSettings,
-} from '../../draw/tables/logic.ts';
-import type { RankMarker, TableCanvasContext, TableTheme } from '../../draw/tables/surface.ts';
+  type TableTheme,
+} from './settings.ts';
 import { hasMeasuredValue, valueNumber, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';

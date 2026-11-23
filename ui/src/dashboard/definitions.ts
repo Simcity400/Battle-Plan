@@ -11,6 +11,7 @@ import type { OptionField, OptionValue } from './options';
 import type { Failure } from './queryError';
 import type { PinnedSpec } from './regionTime';
 import type { DeclaredProduct } from './request';
+import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -97,13 +98,14 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
+  declaration?: AnyTableWidgetDeclaration;
   usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   countryChip?: ComponentType<WidgetCountryChipProps>;
   headerControls?: ComponentType<HeaderControlsProps>;
 }
 
-export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'countryChip' | 'useOptionChoices' | 'usePresets'>;
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'declaration' | 'headerControls' | 'countryChip' | 'useOptionChoices' | 'usePresets'>;
 
 const registry = new Map<string, WidgetDefinition>();
 

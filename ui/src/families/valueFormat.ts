@@ -1,6 +1,22 @@
 import { formatNativeFixed5 } from '../charts/valueAxis.ts';
-import { amountText, percentCell } from '../draw/tables/logic.ts';
 import { assertValue, type Scalar, type Value } from './value.ts';
+
+function percentCell(raw: string | bigint): string {
+  const value = BigInt(raw);
+  const rounded = BigInt.asIntN(32, (value + (value < 0n ? -50000n : 50000n)) / 100000n);
+  const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
+  return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
+}
+
+function amountText(value: number | bigint, decimals: number, percent = false): string {
+  let raw: number | bigint = typeof value === 'number' ? Math.trunc(value) : value;
+  if (percent) raw = typeof raw === 'number' && Math.abs(raw) < 2 ** 46 ? raw * 100 : BigInt(raw) * 100n;
+  const negative = raw < 0;
+  const digits = String(negative ? -raw : raw).padStart(decimals + 1, '0');
+  const whole = digits.slice(0, digits.length - decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const fraction = decimals ? digits.slice(digits.length - decimals).replace(/0+$/, '') : '';
+  return `${negative ? '−' : ''}${whole}${fraction ? `.${fraction}` : ''}${percent ? '%' : ''}`;
+}
 
 export type ValueFormat =
   | 'integer'

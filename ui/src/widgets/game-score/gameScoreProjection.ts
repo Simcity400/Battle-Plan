@@ -1,29 +1,24 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { liveKey } from '../../charts/live.ts';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
-import { lookAt, type CountryLook } from '../../draw/tables/looks.ts';
-import { OFFERED } from '../../draw/tables/settings.ts';
-import type { GameScoreRow } from '../../generated/dashboard';
+import type { DeclaredFactionRun, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import {
   declareTableProjection,
+  type DeclarativeColumnSpec,
   type TableColumnSpec,
   type TableGroupSpec,
   type TableProjection,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
+import { OFFERED } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromLive, valueNumber, type Value } from '../../families/value.ts';
-import type { HourRanges } from '../occupied-states/occupiedProjection.ts';
+import type { GameScoreRow } from '../../generated/dashboard';
+import { DEFAULT_SORT, OPTIONS } from './definition.ts';
 import { SCORE_LABELS, SCORE_PARTS, scoreHint, scorePart, validateGameScore, type GameScoreReply, type ScorePart } from './gameScoreData.ts';
 
-export interface FactionRun {
-  readonly id: string;
-  readonly tag: string;
-  readonly firstHour: number;
-  readonly lastHour: number;
-  readonly names: readonly { readonly firstHour: number; readonly lastHour: number; readonly name: string | null }[];
-  readonly fallbackName: string | null;
-}
+export type FactionRun = DeclaredFactionRun;
 
 export interface GameScoreProjectionOptions {
   readonly all: boolean;
@@ -35,19 +30,7 @@ export interface GameScoreProjectionOptions {
   readonly factionRuns: readonly FactionRun[] | null;
   readonly rankMarkers: boolean;
   readonly cellBars: boolean;
-  readonly labels: Readonly<Record<string, readonly CountryLook[]>>;
-}
-
-const validated = new WeakMap<object, GameScoreReply>();
-
-function checkedScore(raw: unknown): GameScoreReply {
-  if (!raw || typeof raw !== 'object') return validateGameScore(raw);
-  let held = validated.get(raw);
-  if (!held) {
-    held = validateGameScore(raw);
-    validated.set(raw, held);
-  }
-  return held;
+  readonly labels: CountryLooksMap;
 }
 
 const inRanges = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);
@@ -56,7 +39,7 @@ function factionAt(runs: readonly FactionRun[] | null, tag: string, hour: number
   if (!runs) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2 };
   for (const run of runs) {
     if (run.tag === tag && run.firstHour <= hour && hour <= run.lastHour) {
-      const name = run.names.find(n => n.firstHour <= hour && hour <= n.lastHour)?.name ?? run.fallbackName;
+      const name = run.names.find(n => n.firstHour <= hour && hour <= run.lastHour)?.name ?? run.fallbackName;
       return { key: `faction:${run.id}`, label: name ?? 'Name not recorded', order: name === null ? 1 : 0, orderKey: BigInt(run.id) };
     }
   }
@@ -93,36 +76,23 @@ export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = fal
 }
 
 export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = registerTableProjection(
-  declareTableProjection<unknown, GameScoreRow, GameScoreProjectionOptions>({
+  declareTableProjection<GameScoreReply, GameScoreRow, GameScoreProjectionOptions>({
     kind: 'game-score',
+    validate: validateGameScore,
     rank: true,
     rankMarkers: options => options.rankMarkers,
-    columns: (raw, options) => {
-      const reply = checkedScore(raw);
+    columns: (reply, options): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {
       const specs = gameScoreColumns(reply.hints, options.cellBars);
       return [
-        {
-          ...specs[0]!,
-          iconSlot: true,
-          country: row => row.tag,
-          looks: (row, opt) => opt.labels[row.tag],
-          value: (row, _live, hour, opt) => {
-            const look = lookAt(opt.labels[row.tag], hour);
-            return look && look.name ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
-          },
-        },
-        ...SCORE_PARTS.map((part, idx) => ({
+        { ...specs[0]!, countryField: 'tag' },
+        ...SCORE_PARTS.map((part, idx): DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions> => ({
           ...specs[idx + 1]!,
-          country: (row: GameScoreRow) => row.tag,
-          value: (row: GameScoreRow, live: Parameters<typeof valueFromLive>[0]): Value => {
-            if (row[part].missing !== null) return notRecorded(row[part].missing);
-            return valueFromLive(live, liveKey(row.tag, part));
-          },
+          country: 'tag',
+          value: (row, live): Value => (row[part].missing !== null ? notRecorded(row[part].missing) : valueFromLive(live, liveKey(row.tag, part))),
         })),
       ];
     },
-    rows: (raw, live, hour, options) => {
-      const reply = checkedScore(raw);
+    rows: (reply, live, hour, options) => {
       if (reply.missing !== null) {
         return { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
       }
@@ -152,17 +122,54 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
     rowKey: row => row.tag,
     rowName: (row, hour, options) => lookAt(options.labels[row.tag], hour)?.name ?? row.tag,
     group: (row, hour, options) => (options.factions ? factionAt(options.factionRuns, row.tag, hour) : undefined),
-    tooltipExtra: (row, raw, _live, hour, options): TooltipExtraRow[] => {
-      const reply = checkedScore(raw);
-      const faction = factionAt(options.factionRuns, row.tag, hour).label;
-      return [
-        { label: 'Faction', value: knownValue(faction), divider: true },
-        ...reply.multipliers.map((multiplier, index): TooltipExtraRow => ({
-          label: `${SCORE_LABELS[scorePart(multiplier.part)]} multiplier`,
-          value: multiplier.raw === null ? notRecorded(multiplier.missing ?? 'Not recorded') : knownValue(formatRaw(multiplier.raw, 5, 5)),
-          ...(index === 0 ? { divider: true } : {}),
-        })),
-      ];
-    },
+    tooltipExtra: (row, reply, _live, hour, options): TooltipExtraRow[] => [
+      { label: 'Faction', value: knownValue(factionAt(options.factionRuns, row.tag, hour).label), divider: true },
+      ...reply.multipliers.map((multiplier, index): TooltipExtraRow => ({
+        label: `${SCORE_LABELS[scorePart(multiplier.part)]} multiplier`,
+        value: multiplier.raw === null ? notRecorded(multiplier.missing ?? 'Not recorded') : knownValue(formatRaw(multiplier.raw, 5, 5)),
+        ...(index === 0 ? { divider: true } : {}),
+      })),
+    ],
   }),
 );
+
+export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOptions> = {
+  family: 'table',
+  kind: 'game-score',
+  label: 'Game score',
+  subject: 'game scores',
+  emptyCampaign: 'Load a campaign to see its game scores.',
+  icon: 'grid',
+  optionFields: OPTIONS,
+  countries: {
+    mode: 'multi',
+    labels: true,
+    factions: true,
+    allowSlots: true,
+    allTagsForLabels: true,
+    requireGroupsWhen: (widget, options) => options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top'),
+  },
+  source: {
+    kind: 'panel',
+    product: 'game-score',
+    params: ctx => ({ branchId: ctx.branch.id }),
+    validate: validateGameScore,
+  },
+  projection: gameScoreProjection,
+  columns: ctx => gameScoreColumns(undefined, ctx.options.cellBars === true),
+  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  projectionOptions: ctx => ({
+    all: ctx.countries.all,
+    chosenTags: ctx.countries.chosenTags,
+    membership: ctx.countries.membership,
+    top: ctx.countries.top,
+    by: scorePart(ctx.options.topMeasure),
+    factions: ctx.options.factions === true,
+    factionRuns: ctx.countries.factions,
+    rankMarkers: ctx.options.rankMarkers === true,
+    cellBars: ctx.options.cellBars === true,
+    labels: ctx.countries.labels,
+  }),
+  jumpToDate: true,
+  keyByBranch: true,
+};

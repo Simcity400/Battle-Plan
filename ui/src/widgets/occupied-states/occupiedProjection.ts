@@ -1,26 +1,39 @@
 import { formatAmount, formatFixed, formatSigned } from '../../charts/valueAxis.ts';
 import { liveKey } from '../../charts/live.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { strengthBar } from '../../draw/tables/logic.ts';
-import { lookAt, type CountryLook } from '../../draw/tables/looks.ts';
-import { declareTableProjection, type TableCellBar, type TableColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
+import type { DeclaredCountryFilter, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
+import {
+  declareTableProjection,
+  type DeclarativeColumnSpec,
+  type TableCellBar,
+  type TableColumnSpec,
+  type TableProjection,
+  type TooltipExtraRow,
+} from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, valueFromLive, valueFromNullable, zeroValue, type Value } from '../../families/value.ts';
-import { COLUMNS } from './definition.ts';
-import { emptyReason, garrisonCell, NOT_NAMED, occupiedRows, STRENGTH, validateOccupiedStates, type CountryRole, type OccupiedRow, type OccupiedStatesReply } from './occupiedStatesData.ts';
+import { strengthBar, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import {
+  emptyReason,
+  garrisonCell,
+  NOT_NAMED,
+  occupiedRows,
+  STRENGTH,
+  validateOccupiedStates,
+  type CountryRole,
+  type OccupiedRow,
+  type OccupiedStatesReply,
+} from './occupiedStatesData.ts';
 
-export type HourRanges = readonly (readonly [number, number])[];
-
-export interface OccupiedFilter {
-  readonly passing: Readonly<Record<string, HourRanges>> | null;
-  readonly unrecorded: readonly (readonly [number, number, string])[];
-  readonly bounds: readonly number[];
-}
+export type { HourRanges };
+export type OccupiedFilter = DeclaredCountryFilter;
 
 export interface OccupiedProjectionOptions {
   readonly filter: OccupiedFilter;
   readonly role: CountryRole;
-  readonly labels: Readonly<Record<string, readonly CountryLook[]>>;
+  readonly labels: CountryLooksMap;
   readonly lawAs: string;
   readonly filterAll: boolean;
 }
@@ -50,11 +63,10 @@ function strengthFraction(raw: number): number {
   return Math.max(0, Math.min(1, rounded / 100000));
 }
 
-function countryValue(tag: string | null, labels: Readonly<Record<string, readonly CountryLook[]>>, hour: number): Value<string> {
+function countryLabel(tag: string | null, labels: CountryLooksMap, hour: number): Value<string> {
   if (tag === null) return notRecorded('Unknown country');
   const look = lookAt(labels[tag], hour);
-  if (look && look.name) return knownValue(look.name);
-  return notRecorded(look?.status ?? 'Country name unavailable');
+  return look && look.name ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
 }
 
 export const OCCUPIED_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(col => ({
@@ -66,60 +78,23 @@ export const OCCUPIED_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(col => (
   widest: col.key === 'resistance' || col.key === 'compliance' ? ['100%'] : col.key === 'garrison' ? ['999.99'] : undefined,
 }));
 
-const validatedReplies = new WeakMap<object, OccupiedStatesReply>();
-
-function checkedOccupied(raw: unknown): OccupiedStatesReply {
-  if (!raw || typeof raw !== 'object') return validateOccupiedStates(raw);
-  let held = validatedReplies.get(raw);
-  if (!held) {
-    held = validateOccupiedStates(raw);
-    validatedReplies.set(raw, held);
-  }
-  return held;
-}
-
 export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions> = registerTableProjection(
-  declareTableProjection<unknown, OccupiedRow, OccupiedProjectionOptions>({
+  declareTableProjection<OccupiedStatesReply, OccupiedRow, OccupiedProjectionOptions>({
     kind: 'occupied-states',
+    validate: validateOccupiedStates,
     nextChange: (_sources, hour, options) => filterNext(options.filter, hour),
-    columns: (raw, options) => {
-      const reply = checkedOccupied(raw);
+    columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
       const laws = new Map(reply.laws.map(law => [law.token, law]));
       const redBelow = reply.garrisonRedRaw === null ? undefined : Number(reply.garrisonRedRaw);
       return [
-        {
-          ...OCCUPIED_COLUMNS[0]!,
-          value: row => valueFromNullable(row.value.name, { kind: 'notRecorded', reason: row.value.nameMissing ?? 'Not recorded' }),
-        },
-        {
-          ...OCCUPIED_COLUMNS[1]!,
-          iconSlot: true,
-          country: row => row.value.owner,
-          looks: (row, opt) => (row.value.owner ? opt.labels[row.value.owner] : undefined),
-          value: (row, _live, hour, opt) => countryValue(row.value.owner, opt.labels, hour),
-        },
-        {
-          ...OCCUPIED_COLUMNS[2]!,
-          iconSlot: true,
-          country: row => row.value.occupier,
-          looks: (row, opt) => (row.value.occupier ? opt.labels[row.value.occupier] : undefined),
-          value: (row, _live, hour, opt) => countryValue(row.value.occupier, opt.labels, hour),
-        },
-        {
-          ...OCCUPIED_COLUMNS[3]!,
-          liveField: 'resistance',
-          maximum: PERCENT_SCALE,
-          country: row => row.value.occupier,
-        },
-        {
-          ...OCCUPIED_COLUMNS[4]!,
-          liveField: 'compliance',
-          maximum: PERCENT_SCALE,
-          country: row => row.value.occupier,
-        },
+        { ...OCCUPIED_COLUMNS[0]!, path: 'value.name', whenNull: { kind: 'notRecorded', reasonField: 'value.nameMissing', reason: 'Not recorded' } },
+        { ...OCCUPIED_COLUMNS[1]!, countryField: 'value.owner' },
+        { ...OCCUPIED_COLUMNS[2]!, countryField: 'value.occupier' },
+        { ...OCCUPIED_COLUMNS[3]!, liveField: 'resistance', maximum: PERCENT_SCALE, country: 'value.occupier' },
+        { ...OCCUPIED_COLUMNS[4]!, liveField: 'compliance', maximum: PERCENT_SCALE, country: 'value.occupier' },
         {
           ...OCCUPIED_COLUMNS[5]!,
-          country: row => row.value.occupier,
+          country: 'value.occupier',
           value: (row, live) => {
             if (row.value.garrisonRequiredSign === null) {
               return row.value.garrisonMissing !== null ? notRecorded(row.value.garrisonMissing) : notApplicable('No garrison requirement');
@@ -153,20 +128,18 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         },
       ];
     },
-    rows: (raw, _live, hour, options) => {
-      const reply = checkedOccupied(raw);
-      const { filter } = options;
-      const passing = filter.passing;
-      const unrecorded = filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
+    rows: (reply, _live, hour, options) => {
+      const passing = options.filter.passing;
+      const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
       const view = occupiedRows(reply, passing ? tag => within(passing[tag], hour) : null, options.role, unrecorded);
       const empty = emptyReason(reply, view);
-      const notes: string[] = [];
-      if (reply.missing === null && !reply.complete) notes.push('Some occupied states are missing.');
-      if (reply.missing === null && !options.filterAll && reply.states.some(state => state[options.role] === null)) {
-        notes.push('Some states couldn’t be matched to these countries.');
-      }
       if (reply.missing !== null) {
         return { rows: [], empty: empty ?? reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
+      }
+      const notes: string[] = [];
+      if (!reply.complete) notes.push('Some occupied states are missing.');
+      if (!options.filterAll && reply.states.some(state => state[options.role] === null)) {
+        notes.push('Some states couldn’t be matched to these countries.');
       }
       return {
         rows: view.rows,
@@ -177,8 +150,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
     },
     rowKey: row => row.key,
     rowName: row => row.value.name ?? `State ${row.state}`,
-    tooltipExtra: (row, raw, live, hour, options): TooltipExtraRow[] => {
-      const reply = checkedOccupied(raw);
+    tooltipExtra: (row, reply, live, hour, options): TooltipExtraRow[] => {
       const v = row.value;
       const liveText = (column: string, fmt: (s: string) => string): Value<string> => {
         const val = valueFromLive(live, liveKey(row.key, column));
@@ -186,8 +158,6 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         if (val.kind === 'partial') return partialValue(fmt(BigInt(Math.trunc(Number(val.value))).toString()), val.reason);
         return val;
       };
-      const resSpeed = liveText('resistanceSpeed', r => `${formatSigned(r, 5, 5)} pp/day`);
-      const compSpeed = liveText('complianceSpeed', r => `${formatSigned(r, 5, 5)} pp/day`);
       const reqManpower: Value<string> = v.garrisonRequiredSign === null
         ? notApplicable('No garrison requirement')
         : liveText('requiredManpower', r => formatFixed(BigInt(r), 0, 0));
@@ -196,32 +166,54 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         assignedManpower = notApplicable('Assigned manpower does not apply');
       } else {
         const rawAssigned = valueFromLive(live, liveKey(row.key, 'assignedManpower'));
-        if (rawAssigned.kind === 'notRecorded' && rawAssigned.reason === NOT_NAMED) {
-          assignedManpower = knownValue('0');
-        } else if (rawAssigned.kind === 'known' || rawAssigned.kind === 'zero') {
-          assignedManpower = knownValue(formatFixed(BigInt(Math.trunc(Number(rawAssigned.value))), 0, 0));
-        } else if (rawAssigned.kind === 'partial') {
-          assignedManpower = partialValue(formatFixed(BigInt(Math.trunc(Number(rawAssigned.value))), 0, 0), rawAssigned.reason);
-        } else {
-          assignedManpower = rawAssigned;
-        }
+        if (rawAssigned.kind === 'notRecorded' && rawAssigned.reason === NOT_NAMED) assignedManpower = knownValue('0');
+        else if (rawAssigned.kind === 'known' || rawAssigned.kind === 'zero') assignedManpower = knownValue(formatFixed(BigInt(Math.trunc(Number(rawAssigned.value))), 0, 0));
+        else if (rawAssigned.kind === 'partial') assignedManpower = partialValue(formatFixed(BigInt(Math.trunc(Number(rawAssigned.value))), 0, 0), rawAssigned.reason);
+        else assignedManpower = rawAssigned;
       }
       const strengthVal = valueFromLive(live, liveKey(row.key, STRENGTH));
       const strength: Value<string> = strengthVal.kind === 'known' || strengthVal.kind === 'zero'
         ? knownValue(`${formatAmount((BigInt(Math.trunc(Number(strengthVal.value))) * 100n).toString(), 5, 5)}%`)
         : notRecorded(v.garrisonMissing ?? (strengthVal.kind === 'notRecorded' && strengthVal.reason !== NOT_NAMED ? strengthVal.reason : reply.strengthMissing));
       const extra: TooltipExtraRow[] = [
-        { label: 'Resistance speed', value: resSpeed, divider: true },
-        { label: 'Compliance speed', value: compSpeed },
+        { label: 'Resistance speed', value: liveText('resistanceSpeed', r => `${formatSigned(r, 5, 5)} pp/day`), divider: true },
+        { label: 'Compliance speed', value: liveText('complianceSpeed', r => `${formatSigned(r, 5, 5)} pp/day`) },
         { label: 'Required manpower', value: reqManpower },
         { label: 'Assigned manpower', value: assignedManpower },
         { label: 'Garrison strength', value: strength },
-        { label: 'Occupied country', value: countryValue(v.occupied, options.labels, hour) },
+        { label: 'Occupied country', value: countryLabel(v.occupied, options.labels, hour) },
       ];
-      if (v.garrisonAlert) {
-        extra.push({ label: 'Garrison status', value: knownValue('Garrison requirement not met.'), tone: 'negative' });
-      }
+      if (v.garrisonAlert) extra.push({ label: 'Garrison status', value: knownValue('Garrison requirement not met.'), tone: 'negative' });
       return extra;
     },
   }),
 );
+
+export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectionOptions> = {
+  family: 'table',
+  kind: 'occupied-states',
+  label: 'Occupied states',
+  subject: 'occupied states',
+  emptyCampaign: 'Load a campaign to see occupied states.',
+  className: 'occupied-states',
+  frameClassName: 'occupied-table-surface',
+  optionFields: OPTIONS,
+  countries: { mode: 'filter', labels: true, colours: true },
+  source: {
+    kind: 'panel',
+    product: 'occupied-states',
+    params: ctx => ({ branchId: ctx.branch.id }),
+    validate: validateOccupiedStates,
+  },
+  projection: occupiedStatesProjection,
+  columns: OCCUPIED_COLUMNS,
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
+  projectionOptions: ctx => ({
+    filter: ctx.countries.filter,
+    role: ctx.options.countryRole === 'occupied' ? 'occupied' : 'occupier',
+    labels: ctx.countries.labels,
+    lawAs: ctx.settings.columns.law?.as ?? 'dot',
+    filterAll: ctx.countries.all,
+  }),
+  jumpToDate: true,
+};

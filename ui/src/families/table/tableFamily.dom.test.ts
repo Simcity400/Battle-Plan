@@ -24,6 +24,12 @@ test('table family plays across frames with zero React commits, zero layout read
     assert.equal(played.mirrorRows.at(-1)?.key, 'ENG', 'notRecorded row stays last');
     assert.ok(played.mirrorRows.at(-1)?.cells.some(c => c?.includes('Not recorded: ENG factories not recorded')), 'mirror speaks missing reason');
 
+    const heldCheck = await act<{ pixelsChanged: boolean; dim: boolean; held: boolean; through: number | null }>('verifyRepaintAndHeld()');
+    assert.equal(heldCheck.pixelsChanged, true, 'same-layout value change repaints canvas pixels');
+    assert.equal(heldCheck.dim, true, 'clock past confirmed hour marks view dim');
+    assert.equal(heldCheck.held, true, 'dim view marks frame data-held');
+    assert.equal(heldCheck.through, 23);
+
     const { cdpSession } = await import(new URL('../../../../tools/e2e/cdp.mjs', import.meta.url).href) as {
       cdpSession(url: string): Promise<{ send(method: string, params?: Record<string, unknown>): Promise<unknown>; close(): void }>;
     };

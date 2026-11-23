@@ -8,6 +8,7 @@ export interface ValueCanvasTheme {
   readonly muted: string;
   readonly line: string;
   readonly hatch: string;
+  readonly hatchEdge?: string;
   readonly font: string;
   readonly fontSize: { readonly small: number; readonly body: number };
   readonly hatchSpacing: number;
@@ -27,7 +28,7 @@ export function drawHatchRect(
   width: number,
   height: number,
   radius: number,
-  theme: Pick<ValueCanvasTheme, 'hatch' | 'line' | 'hatchSpacing'>,
+  theme: Pick<ValueCanvasTheme, 'hatch' | 'hatchEdge' | 'line' | 'hatchSpacing'>,
 ): void {
   if (width <= 0 || height <= 0) return;
   ctx.save();
@@ -46,7 +47,7 @@ export function drawHatchRect(
   }
   ctx.restore();
   ctx.save();
-  ctx.strokeStyle = theme.hatch;
+  ctx.strokeStyle = theme.hatchEdge ?? theme.hatch;
   ctx.globalAlpha = 0.35;
   ctx.lineWidth = 1;
   ctx.beginPath();

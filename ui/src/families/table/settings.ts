@@ -1,0 +1,286 @@
+import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
+import type { OptionField, OptionValue } from '../../dashboard/options.ts';
+
+export type TableSortDirection = 'ascending' | 'descending';
+export type TableOverflow = 'tooltip' | 'scroll';
+export type TableDensity = 'comfortable' | 'compact';
+export type TableTone = 'blue' | 'red' | 'amber' | 'green' | 'grey' | 'country' | 'value-good' | 'value-bad';
+export type TableDisplay = 'plain' | 'faint' | 'track' | 'meterAfter' | 'meterBefore' | 'underline' | 'dot' | 'outline' | 'filled' | 'text'
+  | 'flagName' | 'name' | 'flag' | 'icon';
+
+export interface TableSettings {
+  density: TableDensity;
+  overflow: TableOverflow;
+  order: string[];
+  columns: Record<string, { show: boolean; as: TableDisplay; tone?: TableTone; width: number | null }>;
+  sort: { column: string; direction: TableSortDirection };
+}
+
+export interface TableColumnDefaults {
+  key: string;
+  label: string;
+  as: TableDisplay;
+  tone?: TableTone;
+  offered: readonly TableDisplay[];
+}
+
+export interface TableBase {
+  density: TableDensity;
+  overflow: TableOverflow;
+  sort: TableSettings['sort'];
+}
+
+export interface TableColumnLayout {
+  key: string;
+  label: string;
+  priority: number;
+  width: number;
+  widest?: readonly string[];
+  shown: boolean;
+  display: TableDisplay;
+  tone?: TableTone;
+  numeric?: boolean;
+}
+
+export interface TableLayout {
+  columns: TableColumnLayout[];
+  hidden: string[];
+  totalWidth: number;
+  scrollable: boolean;
+  pinnedWidth: number;
+}
+
+export type TableCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+export interface TableTheme {
+  surface: string;
+  text: string;
+  muted: string;
+  line: string;
+  lineSoft: string;
+  accent: string;
+  blue: string;
+  red: string;
+  amber: string;
+  green: string;
+  grey: string;
+  hatch: string;
+  hatchEdge?: string;
+  font: string;
+  fontSize: { small: number; body: number };
+  lineWidth: number;
+  hatchSpacing: number;
+  country?: Readonly<Record<string, string>>;
+}
+
+export interface RankMarker {
+  delta: number;
+  until: number;
+}
+
+export interface GlideOffset {
+  from: number;
+  to: number;
+  started: number;
+}
+
+export const TABLE_SETTINGS_KEY = 'tableSettings';
+export const TABLE_SETTINGS_VERSION = 1;
+
+export const HEADER_CARET_LANE = 28;
+export const ROW_HEIGHT = { comfortable: 28, compact: 22 } as const;
+export const METER_HEIGHT = 4;
+export const TRACK_HEIGHT = 6;
+export const SORT_GLIDE_MS = 160;
+export const RANK_HOLD_MS = 2500;
+export const CELL_INSET = 8;
+export const ICON_LANE = 26;
+export const DOT_LANE = 12;
+export const METER_WIDTH = 44;
+export const TRACK_MIN = 32;
+export const BAR_GAP = 8;
+
+export const OFFERED = {
+  number: ['plain', 'faint', 'track', 'meterAfter', 'meterBefore', 'underline'],
+  country: ['flagName', 'name', 'flag'],
+  status: ['dot', 'outline', 'filled', 'text', 'icon'],
+  text: ['plain'],
+} as const satisfies Readonly<Record<string, readonly TableDisplay[]>>;
+
+export function displayExtra(column: Pick<TableColumnLayout, 'display'>): number {
+  switch (column.display) {
+    case 'faint': return 4;
+    case 'track': return TRACK_MIN + BAR_GAP;
+    case 'meterAfter': case 'meterBefore': return METER_WIDTH + BAR_GAP;
+    case 'dot': return DOT_LANE;
+    case 'outline': case 'filled': return 16;
+    case 'flagName': case 'icon': return ICON_LANE;
+    case 'flag': return 20;
+    default: return 0;
+  }
+}
+
+export const measuresColumn = (column: Pick<TableColumnLayout, 'display' | 'tone'>): boolean =>
+  column.display === 'faint' || column.display === 'track'
+  || column.display === 'meterAfter' || column.display === 'meterBefore'
+  || column.display === 'underline' || column.tone === 'value-good' || column.tone === 'value-bad';
+
+export const showsIcon = (display: TableDisplay): boolean =>
+  display === 'flagName' || display === 'flag' || display === 'icon';
+
+export const endAligned = (column: Pick<TableColumnLayout, 'numeric' | 'display'>): boolean =>
+  !!column.numeric && column.display !== 'track' && column.display !== 'meterBefore';
+
+export function scrollBounds(layout: TableLayout, viewport: number, scrollLeft: number): { max: number; left: number } {
+  const max = Math.max(0, layout.totalWidth - viewport);
+  return { max, left: Math.max(0, Math.min(max, scrollLeft)) };
+}
+
+export function glideOffset(glide: GlideOffset | undefined, now: number, duration = SORT_GLIDE_MS): number {
+  if (!glide) return 0;
+  const t = Math.max(0, Math.min(1, (now - glide.started) / duration));
+  const eased = t * t * (3 - 2 * t);
+  return glide.from + (glide.to - glide.from) * eased;
+}
+
+export function rankMarkers(
+  previous: readonly string[],
+  current: readonly string[],
+  now: number,
+  held: ReadonlyMap<string, RankMarker>,
+  holdMs = RANK_HOLD_MS,
+): Map<string, RankMarker> {
+  const before = new Map<string, number>();
+  previous.forEach((key, index) => before.set(key, index));
+  const next = new Map<string, RankMarker>();
+  current.forEach((key, index) => {
+    const prev = before.get(key);
+    if (prev !== undefined && prev !== index) {
+      next.set(key, { delta: prev - index, until: now + holdMs });
+    } else {
+      const existing = held.get(key);
+      if (existing && existing.until > now) next.set(key, existing);
+    }
+  });
+  return next;
+}
+
+export function percentCell(raw: string | bigint): string {
+  const value = BigInt(raw);
+  const rounded = BigInt.asIntN(32, (value + (value < 0n ? -50000n : 50000n)) / 100000n);
+  const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
+  return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
+}
+
+export function amountCell(raw: string | bigint): string {
+  const amount = BigInt(raw);
+  return amount === 0n ? '-' : amount < 0n ? '!' : formatNativeFixed5(amount, 2);
+}
+
+export function strengthBar(raw: string | bigint): bigint {
+  const percent = BigInt.asIntN(64, BigInt(raw) * 100n);
+  const biased = BigInt.asIntN(64, percent + (percent < 0n ? -50000n : 50000n));
+  return BigInt.asIntN(32, biased / 100000n) * 1000n;
+}
+
+export function tableFamilyOptions(columns: readonly TableColumnDefaults[], base: TableBase): readonly OptionField[] {
+  return [{ key: TABLE_SETTINGS_KEY, section: 'options', label: 'Table', kind: 'table', default: '', columns, base }];
+}
+
+type ColumnSetting = TableSettings['columns'][string];
+const columnDefault = (column: TableColumnDefaults): ColumnSetting =>
+  ({ show: true, as: column.as, ...(column.tone && { tone: column.tone }), width: null });
+
+export function tableDefaults(columns: readonly TableColumnDefaults[], base: TableBase): TableSettings {
+  return {
+    density: base.density,
+    overflow: base.overflow,
+    order: columns.map(column => column.key),
+    columns: Object.fromEntries(columns.map(column => [column.key, columnDefault(column)])),
+    sort: { ...base.sort },
+  };
+}
+
+const displays = new Set<TableDisplay>([
+  'plain', 'faint', 'track', 'meterAfter', 'meterBefore', 'underline',
+  'dot', 'outline', 'filled', 'text', 'flagName', 'name', 'flag', 'icon',
+]);
+const tones = new Set<TableTone>(['blue', 'red', 'amber', 'green', 'grey', 'country', 'value-good', 'value-bad']);
+const own = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const validWidth = (width: unknown): width is number | null => width === null || typeof width === 'number' && Number.isFinite(width) && width >= 40 && width <= 1000;
+const validTone = (tone: unknown): tone is TableTone | undefined => tone === undefined || typeof tone === 'string' && tones.has(tone as TableTone);
+
+function keptEntry(stored: Record<string, unknown>): ColumnSetting | null {
+  if (typeof stored.show !== 'boolean' || typeof stored.as !== 'string' || !displays.has(stored.as as TableDisplay) || !validTone(stored.tone) || !validWidth(stored.width)) return null;
+  return { show: stored.show, as: stored.as as TableDisplay, ...(stored.tone !== undefined && { tone: stored.tone }), width: stored.width };
+}
+
+export function tableSettingsOf(value: unknown, columns: readonly TableColumnDefaults[], base: TableBase): TableSettings {
+  const result = tableDefaults(columns, base);
+  if (typeof value !== 'string' || !value) return result;
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { return result; }
+  if (!own(parsed) || parsed.v !== TABLE_SETTINGS_VERSION || (parsed.density !== 'comfortable' && parsed.density !== 'compact')
+    || (parsed.overflow !== 'tooltip' && parsed.overflow !== 'scroll') || !Array.isArray(parsed.order) || !own(parsed.columns) || !own(parsed.sort)
+    || typeof parsed.sort.column !== 'string' || !['ascending', 'descending'].includes(String(parsed.sort.direction))) return result;
+  result.density = parsed.density;
+  result.overflow = parsed.overflow;
+  const known = new Map(columns.map(column => [column.key, column]));
+  for (const [key, stored] of Object.entries(parsed.columns)) {
+    if (!own(stored)) continue;
+    const column = known.get(key);
+    if (!column) {
+      const kept = keptEntry(stored);
+      if (kept) result.columns[key] = kept;
+      continue;
+    }
+    const entry = result.columns[key]!;
+    if (typeof stored.show === 'boolean') entry.show = stored.show;
+    if (typeof stored.as === 'string' && column.offered.includes(stored.as as TableDisplay)) entry.as = stored.as as TableDisplay;
+    if (validTone(stored.tone)) {
+      if (stored.tone === undefined) delete entry.tone;
+      else entry.tone = stored.tone;
+    }
+    if (validWidth(stored.width)) entry.width = stored.width;
+  }
+  const seen = new Set<string>();
+  result.order = parsed.order.filter((key): key is string => {
+    if (typeof key !== 'string' || !(key in result.columns) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  for (const column of columns) if (!seen.has(column.key)) result.order.push(column.key);
+  if (known.has(parsed.sort.column)) result.sort = { column: parsed.sort.column, direction: parsed.sort.direction as 'ascending' | 'descending' };
+  return result;
+}
+
+export function encodeTableSettings(settings: TableSettings): string {
+  return JSON.stringify({
+    v: TABLE_SETTINGS_VERSION,
+    density: settings.density,
+    overflow: settings.overflow,
+    order: settings.order,
+    columns: settings.columns,
+    sort: settings.sort,
+  });
+}
+
+export function tableSettingValue(settings: TableSettings): OptionValue {
+  return encodeTableSettings(settings);
+}
+
+export function cloneTableSettings(settings: TableSettings): TableSettings {
+  return {
+    density: settings.density,
+    overflow: settings.overflow,
+    order: [...settings.order],
+    columns: Object.fromEntries(Object.entries(settings.columns).map(([key, value]) => [key, { ...value }])),
+    sort: { ...settings.sort },
+  };
+}
+
+export function updateTableSettings(settings: TableSettings, update: (next: TableSettings) => void): TableSettings {
+  const next = cloneTableSettings(settings);
+  update(next);
+  return next;
+}

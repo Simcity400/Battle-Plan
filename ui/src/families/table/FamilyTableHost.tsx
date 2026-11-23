@@ -18,17 +18,13 @@ import { asFailure } from '../../dashboard/queryError.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
 import type { AuditRow } from '../../draw/notifications';
-import { ROW_HEIGHT, type TableSettings } from '../../draw/tables/logic.ts';
-import { updateTableSettings } from '../../draw/tables/settings.ts';
-import type { TableTheme } from '../../draw/tables/surface.ts';
-import { columnWidthVar, DISPLAY_LABELS, type TableHeaderColumn } from '../../draw/tables/TableHeader.tsx';
+import { ROW_HEIGHT, updateTableSettings, type TableSettings, type TableTheme } from './settings.ts';
+import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilySources, MirrorModel } from '../contract.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableProjection } from './model.ts';
-import { FamilyTableHeader } from './TableHeader.tsx';
-import '../../draw/tables/table.css';
 import './tableFamily.css';
 
 const TABLE_AUDIT = -1;
@@ -111,6 +107,9 @@ type NavEntry = readonly [key: string, name: string, index: number, treeState: n
 function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | undefined {
   if (typeof document === 'undefined') return undefined;
   const tokens = readTokens();
+  const rootStyle = getComputedStyle(document.documentElement);
+  const hatch = rootStyle.getPropertyValue('--hatch').trim() || tokens.muted;
+  const hatchEdge = rootStyle.getPropertyValue('--hatch-edge').trim() || tokens.border;
   return {
     surface: tokens.surface,
     text: tokens.text,
@@ -123,7 +122,8 @@ function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | und
     amber: tokens.warning,
     green: tokens.positive,
     grey: tokens.muted,
-    hatch: tokens.muted,
+    hatch,
+    hatchEdge,
     font: tokens.font,
     fontSize: { small: tokens.fontSize.small, body: tokens.fontSize.body },
     lineWidth: tokens.lineWidth.grid,
@@ -581,9 +581,10 @@ export default function FamilyTableHost<TOptions>({
         setWidthsState(prev => prev.signature === sig ? prev : { ...widths, signature: sig });
       }
 
-      const tableInfo = shown.fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean; nav: readonly NavEntry[] } | undefined;
+      const navField = shown.fields.nav as readonly NavEntry[] | undefined;
+      if (navField) navRef.current = navField;
+      const tableInfo = shown.fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
       if (tableInfo) {
-        navRef.current = tableInfo.nav;
         if (lastExtentRef.current.count !== tableInfo.count) {
           lastExtentRef.current.count = tableInfo.count;
           accessibleRef.current?.setAttribute('aria-rowcount', String(tableInfo.count + 1));
@@ -596,8 +597,8 @@ export default function FamilyTableHost<TOptions>({
         if (focusInsideRef.current && focusedKeyRef.current) {
           if (tableInfo.focusedIndex >= 0) {
             scrollRowIntoView(tableInfo.focusedIndex);
-          } else if (tableInfo.nav.length > 0) {
-            focusedKeyRef.current = tableInfo.nav[0]![0];
+          } else if (navRef.current.length > 0) {
+            focusedKeyRef.current = navRef.current[0]![0];
             queueMicrotask(() => bindRef.current());
           }
         }
@@ -610,6 +611,9 @@ export default function FamilyTableHost<TOptions>({
 
       const mirror = shown.fields.mirror as MirrorModel | undefined;
       if (mirror) paintMirror(mirror, false);
+
+      const phases = shown.fields.phases as Record<string, unknown> | undefined;
+      if (phases && frameNode && perfLog) frameNode.dataset.familyPhases = JSON.stringify(phases);
 
       const tipField = shown.fields.tooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
       if (tipField?.text && !shown.dim) {

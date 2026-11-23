@@ -3,9 +3,11 @@ import test from 'node:test';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import type { TableSettings } from '../../draw/tables/logic.ts';
-import { tableSettingsOf } from '../../draw/tables/settings.ts';
-import type { TableTheme } from '../../draw/tables/surface.ts';
+import { liveKey, valuesOf } from '../../charts/live.ts';
+import { tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
+import { nextLookChange } from './looks.ts';
+import { familyTableLaneView } from './laneView.ts';
+import { registerTableProjection } from './registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
 import { CLOCK_COLUMNS, CLOCK_TABLE_BASE, campaignClockProjection } from '../../widgets/campaign-clock/clockProjection.ts';
@@ -19,8 +21,9 @@ import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../
 import type { FamilySources } from '../contract.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { declareTableProjection, deriveTableAudit, resolveTableRows, type TableColumnSpec } from './model.ts';
+import { declareTableProjection, deriveTableAudit, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
 import { createTablePicture, drawFamilyTable } from './painter.ts';
+import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
@@ -447,4 +450,154 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const draw = drawFamilyTable(ctx, { layout, rows: followedRows, settings, hour: 200, width: 480, height: 320, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
   assert.ok(draw.paintedCells <= 30, `only visible viewport rows painted out of 1,500: ${draw.paintedCells} cells`);
   assert.ok(counts().measureCalls <= 50, `bounded text measurements for 1,500-country table: ${counts().measureCalls}`);
+});
+
+test('occupied-states projection carries country looks at hour, filter ranges, unrecorded membership, and live tooltip details', () => {
+  const mkState = (id: number, occupier: string | null, occupied: string | null, extra: Record<string, unknown> = {}) => ({
+    state: id, name: `State ${id}`, nameMissing: null, owner: occupied, occupier, occupied, garrisonRequiredSign: 1 as const,
+    garrisonAlert: false, assignedKnown: true, garrisonMissing: null, law: 'mod_law', lawMissing: null, ...extra,
+  });
+  const reply = {
+    states: [mkState(1, 'GER', 'POL'), mkState(2, 'SOV', 'POL'), mkState(3, null, 'POL')],
+    complete: true, missing: null,
+    laws: [{ token: 'mod_law', name: 'Moderate', icon: null, missing: null }],
+    strengthMissing: 'Strength needs inputs', garrisonRedRaw: '30000', warnings: [],
+  };
+  const labels = {
+    GER: [{ from: 0, name: 'Germany', flag: 'old.png' }, { from: 20, name: 'German Reich', flag: 'new.png' }],
+    POL: [{ from: 0, name: 'Poland' }],
+  };
+  assert.deepEqual([nextLookChange(labels, 5), nextLookChange(labels, 19), nextLookChange(labels, 20)], [20, 20, Infinity]);
+
+  const filter = { passing: { GER: [[10, 20]] as const }, unrecorded: [[30, 40, 'Membership not recorded']] as const, bounds: [10, 21, 30, 41] };
+  const live = valuesOf(new Map([
+    [liveKey('1', 'resistance'), 2_500_000],
+    [liveKey('1', 'compliance'), 0],
+    [liveKey('1', 'requiredManpower'), 1200],
+    [liveKey('1', 'garrison'), 250_000],
+    [liveKey('1', 'garrisonStrength'), 87_500],
+  ]), NOT_NAMED);
+  const run = (hour: number) => occupiedStatesProjection.project(
+    { answers: new Map(), panels: new Map([['main', reply]]), live: new Map([['main', live]]) },
+    hour,
+    { filter, role: 'occupier', labels, lawAs: 'dot', filterAll: false },
+  );
+  const at15 = run(15);
+  assert.deepEqual(at15.rows.map(r => r.key), ['1']);
+  const settings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
+  const flat15 = resolveTableRows(at15, settings);
+  const tip = deriveTableTooltip(flat15, '1', at15.columns, new Set(), 15);
+  assert.ok(tip);
+  assert.equal(tip.rows.find(r => r.label === 'Resistance')?.value, '25%');
+  assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.value, '0', 'known assigned with no live cell reads 0');
+  assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.value, '87.5%');
+  assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.value, 'Poland');
+
+  assert.equal(run(25).empty, 'Occupied states unavailable for these countries.');
+  assert.equal(run(35).empty, 'Membership not recorded');
+  assert.equal(run(20).rows[0]!.cells.occupier!.value.kind, 'known');
+  assert.equal((run(20).rows[0]!.cells.occupier!.value as { value: string }).value, 'German Reich');
+});
+
+test('layout hides lowest-priority columns into tooltip or keeps all columns in scroll mode, and bigints sort beyond 2^53', () => {
+  const specs: TableColumnSpec[] = [
+    { key: 'state', label: 'State', as: 'plain', offered: ['plain'], priority: 0, text: true, widest: ['State Name'] },
+    { key: 'resistance', label: 'Resistance', as: 'meterAfter', offered: ['meterAfter'], priority: 1, numeric: true },
+    { key: 'owner', label: 'Owner', as: 'plain', offered: ['plain'], priority: 6, text: true },
+  ];
+  const settings = tableSettingsOf(undefined, specs, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'resistance', direction: 'descending' } });
+  const cols = buildColumnLayouts(specs, settings, { state: 140, resistance: 130, owner: 140 });
+  const hiddenLayout = layoutFamilyTable(cols, 370, 'tooltip');
+  assert.deepEqual(hiddenLayout.columns.map(c => c.key), ['state', 'resistance']);
+  assert.deepEqual(hiddenLayout.hidden, ['owner']);
+  const scrollLayout = layoutFamilyTable(cols, 250, 'scroll');
+  assert.equal(scrollLayout.scrollable, true);
+  assert.equal(scrollLayout.pinnedWidth, 140);
+
+  const bigModel = {
+    columns: specs.slice(0, 2),
+    hour: 1,
+    rows: [
+      { key: 'A', name: 'A', cells: { state: { value: knownValue('A') }, resistance: { value: knownValue((1n << 60n) + 1n) } } },
+      { key: 'B', name: 'B', cells: { state: { value: knownValue('B') }, resistance: { value: knownValue((1n << 60n) + 2n) } } },
+    ],
+  };
+  assert.deepEqual(resolveTableRows(bigModel, settings).map(r => r.key), ['B', 'A']);
+});
+
+test('lane view skips projection on next(), caches unchanged sources across serves, throttles mirror to 1 Hz while playing, and omits audit unless requested', () => {
+  let projectCalls = 0;
+  const proj = declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
+    kind: 'test-lane-cache',
+    columns: [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, path: 'id' },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'integer', path: 'v' },
+    ],
+    rows: reply => {
+      projectCalls++;
+      return { rows: reply.rows };
+    },
+    rowKey: row => row.id,
+    rowName: row => row.id,
+  });
+  registerTableProjection(proj);
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const view = familyTableLaneView(() => {});
+    const settings = tableSettingsOf(undefined, [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
+    ], { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    const staticPanels = { main: { rows: [{ id: 'GER', v: 10 }] } };
+    const options = {};
+    const model = {
+      family: 'table' as const,
+      kind: 'test-lane-cache',
+      options,
+      settings,
+      sources: {},
+      staticPanels,
+      width: 320,
+      height: 200,
+      scrollLeft: 0,
+      scrollTop: 0,
+      window: { first: 0, count: 10 },
+    };
+    const scene = { widget: 1, subs: [], pictures: [], model };
+    assert.equal(view.next?.(scene, 10), Infinity);
+    assert.equal(projectCalls, 0, 'next() must never invoke projection.project()');
+
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const content = () => `c${seq++}`;
+    const mkInput = (now: number, speed: number, audit = false) => ({
+      ...scene,
+      model: audit ? { ...model, audit: true } : model,
+      hour: 10,
+      speed,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now,
+    });
+    const first = view.paint(mkInput(1000, 1440), state, content);
+    assert.equal(projectCalls, 1);
+    assert.equal(first.fields.audit, undefined, 'audit omitted when bound.audit is false');
+    const firstMirrorContent = first.fields.mirror!.content;
+
+    const second = view.paint(mkInput(1100, 1440), state, content);
+    assert.equal(projectCalls, 1, 'same sources/options/hour reuses cached projection');
+    assert.equal(second.fields.mirror!.content, firstMirrorContent, 'mirror stays cached under 1 Hz while playing');
+
+    const withAudit = view.paint(mkInput(1200, 1440, true), state, content);
+    assert.ok(Array.isArray(withAudit.fields.audit?.value), 'audit built only when requested');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
 });

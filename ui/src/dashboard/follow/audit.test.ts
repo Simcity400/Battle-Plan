@@ -1,17 +1,26 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { auditRows } from '../../draw/views/table.ts';
+import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableModel } from '../../families/table/model.ts';
+import { OFFERED, tableDefaults } from '../../families/table/settings.ts';
+import { knownValue } from '../../families/value.ts';
 import { panelAuditRows } from './panelAudit.ts';
-import type { TableRowModel, TableValues } from '../../draw/tables/surface.ts';
 
-const values = (value: number): TableValues => ({ get: () => value, missing: () => 'Not recorded' });
+const cols: readonly TableColumnSpec[] = [
+  { key: 'v', label: 'Value', as: 'plain', offered: OFFERED.number, priority: 0, numeric: true, format: 'integer' },
+];
+const settings = tableDefaults(cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
 
 test('review 4 finding 15: a table reader compares the values shown, not each country with itself', () => {
-  const rows: TableRowModel[] = [{ key: 'GER', cells: { v: { valueKey: 'GER\u0000s', format: 'integer' } } }];
-  const shown = auditRows(rows, ['v'], values(10), 10, undefined), exact = auditRows(rows, ['v'], values(20), 10, undefined);
+  const modelOf = (value: number): TableModel => ({
+    columns: cols,
+    rows: [{ key: 'GER', name: 'GER', cells: { v: { value: knownValue(value), format: 'integer' } } }],
+    hour: 10,
+  });
+  const shown = deriveTableAudit(resolveTableRows(modelOf(10), settings), cols, 10);
+  const exact = deriveTableAudit(resolveTableRows(modelOf(20), settings), cols, 10);
   assert.deepEqual(shown.map(row => [row.key, row.value]), [['GER:v', '10']]);
   assert.notEqual(shown[0]!.value, exact[0]!.value, 'shown 10 against an exact 20 is a difference the auditor sees');
-  assert.deepEqual(auditRows([], ['v'], null, 10, 'No states are occupied'), [{ row: 'empty', key: 'empty:notice', value: 'No states are occupied' }]);
+  assert.deepEqual(deriveTableAudit([], cols, 10, 'No states are occupied'), [{ row: 'empty', key: 'empty:notice', value: 'No states are occupied' }]);
 });
 
 test('review 4 finding 15: a panel reader compares live values as well as structure, so two products with empty structure still differ', () => {

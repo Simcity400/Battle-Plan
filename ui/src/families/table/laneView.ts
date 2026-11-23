@@ -1,12 +1,12 @@
+import type { LiveValues } from '../../charts/live';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
-import { ROW_HEIGHT, type GlideOffset, type TableSettings } from '../../draw/tables/logic.ts';
-import { rankMarkers, type RankMarker, type TableTheme } from '../../draw/tables/surface.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
-import type { LiveValues } from '../../charts/live';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
+import { nextLookChange, type CountryLooksMap } from './looks.ts';
 import {
   deriveTableAudit,
   deriveTableMirror,
@@ -27,6 +27,7 @@ import {
   type FamilyTablePicture,
 } from './painter.ts';
 import { tableProjection } from './registry.ts';
+import { ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> {
   readonly family: 'table';
@@ -54,6 +55,17 @@ export function isFamilyTableBinding(value: unknown): value is FamilyTableBindin
   return !!value && typeof value === 'object' && (value as { family?: unknown }).family === 'table' && typeof (value as { kind?: unknown }).kind === 'string';
 }
 
+type FieldEntry = { value: unknown; content: string };
+
+interface PhaseTally {
+  serves: number;
+  projMs: number;
+  layoutMs: number;
+  paintMs: number;
+  fieldsMs: number;
+  auditMs: number;
+}
+
 interface HeldFamilyTable {
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
@@ -69,7 +81,51 @@ interface HeldFamilyTable {
   markers: Map<string, RankMarker>;
   kept: Map<string, { text: string; content: string }>;
   wake?: () => void;
+
+  prevParts: readonly (readonly unknown[])[];
+  prevOptions: unknown;
+  prevStaticPanels: unknown;
+  prevStaticAnswers: unknown;
+  prevSortKey: string;
+  prevExpanded: unknown;
+  validFrom: number;
+  validUntil: number;
+  cachedModel: TableModel | null;
+  cachedRows: readonly FlatTableRow[];
+
+  layoutCols: readonly TableColumnSpec[] | null;
+  layoutSettings: TableSettings | null;
+  layoutWidth: number;
+  layoutRankShown: boolean;
+  layoutRankWidth: number;
+  layoutTheme: TableTheme | undefined;
+  cachedAllLayouts: FamilyColumnLayout[];
+  cachedLayout: FamilyTableLayout | null;
+  widthsField: FieldEntry | null;
+
+  metaSig: string;
+  metaField: FieldEntry | null;
+  navSig: string;
+  navField: FieldEntry | null;
+  tableSig: string;
+  tableField: FieldEntry | null;
+
+  lastMirrorAt: number;
+  lastMirrorWindow: string;
+  lastMirrorFocus: string | null;
+  mirrorField: FieldEntry | null;
+
+  lastTipAt: number;
+  lastTipKey: string | null;
+  tipField: FieldEntry | null;
+
+  auditField: FieldEntry | null;
+  phases: PhaseTally;
+  phasesField: FieldEntry | null;
 }
+
+const MIRROR_CADENCE_MS = 1000;
+const TOOLTIP_CADENCE_MS = 250;
 
 const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => map && {
   get: (key: string) => {
@@ -88,6 +144,27 @@ const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> 
 
 function answerOf(value: LaneValue): FollowedAnswer | undefined {
   return value.kind === 'answer' ? value.answer : undefined;
+}
+
+function optionsLooks(options: unknown): CountryLooksMap | undefined {
+  if (!options || typeof options !== 'object') return undefined;
+  const obj = options as { labels?: CountryLooksMap; looks?: CountryLooksMap };
+  return obj.labels ?? obj.looks;
+}
+
+function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {
+  if (prev.length !== pictures.length) return false;
+  for (let i = 0; i < pictures.length; i++) {
+    const a = prev[i]!;
+    const b = pictures[i]!.parts;
+    if (a.length !== b.length) return false;
+    for (let j = 0; j < b.length; j++) if (a[j] !== b[j]) return false;
+  }
+  return true;
+}
+
+function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (readonly unknown[])[] {
+  return pictures.map(picture => picture.parts.slice());
 }
 
 export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): FamilySources {
@@ -136,16 +213,15 @@ function cachedField(held: HeldFamilyTable, name: string, text: string, content:
 }
 
 function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined): string {
-  return JSON.stringify([
-    columns.map(c => [c.key, c.label, c.as, c.widest ?? null, c.format ?? null, c.numeric ?? false]),
-    settings.order,
-    Object.fromEntries(Object.entries(settings.columns).map(([k, v]) => [k, [v.show, v.as, v.width]])),
-    theme?.font ?? '',
-    theme?.fontSize ?? null,
-  ]);
+  let out = `${theme?.font ?? ''}|${theme?.fontSize.small ?? 0}|${theme?.fontSize.body ?? 0}|${settings.order.join(',')}`;
+  for (const c of columns) {
+    const own = settings.columns[c.key];
+    out += `;${c.key}:${c.label}:${c.as}:${own?.show ?? true}:${own?.as ?? ''}:${own?.width ?? ''}:${c.numeric ? 1 : 0}`;
+  }
+  return out;
 }
 
-function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readonly FlatTableRow[], hour: number): Record<string, string[]> {
+function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readonly FlatTableRow[]): Record<string, string[]> {
   const samples: Record<string, string[]> = {};
   const limit = Math.min(rows.length, 40);
   for (const column of columns) {
@@ -161,8 +237,26 @@ function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readon
     }
     samples[column.key] = list;
   }
-  void hour;
   return samples;
+}
+
+function navSignature(rows: readonly FlatTableRow[]): string {
+  let sig = String(rows.length);
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i]!;
+    if (item.kind === 'data') {
+      sig += `\u0000${item.key}:${item.name}:${item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1}`;
+    } else {
+      sig += `\u0001${item.key}`;
+    }
+  }
+  return sig;
+}
+
+function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, rankWidth: number): string {
+  let cols = '';
+  for (let i = 0; i < model.columns.length; i++) cols += `,${model.columns[i]!.key}:${model.columns[i]!.label}:${model.columns[i]!.as}`;
+  return `${model.empty ?? ''}|${model.emptyDetail ?? ''}|${model.emptyKind ?? 'empty'}|${model.summaryPill ?? ''}|${(model.notes ?? []).join('\u0000')}|${(model.warnings ?? []).join('\u0000')}|${hasTree ? 1 : 0}|${model.unsorted ? 1 : 0}|${rankShown ? 1 : 0}|${rankWidth}|${cols}`;
 }
 
 export function familyTableLaneView(wake: (widget: number) => void): LaneView {
@@ -172,10 +266,11 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       if (!isFamilyTableBinding(bound)) return Infinity;
       const projection = tableProjection(bound.kind);
       if (!projection) return Infinity;
-      const sources = sourcesFromScene(scene, bound);
-      let soonest = projection.nextChange ? projection.nextChange(sources, hour, bound.options) : Infinity;
-      const model = projection.project(sources, hour, bound.options);
-      soonest = Math.min(soonest, nextTableChange(model, hour));
+      let soonest = nextLookChange(optionsLooks(bound.options), hour);
+      if (projection.nextChange) {
+        const sources = sourcesFromScene(scene, bound);
+        soonest = Math.min(soonest, projection.nextChange(sources, hour, bound.options));
+      }
       return soonest;
     },
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
@@ -186,6 +281,8 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       if (!projection) {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown table declaration: ${bound.kind}` };
       }
+      const timed = bound.audit === true;
+      const t0 = timed ? performance.now() : 0;
 
       let held = state.get('familyTable') as HeldFamilyTable | undefined;
       const dpr = surface.dpr || 1;
@@ -207,6 +304,41 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           glide: new Map(),
           markers: new Map(),
           kept: new Map(),
+          prevParts: [],
+          prevOptions: undefined,
+          prevStaticPanels: undefined,
+          prevStaticAnswers: undefined,
+          prevSortKey: '',
+          prevExpanded: undefined,
+          validFrom: Infinity,
+          validUntil: -Infinity,
+          cachedModel: null,
+          cachedRows: [],
+          layoutCols: null,
+          layoutSettings: null,
+          layoutWidth: -1,
+          layoutRankShown: false,
+          layoutRankWidth: -1,
+          layoutTheme: undefined,
+          cachedAllLayouts: [],
+          cachedLayout: null,
+          widthsField: null,
+          metaSig: '',
+          metaField: null,
+          navSig: '',
+          navField: null,
+          tableSig: '',
+          tableField: null,
+          lastMirrorAt: -Infinity,
+          lastMirrorWindow: '',
+          lastMirrorFocus: null,
+          mirrorField: null,
+          lastTipAt: -Infinity,
+          lastTipKey: null,
+          tipField: null,
+          auditField: null,
+          phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 },
+          phasesField: null,
         });
       }
       held.wake = () => wake(input.widget);
@@ -217,74 +349,148 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       }
       held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      const sources = sourcesFromScene(input, bound);
-      const model: TableModel = projection.project(sources, input.hour, bound.options);
-      const flatRows = resolveTableRows(model, bound.settings, bound.expanded);
-      for (const url of collectCellIcons(flatRows)) loadIcon(held, url);
+      const sortSig = `${bound.settings.sort.column}\u0000${bound.settings.sort.direction}`;
+      const canReuseModel = held.cachedModel !== null
+        && samePictures(held.prevParts, input.pictures)
+        && held.prevOptions === bound.options
+        && held.prevStaticPanels === bound.staticPanels
+        && held.prevStaticAnswers === bound.staticAnswers
+        && held.prevSortKey === sortSig
+        && held.prevExpanded === bound.expanded
+        && input.hour >= held.validFrom
+        && input.hour < held.validUntil;
 
-      const configKey = widthConfigOf(model.columns, bound.settings, bound.theme);
-      if (bound.theme && held.widthConfigKey !== configKey) {
-        const baseCols = buildColumnLayouts(model.columns, bound.settings);
-        const measure = (text: string, font: string) => {
-          const cacheKey = `${font}\u0000${text}`;
-          let w = held!.picture.measures.get(cacheKey);
-          if (w === undefined) {
-            held!.ctx.font = font;
-            w = held!.ctx.measureText(text).width;
-            held!.picture.measures.set(cacheKey, w);
-          }
-          return w;
-        };
-        held.fixedWidths = measureFixedColumnWidths(baseCols, bound.settings, bound.theme, measure, initialTextSamples(baseCols, flatRows, model.hour));
-        held.widthConfigKey = configKey;
+      let model: TableModel;
+      let flatRows: readonly FlatTableRow[];
+      const modelChanged = !canReuseModel;
+      if (canReuseModel) {
+        model = held.cachedModel!;
+        flatRows = held.cachedRows;
+      } else {
+        const sources = sourcesFromScene(input, bound);
+        model = projection.project(sources, input.hour, bound.options);
+        flatRows = resolveTableRows(model, bound.settings, bound.expanded);
+        for (const url of collectCellIcons(flatRows)) loadIcon(held, url);
+        let nextBoundary = nextLookChange(optionsLooks(bound.options), input.hour);
+        if (projection.nextChange) nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
+        if (model.rows.some(r => r.revealAt !== undefined)) nextBoundary = Math.min(nextBoundary, nextTableChange(model, input.hour));
+        held.prevParts = snapshotPictures(input.pictures);
+        held.prevOptions = bound.options;
+        held.prevStaticPanels = bound.staticPanels;
+        held.prevStaticAnswers = bound.staticAnswers;
+        held.prevSortKey = sortSig;
+        held.prevExpanded = bound.expanded;
+        held.validFrom = input.hour;
+        held.validUntil = nextBoundary;
+        held.cachedModel = model;
+        held.cachedRows = flatRows;
       }
+      const tProj = timed ? performance.now() : 0;
 
       const rankShown = model.rank === true;
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
-      const allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
-      const protectedKeys = new Set<string>();
-      if (!model.unsorted && bound.settings.sort.column) protectedKeys.add(bound.settings.sort.column);
-      const layout: FamilyTableLayout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), bound.settings.overflow, {
-        rankShown,
-        rankWidth,
-        protectedKeys,
-      });
+      const layoutSame = held.cachedLayout !== null
+        && held.layoutCols === model.columns
+        && held.layoutSettings === bound.settings
+        && held.layoutWidth === bound.width
+        && held.layoutRankShown === rankShown
+        && held.layoutRankWidth === rankWidth
+        && held.layoutTheme === bound.theme;
+
+      let allLayouts: FamilyColumnLayout[];
+      let layout: FamilyTableLayout;
+      const layoutChanged = !layoutSame;
+      if (layoutSame) {
+        allLayouts = held.cachedAllLayouts;
+        layout = held.cachedLayout!;
+      } else {
+        const configKey = widthConfigOf(model.columns, bound.settings, bound.theme);
+        if (bound.theme && held.widthConfigKey !== configKey) {
+          const baseCols = buildColumnLayouts(model.columns, bound.settings);
+          const measure = (text: string, font: string) => {
+            const cacheKey = `${font}\u0000${text}`;
+            let w = held!.picture.measures.get(cacheKey);
+            if (w === undefined) {
+              held!.ctx.font = font;
+              w = held!.ctx.measureText(text).width;
+              held!.picture.measures.set(cacheKey, w);
+            }
+            return w;
+          };
+          held.fixedWidths = measureFixedColumnWidths(baseCols, bound.settings, bound.theme, measure, initialTextSamples(baseCols, flatRows));
+          held.widthConfigKey = configKey;
+        }
+        allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
+        const protectedKeys = new Set<string>();
+        if (!model.unsorted && bound.settings.sort.column) protectedKeys.add(bound.settings.sort.column);
+        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), bound.settings.overflow, {
+          rankShown,
+          rankWidth,
+          protectedKeys,
+        });
+        held.layoutCols = model.columns;
+        held.layoutSettings = bound.settings;
+        held.layoutWidth = bound.width;
+        held.layoutRankShown = rankShown;
+        held.layoutRankWidth = rankWidth;
+        held.layoutTheme = bound.theme;
+        held.cachedAllLayouts = allLayouts;
+        held.cachedLayout = layout;
+        const widthsPayload = {
+          widths: Object.fromEntries(layout.columns.map(col => [col.key, col.width])),
+          visible: layout.columns.map(col => col.key),
+          hidden: layout.hidden,
+          totalWidth: layout.totalWidth,
+          scrollable: layout.scrollable,
+          moreWidth: layout.moreWidth,
+        };
+        const widthsText = JSON.stringify(widthsPayload);
+        held.widthsField = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
+      }
 
       const now = input.now;
       const glideMs = glideDurationForSpeed(input.speed, bound.reducedMotion === true);
       const rowHeight = ROW_HEIGHT[bound.settings.density];
-      if (held.priorRows.length && glideMs > 0) {
-        const oldIndex = new Map<string, number>();
-        held.priorRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
-        const nextGlide = new Map<string, GlideOffset>();
-        flatRows.forEach((item, index) => {
-          if (item.kind !== 'data') return;
-          const before = oldIndex.get(item.key);
-          if (before !== undefined && before !== index) {
-            nextGlide.set(item.key, { from: (before - index) * rowHeight, to: 0, started: now });
-          } else {
-            const existing = held!.glide.get(item.key);
-            if (existing && now - existing.started < glideMs) nextGlide.set(item.key, existing);
-          }
-        });
-        held.glide = nextGlide;
-      } else {
-        held.glide = new Map();
-      }
+      if (modelChanged) {
+        if (held.priorRows.length && glideMs > 0) {
+          const oldIndex = new Map<string, number>();
+          held.priorRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
+          const nextGlide = new Map<string, GlideOffset>();
+          flatRows.forEach((item, index) => {
+            if (item.kind !== 'data') return;
+            const before = oldIndex.get(item.key);
+            if (before !== undefined && before !== index) {
+              nextGlide.set(item.key, { from: (before - index) * rowHeight, to: 0, started: now });
+            } else {
+              const existing = held!.glide.get(item.key);
+              if (existing && now - existing.started < glideMs) nextGlide.set(item.key, existing);
+            }
+          });
+          held.glide = nextGlide;
+        } else {
+          held.glide = new Map();
+        }
 
-      if (rankMarkersOn) {
-        const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
-        const sortSig = `${bound.settings.sort.column}\u0000${bound.settings.sort.direction}`;
-        const holdMs = rankHoldForSpeed(input.speed);
-        held.markers = held.order?.sort === sortSig ? rankMarkers(held.order.keys, dataKeys, now, held.markers, holdMs) : new Map();
-        held.order = { sort: sortSig, keys: dataKeys };
+        if (rankMarkersOn) {
+          const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
+          const holdMs = rankHoldForSpeed(input.speed);
+          held.markers = held.order?.sort === sortSig ? rankMarkers(held.order.keys, dataKeys, now, held.markers, holdMs) : new Map();
+          held.order = { sort: sortSig, keys: dataKeys };
+        } else {
+          held.markers = new Map();
+        }
+        held.priorRows = flatRows;
+        held.priorHour = model.hour;
       } else {
-        held.markers = new Map();
+        if (held.glide.size) {
+          for (const [key, g] of held.glide) if (glideMs === 0 || now - g.started >= glideMs) held.glide.delete(key);
+        }
+        if (held.markers.size) {
+          for (const [key, m] of held.markers) if (m.until <= now) held.markers.delete(key);
+        }
       }
-
-      held.priorRows = flatRows;
-      held.priorHour = model.hour;
+      const tLayout = timed ? performance.now() : 0;
 
       const inspectedKey = typeof input.inspect === 'string' && input.inspect.startsWith('row:') ? input.inspect.slice(4) : null;
       const selectedKey = bound.selectedKey ?? null;
@@ -318,66 +524,123 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         painted = result.drew;
       }
       if (painted) held.content = content();
+      const tPaint = timed ? performance.now() : 0;
 
-      const moving = (glideMs > 0 && held.glide.size > 0) || [...held.markers.values()].some(marker => marker.until > now);
-      const fields: Record<string, { value: unknown; content: string }> = {};
+      const moving = (glideMs > 0 && held.glide.size > 0) || held.markers.size > 0;
+      const fields: Record<string, FieldEntry> = {};
 
-      const widthsPayload = {
-        widths: Object.fromEntries(layout.columns.map(col => [col.key, col.width])),
-        visible: layout.columns.map(col => col.key),
-        hidden: layout.hidden,
-        totalWidth: layout.totalWidth,
-        scrollable: layout.scrollable,
-        moreWidth: layout.moreWidth,
-      };
-      const widthsText = JSON.stringify(widthsPayload);
-      fields.widths = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
+      if (held.widthsField) fields.widths = held.widthsField;
 
-      const hasTree = flatRows.some(item => item.kind === 'data' && item.isTreeGroup);
-      const metaPayload = {
-        empty: model.empty ?? null,
-        emptyDetail: model.emptyDetail ?? null,
-        emptyKind: model.emptyKind ?? 'empty',
-        summaryPill: model.summaryPill ?? null,
-        notes: model.notes ?? [],
-        warnings: model.warnings ?? [],
-        hasTree,
-        unsorted: model.unsorted === true,
-        rankShown,
-        rankWidth,
-        columns: model.columns,
-      };
-      const metaText = JSON.stringify(metaPayload);
-      fields.meta = { value: metaPayload, content: cachedField(held, 'meta', metaText, content) };
+      if (modelChanged || layoutChanged || !held.metaField) {
+        const hasTree = flatRows.some(item => item.kind === 'data' && item.isTreeGroup);
+        const mSig = metaSignature(model, hasTree, rankShown, rankWidth);
+        if (mSig !== held.metaSig || !held.metaField) {
+          held.metaSig = mSig;
+          held.metaField = {
+            value: {
+              empty: model.empty ?? null,
+              emptyDetail: model.emptyDetail ?? null,
+              emptyKind: model.emptyKind ?? 'empty',
+              summaryPill: model.summaryPill ?? null,
+              notes: model.notes ?? [],
+              warnings: model.warnings ?? [],
+              hasTree,
+              unsorted: model.unsorted === true,
+              rankShown,
+              rankWidth,
+              columns: model.columns,
+            },
+            content: content(),
+          };
+        }
+      }
+      fields.meta = held.metaField!;
+
+      if (modelChanged || !held.navField) {
+        const nSig = navSignature(flatRows);
+        if (nSig !== held.navSig || !held.navField) {
+          held.navSig = nSig;
+          const navItems: (readonly [string, string, number, number, string, unknown])[] = [];
+          for (let i = 0; i < flatRows.length; i++) {
+            const item = flatRows[i]!;
+            if (item.kind === 'data') {
+              navItems.push([item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null]);
+            }
+          }
+          held.navField = { value: navItems, content: content() };
+        }
+      }
+      fields.nav = held.navField!;
 
       const focusedIndex = focusedKey ? flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey) : -1;
       const inspectedPresent = inspectedKey ? flatRows.some(item => item.kind === 'data' && item.key === inspectedKey) : false;
-      const navItems = flatRows.flatMap((item, index) => item.kind === 'data'
-        ? [[item.key, item.name, index, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null] as const]
-        : []);
-      const tablePayload = { count: flatRows.length, focusedIndex, inspectedPresent, nav: navItems };
-      const tableText = JSON.stringify(tablePayload);
-      fields.table = { value: tablePayload, content: cachedField(held, 'table', tableText, content) };
+      const tSig = `${flatRows.length}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
+      if (tSig !== held.tableSig || !held.tableField) {
+        held.tableSig = tSig;
+        held.tableField = { value: { count: flatRows.length, focusedIndex, inspectedPresent }, content: content() };
+      }
+      fields.table = held.tableField;
 
-      const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-      const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey);
-      const mirrorText = JSON.stringify(mirror);
-      fields.mirror = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
+      const winKey = bound.window ? `${bound.window.first}:${bound.window.count}` : '';
+      const mirrorDue = !held.mirrorField
+        || input.speed === 0
+        || winKey !== held.lastMirrorWindow
+        || focusedKey !== held.lastMirrorFocus
+        || (now - held.lastMirrorAt >= MIRROR_CADENCE_MS && (modelChanged || layoutChanged));
+      if (mirrorDue) {
+        const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
+        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey);
+        const mirrorText = JSON.stringify(mirror);
+        held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
+        held.lastMirrorAt = now;
+        held.lastMirrorWindow = winKey;
+        held.lastMirrorFocus = focusedKey;
+      }
+      if (held.mirrorField) fields.mirror = held.mirrorField;
 
       const tipKey = inspectedKey ?? focusedKey;
       if (tipKey) {
-        const hiddenSet = new Set(layout.hidden);
-        const tooltip = deriveTableTooltip(flatRows, tipKey, model.columns, hiddenSet, model.hour);
-        const tipPayload = { key: inspectedKey ? `row:${inspectedKey}` : `focus:${focusedKey}`, text: tooltip ? { hour: model.hour, rowKey: tipKey, content: tooltip } : null };
-        const tipText = JSON.stringify(tipPayload);
-        fields.tooltip = { value: tipPayload, content: cachedField(held, 'tooltip', tipText, content) };
+        const tipDue = !held.tipField
+          || tipKey !== held.lastTipKey
+          || input.speed === 0
+          || (now - held.lastTipAt >= TOOLTIP_CADENCE_MS && (modelChanged || layoutChanged));
+        if (tipDue) {
+          const hiddenSet = new Set(layout.hidden);
+          const tooltip = deriveTableTooltip(flatRows, tipKey, model.columns, hiddenSet, model.hour);
+          const tipPayload = { key: inspectedKey ? `row:${inspectedKey}` : `focus:${focusedKey}`, text: tooltip ? { hour: model.hour, rowKey: tipKey, content: tooltip } : null };
+          const tipText = JSON.stringify(tipPayload);
+          held.tipField = { value: tipPayload, content: cachedField(held, 'tooltip', tipText, content) };
+          held.lastTipAt = now;
+          held.lastTipKey = tipKey;
+        }
+        if (held.tipField) fields.tooltip = held.tipField;
+      } else {
+        held.lastTipKey = null;
+        held.tipField = null;
       }
+      const tFields = timed ? performance.now() : 0;
 
       if (bound.audit) {
-        const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-        const auditRows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
-        const auditText = JSON.stringify(auditRows);
-        fields.audit = { value: auditRows, content: cachedField(held, 'audit', auditText, content) };
+        if (modelChanged || layoutChanged || !held.auditField) {
+          const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
+          const auditRows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
+          held.auditField = { value: auditRows, content: content() };
+        }
+        fields.audit = held.auditField;
+      }
+
+      if (timed) {
+        const tEnd = performance.now();
+        held.phases.serves++;
+        held.phases.projMs += tProj - t0;
+        held.phases.layoutMs += tLayout - tProj;
+        held.phases.paintMs += tPaint - tLayout;
+        held.phases.fieldsMs += tFields - tPaint;
+        held.phases.auditMs += tEnd - tFields;
+        if (input.speed === 0 || held.phases.serves % 30 === 0 || !held.phasesField) {
+          held.phasesField = { value: { kind: bound.kind, ...held.phases }, content: content() };
+        }
+        fields.phases = held.phasesField;
       }
 
       const hit = (point: readonly [number, number]) => {

@@ -9,7 +9,7 @@ import { answerBody } from '../../dashboard/follow/messages.fixture.ts';
 import { packet, resetStamps, splitForLanes } from '../../dashboard/follow/split.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback.ts';
-import { tableSettingsOf } from '../../draw/tables/settings.ts';
+import { tableSettingsOf } from './settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDomShared.ts';
 import FamilyTableHost from './FamilyTableHost.tsx';
 import '../../styles.css';
@@ -276,6 +276,32 @@ window.tableFamilyDom = {
       cells: [...tr.querySelectorAll('td')].map(td => td.textContent),
     }));
     return { commits, totalInstallReads, installs, finalHour: view?.h ?? null, mirrorRows };
+  },
+
+  async verifyRepaintAndHeld() {
+    const hashCanvas = async () => {
+      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.tf-canvas')!;
+      const bitmap = await createImageBitmap(canvas);
+      const out = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = out.getContext('2d')!;
+      ctx.drawImage(bitmap, 0, 0);
+      const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let hash = 2166136261;
+      for (let i = 0; i < data.length; i++) hash = Math.imul(hash ^ data[i]!, 16777619);
+      return `${bitmap.width}x${bitmap.height}:${(hash >>> 0).toString(16)}`;
+    };
+    const beforeHash = await hashCanvas();
+    sendHour(23, [75n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
+    clock.step(1);
+    await until(() => pipeline.view(pipeId)?.h === 23 && !pipeline.view(pipeId)?.dim);
+    const afterHash = await hashCanvas();
+    for (let s = 0; s < 5; s++) clock.step(1);
+    await until(() => pipeline.view(pipeId)?.dim === true, 3000);
+    const dimView = pipeline.view(pipeId);
+    const held = !!hostNode!.querySelector('[data-held]');
+    sendHour(28, [70n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
+    await until(() => pipeline.view(pipeId)?.h === 28 && !pipeline.view(pipeId)?.dim, 3000);
+    return { pixelsChanged: beforeHash !== afterHash, dim: !!dimView?.dim, held, through: dimView?.through ?? null };
   },
 
   bodyBox() {

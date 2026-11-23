@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
-import { emptyReason, occupiedDetail, garrisonBar, garrisonCell, garrisonText, garrisonTone, liveRaw, NOT_NAMED, occupationTooltip, occupationTooltipKeys, occupiedRows, percentCell, strengthBar, validateOccupiedStates } from './occupiedStatesData.ts';
-import type { OccupiedState, OccupiedStatesReply } from './occupiedStatesData';
 import { countryMatch, membershipUnrecordedAt } from '../../dashboard/groups.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { panelStructure } from '../../draw/panels/views.ts';
+import { emptyReason, garrisonBar, garrisonCell, garrisonText, liveRaw, occupiedRows, percentCell, strengthBar, validateOccupiedStates } from './occupiedStatesData.ts';
+import type { OccupiedState, OccupiedStatesReply } from './occupiedStatesData';
 
 const state = (id: number, occupier: string | null, occupied: string | null, extra: Partial<OccupiedState> = {}): OccupiedState => ({
   state: id, name: `State ${id}`, nameMissing: null, owner: 'OWN', occupier, occupied, garrisonRequiredSign: 1,
   garrisonAlert: false, assignedKnown: false, garrisonMissing: 'Assigned manpower is incomplete',
-  law: 'mod_law', lawMissing: null, ...extra });
+  law: 'mod_law', lawMissing: null, ...extra,
+});
 const reply = (states: OccupiedState[]): OccupiedStatesReply => ({ states, complete: true, missing: null, laws: [], strengthMissing: 'Strength needs inputs', garrisonRedRaw: '30000', warnings: [] });
 
 test('the reply is checked whole: states ascend once each and every field has its type', () => {
@@ -25,23 +25,6 @@ test('the reply is checked whole: states ascend once each and every field has it
   assert.throws(() => validateOccupiedStates({ ...reply([]), garrisonRedRaw: 0.3 }));
   assert.equal(validateOccupiedStates({ ...reply([]), garrisonRedRaw: null }).garrisonRedRaw, null, 'a content saying no red threshold');
   assert.throws(() => validateOccupiedStates({ ...reply([]), missing: 3 }));
-});
-
-test('the worker tells the page only of what the page renders itself, never which country holds what', () => {
-  const shape = (states: OccupiedState[], warnings: string[] = []) => panelStructure('occupied-states', { ...reply(states), warnings }, 0);
-  const before = shape([state(1, 'GER', 'POL'), state(2, 'ITA', 'GRE')]);
-  assert.equal(shape([state(1, 'ITA', 'POL'), state(2, 'GER', 'GRE')]), before);
-  assert.equal(shape([state(1, 'GER', 'POL'), state(2, 'HUN', 'GRE')]), before, 'a new country: the worker names every country the recording holds');
-  assert.notEqual(shape([state(1, 'GER', 'POL'), state(2, null, 'GRE')]), before, 'a state no country holds');
-  assert.notEqual(shape([state(1, 'GER', 'POL'), state(2, 'ITA', 'GRE')], ['Laws not recorded']), before, 'a warning');
-  assert.throws(() => panelStructure('occupied-states', { states: 3 }, 0), /malformed/);
-});
-
-test('a drawn state’s detail is the state and its law in the reply drawn', () => {
-  const drawn = { ...reply([state(1, 'GER', 'POL'), state(2, 'ITA', 'GRE', { law: 'other' })]), laws: [{ token: 'other', name: 'Other law', icon: null, missing: null }] };
-  assert.deepEqual(occupiedDetail(drawn, '2'), { value: drawn.states[1], law: drawn.laws[0], strengthMissing: 'Strength needs inputs' });
-  assert.equal(occupiedDetail(drawn, '1')?.law, null, 'a law the reply does not list');
-  assert.equal(occupiedDetail(drawn, '3'), null);
 });
 
 test('a filter matches the occupier or the occupied country, and a state no country names cannot be matched', () => {
@@ -60,57 +43,16 @@ test('cells round half away from zero and clamp; the bar narrows the strength as
   assert.equal(percentCell('4449999'), '44%');
   assert.equal(strengthBar('50000'), 50000n);
   assert.equal(strengthBar('-50000'), -50000n);
-  assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: -1 })), { bar: 0n, red: true }, 'unmet: an empty bar and red, whatever the strength');
+  assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: -1 })), { bar: 0n, red: true });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: 0 })), { bar: null, red: false });
-  assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: null })), { bar: null, red: false }, 'no garrison row, no bar');
-  assert.deepEqual(garrisonCell(state(1, 'GER', 'POL')), { bar: 'cell', red: false }, 'required: the bar and its red are the strength’s live cell');
+  assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: null })), { bar: null, red: false });
+  assert.deepEqual(garrisonCell(state(1, 'GER', 'POL')), { bar: 'cell', red: false });
   assert.equal(garrisonBar(50000), 50000n);
   assert.equal(garrisonBar(-50000), -50000n);
-  const tone = garrisonTone('30000');
-  assert.deepEqual([tone(29999), tone(30000), tone(100000)], ['occupation-garrison-alert', undefined, undefined], 'red below the content’s threshold');
-  assert.equal(garrisonTone(null)(0), undefined, 'no threshold, never red');
-  assert.deepEqual([garrisonText(-1), garrisonText(0), garrisonText(250000), garrisonText(123456)], ['!', '-', '2.50', '1.23'], 'the painted amount as main drew it');
-});
-
-test('the tooltip reads the live values and names why one is missing, and a strength not established says why', () => {
-  const values = valuesOf(new Map([[liveKey('1', 'resistance'), 2500000], [liveKey('1', 'compliance'), 0], [liveKey('1', 'requiredManpower'), 1200],
-    [liveKey('1', 'garrison'), 250000], [liveKey('2', 'assignedManpower'), 900]]), 'Not recorded at this hour');
+  assert.deepEqual([garrisonText(-1), garrisonText(0), garrisonText(250000), garrisonText(123456)], ['!', '-', '2.50', '1.23']);
+  const values = valuesOf(new Map([[liveKey('1', 'resistance'), 2500000]]), 'Not recorded at this hour');
   assert.equal(liveRaw(values, '1', 'resistance'), '2500000');
   assert.equal(liveRaw(values, '1', 'resistanceSpeed'), null);
-  const row = occupiedRows(reply([state(1, 'GER', 'POL')]), null, 'occupier').rows[0];
-  const tip = occupationTooltip(row, values, tag => `Name ${tag}`, 'Strength needs inputs', token => `Law ${token}`);
-  const value = (label: string) => tip.rows.find(item => item.label === label)?.value;
-  assert.deepEqual([value('Owner'), value('Occupier'), value('Occupation law')], ['Name OWN', 'Name GER', 'Law mod_law'],
-    'every column the table can hide into the tooltip is in it');
-  const unknown = occupationTooltip(occupiedRows(reply([state(9, 'GER', 'POL', { owner: null, law: null, lawMissing: 'No law row' })]), null, 'occupier').rows[0],
-    values, tag => tag, '', token => token);
-  assert.deepEqual([unknown.rows.find(item => item.label === 'Owner')?.value, unknown.rows.find(item => item.label === 'Occupation law')?.value],
-    ['Unknown country', 'No law row'], 'missing owner and law say so');
-  assert.equal(value('Resistance'), '25%');
-  assert.equal(value('Resistance speed'), 'Not recorded at this hour');
-  const tone = (label: string) => tip.rows.find(item => item.label === label)?.tone;
-  assert.deepEqual([tone('Resistance speed'), tone('Resistance'), tone('Garrison strength')], ['muted', undefined, 'muted'], 'the family panel: a missing value is muted in the value place');
-  assert.equal(value('Compliance'), '0%');
-  assert.equal(value('Garrison strength'), 'Assigned manpower is incomplete');
-  const strong = valuesOf(new Map([[liveKey('5', 'garrisonStrength'), 87500]]), NOT_NAMED);
-  const strength = (id: number, extra: Partial<OccupiedState>, values = strong) => occupationTooltip(occupiedRows(reply([state(id, 'GER', 'POL', extra)]), null, 'occupier').rows[0],
-    values, tag => tag, 'Strength needs inputs', token => token).rows.find(item => item.label === 'Garrison strength')?.value;
-  assert.equal(strength(5, { garrisonMissing: null }), '87.5%', 'the strength from its live cell');
-  assert.equal(strength(6, { garrisonMissing: null }), 'Strength needs inputs', 'no cell named and no reason: the reply’s general reason');
-  assert.equal(strength(6, { garrisonMissing: null }, valuesOf(new Map(), 'Not recorded at this hour')), 'Not recorded at this hour', 'a cell named but not recorded at the hour shown says so');
-  assert.equal(value('Occupied country'), 'Name POL');
-  assert.deepEqual([value('Required manpower'), value('Required garrison amount'), value('Assigned manpower')], ['1,200', '2.5', '—'], 'garrison numbers from cells; assigned not known');
-  const unnamed = valuesOf(new Map([[liveKey('2', 'assignedManpower'), 900]]), NOT_NAMED);
-  const known = (id: number) => occupiedRows(reply([state(id, 'GER', 'POL', { assignedKnown: true })]), null, 'occupier').rows[0];
-  const assigned = (id: number) => occupationTooltip(known(id), unnamed, tag => tag, '', token => token).rows.find(item => item.label === 'Assigned manpower')?.value;
-  assert.deepEqual([assigned(2), assigned(3)], ['900', '0'], 'the summed cell, and zero where no row is assigned and so no cell is named');
-  const noGarrison = occupationTooltip(occupiedRows(reply([state(4, 'GER', 'POL', { garrisonRequiredSign: null })]), null, 'occupier').rows[0], values, tag => tag, '', token => token);
-  assert.equal(noGarrison.rows.find(item => item.label === 'Required manpower')?.value, '—', 'no garrison row, no garrison number');
-
-  const read = new Set<string>();
-  const recording = { get: (key: string) => { read.add(key); return undefined; }, missing: (key: string) => { read.add(key); return NOT_NAMED; } };
-  occupationTooltip(known(7), recording, tag => tag, '', token => token);
-  assert.deepEqual([...read].filter(key => !occupationTooltipKeys('7').includes(key)), []);
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
@@ -135,5 +77,5 @@ test('the table says why it shows no rows at the hour, and nothing while it show
   assert.equal(emptyReason({ ...reply([]), complete: false }, view([])), 'Some occupied states are missing.');
   assert.equal(emptyReason(reply([]), view([], { selectionUnknown: true })), 'Occupied states unavailable for these countries.');
   assert.equal(emptyReason(reply([]), view([], { membership: 'Membership not recorded' })), 'Membership not recorded');
-  assert.equal(emptyReason({ ...reply([state(1, 'GER', 'POL')]), missing: 'not read' }, view([{}])), 'Occupied states weren’t recorded at this time: not read', 'not recorded wins over rows');
+  assert.equal(emptyReason({ ...reply([state(1, 'GER', 'POL')]), missing: 'not read' }, view([{}])), 'Occupied states weren’t recorded at this time: not read');
 });

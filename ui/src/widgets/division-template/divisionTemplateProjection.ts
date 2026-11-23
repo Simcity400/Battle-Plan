@@ -1,15 +1,20 @@
 import { usNumber } from '../../charts/numberFormat.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { OFFERED } from '../../draw/tables/settings.ts';
-import type { DivisionTemplatesReply } from '../../generated/dashboard';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import {
   declareTableProjection,
+  type DeclarativeColumnSpec,
   type TableColumnSpec,
   type TableProjection,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { knownValue, notApplicable, notRecorded, valueFromNullable, valueFromRawBigInt, type Value } from '../../families/value.ts';
+import { OFFERED } from '../../families/table/settings.ts';
+import { knownValue, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
+import type { DivisionTemplatesReply } from '../../generated/dashboard';
+import { DEFAULT_SORT, OPTIONS } from './definition.ts';
+import { designerSnapshot } from './designerSnapshot.ts';
 import {
   battalionCount,
   battalionSummary,
@@ -27,129 +32,99 @@ export interface DivisionTemplateProjectionOptions {
   readonly canOpenDesigner: boolean;
 }
 
-const validated = new WeakMap<object, DivisionTemplatesReply>();
-
-function checkedTemplates(raw: unknown): DivisionTemplatesReply {
-  if (!raw || typeof raw !== 'object') return validateDivisionTemplates(raw);
-  let held = validated.get(raw);
-  if (!held) {
-    held = validateDivisionTemplates(raw);
-    validated.set(raw, held);
-  }
-  return held;
-}
+const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemplateProjectionOptions>[] = [
+  {
+    key: 'template',
+    label: 'Template',
+    as: 'icon',
+    offered: OFFERED.text,
+    priority: 0,
+    text: true,
+    hideable: false,
+    widest: ['Infantry Division'],
+    hint: 'Sorted by the game’s roster order',
+    iconSlot: true,
+    icon: row => (row.kind === 'template' ? row.entry.icon ?? undefined : undefined),
+    value: row => knownValue(row.kind === 'obsolete' ? `Obsolete templates (${row.count})` : templateName(row.entry)),
+    sortValue: row => row.kind === 'obsolete'
+      ? knownValue(Number.MAX_SAFE_INTEGER)
+      : valueFromNullable(row.entry.rosterOrdinal, { kind: 'notRecorded', reason: 'Roster order not recorded' }),
+  },
+  {
+    key: 'fielded',
+    label: 'Fielded',
+    as: 'plain',
+    cellBarWhen: opt => opt.cellBars,
+    tone: 'blue',
+    offered: OFFERED.number,
+    priority: 1,
+    numeric: true,
+    format: 'integer',
+    widest: ['999'],
+    path: 'entry.fielded',
+    whenNull: { kind: 'notRecorded', reason: 'Fielded count not recorded' },
+  },
+  {
+    key: 'battalions',
+    label: 'Battalions',
+    as: 'plain',
+    offered: OFFERED.text,
+    priority: 2,
+    text: true,
+    widest: ['Infantry ×9 · Artillery'],
+    value: row => valueFromNullable(
+      row.kind === 'template' ? battalionSummary(row.entry) : null,
+      { kind: 'notRecorded', reason: row.kind === 'template' ? (row.entry.unitsMissing ?? 'Composition not recorded') : 'Composition not recorded' },
+    ),
+    sortValue: row => valueFromNullable(
+      row.kind === 'template' ? battalionCount(row.entry) : null,
+      { kind: 'notRecorded', reason: row.kind === 'template' ? (row.entry.unitsMissing ?? 'Composition not recorded') : 'Composition not recorded' },
+    ),
+  },
+  {
+    key: 'width',
+    label: 'Base combat width',
+    as: 'plain',
+    offered: OFFERED.number,
+    priority: 3,
+    numeric: true,
+    format: 'fixed5Width',
+    widest: ['99.9'],
+    path: 'entry.baseWidthRaw',
+    rawBigInt: true,
+    whenNull: { kind: 'notRecorded', reason: 'Base combat width not recorded' },
+  },
+  {
+    key: 'priority',
+    label: 'Priority',
+    as: 'plain',
+    offered: OFFERED.text,
+    priority: 4,
+    text: true,
+    widest: ['Reserve'],
+    value: row => valueFromNullable(
+      row.kind === 'template' ? priorityLabel(row.entry) : null,
+      { kind: 'notRecorded', reason: row.kind === 'template' ? (row.entry.priorityMissing ?? 'Priority not recorded') : 'Priority not recorded' },
+    ),
+    sortPath: 'entry.priority',
+    whenNull: { kind: 'notRecorded', reasonField: 'entry.priorityMissing', reason: 'Priority not recorded' },
+  },
+];
 
 export function divisionTemplateColumns(cellBars = false): TableColumnSpec[] {
-  return [
-    {
-      key: 'template',
-      label: 'Template',
-      as: 'icon',
-      offered: OFFERED.text,
-      priority: 0,
-      text: true,
-      hideable: false,
-      widest: ['Infantry Division'],
-      hint: 'Sorted by the game’s roster order',
-    },
-    {
-      key: 'fielded',
-      label: 'Fielded',
-      as: cellBars ? 'faint' : 'plain',
-      tone: 'blue',
-      offered: OFFERED.number,
-      priority: 1,
-      numeric: true,
-      format: 'integer',
-      widest: ['999'],
-    },
-    {
-      key: 'battalions',
-      label: 'Battalions',
-      as: 'plain',
-      offered: OFFERED.text,
-      priority: 2,
-      text: true,
-      widest: ['Infantry ×9 · Artillery'],
-    },
-    {
-      key: 'width',
-      label: 'Base combat width',
-      as: 'plain',
-      offered: OFFERED.number,
-      priority: 3,
-      numeric: true,
-      format: 'fixed5Width',
-      widest: ['99.9'],
-    },
-    {
-      key: 'priority',
-      label: 'Priority',
-      as: 'plain',
-      offered: OFFERED.text,
-      priority: 4,
-      text: true,
-      widest: ['Reserve'],
-    },
-  ];
+  return TEMPLATE_COLUMNS.map(col => (col.cellBarWhen ? { ...col, as: cellBars ? 'faint' : 'plain' } : col));
 }
 
 const yesNoValue = (value: boolean | null): Value<string> =>
   value === null ? notRecorded('Setting not recorded') : knownValue(value ? 'Yes' : 'No');
 
 export const divisionTemplateProjection: TableProjection<DivisionTemplateProjectionOptions> = registerTableProjection(
-  declareTableProjection<unknown, TemplateRow, DivisionTemplateProjectionOptions>({
+  declareTableProjection<DivisionTemplatesReply, TemplateRow, DivisionTemplateProjectionOptions>({
     kind: 'division-template',
-    columns: (_raw, options) => {
-      const specs = divisionTemplateColumns(options.cellBars);
-      return [
-        {
-          ...specs[0]!,
-          iconSlot: true,
-          icon: row => (row.kind === 'template' ? row.entry.icon ?? undefined : undefined),
-          value: row => knownValue(row.kind === 'obsolete' ? `Obsolete templates (${row.count})` : templateName(row.entry)),
-          sortValue: row => row.kind === 'obsolete'
-            ? knownValue(Number.MAX_SAFE_INTEGER)
-            : valueFromNullable(row.entry.rosterOrdinal, { kind: 'notRecorded', reason: 'Roster order not recorded' }),
-        },
-        {
-          ...specs[1]!,
-          value: row => row.kind === 'obsolete'
-            ? notApplicable('Summary row for obsolete templates')
-            : valueFromNullable(row.entry.fielded, { kind: 'notRecorded', reason: 'Fielded count not recorded' }),
-          bar: row => (row.kind === 'obsolete' ? null : undefined),
-        },
-        {
-          ...specs[2]!,
-          value: row => {
-            if (row.kind === 'obsolete') return notApplicable('Summary row for obsolete templates');
-            const summary = battalionSummary(row.entry);
-            return valueFromNullable(summary, { kind: 'notRecorded', reason: row.entry.unitsMissing ?? 'Composition not recorded' });
-          },
-          sortValue: row => {
-            if (row.kind === 'obsolete') return notApplicable('Summary row for obsolete templates');
-            return valueFromNullable(battalionCount(row.entry), { kind: 'notRecorded', reason: row.entry.unitsMissing ?? 'Composition not recorded' });
-          },
-        },
-        {
-          ...specs[3]!,
-          value: row => row.kind === 'obsolete'
-            ? notApplicable('Summary row for obsolete templates')
-            : valueFromRawBigInt(row.entry.baseWidthRaw, { kind: 'notRecorded', reason: 'Base combat width not recorded' }),
-        },
-        {
-          ...specs[4]!,
-          value: row => row.kind === 'obsolete'
-            ? notApplicable('Summary row for obsolete templates')
-            : valueFromNullable(priorityLabel(row.entry), { kind: 'notRecorded', reason: row.entry.priorityMissing ?? 'Priority not recorded' }),
-          sortValue: row => row.kind === 'obsolete'
-            ? notApplicable('Summary row for obsolete templates')
-            : valueFromNullable(row.entry.priority, { kind: 'notRecorded', reason: row.entry.priorityMissing ?? 'Priority not recorded' }),
-        },
-      ];
-    },
-    rows: (raw, _live, _hour, options) => {
-      const reply = checkedTemplates(raw);
+    validate: validateDivisionTemplates,
+    naWhen: row => (row.kind === 'obsolete' ? 'Summary row for obsolete templates' : null),
+    columns: TEMPLATE_COLUMNS,
+    rows: (reply, _live, _hour, options) => {
       const rows = templateRows(reply);
       const current = reply.templates.filter(entry => !entry.obsolete).length;
       const summaryPill = `${current} ${current === 1 ? 'template' : 'templates'}`;
@@ -166,11 +141,11 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
     },
     rowKey: row => row.key,
     rowName: row => (row.kind === 'obsolete' ? `Obsolete templates (${row.count})` : templateName(row.entry)),
-    rowMeta: (row, raw) => row.kind === 'template' ? { designer: row.entry.designer ?? 'ordinary', tag: checkedTemplates(raw).tag } : null,
+    rowMeta: (row, reply) => (row.kind === 'template' ? { designer: row.entry.designer ?? 'ordinary', tag: reply.tag } : null),
     children: row => (row.kind === 'obsolete' ? row.children : undefined),
     initiallyOpen: () => false,
     tooltipAction: (row, options) => (row.kind === 'template' && options.canOpenDesigner ? 'Click for division designer' : undefined),
-    tooltipNote: (row, _raw, _live, _hour, options) => (row.kind === 'template' && !options.canOpenDesigner ? 'Game view not available yet' : undefined),
+    tooltipNote: (row, _reply, _live, _hour, options) => (row.kind === 'template' && !options.canOpenDesigner ? 'Game view not available yet' : undefined),
     tooltipExtra: (row): TooltipExtraRow[] | undefined => {
       if (row.kind === 'obsolete') return undefined;
       const entry = row.entry;
@@ -179,15 +154,11 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
       const support = entry.units.filter(unit => unit.support);
       if (line.length) {
         extra.push({ label: 'Line battalions', value: knownValue(String(line.reduce((s, u) => s + u.count, 0))), strong: true, divider: true });
-        for (const unit of line) {
-          extra.push({ label: unitName(unit), value: knownValue(`\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined });
-        }
+        for (const unit of line) extra.push({ label: unitName(unit), value: knownValue(`\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined });
       }
       if (support.length) {
         extra.push({ label: 'Support companies', value: knownValue(String(support.length)), strong: true });
-        for (const unit of support) {
-          extra.push({ label: unitName(unit), value: knownValue(unit.count === 1 ? '1' : `\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined });
-        }
+        for (const unit of support) extra.push({ label: unitName(unit), value: knownValue(unit.count === 1 ? '1' : `\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined });
       }
       if (entry.settingsMissing === null) {
         extra.push(
@@ -205,3 +176,29 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
     },
   }),
 );
+
+export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplateProjectionOptions> = {
+  family: 'table',
+  kind: 'division-template',
+  label: 'Division templates',
+  subject: 'templates',
+  emptyCampaign: 'Load a campaign to see templates.',
+  optionFields: OPTIONS,
+  countries: { mode: 'single', choose: 'Choose a country to see its templates.' },
+  source: {
+    kind: 'panel',
+    product: 'division-templates',
+    params: ctx => (ctx.countryTag
+      ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner' }
+      : null),
+    validate: validateDivisionTemplates,
+  },
+  projection: divisionTemplateProjection,
+  columns: ctx => divisionTemplateColumns(ctx.options.cellBars === true),
+  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  projectionOptions: ctx => ({
+    countryName: ctx.countryName,
+    cellBars: ctx.options.cellBars === true,
+    canOpenDesigner: Boolean(designerSnapshot()),
+  }),
+};

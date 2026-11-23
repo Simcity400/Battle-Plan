@@ -1,9 +1,12 @@
-import { countryKey } from '../../dashboard/countryKey.ts';
-import type { CountryLook } from '../../draw/tables/looks.ts';
-import { lookAt } from '../../draw/tables/looks.ts';
-import { OFFERED } from '../../draw/tables/settings.ts';
-import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
+import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import type { FamilySources } from '../../families/contract.ts';
+import type { DeclaredFollowItem, DeclaredTableContext, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
+import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
+import { registerTableProjection } from '../../families/table/registry.ts';
+import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import {
   knownValue,
   notRecorded,
@@ -13,11 +16,21 @@ import {
   type NumericScalar,
   type Value,
 } from '../../families/value.ts';
-import type { HourRanges } from '../occupied-states/occupiedProjection.ts';
 import { defaultWidestSamples, type ValueFormat } from '../../families/valueFormat.ts';
-import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
-import { partialSource, rankedTags, scoreboardColumnNote, validateScoreboardReply } from './scoreboardData.ts';
+import type { ScoreboardColumn, ScoreboardColumnsReply, ScoreboardReply } from '../../generated/dashboard';
+import { DEFAULT_SORT, OPTIONS, TABLE_BASE } from './definition.ts';
+import {
+  partialSource,
+  rankedTags,
+  rankingColumn,
+  rankingDescending,
+  scoreboardColumnNote,
+  scoreboardParams,
+  scoreboardSort,
+  selectedColumns,
+  validateColumnsReply,
+  validateScoreboardReply,
+} from './scoreboardData.ts';
 
 export const RANK_SOURCE = 'top:rank';
 
@@ -27,12 +40,11 @@ export interface ScoreboardProjectionOptions {
   readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly top: number | null;
   readonly rankMarkers: boolean;
-  readonly looks: Readonly<Record<string, readonly CountryLook[]>>;
+  readonly looks: CountryLooksMap;
 }
 
-function columnFormat(column: ScoreboardColumn): ValueFormat {
-  return { decimals: column.decimals, percent: column.unit === 'percent' };
-}
+const columnFormat = (column: ScoreboardColumn): ValueFormat =>
+  ({ decimals: column.decimals, percent: column.unit === 'percent' });
 
 export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: number | null): TableColumnSpec[] {
   return [
@@ -66,7 +78,7 @@ export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: n
   ];
 }
 
-function countryNameValue(tag: string, looks: Readonly<Record<string, readonly CountryLook[]>>, hour: number): { value: Value<string>; name: string; runs?: readonly CountryLook[] } {
+function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
   const runs = looks[tag];
   const look = lookAt(runs, hour);
   if (look && look.name) return { value: knownValue(look.name), name: look.name, runs };
@@ -136,9 +148,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
 
     const rankAnswer = options.top != null ? sources.answers.get(RANK_SOURCE) : undefined;
     if (options.top != null) {
-      if (!rankAnswer) {
-        return { columns, rows: [], hour, rank: true, rankMarkers: options.rankMarkers };
-      }
+      if (!rankAnswer) return { columns, rows: [], hour, rank: true, rankMarkers: options.rankMarkers };
       if (rankAnswer.kind === 'notRecorded') {
         return { columns, rows: [], hour, empty: rankAnswer.reason, emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers };
       }
@@ -195,3 +205,125 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
     };
   },
 });
+
+function scoreboardState(ctx: Omit<DeclaredTableContext<ScoreboardColumnsReply>, 'settings'>) {
+  const registry = ctx.aux?.columns ?? [];
+  const shown = selectedColumns(registry, ctx.options.columns, ctx.aux?.defaultColumns ?? []);
+  const sort = scoreboardSort(registry, shown, tableSortOf(ctx.options.tableSort, DEFAULT_SORT), ctx.aux?.defaultSort ?? '');
+  const rank = rankingColumn(registry, sort, ctx.options.topMeasure, ctx.aux?.defaultSort ?? '');
+  const descending = rankingDescending(sort, rank);
+  return { registry, shown, sort, rank, descending };
+}
+
+export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionOptions, ScoreboardColumnsReply> = {
+  family: 'table',
+  kind: 'scoreboard',
+  label: 'Scoreboard',
+  subject: 'scoreboard',
+  emptyCampaign: 'Load a campaign to compare its countries.',
+  icon: 'grid',
+  className: 'scoreboard',
+  optionFields: OPTIONS,
+  countries: {
+    mode: 'multi',
+    labels: true,
+    everyOnTop: true,
+    requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
+  },
+  aux: {
+    product: 'scoreboard-columns',
+    params: track => ({ branchId: track.branch.id }),
+    validate: validateColumnsReply,
+  },
+  source: {
+    kind: 'multi',
+    follow: ctx => {
+      const { shown, rank, descending } = scoreboardState(ctx);
+      const top = ctx.countries.top;
+      const subs: DeclaredFollowItem[] = [];
+      if (top != null) {
+        if (!rank?.family) return { subs: [], unavailable: 'No measure to rank the top countries by is in this recording.' };
+        subs.push({ name: RANK_SOURCE, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: rank.family, top, least: descending ? undefined : true } } });
+      }
+      const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
+      let hasFamilies = false;
+      if (reads) {
+        for (const column of shown) {
+          if (column.family) {
+            hasFamilies = true;
+            subs.push({ name: column.key, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: column.family, reads } } });
+          }
+          if (column.partial) {
+            subs.push({ name: partialSource(column.key), query: { product: 'series-state', params: { branchId: ctx.branch.id, family: column.partial, reads } } });
+          }
+        }
+      }
+      if (!hasFamilies) {
+        return { subs: [], unavailable: shown.map(column => column.reason).filter(Boolean).join(' ') || 'No selected column is followed in this recording.' };
+      }
+      return { subs };
+    },
+    exactProduct: 'scoreboard',
+    exactParams: (ctx, hour) => {
+      const { shown, rank, descending } = scoreboardState(ctx);
+      const tags = ctx.countries.top == null ? ctx.countries.rankedAt(hour) : [];
+      return scoreboardParams(ctx.branch.id, hour, shown, tags, ctx.countries.top, rank, descending);
+    },
+    dynamicKeys: ['hour', 'tags'],
+    validate: (raw, ctx) => validateScoreboardReply(raw, scoreboardState(ctx).shown.length),
+  },
+  projection: scoreboardProjection,
+  columns: ctx => scoreboardColumnsSpec(scoreboardState(ctx).shown, ctx.countries.top),
+  settings: {
+    kind: 'custom',
+    resolve: (ctx, columns) => {
+      const { sort } = scoreboardState(ctx);
+      const stored = tableSettingsOf(ctx.options.tableSettings, columns, TABLE_BASE);
+      return { ...stored, order: columns.map(col => col.key), sort };
+    },
+    onChange: (next, current, ctx, setOption) => {
+      const { registry, shown } = scoreboardState(ctx);
+      if (next.sort.column !== current.sort.column || next.sort.direction !== current.sort.direction) {
+        const measure = next.sort.column === 'country' ? current.sort.column : next.sort.column;
+        if (registry.some(column => column.key === measure && column.available)) setOption('topMeasure', setToken(measure));
+        setOption('tableSort', tableSortToken(next.sort));
+        return;
+      }
+      const hidden = shown.filter(column => next.columns[column.key]?.show === false);
+      if (hidden.length) {
+        setOption('columns', shown.filter(column => !hidden.includes(column)).map(column => setToken(column.key)).join(' '));
+        return;
+      }
+      setOption(TABLE_SETTINGS_KEY, encodeTableSettings(next));
+    },
+  },
+  projectionOptions: ctx => {
+    const { shown } = scoreboardState(ctx);
+    const top = ctx.countries.top;
+    return {
+      shown,
+      candidates: top != null ? ctx.countries.every : ctx.countries.tags,
+      membership: top == null ? ctx.countries.membership : null,
+      top,
+      rankMarkers: ctx.options.rankMarkers === true,
+      looks: ctx.countries.labels,
+    };
+  },
+  unavailable: ctx => {
+    const { shown, rank } = scoreboardState(ctx);
+    if (ctx.aux && !shown.length) return 'The selected columns are not in this recording. Choose columns in settings.';
+    if (ctx.countries.top != null && !rank) return 'No measure to rank the top countries by is in this recording.';
+    if (ctx.countries.top == null && ctx.following && !ctx.countries.tags.length) return 'No countries available for this selection.';
+    return null;
+  },
+  warnings: (ctx, followRefused) => {
+    const registry = ctx.aux?.columns ?? [];
+    const absent = contentSet(ctx.options.columns).map(contentKey).filter(key => !registry.some(column => column.key === key));
+    const unknown = ctx.aux && absent.length
+      ? [`${absent.length} selected ${absent.length === 1 ? 'column is' : 'columns are'} not in this recording: ${absent.join(', ')}.`]
+      : [];
+    const unfollowed = followRefused ? [`Values are not followed here: ${followRefused}.`] : [];
+    return [...(ctx.aux?.warnings ?? []), ...unknown, ...unfollowed];
+  },
+  keyByBranch: true,
+};
