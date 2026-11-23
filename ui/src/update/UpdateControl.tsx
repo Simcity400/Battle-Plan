@@ -76,7 +76,13 @@ export function UpdateNotes({ state, onOpenRelease }: { state: UpdateState; onOp
   if (!state.releases.length && !state.unlisted) return null;
   const now = Date.now();
   const offered = state.downloadedVersion ?? state.availableVersion;
+  const missing = offered != null && !state.releases.some(notes => notes.version === offered);
   return <div className="update-releases">
+    {missing && <section className="update-release">
+      <p className="update-release-footer">This update’s changes aren’t listed here.</p>
+      {onOpenRelease && state.enabled && <button type="button" className="update-release-link" onClick={() => onOpenRelease(offered)}>
+        Release on GitHub<Icon name="external" /></button>}
+    </section>}
     {state.releases.map(notes => {
       const { items, footer } = releaseView(notes);
       return <section key={notes.version} className="update-release">
@@ -89,9 +95,7 @@ export function UpdateNotes({ state, onOpenRelease }: { state: UpdateState; onOp
           {releaseLink(notes)}<Icon name="external" /></button>}
       </section>;
     })}
-    {state.unlisted && <p className="update-release-footer">{state.releases.length ? 'Earlier releases aren’t listed here.' : 'This update’s changes aren’t listed here.'}</p>}
-    {offered && !state.releases.some(notes => notes.version === offered) && onOpenRelease && state.enabled
-      && <button type="button" className="update-release-link" onClick={() => onOpenRelease(offered)}>Release on GitHub<Icon name="external" /></button>}
+    {state.unlisted && state.releases.length > 0 && <p className="update-release-footer">Earlier releases aren’t listed here.</p>}
   </div>;
 }
 

@@ -40,8 +40,9 @@
 .update-notes strong { font-weight: 600; }
 .update-release-footer { margin: 0; color: var(--muted); font-size: 0.75rem; line-height: 1.25rem; }
 .update-release-footer.is-strong { color: var(--text); font-weight: 600; }
-.update-release-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: color-mix(in srgb, var(--text) 82%, var(--overlay));
+.update-release-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--muted);
   font: inherit; font-size: 0.75rem; line-height: 1.25rem; cursor: pointer; transition: color var(--t-fast) var(--ease); }
+.update-popover .update-release-link { color: color-mix(in srgb, var(--text) 82%, var(--overlay)); }
 .update-release-link:hover, .update-release-link:focus-visible { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .update-release-link > svg { width: 12px; height: 12px; flex: none; }
 .update-popover-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 12px; }
