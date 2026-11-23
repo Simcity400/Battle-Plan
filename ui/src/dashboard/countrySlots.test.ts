@@ -37,6 +37,21 @@ test('two holders of one slot at once: the run at an hour is the one of the lowe
   assert.equal(shared.tagAt(5, 160), 'NEW');
   assert.deepEqual(shared.runAt(5, 100), { tag: 'OLD', firstHour: 0, lastHour: 200 }, 'before the lower id holds it');
   assert.equal(shared.runAt(5, 201), null, 'an hour it holds no tag');
+  assert.deepEqual(
+    shared.tagRuns(5).map(({ tag, firstHour, lastHour }) => ({ tag, firstHour, lastHour })),
+    [{ tag: 'OLD', firstHour: 0, lastHour: 149 }, { tag: 'NEW', firstHour: 150, lastHour: 200 }],
+    'overlapping slot runs split so the lowest countryId wins at every hour',
+  );
+});
+
+test('tag existence runs retain unresolved spans so existence matches the board query', () => {
+  const withUnresolved = new SlotTags({ countries: [
+    { tag: 'GER', identities: [{ firstHour: 0, lastHour: 10, slot: 5, countryId: 50 }], unresolved: [{ firstHour: 11, lastHour: 20 }] },
+  ] });
+  assert.deepEqual(withUnresolved.tagExistenceRuns('GER'), [
+    { tag: 'GER', firstHour: 0, lastHour: 10 },
+    { tag: 'GER', firstHour: 11, lastHour: 20, unresolved: true },
+  ]);
 });
 
 test('a country key names a slot by a form no tag can spell, and reads back as the country it names', () => {

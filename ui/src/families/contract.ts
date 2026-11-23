@@ -30,6 +30,7 @@ export interface MirrorCell {
 export interface MirrorRow {
   readonly key: string;
   readonly name: string;
+  readonly rowIndex: number;
   readonly rank?: number;
   readonly level?: number;
   readonly group?: boolean;

@@ -114,4 +114,21 @@ test('game-score projection resolves slot tag runs at the projected hour and hon
 
   assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 40, opts), 51, 'nextChange reports faction rename boundary');
   assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 90, opts), 105, 'nextChange reports slot switch / faction end boundary');
+
+  const ungroupedOpts = {
+    ...opts,
+    factions: false,
+    factionUnobserved: [[20, 30] as const],
+    factionIncomplete: [[65, 75] as const],
+  };
+  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 10, ungroupedOpts), 20, 'nextChange includes faction coverage bounds even when grouping is off');
+  assert.equal(gameScoreProjection.nextChange?.(EMPTY_SOURCES, 40, ungroupedOpts), 51, 'nextChange includes faction rename bounds even when grouping is off');
+
+  const unobsModel = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 25, { ...opts, factionUnobserved: [[20, 30]] });
+  assert.equal(unobsModel.rows[0]!.group?.key, 'faction-not-recorded', 'unobserved faction hours are notRecorded, never No faction');
+  const unobsExtra = typeof unobsModel.rows[0]!.tooltipExtra === 'function' ? unobsModel.rows[0]!.tooltipExtra() : unobsModel.rows[0]!.tooltipExtra;
+  assert.equal(unobsExtra?.[0]?.value.kind, 'notRecorded');
+
+  const incompModel = gameScoreProjection.project({ answers: new Map(), panels: new Map([['main', rep]]), live: new Map([['main', live]]) }, 110, { ...opts, factionIncomplete: [[108, 115]] });
+  assert.equal(incompModel.rows[0]!.group?.key, 'faction-not-recorded', 'incomplete faction roster hours are notRecorded for non-members, never No faction');
 });

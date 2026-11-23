@@ -147,8 +147,18 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
 
-  assert.equal(auditValue(zeroValue(0), 'integer'), '0');
-  assert.equal(auditValue(notRecorded('No sensor'), 'integer'), 'Not recorded: No sensor');
-  assert.equal(auditValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
-  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
+  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', '0']));
+  assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));
+  assert.equal(auditValue(notApplicable('Peacetime'), 'integer'), JSON.stringify(['notApplicable', 'Peacetime']));
+  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', '15', 'Gaps', false]));
+  assert.notEqual(auditValue(zeroValue(0), 'decimal1'), auditValue(knownValue(0.04), 'decimal1'));
+});
+
+test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
+  const big = (1n << 60n) + 7n;
+  assert.equal(spokenValue(knownValue(big), 'decimal1'), '1,152,921,504,606,846,983');
+  assert.equal(spokenValue(knownValue(big), 'percent2'), '1152921504606846983.00%');
+  assert.equal(spokenValue(knownValue(big), { decimals: 0, maxDecimals: 2 }), '1,152,921,504,606,846,983');
+  const bigSeconds = 3600n * 100000000000000000n + 61n;
+  assert.equal(spokenValue(knownValue(bigSeconds), 'clockSeconds'), '100000000000000000:01:01');
 });

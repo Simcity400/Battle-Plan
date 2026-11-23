@@ -63,3 +63,32 @@ test('missing template name projects as notRecorded with nameMissing instead of 
   );
   assert.deepEqual(model.rows[0]!.cells.template!.value, { kind: 'notRecorded', reason: 'Localisation missing for template 1' });
 });
+
+test('unread template settings separate unknown obsolete status from current count, withhold designer, and never wrap unnamed units as known', () => {
+  const unnamedUnits = [
+    { key: 'a', name: null, nameMissing: 'Unit type not localized', count: 2, support: false, local: false },
+  ];
+  const mixedUnits = [
+    { key: 'inf', name: 'Infantry', nameMissing: null, count: 6, support: false, local: false },
+    { key: 'unk', name: null, nameMissing: 'Support name missing', count: 1, support: true, local: false },
+  ];
+  const rep = reply([
+    entry('1', { obsolete: false, designer: 'ordinary', units: unnamedUnits }),
+    entry('2', { obsolete: null, designer: null, settingsMissing: 'Template settings table unread', units: mixedUnits }),
+  ]);
+  const model = divisionTemplateProjection.project(
+    { answers: new Map(), panels: new Map([['main', rep]]), live: new Map() },
+    50,
+    { countryName: 'Germany', cellBars: false, canOpenDesigner: true },
+  );
+  assert.equal(model.summaryPill, '1 current \u00b7 1 status not recorded');
+  assert.deepEqual(model.rows.map(r => r.key), ['1', 'status-unknown']);
+  assert.deepEqual(model.rows[0]!.cells.battalions!.value, { kind: 'notRecorded', reason: 'Unit type not localized' });
+  const unknownChild = model.rows[1]!.children![0]!;
+  assert.deepEqual(unknownChild.cells.battalions!.value, { kind: 'partial', value: 'Infantry \u00d76', reason: 'Support name missing' });
+  assert.equal((unknownChild.meta as { designer: unknown }).designer, null);
+  assert.equal(unknownChild.tooltipAction, undefined);
+  assert.equal(unknownChild.tooltipNote, 'Template settings table unread');
+  const extra = typeof unknownChild.tooltipExtra === 'function' ? unknownChild.tooltipExtra() : unknownChild.tooltipExtra;
+  assert.equal(extra?.some(row => row.value.kind === 'notRecorded' && row.value.reason === 'Support name missing'), true);
+});

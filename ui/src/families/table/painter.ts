@@ -24,6 +24,7 @@ import { hasMeasuredValue, valueNumber, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
+import { lookAt } from './looks.ts';
 import { resolveCellAtHour, type FlatTableRow, type TableCell } from './model.ts';
 
 export const WATCHING_SPEED = 24;
@@ -102,9 +103,13 @@ export interface DrawFamilyTableInput {
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
 
-function colorOf(theme: TableTheme, tone: string | undefined, country: string | undefined, fraction: number | null): string {
+function colorOf(theme: TableTheme, tone: string | undefined, country: string | undefined, fraction: number | null, hour: number): string {
   if (!tone) return theme.text;
-  if (tone === 'country') return country ? theme.country?.[country] ?? theme.text : theme.text;
+  if (tone === 'country') {
+    if (!country) return theme.text;
+    const dated = lookAt(theme.countryLooks?.[country], hour)?.color;
+    return dated ?? theme.country?.[country] ?? theme.text;
+  }
   if (tone === 'value-good' || tone === 'value-bad') {
     if (fraction === null) return theme.muted;
     const badness = tone === 'value-bad' ? fraction : 1 - fraction;
@@ -294,7 +299,7 @@ export function drawFamilyTable(
   const moving = glideDuration > 0 && glide.size > 0;
   const hasGroupHeaders = rows.some(item => item.kind === 'group-header');
   const frameKey = picture && !moving && !layout.scrollable && !hasGroupHeaders
-    ? `${width}\u0002${height}\u0002${rank}\u0002${scrollTop}\u0002${scrollLeft}\u0002${first}\u0002${last}\u0002${rows.length ? '' : empty ?? ''}\u0002${layout.columns.map(c => `${c.key}:${c.width}:${c.display}:${c.tone ?? ''}`).join(',')}`
+    ? `${width}\u0002${height}\u0002${rowHeight}\u0002${rank}\u0002${scrollTop}\u0002${scrollLeft}\u0002${first}\u0002${last}\u0002${rows.length ? '' : empty ?? ''}\u0002${layout.columns.map(c => `${c.key}:${c.width}:${c.display}:${c.tone ?? ''}`).join(',')}`
     : null;
 
   const drawSingleCell = (
@@ -504,7 +509,7 @@ export function drawFamilyTable(
     const span = Math.max(1, barSpanOf(column, slotWidth) * dpr);
     const pixels = bar.fraction === null ? -1 : Math.round(bar.fraction * span);
     const fraction = bar.fraction === null ? null : pixels / span;
-    const fill = bar.alert ? theme.red : colorOf(theme, cell?.tone ?? column.tone, cell?.country, fraction);
+    const fill = bar.alert ? theme.red : colorOf(theme, cell?.tone ?? column.tone, cell?.country, fraction, hour);
     const art = resolved.icon === undefined ? '' : `${resolved.icon}\u0003${icons?.get(resolved.icon) ? 1 : icons?.get(resolved.icon) === null ? 2 : 0}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
     const key = `${formatted.kind}\u0002${formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text}\u0002${resolved.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${slotWidth}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}`;
@@ -601,6 +606,16 @@ export function drawFamilyTable(
   const rowY = (item: FlatTableRow, index: number) =>
     index * rowHeight - scrollTop + (glideDuration > 0 && item.kind === 'data' ? glideOffset(glide.get(item.key), now, glideDuration) : 0);
 
+  const visibleIndices: number[] = [];
+  if (moving) {
+    for (let index = 0; index < rows.length; index++) {
+      const y = rowY(rows[index]!, index);
+      if (y + rowHeight > 0 && y < height) visibleIndices.push(index);
+    }
+  } else {
+    for (let index = first; index < last; index++) visibleIndices.push(index);
+  }
+
   const paintBody = (pinned = false) => {
     let x = pinned ? rank : rank - bounds.left;
     for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
@@ -610,7 +625,8 @@ export function drawFamilyTable(
       const slotWidth = trackSlotWidth(column);
       let drawn = picture?.cells.get(column.key);
       if (picture && !drawn) picture.cells.set(column.key, drawn = []);
-      for (let index = first; index < last; index++) {
+      for (let vi = 0; vi < visibleIndices.length; vi++) {
+        const index = visibleIndices[vi]!;
         const item = rows[index]!;
         const y = rowY(item, index);
         if (item.kind === 'group-header') {
@@ -648,7 +664,8 @@ export function drawFamilyTable(
 
   const paintRanks = (x: number) => {
     if (rank <= 0) return;
-    for (let index = first; index < last; index++) {
+    for (let vi = 0; vi < visibleIndices.length; vi++) {
+      const index = visibleIndices[vi]!;
       const item = rows[index]!;
       if (item.kind !== 'data') continue;
       drawRank(item, index, x, rowY(item, index));
@@ -678,7 +695,8 @@ export function drawFamilyTable(
   }
 
   const rowWidth = Math.max(width, layout.totalWidth);
-  for (let index = first; index < last; index++) {
+  for (let vi = 0; vi < visibleIndices.length; vi++) {
+    const index = visibleIndices[vi]!;
     const item = rows[index]!;
     if (item.kind !== 'data') continue;
     paintRowEdges(ctx, theme, 0, rowY(item, index), rowWidth, rowHeight, inspectedKey === item.key, selectedKey === item.key, focusedKey === item.key);
@@ -703,9 +721,7 @@ export function hitFamilyTable(
 ): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean } {
   let item: FlatTableRow | undefined;
   if (glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined) {
-    const first = Math.max(0, Math.floor(scrollTop / rowHeight) - 2);
-    const last = Math.min(rows.length, Math.ceil((scrollTop + Math.max(rowHeight * 4, point.y + rowHeight * 2)) / rowHeight) + 2);
-    for (let i = last - 1; i >= first; i--) {
+    for (let i = rows.length - 1; i >= 0; i--) {
       const candidate = rows[i]!;
       const y = i * rowHeight - scrollTop + (candidate.kind === 'data' ? glideOffset(glide.get(candidate.key), now, glideDuration) : 0);
       if (point.y >= y && point.y < y + rowHeight) {

@@ -19,7 +19,8 @@ import {
   type Scalar,
   type Value,
 } from '../value.ts';
-import { auditValue, formatValueState, spokenValue, type ValueFormat } from '../valueFormat.ts';
+import { canonicalAuditValue } from '../audit.ts';
+import { formatValueState, spokenValue, type ValueFormat } from '../valueFormat.ts';
 import { lookAt, type CountryLook, type CountryLooksMap } from './looks.ts';
 import type { TableColumnDefaults, TableSettings, TableSortDirection } from './settings.ts';
 
@@ -303,20 +304,41 @@ export function deriveTableAudit(
   columns: readonly TableColumnSpec[],
   hour: number,
   empty?: string,
+  options?: { readonly rankShown?: boolean; readonly emptyKind?: 'empty' | 'unavailable' },
 ): AuditRow[] {
-  const dataRows = flatRows.filter((item): item is Extract<FlatTableRow, { kind: 'data' }> => item.kind === 'data');
-  if (!dataRows.length) {
-    return empty === undefined ? [] : [{ row: 'empty', key: 'empty:notice', value: empty }];
+  const rankShown = options?.rankShown === true;
+  const emptyKind = options?.emptyKind ?? 'empty';
+  const out: AuditRow[] = [
+    { row: '__columns__', key: '__columns__:visible', value: JSON.stringify(columns.map(col => col.key)) },
+  ];
+  const hasData = flatRows.some(item => item.kind === 'data');
+  if (!hasData) {
+    if (empty !== undefined) {
+      out.push({ row: 'empty', key: 'empty:notice', value: JSON.stringify([emptyKind, empty]) });
+    }
+    return out;
   }
-  const out: AuditRow[] = [];
-  for (const item of dataRows) {
+  for (const item of flatRows) {
+    if (item.kind === 'group-header') {
+      out.push({
+        row: item.key,
+        key: `${item.key}:group`,
+        value: JSON.stringify(['group-header', item.label]),
+      });
+      continue;
+    }
+    out.push({
+      row: item.key,
+      key: `${item.key}:_meta`,
+      value: JSON.stringify(['data', rankShown ? item.rank : null, item.level, item.isTreeGroup ? item.isOpen : null]),
+    });
     for (const col of columns) {
       const cell = item.row.cells[col.key];
       const resolved = cell ? resolveCellAtHour(cell, hour) : { value: notRecorded('Not recorded') };
       out.push({
         row: item.key,
         key: `${item.key}:${col.key}`,
-        value: auditValue(resolved.value, cell?.format ?? col.format),
+        value: canonicalAuditValue(resolved.value),
       });
     }
   }
@@ -348,6 +370,7 @@ export function deriveTableMirror(
       return {
         key: item.key,
         name: item.label,
+        rowIndex: index,
         groupHeader: true,
         cells: [{ column: columns[0]?.key ?? 'group', spoken: item.label }],
       };
@@ -355,6 +378,7 @@ export function deriveTableMirror(
     return {
       key: item.key,
       name: item.name,
+      rowIndex: index,
       ...(rankShown ? { rank: item.rank } : {}),
       level: item.level,
       ...(item.isTreeGroup ? { group: true, open: item.isOpen } : {}),

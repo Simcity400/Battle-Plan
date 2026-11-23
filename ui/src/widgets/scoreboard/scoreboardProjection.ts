@@ -5,6 +5,7 @@ import type { FamilySources } from '../../families/contract.ts';
 import {
   holderTagAt,
   nextHoldersChange,
+  nextMembershipChange,
   nextRangesChange,
   type DeclaredFollowItem,
   type DeclaredTableContext,
@@ -96,21 +97,29 @@ function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
   return { value: notRecorded(look?.status ?? 'Country name unavailable'), name: tag, runs };
 }
 
+function scoreboardMissingReason(column: ScoreboardColumn, displayTag: string, rawReason: string | null | undefined): string {
+  const family = column.family;
+  if (!rawReason || rawReason === 'Not in the answer') {
+    return `${displayTag}'s ${column.label} was not recorded at this hour`;
+  }
+  if (family && (
+    rawReason.endsWith(` holds no row of ${family.kind} at this hour`)
+    || rawReason.endsWith(`'s ${family.measure} was not recorded at this hour`)
+  )) {
+    return `${displayTag}'s ${column.label} was not recorded at this hour`;
+  }
+  return rawReason;
+}
+
 export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerTableProjection({
   kind: 'scoreboard',
   family: 'table',
   nextChange(_sources, hour, options) {
-    let soonest = Math.min(
+    return Math.min(
       nextHoldersChange(options.holders, hour),
       nextRangesChange(options.unobserved, hour),
+      nextMembershipChange(options.membership, hour),
     );
-    if (options.membership) {
-      for (const ranges of Object.values(options.membership)) {
-        const next = nextRangesChange(ranges, hour);
-        if (next < soonest) soonest = next;
-      }
-    }
-    return soonest;
   },
   project(sources: FamilySources, hour: number, options: ScoreboardProjectionOptions): TableModel {
     const columns = scoreboardColumnsSpec(options.shown, options.top);
@@ -138,7 +147,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
             ? notRecorded(column.reason ?? 'Unavailable')
             : valueFromRawBigInt(
               rawCell.valueRaw,
-              { kind: 'notRecorded', reason: rawCell.missing ?? column.reason ?? 'Not available at this time' },
+              { kind: 'notRecorded', reason: scoreboardMissingReason(column, row.tag, rawCell.missing ?? column.reason) },
               { partial: rawCell.partial ? 'Some inputs were not recorded at this hour' : null },
             );
           if (value.kind === 'partial') hasPartial = true;
@@ -188,8 +197,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
             || options.membership[datedTag]?.some(([first, last]) => first <= hour && hour <= last);
           if (!inMember) continue;
         }
-        const wireName = isSlotKey(candidate) ? String(countryFromKey(candidate)) : candidate;
-        activeEntries.push({ key: candidate, displayTag: datedTag, wireName });
+        activeEntries.push({ key: candidate, displayTag: datedTag, wireName: candidate });
       }
     }
 
@@ -213,7 +221,9 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
         }
         const base = valueFromNamedAnswer(answer, wireName);
-        let value: Value<NumericScalar> = base;
+        let value: Value<NumericScalar> = base.kind === 'notRecorded'
+          ? notRecorded(scoreboardMissingReason(column, displayTag, base.reason))
+          : base;
         if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
           value = partialValue(base.value, 'Some inputs were not recorded at this hour');
           hasPartial = true;
@@ -280,11 +290,9 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
         subs.push({ name: RANK_SOURCE, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: rank.family, top, least: descending ? undefined : true } } });
       }
       const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
-      let hasFamilies = false;
       if (reads) {
         for (const column of shown) {
           if (column.family) {
-            hasFamilies = true;
             subs.push({ name: column.key, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: column.family, reads } } });
           }
           if (column.partial) {
@@ -292,10 +300,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
           }
         }
       }
-      if (!hasFamilies) {
-        return { subs: [], unavailable: shown.map(column => column.reason).filter(Boolean).join(' ') || 'No selected column is followed in this recording.' };
-      }
-      return { subs };
+      return { subs, allowEmptyFollow: top == null && subs.length === 0 };
     },
     exactProduct: 'scoreboard',
     exactParams: (ctx, hour) => {
@@ -349,7 +354,9 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
     const { shown, rank } = scoreboardState(ctx);
     if (ctx.aux && !shown.length) return 'The selected columns are not in this recording. Choose columns in settings.';
     if (ctx.countries.top != null && !rank) return 'No measure to rank the top countries by is in this recording.';
-    if (ctx.countries.top == null && ctx.following && !ctx.countries.tags.length) return 'No countries available for this selection.';
+    if (ctx.countries.top == null && ctx.following && !ctx.countries.tags.length && ctx.countries.membership === null) {
+      return 'No countries available for this selection.';
+    }
     return null;
   },
   warnings: (ctx, followRefused) => {

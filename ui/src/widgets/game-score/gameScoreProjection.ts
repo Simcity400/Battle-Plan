@@ -4,12 +4,14 @@ import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import {
   holderTagAt,
   nextHoldersChange,
+  nextMembershipChange,
   nextRangesChange,
   type DeclaredFactionRun,
   type HolderRun,
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
+import { inHourRanges, nextFactionsChange } from '../../families/holders.ts';
 import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import {
   declareTableProjection,
@@ -38,19 +40,28 @@ export interface GameScoreProjectionOptions {
   readonly by: ScorePart;
   readonly factions: boolean;
   readonly factionRuns: readonly FactionRun[] | null;
+  readonly factionUnobserved?: HourRanges;
+  readonly factionIncomplete?: HourRanges;
   readonly rankMarkers: boolean;
   readonly cellBars: boolean;
   readonly labels: CountryLooksMap;
 }
 
-const inRanges = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);
-
 interface ResolvedFaction extends TableGroupSpec {
   readonly missingReason?: string;
 }
 
-function factionAt(runs: readonly FactionRun[] | null, tag: string, hour: number): ResolvedFaction {
+function factionAt(
+  runs: readonly FactionRun[] | null,
+  tag: string,
+  hour: number,
+  unobserved?: HourRanges,
+  incomplete?: HourRanges,
+): ResolvedFaction {
   if (!runs) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2, missingReason: 'Faction membership not loaded' };
+  if (inHourRanges(unobserved, hour)) {
+    return { key: 'faction-not-recorded', label: 'Faction not recorded', order: 2, missingReason: 'Faction membership was not recorded at this hour' };
+  }
   for (const run of runs) {
     if (run.tag === tag && run.firstHour <= hour && hour <= run.lastHour) {
       const entry = run.names.find(n => n.firstHour <= hour && hour <= n.lastHour);
@@ -64,31 +75,19 @@ function factionAt(runs: readonly FactionRun[] | null, tag: string, hour: number
       };
     }
   }
+  if (inHourRanges(incomplete, hour)) {
+    return { key: 'faction-not-recorded', label: 'Faction not recorded', order: 2, missingReason: 'Faction roster was incomplete at this hour' };
+  }
   return { key: 'no-faction', label: 'No faction', order: 3 };
 }
 
 function nextGameScoreChange(hour: number, options: GameScoreProjectionOptions): number {
-  let soonest = Math.min(
+  return Math.min(
     nextHoldersChange(options.holders, hour),
     nextRangesChange(options.unobserved, hour),
+    nextMembershipChange(options.membership, hour),
+    nextFactionsChange(options.factionRuns, hour, options.factionUnobserved, options.factionIncomplete),
   );
-  if (options.membership) {
-    for (const ranges of Object.values(options.membership)) {
-      const next = nextRangesChange(ranges, hour);
-      if (next < soonest) soonest = next;
-    }
-  }
-  if (options.factions && options.factionRuns) {
-    for (const run of options.factionRuns) {
-      if (run.firstHour > hour && run.firstHour < soonest) soonest = run.firstHour;
-      if (run.lastHour + 1 > hour && run.lastHour + 1 < soonest) soonest = run.lastHour + 1;
-      for (const n of run.names) {
-        if (n.firstHour > hour && n.firstHour < soonest) soonest = n.firstHour;
-        if (n.lastHour + 1 > hour && n.lastHour + 1 < soonest) soonest = n.lastHour + 1;
-      }
-    }
-  }
-  return soonest;
 }
 
 export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = false): TableColumnSpec[] {
@@ -158,7 +157,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
       } else if (options.all) {
         filtered = reply.rows;
       } else if (options.membership) {
-        filtered = reply.rows.filter(row => inRanges(options.membership![row.tag], hour));
+        filtered = reply.rows.filter(row => inHourRanges(options.membership![row.tag], hour));
       } else if (options.holders) {
         const activeTags = new Set<string>();
         for (const runs of Object.values(options.holders)) {
@@ -179,11 +178,11 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
     rowName: (row, hour, options) => lookAt(options.labels[row.tag], hour)?.name ?? row.tag,
     group: (row, hour, options) => {
       if (!options.factions) return undefined;
-      const f = factionAt(options.factionRuns, row.tag, hour);
+      const f = factionAt(options.factionRuns, row.tag, hour, options.factionUnobserved, options.factionIncomplete);
       return { key: f.key, label: f.label, order: f.order, ...(f.orderKey !== undefined ? { orderKey: f.orderKey } : {}) };
     },
     tooltipExtra: (row, reply, _live, hour, options): TooltipExtraRow[] => {
-      const f = factionAt(options.factionRuns, row.tag, hour);
+      const f = factionAt(options.factionRuns, row.tag, hour, options.factionUnobserved, options.factionIncomplete);
       return [
         { label: 'Faction', value: f.missingReason ? notRecorded(f.missingReason) : knownValue(f.label), divider: true },
         ...reply.multipliers.map((multiplier, index): TooltipExtraRow => ({
@@ -230,6 +229,8 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
     by: scorePart(ctx.options.topMeasure),
     factions: ctx.options.factions === true,
     factionRuns: ctx.countries.factions,
+    factionUnobserved: ctx.countries.factionUnobserved,
+    factionIncomplete: ctx.countries.factionIncomplete,
     rankMarkers: ctx.options.rankMarkers === true,
     cellBars: ctx.options.cellBars === true,
     labels: ctx.countries.labels,

@@ -38,9 +38,9 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
 
   const handleActivate = useCallback((key: string, meta?: unknown, atHour?: number) => {
     if (!snapshot || atHour === undefined) return;
-    const info = meta as { designer?: 'ordinary' | 'headquarters'; tag?: string } | null | undefined;
-    if (!info?.tag) return;
-    setOpened({ template: key, designer: info.designer ?? 'ordinary', tag: info.tag });
+    const info = meta as { designer?: 'ordinary' | 'headquarters' | null; tag?: string } | null | undefined;
+    if (!info?.tag || !info.designer) return;
+    setOpened({ template: key, designer: info.designer, tag: info.tag });
     drillControl.show(key, atHour);
   }, [snapshot, drillControl]);
 

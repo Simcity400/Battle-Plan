@@ -1,6 +1,5 @@
 import { formatAmount, formatFixed, formatSigned } from '../../charts/valueAxis.ts';
 import { liveKey } from '../../charts/live.ts';
-import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { DeclaredCountryFilter, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import {
@@ -137,7 +136,8 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
           value: row => {
             if (row.value.law === null) return notRecorded(row.value.lawMissing ?? 'Not recorded');
             const law = laws.get(row.value.law);
-            return knownValue(contentTitle(law?.name, row.value.law, 'Occupation law name unavailable'));
+            if (law?.name && law.name.trim()) return knownValue(law.name);
+            return notRecorded(law?.missing ?? row.value.lawMissing ?? 'Occupation law name unavailable');
           },
         },
       ];

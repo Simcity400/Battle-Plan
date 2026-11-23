@@ -1,4 +1,5 @@
 import { formatNativeFixed5 } from '../charts/valueAxis.ts';
+import { canonicalAuditValue } from './audit.ts';
 import { assertValue, type Scalar, type Value } from './value.ts';
 
 function percentCell(raw: string | bigint): string {
@@ -39,8 +40,22 @@ export const NOT_RECORDED_LABEL = 'Not recorded';
 export const NOT_APPLICABLE_LABEL = '\u2014';
 export const PARTIAL_LABEL = 'partial';
 
+function formatGroupedBigInt(raw: bigint, plus = false): string {
+  if (raw === 0n) return '0';
+  const negative = raw < 0n;
+  const digits = (negative ? -raw : raw).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${negative ? '\u2212' : plus ? '+' : ''}${digits}`;
+}
+
 export function formatClockSeconds(seconds: number | bigint): string {
-  const total = Math.max(0, Math.floor(Number(seconds)));
+  if (typeof seconds === 'bigint') {
+    const total = seconds < 0n ? 0n : seconds;
+    const hours = total / 3600n;
+    const minutes = (total / 60n) % 60n;
+    const secs = total % 60n;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  const total = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor(total / 60) % 60;
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
@@ -69,16 +84,20 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   }
   if (format === 'clockSeconds') return formatClockSeconds(raw);
   if (format === 'decimal1') {
-    const num = Number(raw);
-    if (num === 0) return '0';
-    const negative = num < 0;
-    const text = Math.abs(num).toLocaleString('en-US', { maximumFractionDigits: 1 });
+    if (typeof raw === 'bigint') return formatGroupedBigInt(raw);
+    if (raw === 0) return '0';
+    const negative = raw < 0;
+    const text = Math.abs(raw).toLocaleString('en-US', { maximumFractionDigits: 1 });
     return `${negative ? '\u2212' : ''}${text}`;
   }
   if (format === 'percent2') {
-    const num = Number(raw);
-    if (num === 0) return '0%';
-    return `${num.toFixed(2)}%`;
+    if (typeof raw === 'bigint') {
+      if (raw === 0n) return '0%';
+      const negative = raw < 0n;
+      return `${negative ? '-' : ''}${(negative ? -raw : raw).toString()}.00%`;
+    }
+    if (raw === 0) return '0%';
+    return `${raw.toFixed(2)}%`;
   }
   if (format === 'fixed5Percent') {
     if (raw === 0 || raw === 0n) return '0%';
@@ -101,9 +120,11 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     return `${format.percent ? '0%' : '0'}${suffix}`;
   }
   if (format.maxDecimals !== undefined && format.decimals === 0) {
-    const num = Number(raw);
-    const negative = num < 0;
-    const text = Math.abs(num).toLocaleString('en-US', { maximumFractionDigits: format.maxDecimals });
+    if (typeof raw === 'bigint') {
+      return `${formatGroupedBigInt(raw, format.signed === true)}${format.percent ? '%' : ''}${suffix}`;
+    }
+    const negative = raw < 0;
+    const text = Math.abs(raw).toLocaleString('en-US', { maximumFractionDigits: format.maxDecimals });
     return `${negative ? '\u2212' : sign}${text}${format.percent ? '%' : ''}${suffix}`;
   }
   return `${sign}${amountText(raw, format.decimals, format.percent)}${suffix}`;
@@ -141,8 +162,9 @@ export function spokenValue(value: Value, format?: ValueFormat): string {
   return formatValueState(value, format).spoken;
 }
 
-export function auditValue(value: Value, format?: ValueFormat): string {
-  return formatValueState(value, format).audit;
+export function auditValue(value: Value, _format?: ValueFormat): string {
+  assertValue(value, 'auditValue');
+  return canonicalAuditValue(value);
 }
 
 export function defaultWidestSamples(format?: ValueFormat): readonly string[] {

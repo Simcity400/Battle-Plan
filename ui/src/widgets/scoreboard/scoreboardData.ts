@@ -68,7 +68,7 @@ export const rankingDescending = (sort: Sort, rank: ScoreboardColumn | undefined
 
 export function scoreboardParams(branchId: string, hour: GatedHour, columns: readonly ScoreboardColumn[], tags: readonly string[],
   top: number | null, rank: ScoreboardColumn | undefined, descending = true): (Omit<ScoreboardParams, 'hour'> & { hour: GatedHour }) | null {
-  if (!columns.length || (top == null ? !tags.length : !rank)) return null;
+  if (!columns.length || (top != null && !rank)) return null;
   const keys = columns.map(column => column.key);
   return top == null ? { branchId, hour, columns: keys, countries: tags.map(countryFromKey) }
     : { branchId, hour, columns: keys, countries: [], top: { count: top, sort: rank!.key, descending } };

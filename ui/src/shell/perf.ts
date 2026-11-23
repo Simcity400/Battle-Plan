@@ -88,7 +88,7 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
 }
 
 export interface ExactRead { values: ReadonlyMap<string, string>; ranked?: boolean; ordered?: boolean }
-export type ExactPicture = (hour: number) => Promise<ExactRead | null>;
+export type ExactPicture = (hour: number, auditId?: number) => Promise<ExactRead | null>;
 type ShownRow = NonNullable<PictureSample['rows']>[number];
 
 export function pictureError(surface: string, rows: readonly ShownRow[], exact: ExactRead | null | undefined): string | null {
@@ -242,7 +242,7 @@ export class PerfRecorder {
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null;
-      try { error = pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour)); }
+      try { error = pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour, record.auditId)); }
       catch (cause) { error = String(cause); }
       return { widget, surface, placement, owner, at: record.at, hour, error };
     });

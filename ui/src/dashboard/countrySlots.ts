@@ -1,4 +1,5 @@
 import type { CountryRef, CountryIdentitiesReply } from '../generated/dashboard';
+import { mergeTagExistenceRuns, resolveSlotHolderRuns, type HolderRun } from '../families/holders.ts';
 import type { DashboardClient, ProductRequest } from './client';
 import { countryFromKey } from './countryKey.ts';
 import type { BoundTrack } from './model';
@@ -18,16 +19,24 @@ type Held = { firstHour: number; lastHour: number; countryId: number; tag: strin
 
 export class SlotTags {
   private readonly bySlot = new Map<number, Held[]>();
+  private readonly resolvedSlotRuns = new Map<number, readonly HolderRun[]>();
   private readonly byTag = new Map<string, readonly { firstHour: number; lastHour: number; slot: number }[]>();
+  private readonly byTagUnresolved = new Map<string, readonly { firstHour: number; lastHour: number }[]>();
 
   constructor(reply: Pick<CountryIdentitiesReply, 'countries'>) {
-    for (const { tag, identities } of reply.countries) this.byTag.set(tag, identities);
+    for (const { tag, identities, unresolved } of reply.countries) {
+      this.byTag.set(tag, identities);
+      if (unresolved?.length) this.byTagUnresolved.set(tag, unresolved);
+    }
     for (const { tag, identities } of reply.countries) for (const run of identities) {
       const held = this.bySlot.get(run.slot);
       const entry = { firstHour: run.firstHour, lastHour: run.lastHour, countryId: run.countryId, tag };
       if (held) held.push(entry); else this.bySlot.set(run.slot, [entry]);
     }
-    for (const held of this.bySlot.values()) held.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || a.tag.localeCompare(b.tag));
+    for (const [slot, held] of this.bySlot) {
+      held.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || a.tag.localeCompare(b.tag));
+      this.resolvedSlotRuns.set(slot, resolveSlotHolderRuns(held));
+    }
   }
 
   tagAt(slot: number, hour: number): string | null {
@@ -48,15 +57,15 @@ export class SlotTags {
     return held && { tag: held.tag, firstHour: held.firstHour, lastHour: held.lastHour };
   }
 
-  tagRuns(slot: number): { tag: string; firstHour: number; lastHour: number }[] {
-    return (this.bySlot.get(slot) ?? []).map(({ tag, firstHour, lastHour }) => ({ tag, firstHour, lastHour }));
+  tagRuns(slot: number): HolderRun[] {
+    return [...(this.resolvedSlotRuns.get(slot) ?? [])];
   }
 
-  tagExistenceRuns(tag: string): { tag: string; firstHour: number; lastHour: number }[] {
-    return (this.byTag.get(tag) ?? []).map(({ firstHour, lastHour }) => ({ tag, firstHour, lastHour }));
+  tagExistenceRuns(tag: string): HolderRun[] {
+    return mergeTagExistenceRuns(tag, this.byTag.get(tag) ?? [], this.byTagUnresolved.get(tag) ?? []);
   }
 
-  runsForKey(key: string): { tag: string; firstHour: number; lastHour: number }[] {
+  runsForKey(key: string): HolderRun[] {
     const ref = countryFromKey(key);
     return typeof ref === 'number' ? this.tagRuns(ref) : this.tagExistenceRuns(ref);
   }

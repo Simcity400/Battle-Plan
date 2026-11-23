@@ -1,14 +1,13 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
-import { useCountryLooks } from '../../dashboard/countryLooks';
 import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
-import { useSlotTags } from '../../dashboard/countrySlots.ts';
+import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
 import { lookStarts } from '../../dashboard/countryTimeline';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { Channel } from '../../dashboard/follow/facts';
@@ -29,10 +28,16 @@ import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilySources } from '../contract.ts';
 import {
+  buildDatedCountryLooks,
+  effectiveCountryUnobserved,
+  extractFactionData,
+  freezeGate,
+  resolveRetainedHeadSpan,
+} from '../sources.ts';
+import {
   resolveHeadSpan,
   type DeclaredCountryFilter,
   type DeclaredCountryState,
-  type DeclaredFactionRun,
   type DeclaredTableContext,
   type HolderRun,
   type TableWidgetDeclaration,
@@ -214,7 +219,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     || anySlot
     || (widget.countries.kind !== 'all' && resolvedMulti?.top == null)
   );
-  const slots = useSlotTags(runtime.client, track, active && needsSlots);
+  const slotState = useSlotTagsState(runtime.client, track, active && needsSlots);
+  const slots = slotState.slots;
 
   const effectiveMulti = useMemo(() => {
     if (!resolvedMulti) return null;
@@ -235,10 +241,10 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     return out;
   }, [isMulti, effectiveMulti, slots]);
 
-  const unobserved = useMemo<readonly (readonly [number, number])[]>(() => {
-    if (!effectiveMulti?.unobserved?.length) return [];
-    return effectiveMulti.unobserved.map(span => [span.firstHour, span.lastHour] as const);
-  }, [effectiveMulti?.unobserved]);
+  const unobserved = useMemo(
+    () => effectiveCountryUnobserved(widget.countries, effectiveMulti?.unobserved),
+    [widget.countries, effectiveMulti?.unobserved],
+  );
 
   const membership = useMemo<Readonly<Record<string, readonly (readonly [number, number])[]>> | null>(() => {
     if (!effectiveMulti?.membership) return null;
@@ -258,18 +264,13 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     }));
   }, [effectiveMulti?.membership]);
 
-  const factionRuns = useMemo<readonly DeclaredFactionRun[] | null>(() => {
-    if (!isMulti || !policy.factions || !groups.data) return null;
-    return groups.data.factions.flatMap(faction => faction.members.map(run => ({
-      id: faction.id,
-      tag: run.tag,
-      firstHour: run.firstHour,
-      lastHour: run.lastHour,
-      names: faction.names,
-    })));
-  }, [isMulti, policy, groups.data]);
+  const factionData = useMemo(
+    () => extractFactionData(groups.data, isMulti && policy.factions === true),
+    [isMulti, policy, groups.data],
+  );
 
-  const wantsLabels = (isFilter && policy.labels === true) || (isMulti && policy.labels === true);
+  const wantsColours = isFilter && policy.colours === true;
+  const wantsLabels = (isFilter && (policy.labels === true || wantsColours)) || (isMulti && policy.labels === true);
   const labelTags = useMemo(() => {
     if (!wantsLabels) return NO_TAGS;
     if (isFilter) return allTags;
@@ -291,30 +292,12 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     [wantsLabels, starts],
   );
   const { exactAt } = useCountryLabelsAt(runtime.client, wantsLabels ? track : undefined, wantedLabels, active && wantsLabels, Infinity, true);
-  const labelsText = wantsLabels
-    ? JSON.stringify(starts.map(([tag, hours]) => [tag, hours.map(([at, held]) => {
-      const look = held ? exactAt(at)(tag) : undefined;
-      return [at, look?.known ? look.name : null, look?.flag ?? null, look && !look.known ? look.name : null];
-    })]))
-    : '[]';
+  const builtLooks = wantsLabels ? buildDatedCountryLooks(timeline, labelTags, firstHour, lastHour, exactAt, wantsColours) : NO_LOOKS;
+  const labelsText = wantsLabels ? JSON.stringify(builtLooks) : '{}';
   const labels = useMemo<CountryLooksMap>(
-    () => (wantsLabels
-      ? Object.fromEntries((JSON.parse(labelsText) as [string, [number, string | null, string | null, string | null][]][])
-        .map(([tag, runs]) => [tag, runs.map(([from, name, flag, status]) => ({ from, name, flag: flag ?? undefined, status: status ?? undefined }))]))
-      : NO_LOOKS),
+    () => (wantsLabels ? JSON.parse(labelsText) as CountryLooksMap : NO_LOOKS),
     [wantsLabels, labelsText],
   );
-
-  const wantsColours = isFilter && policy.colours === true;
-  const colourHour = pinHour ?? lastHour;
-  const looks = useCountryLooks(runtime.client, wantsColours ? track : undefined, wantsColours ? allTags : NO_TAGS, colourHour, active && wantsColours);
-  const countryColours = useMemo(() => {
-    if (!wantsColours) return undefined;
-    return new Map(allTags.flatMap(tag => {
-      const colour = looks.color(tag, colourHour);
-      return colour ? [[tag, `rgb(${colour[0]}, ${colour[1]}, ${colour[2]})`] as const] : [];
-    }));
-  }, [wantsColours, allTags, looks, colourHour]);
 
   const countriesState = useMemo<DeclaredCountryState>(() => ({
     all: widget.countries.kind === 'all',
@@ -327,12 +310,14 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     unobserved,
     filter,
     labels,
-    factions: factionRuns,
+    factions: factionData.runs,
+    factionUnobserved: factionData.unobserved,
+    factionIncomplete: factionData.incomplete,
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
-    unobservedIn: (first: number, last: number) => effectiveMulti?.unobserved.some(span => span.firstHour <= last && first <= span.lastHour) ?? false,
-  }), [widget.countries.kind, effectiveMulti, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionRuns, filterMatch?.reason]);
+    unobservedIn: (first: number, last: number) => unobserved.some(([spanFirst, spanLast]) => spanFirst <= last && first <= spanLast),
+  }), [widget.countries.kind, effectiveMulti, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const staticRange = useMemo(() => {
     if (following || !track || !window) return null;
@@ -422,7 +407,9 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     && (!isMulti || (!countriesState.reason && (!needsGroups || !!groups.data) && (!needsSlots || !!slots)));
 
   const followPlan = useMemo(() => {
-    if (!canFollow || !ctx) return { subs: [] as FamilySourceSubscription[], refused: null as string | null, unavailable: null as string | null };
+    if (!canFollow || !ctx) {
+      return { subs: [] as FamilySourceSubscription[], refused: null as string | null, unavailable: null as string | null, allowEmptyFollow: false };
+    }
     const src = declaration.source;
     const subs: FamilySourceSubscription[] = [];
     let refused: string | null = null;
@@ -436,16 +423,16 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     if (src.kind === 'panel') {
       const params = src.params(ctx);
       if (params) add('main', { panel: src.product, ...params }, 'panel', src.product);
-      return { subs, refused, unavailable: null as string | null };
+      return { subs, refused, unavailable: null as string | null, allowEmptyFollow: false };
     }
     if (src.kind === 'head') {
       const query = src.followQuery(ctx);
       if (query) add('main', query, 'followed');
-      return { subs, refused, unavailable: null as string | null };
+      return { subs, refused, unavailable: null as string | null, allowEmptyFollow: false };
     }
     const built = src.follow(ctx);
     for (const item of built.subs) add(item.name, item.query, item.channel ?? 'followed', item.product);
-    return { subs, refused, unavailable: built.unavailable ?? null };
+    return { subs, refused, unavailable: built.unavailable ?? null, allowEmptyFollow: built.allowEmptyFollow === true };
   }, [canFollow, ctx, declaration.source, gate.checkFollow]);
 
   const staticReq = useMemo(() => {
@@ -494,16 +481,20 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   const staticHeld = !following && staticReq !== null && staticProduct.data !== undefined
     && (staticProduct.asking !== undefined || (expectedStaticKey !== null && staticProduct.moment !== expectedStaticKey));
 
-  const staticSources = useMemo<{ readonly sources: FamilySources; readonly hour: number } | null>(() => {
+  const staticSources = useMemo<{ readonly sources: FamilySources; readonly hour: number; readonly span?: readonly [number, number] | null } | null>(() => {
     if (following || staticProduct.data === undefined) return null;
     const src = declaration.source;
     let shownHour = pinHour ?? lastHour;
+    let shownSpan: readonly [number, number] | null = null;
     if (src.kind === 'panel' && staticProduct.moment) {
       const parsed = JSON.parse(staticProduct.moment) as number[];
       if (typeof parsed[0] === 'number') shownHour = parsed[0];
-    } else if (src.kind === 'head' && staticProduct.moment) {
-      const parsed = JSON.parse(staticProduct.moment) as number[];
-      shownHour = parsed[1] ?? staticRange?.last ?? lastHour;
+    } else if (src.kind === 'head') {
+      shownSpan = resolveRetainedHeadSpan(
+        staticProduct.moment,
+        staticRange ? [staticRange.first, staticRange.last] as const : null,
+      );
+      if (shownSpan) shownHour = shownSpan[1];
     } else if (src.kind === 'multi' && typeof (staticProduct.data as { hour?: unknown }).hour === 'number') {
       shownHour = (staticProduct.data as { hour: number }).hour;
     }
@@ -513,16 +504,19 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     return {
       sources: { answers: new Map(), panels: new Map([['main', staticProduct.data]]), live },
       hour: shownHour,
+      ...(shownSpan ? { span: shownSpan } : {}),
     };
-  }, [following, staticProduct.data, staticProduct.moment, declaration.source, pinHour, lastHour, staticRange?.last]);
+  }, [following, staticProduct.data, staticProduct.moment, declaration.source, pinHour, lastHour, staticRange]);
 
-  const gateRef = useRef(gate);
-  gateRef.current = gate;
+  const retainedStaticSpan = staticSources?.span ?? null;
+  const frozenGate = useMemo(
+    () => freezeGate(gate),
+    [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
+  );
 
   const exactSources = useCallback(async (wantedHour: number): Promise<FamilySources | null> => {
     if (!ctx || !perfLog) return null;
-    const currentGate = gateRef.current;
-    const recorded = currentGate.recorded(wantedHour);
+    const recorded = frozenGate.recorded(wantedHour);
     if (recorded === null) return null;
     const src = declaration.source;
     if (src.kind === 'panel') {
@@ -533,8 +527,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
       return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map([['main', repliedCells(raw).read()]]) };
     }
     if (src.kind === 'head') {
-      const span = !following && staticRange
-        ? staticRange.span
+      const span = !following && retainedStaticSpan
+        ? frozenGate.span(retainedStaticSpan[0], retainedStaticSpan[1])
         : (() => {
           const resolved = resolveHeadSpan(
             src.timeShape,
@@ -544,7 +538,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
             window,
             recorded,
           );
-          return resolved ? currentGate.span(resolved.first, resolved.last) : null;
+          return resolved ? frozenGate.span(resolved.first, resolved.last) : null;
         })();
       if (!span) return null;
       const params = src.productParams(ctx, span);
@@ -558,7 +552,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.exactProduct, params });
     const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
     return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-  }, [ctx, following, staticRange, widget.time.mode, window, declaration.source, runtime.client]);
+  }, [ctx, frozenGate, following, retainedStaticSpan, widget.time.mode, window, declaration.source, runtime.client]);
 
   const projectionOptions = useMemo(
     () => (ctx ? declaration.projectionOptions(ctx) : ({} as TProjectionOptions)),
@@ -607,6 +601,9 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
       if (!filterMatch?.ready || !groups.data) return <WidgetState kind="loading" label={loadingLabel} />;
     }
     if (isMulti) {
+      if (needsSlots && slotState.error && !slots) {
+        return <WidgetState kind="error" failure={slotState.error} onRetry={slotState.retry} />;
+      }
       if ((needsGroups && !groups.data) || (needsSlots && !slots)) {
         return <WidgetState kind="loading" label={loadingLabel} />;
       }
@@ -659,12 +656,13 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     onSettings={setOption && declaration.settings.kind !== 'fixed' ? onSettings : undefined}
     editableColumns={declaration.settings.kind === 'table' || declaration.settings.kind === 'custom'}
     subscriptions={followPlan.subs}
+    allowEmptyFollow={followPlan.allowEmptyFollow}
     staticSources={staticSources}
     exactSources={ctx && perfLog && !blockedState ? exactSources : undefined}
     offset={track?.axisOffset ?? 0}
     pin={following ? null : (declaration.source.kind === 'panel' ? (staticSources?.hour ?? pinHour) : staticSources?.hour ?? null)}
     bounds={bounds}
-    countryColours={countryColours}
+    countryLooks={wantsColours ? labels : undefined}
     selectedKey={selectedKey}
     onActivate={onActivate}
     contextMenuItems={declaration.jumpToDate ? contextMenuItems : undefined}

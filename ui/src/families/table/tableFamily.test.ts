@@ -19,10 +19,13 @@ import { occupiedStatesProjection } from '../../widgets/occupied-states/occupied
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
 import { TABLE_BASE as SCOREBOARD_BASE } from '../../widgets/scoreboard/definition.ts';
 import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../widgets/scoreboard/scoreboardProjection.ts';
+import { AuditSnapshotStore, canonicalAuditValue } from '../audit.ts';
+import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
-import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue } from '../value.ts';
+import { effectiveCountryUnobserved, resolveRetainedHeadSpan } from '../sources.ts';
+import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { declareTableProjection, deriveTableAudit, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
+import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
@@ -143,7 +146,7 @@ test('campaign-clock projection produces identical audit output for followed wir
   const followedAudit = deriveTableAudit(resolveTableRows(followedModel, settings), CLOCK_COLUMNS, 50, followedModel.empty);
   const exactAudit = deriveTableAudit(resolveTableRows(exactModel, settings), CLOCK_COLUMNS, 50, exactModel.empty);
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.equal(followedAudit.find(r => r.key === 'total:time')?.value, '01:01:01');
+  assert.equal(followedAudit.find(r => r.key === 'total:time')?.value, canonicalAuditValue(knownValue(3661)));
 });
 
 test('scoreboard projection matches followed and exact audits with missing, partial, zero, and tied rows', () => {
@@ -218,8 +221,8 @@ test('scoreboard projection matches followed and exact audits with missing, part
     assert.equal(followedFlat.at(-1)?.kind === 'data' && followedFlat.at(-1)?.key, 'ENG', `missing ENG sorts last in ${direction}`);
     const order = followedFlat.map(r => r.key);
     assert.ok(order.indexOf('FRA') < order.indexOf('ITA'), 'tied France precedes Italy by name A-Z regardless of wire vs reply input order');
-    assert.equal(followedAudit.find(r => r.key === 'FRA:casualties')?.value, '0', 'known zero renders 0, never None');
-    assert.equal(followedAudit.find(r => r.key === 'ITA:casualties')?.value, '500, partial: Some inputs were not recorded at this hour');
+    assert.equal(followedAudit.find(r => r.key === 'FRA:casualties')?.value, canonicalAuditValue(zeroValue(0)), 'known zero renders zero state');
+    assert.equal(followedAudit.find(r => r.key === 'ITA:casualties')?.value, canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour')));
   }
 });
 
@@ -261,8 +264,8 @@ test('apm-table projection matches followed wire answers and exact replies, incl
   const fAudit = deriveTableAudit(resolveTableRows(fModel, settings), cols, 100, fModel.empty);
   const eAudit = deriveTableAudit(resolveTableRows(eModel, settings), cols, 100, eModel.empty);
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('partial:'));
-  assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.startsWith('Not applicable:'));
+  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.startsWith('["partial","45.2",'));
+  assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.startsWith('["notApplicable",'));
 });
 
 test('occupied-states, game-score (with faction groups), and division-template (with obsolete tree) project deterministically', () => {
@@ -291,7 +294,7 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const occSettings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const occRows = resolveTableRows(occModel, occSettings);
   assert.equal(occRows.length, 1);
-  assert.equal(deriveTableAudit(occRows, occModel.columns, 50).find(r => r.key === '1:resistance')?.value, '25%');
+  assert.equal(deriveTableAudit(occRows, occModel.columns, 50).find(r => r.key === '1:resistance')?.value, canonicalAuditValue(knownValue(2_500_000)));
 
   const gsReply = {
     missing: null,
@@ -729,6 +732,189 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     const firstMaxima = pic.maxima;
     drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: new Map(), markers: new Map(), inspectedKey: 'A', selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, pic);
     assert.equal(pic.maxima, firstMaxima, 'hover repaint reuses cached column maxima without scanning all rows');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});
+
+test('round 2 regressions: canonical audit, snapshot store, retained static span, cadence trailing flush, density invalidation, off-screen focus index, long-distance glide hit/draw, dated country colours, missing occupation law, and meta/priority invalidation', () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'rate', label: 'Rate', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'decimal1' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'rate', direction: 'descending' } });
+  const mkRows = (rate: number, groupLabel: string) => resolveTableRows({
+    columns: cols,
+    hour: 10,
+    rank: true,
+    rows: [
+      { key: 'A', name: 'A', group: { key: 'g1', label: groupLabel, order: 0 }, cells: { name: { value: knownValue('A') }, rate: { value: rate === 0 ? zeroValue(0) : knownValue(rate), format: 'decimal1', country: 'GER' } } },
+    ],
+  }, settings);
+  const auditZero = deriveTableAudit(mkRows(0, 'Axis'), cols, 10, undefined, { rankShown: true });
+  const auditTiny = deriveTableAudit(mkRows(0.04, 'Axis'), cols, 10, undefined, { rankShown: true });
+  assert.notEqual(
+    pictureError('table', auditZero, { values: new Map(auditTiny.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'canonical audit distinguishes 0 from 0.04 despite identical display rounding',
+  );
+  const auditRenamedGroup = deriveTableAudit(mkRows(0.04, 'New Axis'), cols, 10, undefined, { rankShown: true });
+  assert.notEqual(
+    pictureError('table', auditTiny, { values: new Map(auditRenamedGroup.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'canonical audit catches group header changes',
+  );
+  const auditOneCol = deriveTableAudit(mkRows(0.04, 'Axis'), [cols[0]!], 10, undefined, { rankShown: true });
+  assert.notEqual(
+    pictureError('table', auditTiny, { values: new Map(auditOneCol.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'canonical audit catches visible column set changes',
+  );
+
+  const store = new AuditSnapshotStore<{ tag: string }>(2);
+  const id1 = store.create({ tag: 'first' });
+  const id2 = store.create({ tag: 'second' });
+  assert.equal(store.require(id1).tag, 'first');
+  assert.equal(store.require(id2).tag, 'second');
+  assert.throws(() => store.require(undefined), /Not auditable/);
+  assert.throws(() => store.require(999), /Not auditable/);
+
+  assert.deepEqual(resolveRetainedHeadSpan(JSON.stringify([10, 100, 1]), [50, 200]), [10, 100], 'retained static head span comes from reply moment, not newer staticRange');
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), [[10, 20]]);
+
+  const gate = new CadenceGate(20);
+  assert.equal(gate.due(100, 24, 'w'), true);
+  gate.record(100, 'w');
+  gate.invalidate();
+  assert.equal(gate.due(110, 24, 'w'), false);
+  let scheduledMs = -1;
+  let scheduledCb: (() => void) | null = null;
+  let flushed = false;
+  const flusher = new TrailingFlushScheduler([gate], {
+    set: (fn, ms) => {
+      scheduledCb = fn;
+      scheduledMs = ms;
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clear: () => { scheduledCb = null; },
+  });
+  flusher.sync(110, 24, () => { flushed = true; });
+  assert.equal(scheduledMs, 10, 'schedules trailing flush for remaining interval');
+  assert.ok(scheduledCb !== null);
+  (scheduledCb as () => void)();
+  assert.equal(flushed, true, 'trailing flush callback fires cleanly');
+  assert.equal(gate.due(115, 0, 'w'), true, 'pause flushes immediately');
+  flusher.cancel();
+
+  const occMissingLaw = occupiedStatesProjection.project({
+    answers: new Map(),
+    panels: new Map([['main', {
+      states: [{ state: 1, name: 'Warsaw', nameMissing: null, owner: 'POL', occupier: 'GER', occupied: 'POL', garrisonRequiredSign: 0, garrisonAlert: false, assignedKnown: true, garrisonMissing: null, law: 'custom_law', lawMissing: null }],
+      complete: true,
+      missing: null,
+      laws: [{ token: 'custom_law', name: null, icon: null, missing: 'Law localization absent' }],
+      strengthMissing: 'Missing strength',
+      garrisonRedRaw: null,
+      warnings: [],
+    }]]),
+    live: new Map([['main', { get: () => 0, missing: () => 'Not recorded' }]]),
+  }, 50, { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true });
+  assert.deepEqual(occMissingLaw.rows[0]!.cells.law!.value, { kind: 'notRecorded', reason: 'Law localization absent' });
+
+  const manyRows = Array.from({ length: 15 }, (_, i) => ({
+    key: `R${i}`,
+    name: `Row ${i}`,
+    cells: { name: { value: knownValue(`Row ${i}`) }, rate: { value: knownValue(15 - i), format: 'decimal1' as const, country: 'GER' } },
+  }));
+  const flatMany = resolveTableRows({ columns: cols, hour: 10, rows: manyRows }, settings);
+  const mirror = deriveTableMirror(flatMany, cols, 10, false, { first: 5, count: 3 }, 'R0');
+  assert.equal(mirror.rows[0]!.key, 'R0');
+  assert.equal(mirror.rows[0]!.rowIndex, 0, 'off-screen focused row carries its true rowIndex, not window offset');
+
+  const layout = layoutFamilyTable(buildColumnLayouts(cols, settings, { name: 140, rate: 140 }), 320, 'tooltip');
+  const longGlide = new Map([['R12', { from: -12 * 28, to: 0, started: 100 }]]);
+  const hitGliding = hitFamilyTable(layout, flatMany, { x: 20, y: 10 }, 28, 0, 0, false, 0, longGlide, 100, 180);
+  assert.equal(hitGliding.rowKey, 'R12', 'row gliding from index 12 into y=0 is hit-tested accurately');
+
+  const { ctx } = instrumentedContext();
+  const pic = createTablePicture();
+  const datedTheme: TableTheme = {
+    ...TEST_THEME,
+    countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(10, 20, 30)' }, { from: 20, name: 'Germany', color: 'rgb(200, 10, 10)' }] },
+  };
+  const fills: string[] = [];
+  const origFillRect = ctx.fillRect.bind(ctx);
+  const origFill = ctx.fill.bind(ctx);
+  (ctx as unknown as { fillRect: (...a: unknown[]) => void; fill: (...a: unknown[]) => void }).fillRect = (...a: unknown[]) => {
+    fills.push(String(ctx.fillStyle));
+    (origFillRect as (...b: unknown[]) => void)(...a);
+  };
+  (ctx as unknown as { fill: (...a: unknown[]) => void }).fill = (...a: unknown[]) => {
+    fills.push(String(ctx.fillStyle));
+    (origFill as (...b: unknown[]) => void)(...a);
+  };
+  const shortFlat = resolveTableRows({ columns: cols, hour: 10, rows: manyRows.slice(0, 2) }, settings);
+  drawFamilyTable(ctx, { layout, rows: shortFlat, settings, hour: 10, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  assert.ok(fills.includes('rgb(10, 20, 30)'), 'paints dated country colour at hour 10');
+  const compactSettings = { ...settings, density: 'compact' as const };
+  const afterDensity = drawFamilyTable(ctx, { layout, rows: shortFlat, settings: compactSettings, hour: 25, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 2, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  assert.equal(afterDensity.drew, true, 'density change invalidates frameKey and repaints');
+  assert.ok(fills.includes('rgb(200, 10, 10)'), 'paints updated dated country colour at hour 25');
+
+  const metaProj = declareTableProjection<{ designer: string; priority: number }, { id: string; designer: string }, Record<string, never>>({
+    kind: 'test-meta-priority-inv',
+    columns: reply => [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, path: 'id' },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: reply.priority, numeric: true, value: () => knownValue(1) },
+    ],
+    rows: reply => ({ rows: [{ id: 'A', designer: reply.designer }] }),
+    rowKey: r => r.id,
+    rowName: r => r.id,
+    rowMeta: r => ({ designer: r.designer }),
+  });
+  registerTableProjection(metaProj);
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const laneView = familyTableLaneView(() => {});
+    const laneState = new Map<string, unknown>();
+    let seq = 1;
+    const mk = (designer: string, priority: number) => laneView.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'table',
+        kind: 'test-meta-priority-inv',
+        options: {},
+        settings: tableSettingsOf(undefined, [
+          { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
+          { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
+        ], { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } }),
+        sources: {},
+        staticPanels: { main: { designer, priority } },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+      },
+      hour: 10,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    }, laneState, () => `c${seq++}`);
+    const firstPaint = mk('ordinary', 1);
+    const secondPaint = mk('headquarters', 4);
+    assert.notEqual(firstPaint.fields.nav!.content, secondPaint.fields.nav!.content, 'row.meta change invalidates nav field');
+    assert.notEqual(firstPaint.fields.meta!.content, secondPaint.fields.meta!.content, 'column priority change invalidates meta field');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }

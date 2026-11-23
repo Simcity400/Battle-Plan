@@ -18,9 +18,12 @@ test('review 4 finding 15: a table reader compares the values shown, not each co
   });
   const shown = deriveTableAudit(resolveTableRows(modelOf(10), settings), cols, 10);
   const exact = deriveTableAudit(resolveTableRows(modelOf(20), settings), cols, 10);
-  assert.deepEqual(shown.map(row => [row.key, row.value]), [['GER:v', '10']]);
-  assert.notEqual(shown[0]!.value, exact[0]!.value, 'shown 10 against an exact 20 is a difference the auditor sees');
-  assert.deepEqual(deriveTableAudit([], cols, 10, 'No states are occupied'), [{ row: 'empty', key: 'empty:notice', value: 'No states are occupied' }]);
+  assert.deepEqual(shown.find(row => row.key === 'GER:v')?.value, JSON.stringify(['known', '10']));
+  assert.notEqual(shown.find(row => row.key === 'GER:v')?.value, exact.find(row => row.key === 'GER:v')?.value, 'shown 10 against an exact 20 is a difference the auditor sees');
+  assert.deepEqual(deriveTableAudit([], cols, 10, 'No states are occupied'), [
+    { row: '__columns__', key: '__columns__:visible', value: JSON.stringify(['v']) },
+    { row: 'empty', key: 'empty:notice', value: JSON.stringify(['empty', 'No states are occupied']) },
+  ]);
 });
 
 test('review 4 finding 15: a panel reader compares live values as well as structure, so two products with empty structure still differ', () => {

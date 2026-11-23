@@ -11,20 +11,41 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
-import type { DivisionTemplatesReply } from '../../generated/dashboard';
+import { knownValue, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
+import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition.ts';
 import { designerSnapshot } from './designerSnapshot.ts';
 import {
   battalionCount,
-  battalionSummary,
   priorityLabel,
   templateName,
   templateRows,
-  unitName,
   validateDivisionTemplates,
   type TemplateRow,
 } from './divisionTemplateData.ts';
+
+function compositionValue(entry: TemplateEntry): Value<string> {
+  if (entry.unitsMissing !== null && !entry.units.length) {
+    return notRecorded(entry.unitsMissing);
+  }
+  if (!entry.units.length) return knownValue('Empty');
+  const missingReasons: string[] = [];
+  const lineKnown: string[] = [];
+  const supportKnown: string[] = [];
+  for (const unit of entry.units) {
+    const trimmed = unit.name?.trim();
+    if (!trimmed) {
+      missingReasons.push(unit.nameMissing ?? 'Unit name unavailable');
+      continue;
+    }
+    if (unit.support) supportKnown.push(unit.count === 1 ? trimmed : `${trimmed} \u00d7${unit.count}`);
+    else lineKnown.push(`${trimmed} \u00d7${unit.count}`);
+  }
+  const knownText = [lineKnown.join(', '), supportKnown.join(', ')].filter(Boolean).join(' \u00b7 ');
+  if (!missingReasons.length) return knownValue(knownText || 'Empty');
+  const reason = [...new Set(missingReasons)].join('; ');
+  return knownText ? partialValue(knownText, reason) : notRecorded(reason);
+}
 
 export interface DivisionTemplateProjectionOptions {
   readonly countryName: string;
@@ -47,13 +68,17 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
     icon: row => (row.kind === 'template' ? row.entry.icon ?? undefined : undefined),
     value: row => row.kind === 'obsolete'
       ? knownValue(`Obsolete templates (${row.count})`)
-      : valueFromNullable(
-        row.entry.name && row.entry.name.trim() ? row.entry.name : null,
-        { kind: 'notRecorded', reason: row.entry.nameMissing ?? 'Template name unavailable' },
-      ),
+      : row.kind === 'status-unknown'
+        ? notRecorded(row.reason)
+        : valueFromNullable(
+          row.entry.name && row.entry.name.trim() ? row.entry.name : null,
+          { kind: 'notRecorded', reason: row.entry.nameMissing ?? 'Template name unavailable' },
+        ),
     sortValue: row => row.kind === 'obsolete'
       ? knownValue(Number.MAX_SAFE_INTEGER)
-      : valueFromNullable(row.entry.rosterOrdinal, { kind: 'notRecorded', reason: 'Roster order not recorded' }),
+      : row.kind === 'status-unknown'
+        ? knownValue(Number.MAX_SAFE_INTEGER - 1)
+        : valueFromNullable(row.entry.rosterOrdinal, { kind: 'notRecorded', reason: 'Roster order not recorded' }),
   },
   {
     key: 'fielded',
@@ -77,10 +102,9 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
     priority: 2,
     text: true,
     widest: ['Infantry ×9 · Artillery'],
-    value: row => valueFromNullable(
-      row.kind === 'template' ? battalionSummary(row.entry) : null,
-      { kind: 'notRecorded', reason: row.kind === 'template' ? (row.entry.unitsMissing ?? 'Composition not recorded') : 'Composition not recorded' },
-    ),
+    value: row => row.kind === 'template'
+      ? compositionValue(row.entry)
+      : notRecorded('Composition not recorded'),
     sortValue: row => valueFromNullable(
       row.kind === 'template' ? battalionCount(row.entry) : null,
       { kind: 'notRecorded', reason: row.kind === 'template' ? (row.entry.unitsMissing ?? 'Composition not recorded') : 'Composition not recorded' },
@@ -127,12 +151,21 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
   declareTableProjection<DivisionTemplatesReply, TemplateRow, DivisionTemplateProjectionOptions>({
     kind: 'division-template',
     validate: validateDivisionTemplates,
-    naWhen: row => (row.kind === 'obsolete' ? 'Summary row for obsolete templates' : null),
+    naWhen: row => (row.kind === 'obsolete'
+      ? 'Summary row for obsolete templates'
+      : row.kind === 'status-unknown'
+        ? 'Summary row for templates with unrecorded status'
+        : null),
     columns: TEMPLATE_COLUMNS,
     rows: (reply, _live, _hour, options) => {
       const rows = templateRows(reply);
-      const current = reply.templates.filter(entry => !entry.obsolete).length;
-      const summaryPill = `${current} ${current === 1 ? 'template' : 'templates'}`;
+      const current = reply.templates.filter(entry => entry.obsolete === false).length;
+      const unknownStatus = reply.templates.filter(entry => entry.obsolete === null).length;
+      const summaryPill = unknownStatus > 0
+        ? (current > 0
+          ? `${current} current \u00b7 ${unknownStatus} status not recorded`
+          : `${unknownStatus} status not recorded`)
+        : `${current} ${current === 1 ? 'template' : 'templates'}`;
       if (!rows.length) {
         return {
           rows: [],
@@ -145,25 +178,48 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
       return { rows, warnings: reply.warnings, summaryPill };
     },
     rowKey: row => row.key,
-    rowName: row => (row.kind === 'obsolete' ? `Obsolete templates (${row.count})` : templateName(row.entry)),
-    rowMeta: (row, reply) => (row.kind === 'template' ? { designer: row.entry.designer ?? 'ordinary', tag: reply.tag } : null),
-    children: row => (row.kind === 'obsolete' ? row.children : undefined),
+    rowName: row => (row.kind === 'obsolete'
+      ? `Obsolete templates (${row.count})`
+      : row.kind === 'status-unknown'
+        ? `Status not recorded (${row.count})`
+        : templateName(row.entry)),
+    rowMeta: (row, reply) => (row.kind === 'template'
+      ? { designer: row.entry.designer, designerMissing: row.entry.settingsMissing, tag: reply.tag }
+      : null),
+    children: row => (row.kind === 'obsolete' || row.kind === 'status-unknown' ? row.children : undefined),
     initiallyOpen: () => false,
-    tooltipAction: (row, options) => (row.kind === 'template' && options.canOpenDesigner ? 'Click for division designer' : undefined),
-    tooltipNote: (row, _reply, _live, _hour, options) => (row.kind === 'template' && !options.canOpenDesigner ? 'Game view not available yet' : undefined),
+    tooltipAction: (row, options) => (row.kind === 'template' && options.canOpenDesigner && row.entry.designer !== null
+      ? 'Click for division designer'
+      : undefined),
+    tooltipNote: (row, _reply, _live, _hour, options) => {
+      if (row.kind !== 'template') return undefined;
+      if (!options.canOpenDesigner) return 'Game view not available yet';
+      if (row.entry.designer === null) return row.entry.settingsMissing ?? 'Division designer type not recorded';
+      return undefined;
+    },
     tooltipExtra: (row): TooltipExtraRow[] | undefined => {
-      if (row.kind === 'obsolete') return undefined;
+      if (row.kind !== 'template') return undefined;
       const entry = row.entry;
       const extra: TooltipExtraRow[] = [];
       const line = entry.units.filter(unit => !unit.support);
       const support = entry.units.filter(unit => unit.support);
       if (line.length) {
         extra.push({ label: 'Line battalions', value: knownValue(String(line.reduce((s, u) => s + u.count, 0))), strong: true, divider: true });
-        for (const unit of line) extra.push({ label: unitName(unit), value: knownValue(`\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined });
+        for (const unit of line) {
+          const name = unit.name?.trim();
+          extra.push(name
+            ? { label: name, value: knownValue(`\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined }
+            : { label: `Line unit (\u00d7${unit.count})`, value: notRecorded(unit.nameMissing ?? 'Unit name unavailable'), indent: true, lookupKey: unit.key ?? undefined });
+        }
       }
       if (support.length) {
         extra.push({ label: 'Support companies', value: knownValue(String(support.length)), strong: true });
-        for (const unit of support) extra.push({ label: unitName(unit), value: knownValue(unit.count === 1 ? '1' : `\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined });
+        for (const unit of support) {
+          const name = unit.name?.trim();
+          extra.push(name
+            ? { label: name, value: knownValue(unit.count === 1 ? '1' : `\u00d7${unit.count}`), indent: true, lookupKey: unit.key ?? undefined }
+            : { label: `Support unit (${unit.count === 1 ? '1' : `\u00d7${unit.count}`})`, value: notRecorded(unit.nameMissing ?? 'Unit name unavailable'), indent: true, lookupKey: unit.key ?? undefined });
+        }
       }
       if (entry.settingsMissing === null) {
         extra.push(

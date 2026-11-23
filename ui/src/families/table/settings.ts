@@ -1,5 +1,6 @@
 import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options.ts';
+import type { CountryLooksMap } from './looks.ts';
 
 export type TableSortDirection = 'ascending' | 'descending';
 export type TableOverflow = 'tooltip' | 'scroll';
@@ -71,6 +72,7 @@ export interface TableTheme {
   lineWidth: number;
   hatchSpacing: number;
   country?: Readonly<Record<string, string>>;
+  countryLooks?: CountryLooksMap;
 }
 
 export interface RankMarker {

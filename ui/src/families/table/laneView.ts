@@ -4,6 +4,7 @@ import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
+import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
 import { nextLookChange, type CountryLooksMap } from './looks.ts';
@@ -112,23 +113,16 @@ interface HeldFamilyTable {
   tableSig: string;
   tableField: FieldEntry | null;
 
-  lastMirrorAt: number;
-  lastMirrorWindow: string;
-  lastMirrorFocus: string | null;
-  mirrorDirty: boolean;
+  mirrorGate: CadenceGate;
   mirrorField: FieldEntry | null;
 
-  lastTipAt: number;
-  lastTipKey: string | null;
-  tipDirty: boolean;
+  tipGate: CadenceGate;
   tipField: FieldEntry | null;
 
-  lastFocusTipAt: number;
-  lastFocusTipKey: string | null;
-  focusTipDirty: boolean;
+  focusTipGate: CadenceGate;
   focusTipField: FieldEntry | null;
 
-  flushTimer: ReturnType<typeof setTimeout> | null;
+  flusher: TrailingFlushScheduler;
 
   auditId: number;
   auditField: FieldEntry | null;
@@ -304,7 +298,8 @@ function navSignature(rows: readonly FlatTableRow[]): string {
   for (let i = 0; i < rows.length; i++) {
     const item = rows[i]!;
     if (item.kind === 'data') {
-      sig += `\u0000${item.key}:${item.name}:${item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1}`;
+      const meta = item.row.meta === undefined ? '' : JSON.stringify(item.row.meta);
+      sig += `\u0000${item.key}:${item.name}:${item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1}:${meta}`;
     } else {
       sig += `\u0001${item.key}`;
     }
@@ -316,7 +311,7 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
   let cols = '';
   for (let i = 0; i < model.columns.length; i++) {
     const c = model.columns[i]!;
-    cols += `,${c.key}:${c.label}:${c.as}:${c.offered.join('.')}:${c.text ? 1 : 0}:${c.hideable === false ? 0 : 1}:${c.sortable === false ? 0 : 1}:${c.numeric ? 1 : 0}:${c.hint ?? ''}`;
+    cols += `,${c.key}:${c.label}:${c.priority}:${c.as}:${c.offered.join('.')}:${c.text ? 1 : 0}:${c.hideable === false ? 0 : 1}:${c.sortable === false ? 0 : 1}:${c.numeric ? 1 : 0}:${c.hint ?? ''}`;
   }
   return `${model.empty ?? ''}|${model.emptyDetail ?? ''}|${model.emptyKind ?? 'empty'}|${model.summaryPill ?? ''}|${(model.notes ?? []).join('\u0000')}|${(model.warnings ?? []).join('\u0000')}|${hasTree ? 1 : 0}|${model.unsorted ? 1 : 0}|${rankShown ? 1 : 0}|${rankWidth}|${cols}`;
 }
@@ -328,7 +323,10 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       if (!isFamilyTableBinding(bound)) return Infinity;
       const projection = tableProjection(bound.kind);
       if (!projection) return Infinity;
-      let soonest = nextLookChange(optionsLooks(bound.options), hour);
+      let soonest = Math.min(
+        nextLookChange(optionsLooks(bound.options), hour),
+        nextLookChange(bound.theme?.countryLooks, hour),
+      );
       if (projection.nextChange) {
         const sources = sourcesFromScene(scene, bound);
         soonest = Math.min(soonest, projection.nextChange(sources, hour, bound.options));
@@ -353,6 +351,9 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       if (!held) {
         const canvas = new OffscreenCanvas(widthPx, heightPx);
         const ctx = canvas.getContext('2d')!;
+        const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
+        const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         state.set('familyTable', held = {
           canvas,
           ctx,
@@ -391,20 +392,13 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           navField: null,
           tableSig: '',
           tableField: null,
-          lastMirrorAt: -Infinity,
-          lastMirrorWindow: '',
-          lastMirrorFocus: null,
-          mirrorDirty: true,
+          mirrorGate,
           mirrorField: null,
-          lastTipAt: -Infinity,
-          lastTipKey: null,
-          tipDirty: false,
+          tipGate,
           tipField: null,
-          lastFocusTipAt: -Infinity,
-          lastFocusTipKey: null,
-          focusTipDirty: false,
+          focusTipGate,
           focusTipField: null,
-          flushTimer: null,
+          flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate]),
           auditId: -1,
           auditField: null,
           phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 },
@@ -441,7 +435,10 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         model = projection.project(sources, input.hour, bound.options);
         flatRows = resolveTableRows(model, bound.settings, bound.expanded);
         for (const url of collectCellIcons(flatRows)) loadIcon(held, url);
-        let nextBoundary = nextLookChange(optionsLooks(bound.options), input.hour);
+        let nextBoundary = Math.min(
+          nextLookChange(optionsLooks(bound.options), input.hour),
+          nextLookChange(bound.theme?.countryLooks, input.hour),
+        );
         if (projection.nextChange) nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
         if (model.rows.some(r => r.revealAt !== undefined)) nextBoundary = Math.min(nextBoundary, nextTableChange(model, input.hour));
         held.prevParts = snapshotPictures(input.pictures);
@@ -508,7 +505,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         held.cachedAllLayouts = allLayouts;
         held.cachedLayout = layout;
         const widthsPayload = {
-          widths: Object.fromEntries(layout.columns.map(col => [col.key, col.width])),
+          widths: Object.fromEntries(allLayouts.filter(col => col.shown).map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
           hidden: layout.hidden,
           totalWidth: layout.totalWidth,
@@ -651,26 +648,14 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       }
       fields.table = held.tableField;
 
-      const winKey = bound.window ? `${bound.window.first}:${bound.window.count}` : '';
-      if (modelChanged || layoutChanged || winKey !== held.lastMirrorWindow || focusedKey !== held.lastMirrorFocus) {
-        held.mirrorDirty = true;
-      }
-      const mirrorDue = !held.mirrorField
-        || (held.mirrorDirty && (
-          input.speed === 0
-          || winKey !== held.lastMirrorWindow
-          || focusedKey !== held.lastMirrorFocus
-          || now - held.lastMirrorAt >= MIRROR_CADENCE_MS
-        ));
-      if (mirrorDue) {
+      const mirrorKey = `${bound.window ? `${bound.window.first}:${bound.window.count}` : ''}\u0000${focusedKey ?? ''}`;
+      if (modelChanged || layoutChanged) held.mirrorGate.invalidate();
+      if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
         const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
         const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey);
         const mirrorText = JSON.stringify(mirror);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
-        held.lastMirrorAt = now;
-        held.lastMirrorWindow = winKey;
-        held.lastMirrorFocus = focusedKey;
-        held.mirrorDirty = false;
+        held.mirrorGate.record(now, mirrorKey);
       }
       if (held.mirrorField) fields.mirror = held.mirrorField;
 
@@ -685,70 +670,44 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       };
 
       if (inspectedKey) {
-        if (modelChanged || layoutChanged || inspectedKey !== held.lastTipKey) held.tipDirty = true;
-        const tipDue = !held.tipField
-          || (held.tipDirty && (input.speed === 0 || inspectedKey !== held.lastTipKey || now - held.lastTipAt >= TOOLTIP_CADENCE_MS));
-        if (tipDue) {
+        if (modelChanged || layoutChanged) held.tipGate.invalidate();
+        if (!held.tipField || held.tipGate.due(now, input.speed, inspectedKey)) {
           const tooltip = getTip(inspectedKey);
           const tipPayload = { key: `row:${inspectedKey}`, text: tooltip ? { hour: model.hour, rowKey: inspectedKey, content: tooltip } : null };
           const tipText = JSON.stringify(tipPayload);
           held.tipField = { value: tipPayload, content: cachedField(held, 'tooltip', tipText, content) };
-          held.lastTipAt = now;
-          held.lastTipKey = inspectedKey;
-          held.tipDirty = false;
+          held.tipGate.record(now, inspectedKey);
         }
         if (held.tipField) fields.tooltip = held.tipField;
       } else {
-        held.lastTipKey = null;
-        held.tipDirty = false;
+        held.tipGate.reset();
         held.tipField = null;
       }
 
       if (focusedKey) {
-        if (modelChanged || layoutChanged || focusedKey !== held.lastFocusTipKey) held.focusTipDirty = true;
-        const focusTipDue = !held.focusTipField
-          || (held.focusTipDirty && (input.speed === 0 || focusedKey !== held.lastFocusTipKey || now - held.lastFocusTipAt >= TOOLTIP_CADENCE_MS));
-        if (focusTipDue) {
+        if (modelChanged || layoutChanged) held.focusTipGate.invalidate();
+        if (!held.focusTipField || held.focusTipGate.due(now, input.speed, focusedKey)) {
           const tooltip = getTip(focusedKey);
           const tipPayload = { key: `focus:${focusedKey}`, text: tooltip ? { hour: model.hour, rowKey: focusedKey, content: tooltip } : null };
           const tipText = JSON.stringify(tipPayload);
           held.focusTipField = { value: tipPayload, content: cachedField(held, 'focusTooltip', tipText, content) };
-          held.lastFocusTipAt = now;
-          held.lastFocusTipKey = focusedKey;
-          held.focusTipDirty = false;
+          held.focusTipGate.record(now, focusedKey);
         }
         if (held.focusTipField) fields.focusTooltip = held.focusTipField;
       } else {
-        held.lastFocusTipKey = null;
-        held.focusTipDirty = false;
+        held.focusTipGate.reset();
         held.focusTipField = null;
       }
 
-      if (held.flushTimer !== null) {
-        clearTimeout(held.flushTimer);
-        held.flushTimer = null;
-      }
-      if (input.speed > 0 && (held.mirrorDirty || held.tipDirty || held.focusTipDirty)) {
-        let waitMs = Infinity;
-        if (held.mirrorDirty) waitMs = Math.min(waitMs, Math.max(1, MIRROR_CADENCE_MS - (now - held.lastMirrorAt)));
-        if (held.tipDirty) waitMs = Math.min(waitMs, Math.max(1, TOOLTIP_CADENCE_MS - (now - held.lastTipAt)));
-        if (held.focusTipDirty) waitMs = Math.min(waitMs, Math.max(1, TOOLTIP_CADENCE_MS - (now - held.lastFocusTipAt)));
-        if (Number.isFinite(waitMs)) {
-          const target = held;
-          target.flushTimer = setTimeout(() => {
-            target.flushTimer = null;
-            target.wake?.();
-          }, waitMs);
-          (target.flushTimer as unknown as { unref?: () => void })?.unref?.();
-        }
-      }
+      const target = held;
+      held.flusher.sync(now, input.speed, () => { target.wake?.(); });
       const tFields = timed ? performance.now() : 0;
 
       if (bound.audit) {
         const nextAuditId = bound.auditId ?? -1;
         if (modelChanged || layoutChanged || !held.auditField || held.auditId !== nextAuditId) {
-          const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-          const auditRows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
+          const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
+          const auditRows = deriveTableAudit(flatRows, visibleSpecs, model.hour, model.empty, { rankShown, emptyKind: model.emptyKind });
           held.auditId = nextAuditId;
           held.auditField = { value: { id: nextAuditId, rows: auditRows }, content: content() };
         }

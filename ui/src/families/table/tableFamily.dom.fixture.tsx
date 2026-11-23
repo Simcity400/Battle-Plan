@@ -269,11 +269,14 @@ window.tableFamilyDom = {
     totalInstallReads = 0;
     installs = 0;
     let sentThrough = 10;
+    let flipFromHour = Number.MAX_SAFE_INTEGER;
     const feed = (hour: number) => {
       while (sentThrough < hour + 6) {
         sentThrough++;
-        const swap = sentThrough % 2 === 1;
-        sendHour(sentThrough, swap ? [35n, 60n, 30n, -1n] : [70n, 40n, 30n, -1n], [BigInt(sentThrough * 10), BigInt(sentThrough * 20), 0n, 0n]);
+        const fac: [bigint, bigint, bigint, bigint] = sentThrough >= flipFromHour
+          ? [15n, 95n, 30n, -1n]
+          : [85n, 40n, 30n, -1n];
+        sendHour(sentThrough, fac, [BigInt(sentThrough * 10), BigInt(sentThrough * 20), 0n, 0n]);
       }
     };
     feed(10);
@@ -295,21 +298,21 @@ window.tableFamilyDom = {
       const playReads = totalInstallReads;
       const playInstalls = installs;
 
-      const pauseHour = (pipeline.view(pipeId)?.h ?? targetHour) + 1;
-      const beforePauseTop = hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') ?? null;
-      const wantTop = beforePauseTop === 'FRA' ? 'GER' : 'FRA';
-      const fac: [bigint, bigint, bigint, bigint] = wantTop === 'FRA' ? [15n, 95n, 30n, -1n] : [95n, 15n, 30n, -1n];
-      for (let h = sentThrough + 1; h <= pauseHour + 3; h++) {
-        sendHour(h, fac, [BigInt(h * 10), BigInt(h * 20), 0n, 0n]);
-      }
-      sentThrough = Math.max(sentThrough, pauseHour + 3);
-      await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
+      const wantTop = 'FRA';
+      const pauseHour = sentThrough + 1;
+      flipFromHour = pauseHour;
+      feed(pauseHour);
+      const reachedFlip = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
+      if (!reachedFlip) throw new Error(`Live playback did not reach flipped hour ${pauseHour} (at ${pipeline.view(pipeId)?.h})`);
 
       clock.setPlaying(false);
       const flushedOnPause = await until(
         () => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === wantTop,
         800,
       );
+      if (!flushedOnPause) {
+        throw new Error(`Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key')})`);
+      }
 
       const view = pipeline.view(pipeId);
       const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({

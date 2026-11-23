@@ -17,13 +17,14 @@ import { PreparingPage } from '../../dashboard/preparing.ts';
 import { asFailure } from '../../dashboard/queryError.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
-import type { AuditRow } from '../../draw/notifications';
 import { ROW_HEIGHT, updateTableSettings, type TableSettings, type TableTheme } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import { perfLog } from '../../shell/perf.ts';
+import { AuditSnapshotStore, auditIdOf, auditRowsOf } from '../audit.ts';
 import type { FamilySources, MirrorModel } from '../contract.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
+import type { CountryLooksMap } from './looks.ts';
 import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableProjection } from './model.ts';
 import './tableFamily.css';
 
@@ -31,14 +32,10 @@ const TABLE_AUDIT = -1;
 const STATIC_HOLD = {};
 const OVERSCAN = 4;
 const CLICK_CANCEL_PX = 4;
-const TOOLTIP_THROTTLE_MS = 250;
-const MIRROR_THROTTLE_MS = 1000;
 const TYPEAHEAD_RESET_MS = 700;
 const HOVER_OPEN_MS = 150;
 const HOVER_CLOSE_MS = 100;
 const HEADER_FALLBACK_WIDTH = 120;
-
-let nextAuditSnapshot = 1;
 
 interface AuditSnapshot<TOptions> {
   readonly declaration: TableProjection<TOptions>;
@@ -46,6 +43,8 @@ interface AuditSnapshot<TOptions> {
   readonly settings: TableSettings;
   readonly expanded: Readonly<Record<string, boolean>>;
   readonly exactSources: (hour: number) => Promise<FamilySources | null>;
+  readonly width: number;
+  readonly measuredWidths: Readonly<Record<string, number>>;
 }
 
 export interface FamilySourceSubscription {
@@ -71,12 +70,14 @@ export interface FamilyTableHostProps<TOptions> {
   readonly onSettings?: (next: TableSettings) => void;
   readonly editableColumns?: boolean;
   readonly subscriptions: readonly FamilySourceSubscription[];
+  readonly allowEmptyFollow?: boolean;
   readonly staticSources?: { readonly sources: FamilySources; readonly hour: number } | null;
   readonly exactSources?: (hour: number) => Promise<FamilySources | null>;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
   readonly countryColours?: ReadonlyMap<string, string>;
+  readonly countryLooks?: CountryLooksMap;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly contextMenuItems?: (key: string, name: string, hour: number) => MenuItem[];
@@ -117,7 +118,7 @@ interface WidthsState {
 
 type NavEntry = readonly [key: string, name: string, index: number, treeState: number, parent: string, meta?: unknown];
 
-function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | undefined {
+function themeOf(countryColours?: ReadonlyMap<string, string>, countryLooks?: CountryLooksMap): TableTheme | undefined {
   if (typeof document === 'undefined') return undefined;
   const tokens = readTokens();
   const rootStyle = getComputedStyle(document.documentElement);
@@ -142,6 +143,7 @@ function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | und
     lineWidth: tokens.lineWidth.grid,
     hatchSpacing: tokens.hatchSpacing,
     country: countryColours ? Object.fromEntries(countryColours) : undefined,
+    countryLooks,
   };
 }
 
@@ -162,12 +164,14 @@ export default function FamilyTableHost<TOptions>({
   onSettings,
   editableColumns = true,
   subscriptions,
+  allowEmptyFollow = false,
   staticSources = null,
   exactSources,
   offset,
   pin,
   bounds,
   countryColours,
+  countryLooks,
   selectedKey = null,
   onActivate,
   contextMenuItems,
@@ -204,7 +208,7 @@ export default function FamilyTableHost<TOptions>({
   const restoringFocusRef = useRef(false);
   const inspectedKeyRef = useRef<string | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const pointerDownRef = useRef<{ key: string | null; x: number; y: number; button: number; toggle: boolean; cancelled: boolean } | null>(null);
+  const pointerDownRef = useRef<{ key: string | null; resolved: boolean; pendingUp: boolean; x: number; y: number; button: number; toggle: boolean; cancelled: boolean } | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pinnedTipRef = useRef<{ key: string; content: TooltipContent; x: number; y: number } | null>(null);
@@ -212,12 +216,19 @@ export default function FamilyTableHost<TOptions>({
   heldRef.current = held;
   const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
-  const pendingAuditIdRef = useRef<number | null>(null);
-  const auditSnapshotsRef = useRef(new Map<number, AuditSnapshot<TOptions>>());
-  const installedSnapshotsByHourRef = useRef(new Map<number, AuditSnapshot<TOptions>>());
-  const activeSnapshotRef = useRef<AuditSnapshot<TOptions> | null>(null);
-  const lastTipAtRef = useRef(0);
-  const lastMirrorAtRef = useRef(0);
+  const auditStoreRef = useRef<AuditSnapshotStore<AuditSnapshot<TOptions>> | null>(null);
+  if (!auditStoreRef.current) auditStoreRef.current = new AuditSnapshotStore<AuditSnapshot<TOptions>>(512);
+  const lastAuditRef = useRef<{
+    id: number;
+    declaration: TableProjection<TOptions>;
+    options: TOptions;
+    settings: TableSettings;
+    expanded: Readonly<Record<string, boolean>>;
+    exactSources: (hour: number) => Promise<FamilySources | null>;
+    width: number;
+  } | null>(null);
+  const measuredWidthsRef = useRef<Readonly<Record<string, number>>>({});
+  const hoverTipShownRef = useRef(false);
   const lastMirrorKeyRef = useRef('');
   const lastExtentRef = useRef({ height: -1, width: -1, count: -1 });
   const navRef = useRef<readonly NavEntry[]>([]);
@@ -252,7 +263,7 @@ export default function FamilyTableHost<TOptions>({
     signature: '',
   });
 
-  const theme = useMemo(() => themeOf(countryColours), [countryColours]);
+  const theme = useMemo(() => themeOf(countryColours, countryLooks), [countryColours, countryLooks]);
   const tooltipOwner = `family-table:${widget.id}`;
   useEffect(() => () => {
     hideTooltip(tooltipOwner);
@@ -276,7 +287,7 @@ export default function FamilyTableHost<TOptions>({
 
   const pipeline = usePipeline(runtime.clock, runtime.client);
   const widgetKey = useWidgetKey();
-  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null);
+  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
   const pipeKey = enabled && pipeline ? `${widgetKey}|${offset}|${declaration.kind}` : null;
   const pipe = useFollowedWidget(pipeline, pipeKey, {
     offset,
@@ -339,6 +350,8 @@ export default function FamilyTableHost<TOptions>({
     viewportHeight,
     rowHeight,
     offset,
+    bounds,
+    allowEmptyFollow,
     columns: initialColumns,
   });
   latestRef.current = {
@@ -354,6 +367,8 @@ export default function FamilyTableHost<TOptions>({
     viewportHeight,
     rowHeight,
     offset,
+    bounds,
+    allowEmptyFollow,
     columns: meta.columns.length ? meta.columns : initialColumns,
   };
 
@@ -370,6 +385,40 @@ export default function FamilyTableHost<TOptions>({
         [...cur.staticSources.sources.answers].filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== undefined),
       )
       : undefined;
+    let auditId: number | undefined;
+    if (perfLog && cur.exactSources) {
+      const prev = lastAuditRef.current;
+      if (
+        prev
+        && prev.declaration === cur.declaration
+        && prev.options === cur.options
+        && prev.settings === cur.settings
+        && prev.expanded === expandedRef.current
+        && prev.exactSources === cur.exactSources
+        && prev.width === w
+      ) {
+        auditId = prev.id;
+      } else {
+        auditId = auditStoreRef.current!.create({
+          declaration: cur.declaration,
+          options: cur.options,
+          settings: cur.settings,
+          expanded: expandedRef.current,
+          exactSources: cur.exactSources,
+          width: w,
+          measuredWidths: measuredWidthsRef.current,
+        });
+        lastAuditRef.current = {
+          id: auditId,
+          declaration: cur.declaration,
+          options: cur.options,
+          settings: cur.settings,
+          expanded: expandedRef.current,
+          exactSources: cur.exactSources,
+          width: w,
+        };
+      }
+    }
     const bindingModel: FamilyTableBinding<TOptions> = {
       family: 'table',
       kind: cur.declaration.kind,
@@ -389,17 +438,24 @@ export default function FamilyTableHost<TOptions>({
       reducedMotion: reducedMotionEnabled(),
       window: viewWindowRef.current,
       pauseFlush: pauseFlushRef.current,
-      ...(perfLog ? { audit: true, ...(pendingAuditIdRef.current !== null ? { auditId: pendingAuditIdRef.current } : {}) } : {}),
+      ...(perfLog && auditId !== undefined ? { audit: true, auditId } : {}),
     };
     held.canvas.style.width = `${w}px`;
     held.canvas.style.height = `${h}px`;
     pipeline.present(pipe, 'table');
+    const dated = Object.keys(sourceIdsRef.current).length === 0
+      ? (cur.staticSources
+        ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
+        : cur.allowEmptyFollow && cur.bounds
+          ? { h: cur.bounds[0], c: cur.bounds[1] }
+          : undefined)
+      : undefined;
     pipeline.bind(
       pipe,
       [held.surface],
       {
         surfaces: [{ width: w, height: h, dpr: typeof devicePixelRatio === 'number' ? devicePixelRatio : 1 }],
-        ...(cur.staticSources && Object.keys(sourceIdsRef.current).length === 0 ? { dated: { h: cur.staticSources.hour, c: cur.staticSources.hour } } : {}),
+        ...(dated ? { dated } : {}),
       },
       {},
       bindingModel,
@@ -409,28 +465,29 @@ export default function FamilyTableHost<TOptions>({
   const bindRef = useRef(bind);
   bindRef.current = bind;
 
-  const paintMirror = useCallback((mirror: MirrorModel | null, force: boolean) => {
+  const paintMirror = useCallback((mirror: MirrorModel | null) => {
     const tbody = mirrorBodyRef.current;
     if (!tbody) return;
-    const now = performance.now();
-    const playing = runtime.clock.getSnapshot().playing;
-    if (!force && playing && now - lastMirrorAtRef.current < MIRROR_THROTTLE_MS) return;
-    const key = mirror ? `${mirror.first}:${mirror.total}:${focusedKeyRef.current ?? ''}:${mirror.rows.map(r => `${r.key}|${r.cells.map(c => c.spoken).join(',')}`).join(';')}` : '';
-    if (key === lastMirrorKeyRef.current) return;
-    lastMirrorAtRef.current = now;
-    lastMirrorKeyRef.current = key;
     if (!mirror) {
-      tbody.replaceChildren();
+      if (lastMirrorKeyRef.current !== '') {
+        lastMirrorKeyRef.current = '';
+        tbody.replaceChildren();
+      }
       return;
     }
-    const activeFocus = focusedKeyRef.current ?? mirror.rows.find(r => !r.groupHeader)?.key ?? null;
+    const selected = latestRef.current.selectedKey ?? '';
+    const hasFocused = focusedKeyRef.current !== null && mirror.rows.some(r => !r.groupHeader && r.key === focusedKeyRef.current);
+    const activeFocus = hasFocused ? focusedKeyRef.current : (mirror.rows.find(r => !r.groupHeader)?.key ?? null);
+    const key = `${mirror.first}:${mirror.total}:${activeFocus ?? ''}:${selected}:${mirror.rows.map(r => `${r.rowIndex}|${r.key}|${r.groupHeader ? 1 : 0}|${r.rank ?? ''}|${r.level ?? ''}|${r.group ? (r.open ? 1 : 0) : -1}|${r.cells.map(c => c.spoken).join(',')}`).join(';')}`;
+    if (key === lastMirrorKeyRef.current) return;
+    lastMirrorKeyRef.current = key;
     const wasFocused = focusInsideRef.current && document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement);
     const fragment = document.createDocumentFragment();
     let restore: HTMLTableRowElement | null = null;
-    mirror.rows.forEach((row, idx) => {
+    mirror.rows.forEach(row => {
       const tr = document.createElement('tr');
       tr.dataset.rowKey = row.key;
-      tr.setAttribute('aria-rowindex', String(mirror.first + idx + 2));
+      tr.setAttribute('aria-rowindex', String(row.rowIndex + 2));
       if (row.groupHeader) {
         tr.setAttribute('role', 'row');
         const td = document.createElement('td');
@@ -442,7 +499,7 @@ export default function FamilyTableHost<TOptions>({
       tr.tabIndex = row.key === activeFocus ? 0 : -1;
       if (row.level !== undefined) tr.setAttribute('aria-level', String(row.level));
       if (row.group) tr.setAttribute('aria-expanded', String(row.open === true));
-      if (latestRef.current.selectedKey === row.key) tr.setAttribute('aria-selected', 'true');
+      if (selected && selected === row.key) tr.setAttribute('aria-selected', 'true');
       if (row.rank !== undefined) {
         const rankTd = document.createElement('td');
         rankTd.textContent = String(row.rank);
@@ -453,7 +510,7 @@ export default function FamilyTableHost<TOptions>({
         td.textContent = cell.spoken;
         tr.append(td);
       }
-      if (wasFocused && row.key === focusedKeyRef.current) restore = tr;
+      if (wasFocused && row.key === activeFocus) restore = tr;
       fragment.append(tr);
     });
     restoringFocusRef.current = true;
@@ -463,7 +520,7 @@ export default function FamilyTableHost<TOptions>({
     } finally {
       restoringFocusRef.current = false;
     }
-  }, [runtime.clock]);
+  }, []);
 
   const toggleTreeKey = useCallback((key: string) => {
     const entry = navRef.current.find(item => item[0] === key);
@@ -522,6 +579,7 @@ export default function FamilyTableHost<TOptions>({
   useLayoutEffect(() => {
     const node = bodyRef.current;
     if (!node || !pipeline || pipe === null) return;
+    lastExtentRef.current = { height: -1, width: -1, count: -1 };
     const extent = document.createElement('div');
     const drawn = pipeline.held(pipe, 'table', () => {
       const canvas = document.createElement('canvas');
@@ -539,19 +597,25 @@ export default function FamilyTableHost<TOptions>({
     const updateTooltip = (
       tip: { hour: number; rowKey: string; content: TooltipContent } | null,
       pos: { x: number; y: number } | null,
-      force: boolean,
     ) => {
       if (pinnedTipRef.current) return;
       if (!tip || !pos) {
+        hoverTipShownRef.current = false;
         hideTooltip(tooltipOwner);
         return;
       }
-      const now = performance.now();
-      const playing = runtime.clock.getSnapshot().playing;
-      if (!force && playing && now - lastTipAtRef.current < TOOLTIP_THROTTLE_MS) return;
-      lastTipAtRef.current = now;
+      hoverTipShownRef.current = true;
       const fitted = fitTooltip([tip.content], latestRef.current.viewportHeight);
       showTooltip(tooltipOwner, fitted, pos.x, pos.y, tip.rowKey);
+    };
+
+    const activateHit = (rowKey: string, isToggle: boolean) => {
+      const entry = navRef.current.find(item => item[0] === rowKey);
+      if (isToggle || (entry && entry[3] >= 0)) {
+        toggleTreeKey(rowKey);
+        return;
+      }
+      latestRef.current.onActivate?.(rowKey, entry?.[5], lastHourRef.current);
     };
 
     const install = () => {
@@ -586,7 +650,7 @@ export default function FamilyTableHost<TOptions>({
         rawMeta?.unsorted ?? false,
         rawMeta?.rankShown ?? false,
         rawMeta?.rankWidth ?? 0,
-        rawMeta?.columns?.map(c => [c.key, c.label, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
+        rawMeta?.columns?.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
       ]);
       if (nextMetaSig !== metaSigRef.current) {
         metaSigRef.current = nextMetaSig;
@@ -608,28 +672,17 @@ export default function FamilyTableHost<TOptions>({
       }
 
       if (!visible || !shown?.fields) {
-        paintMirror(null, true);
-        if (!pinnedTipRef.current) hideTooltip(tooltipOwner);
-        return;
-      }
-
-      const auditField = shown.fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
-      if (perfLog && auditField && typeof auditField.id === 'number' && auditField.id > 0) {
-        const snap = auditSnapshotsRef.current.get(auditField.id);
-        if (snap) {
-          activeSnapshotRef.current = snap;
-          const auditedHour = shown.painted ?? shown.through;
-          if (auditedHour !== undefined) {
-            const byHour = installedSnapshotsByHourRef.current;
-            byHour.delete(auditedHour);
-            byHour.set(auditedHour, snap);
-            if (byHour.size > 2048) byHour.delete(byHour.keys().next().value!);
-          }
+        paintMirror(null);
+        if (!pinnedTipRef.current) {
+          hoverTipShownRef.current = false;
+          hideTooltip(tooltipOwner);
         }
+        return;
       }
 
       const widths = shown.fields.widths as Omit<WidthsState, 'signature'> | undefined;
       if (widths) {
+        measuredWidthsRef.current = widths.widths;
         for (const [key, px] of Object.entries(widths.widths)) {
           frameNode?.style.setProperty(columnWidthVar(key), `${px}px`);
         }
@@ -640,6 +693,11 @@ export default function FamilyTableHost<TOptions>({
         }
         const sig = JSON.stringify([widths.visible, widths.hidden, widths.scrollable, widths.moreWidth, widths.widths]);
         setWidthsState(prev => prev.signature === sig ? prev : { ...widths, signature: sig });
+      }
+
+      const installedAuditId = auditIdOf(shown.fields.audit);
+      if (perfLog && installedAuditId !== undefined && widths) {
+        auditStoreRef.current!.update(installedAuditId, snap => ({ ...snap, measuredWidths: widths.widths }));
       }
 
       const navField = shown.fields.nav as readonly NavEntry[] | undefined;
@@ -655,28 +713,30 @@ export default function FamilyTableHost<TOptions>({
           lastExtentRef.current.height = extHeight;
           extent.style.height = `${extHeight}px`;
         }
-        if (focusInsideRef.current && focusedKeyRef.current) {
+        if (focusedKeyRef.current) {
           const navEntry = navRef.current.find(item => item[0] === focusedKeyRef.current);
           if (navEntry) {
-            scrollRowIntoView(navEntry[2]);
-          } else if (navRef.current.length > 0) {
-            const fallbackKey = navRef.current[0]![0];
+            if (focusInsideRef.current) scrollRowIntoView(navEntry[2]);
+          } else {
+            const fallbackKey = navRef.current[0]?.[0] ?? null;
             if (fallbackKey !== focusedKeyRef.current) {
               focusedKeyRef.current = fallbackKey;
-              queueMicrotask(() => bindRef.current());
+              if (focusInsideRef.current) queueMicrotask(() => bindRef.current());
             }
           }
         }
         if (inspectedKeyRef.current && !tableInfo.inspectedPresent) {
           inspectedKeyRef.current = null;
           pipeline.inspect(pipe, null);
-          if (!pinnedTipRef.current && !focusInsideRef.current) hideTooltip(tooltipOwner);
+          if (!pinnedTipRef.current && !focusInsideRef.current) {
+            hoverTipShownRef.current = false;
+            hideTooltip(tooltipOwner);
+          }
         }
       }
 
-      const playing = runtime.clock.getSnapshot().playing;
       const mirror = shown.fields.mirror as MirrorModel | undefined;
-      if (mirror) paintMirror(mirror, !playing);
+      if (mirror) paintMirror(mirror);
 
       const phases = shown.fields.phases as Record<string, unknown> | undefined;
       if (phases && frameNode && perfLog) frameNode.dataset.familyPhases = JSON.stringify(phases);
@@ -689,13 +749,15 @@ export default function FamilyTableHost<TOptions>({
       }
       if (!shown.dim && !heldRef.current) {
         if (inspectedKeyRef.current && lastPointerRef.current && hoverTipField?.text && hoverTipField.text.rowKey === inspectedKeyRef.current) {
-          updateTooltip(hoverTipField.text, lastPointerRef.current, !playing);
+          updateTooltip(hoverTipField.text, lastPointerRef.current);
         } else if (focusInsideRef.current && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
-          updateTooltip(focusTipField.text, focusAnchorRef.current, !playing);
+          updateTooltip(focusTipField.text, focusAnchorRef.current);
         } else if (!pinnedTipRef.current) {
+          hoverTipShownRef.current = false;
           hideTooltip(tooltipOwner);
         }
       } else if (!pinnedTipRef.current) {
+        hoverTipShownRef.current = false;
         hideTooltip(tooltipOwner);
       }
     };
@@ -728,13 +790,13 @@ export default function FamilyTableHost<TOptions>({
         }
         if (changed) {
           if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
-          const delay = lastTipAtRef.current > 0 ? 0 : HOVER_OPEN_MS;
+          const delay = hoverTipShownRef.current ? 0 : HOVER_OPEN_MS;
           hoverTimerRef.current = setTimeout(() => {
             hoverTimerRef.current = null;
             if (heldRef.current || dimRef.current) return;
             const currentView = pipeline.view(pipe);
             const tipField = currentView?.fields?.tooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
-            if (tipField?.text && tipField.text.rowKey === inspectedKeyRef.current) updateTooltip(tipField.text, lastPointerRef.current, true);
+            if (tipField?.text && tipField.text.rowKey === inspectedKeyRef.current) updateTooltip(tipField.text, lastPointerRef.current);
           }, delay);
         }
       });
@@ -752,10 +814,11 @@ export default function FamilyTableHost<TOptions>({
           if (focusInsideRef.current && focusedKeyRef.current && !heldRef.current && !dimRef.current) {
             const focusTipField = pipeline.view(pipe)?.fields?.focusTooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
             if (focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
-              updateTooltip(focusTipField.text, focusAnchorRef.current, true);
+              updateTooltip(focusTipField.text, focusAnchorRef.current);
               return;
             }
           }
+          hoverTipShownRef.current = false;
           hideTooltip(tooltipOwner);
         }
       }, HOVER_CLOSE_MS);
@@ -767,23 +830,30 @@ export default function FamilyTableHost<TOptions>({
       const box = node.getBoundingClientRect();
       const x = event.clientX, y = event.clientY;
       if (inspectedKeyRef.current) {
-        pointerDownRef.current = { key: inspectedKeyRef.current, x, y, button: event.button, toggle: false, cancelled: false };
+        const down = { key: inspectedKeyRef.current, resolved: true, pendingUp: false, x, y, button: event.button, toggle: false, cancelled: false };
+        pointerDownRef.current = down;
         pipeline.pointer(pipe, 0, [x - box.left, y - box.top], hitKey => {
-          if (pointerDownRef.current && hitKey?.startsWith('toggle:')) pointerDownRef.current.toggle = true;
+          if (pointerDownRef.current === down && hitKey?.startsWith('toggle:')) down.toggle = true;
         });
       } else {
-        const hitIdx = Math.floor((y - box.top + viewportRef.current.scrollTop) / latestRef.current.rowHeight);
-        const fallbackKey = navRef.current.find(item => item[2] === hitIdx)?.[0] ?? null;
-        pointerDownRef.current = { key: fallbackKey, x, y, button: event.button, toggle: false, cancelled: false };
+        const down = { key: null as string | null, resolved: false, pendingUp: false, x, y, button: event.button, toggle: false, cancelled: false };
+        pointerDownRef.current = down;
         pipeline.pointer(pipe, 0, [x - box.left, y - box.top], hitKey => {
-          if (!pointerDownRef.current || !hitKey) return;
-          const isToggle = hitKey.startsWith('toggle:');
-          const rowKey = hitKey.startsWith('row:') || isToggle ? hitKey.slice(hitKey.indexOf(':') + 1) : null;
-          pointerDownRef.current.key = rowKey;
-          pointerDownRef.current.toggle = isToggle;
+          if (down.cancelled) return;
+          const isToggle = !!hitKey?.startsWith('toggle:');
+          const rowKey = hitKey && (hitKey.startsWith('row:') || isToggle) ? hitKey.slice(hitKey.indexOf(':') + 1) : null;
+          down.key = rowKey;
+          down.toggle = isToggle;
+          down.resolved = true;
           if (rowKey) {
             inspectedKeyRef.current = rowKey;
             pipeline.inspect(pipe, `row:${rowKey}`);
+          }
+          if (down.pendingUp) {
+            if (pointerDownRef.current === down) pointerDownRef.current = null;
+            if (!heldRef.current && !dimRef.current && down.button === 0 && rowKey) {
+              activateHit(rowKey, isToggle);
+            }
           }
         });
       }
@@ -791,18 +861,26 @@ export default function FamilyTableHost<TOptions>({
 
     const onPointerUp = (event: PointerEvent) => {
       const down = pointerDownRef.current;
-      pointerDownRef.current = null;
-      if (!down || down.cancelled || down.button !== 0 || !down.key || heldRef.current || dimRef.current) return;
-      if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > CLICK_CANCEL_PX) return;
-      const entry = navRef.current.find(item => item[0] === down.key);
-      if (down.toggle || (entry && entry[3] >= 0)) {
-        toggleTreeKey(down.key);
+      if (!down || down.cancelled || down.button !== 0 || heldRef.current || dimRef.current) {
+        pointerDownRef.current = null;
         return;
       }
-      latestRef.current.onActivate?.(down.key, entry?.[5], lastHourRef.current);
+      if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > CLICK_CANCEL_PX) {
+        down.cancelled = true;
+        pointerDownRef.current = null;
+        return;
+      }
+      if (!down.resolved) {
+        down.pendingUp = true;
+        return;
+      }
+      pointerDownRef.current = null;
+      if (!down.key) return;
+      activateHit(down.key, down.toggle);
     };
 
     const onPointerCancel = () => {
+      if (pointerDownRef.current) pointerDownRef.current.cancelled = true;
       pointerDownRef.current = null;
     };
 
@@ -872,41 +950,33 @@ export default function FamilyTableHost<TOptions>({
       node.removeEventListener('scroll', onScroll);
       extent.remove();
       surfaceRef.current = null;
+      lastExtentRef.current = { height: -1, width: -1, count: -1 };
       holdElement(frameRef.current, false);
     };
   }, [pipeline, pipe, paintMirror, refreshFocusAnchor, runtime.clock, scrollRowIntoView, toggleTreeKey, tooltipOwner]);
 
   const auditable = !!exactSources;
   useLayoutEffect(() => {
-    if (!perfLog || !auditable || !exactSources) {
-      pendingAuditIdRef.current = null;
-      return;
-    }
-    const id = nextAuditSnapshot++;
-    const snap: AuditSnapshot<TOptions> = { declaration, options, settings, expanded, exactSources };
-    const map = auditSnapshotsRef.current;
-    map.set(id, snap);
-    if (map.size > 64) map.delete(map.keys().next().value!);
-    pendingAuditIdRef.current = id;
-    if (!activeSnapshotRef.current) activeSnapshotRef.current = snap;
-  }, [auditable, declaration, options, settings, expanded, exactSources]);
-
-  useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    pipeline.audit(pipe, TABLE_AUDIT, fields => {
-      const current = fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
-      return current?.rows;
-    });
-    perfLog.reader(pipe, TABLE_AUDIT, async hour => {
-      const snap = installedSnapshotsByHourRef.current.get(hour) ?? activeSnapshotRef.current;
-      if (!snap) return null;
+    pipeline.audit(pipe, TABLE_AUDIT, fields => auditRowsOf(fields.audit));
+    perfLog.reader(pipe, TABLE_AUDIT, async (hour, auditId) => {
+      const snap = auditStoreRef.current!.require(auditId);
       const exact = await snap.exactSources(hour);
       if (!exact) return null;
       const model = snap.declaration.project(exact, hour, snap.options);
       const flatRows = resolveTableRows(model, snap.settings, snap.expanded);
-      const allLayouts = buildColumnLayouts(model.columns, snap.settings);
-      const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-      const rows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
+      const rankShown = model.rank === true;
+      const rankWidth = rankShown ? (model.rankMarkers ? 64 : 36) : 0;
+      const allLayouts = buildColumnLayouts(model.columns, snap.settings, snap.measuredWidths);
+      const protectedKeys = new Set<string>();
+      if (!model.unsorted && snap.settings.sort.column) protectedKeys.add(snap.settings.sort.column);
+      const computedLayout = layoutFamilyTable(allLayouts, Math.max(1, snap.width), snap.settings.overflow, {
+        rankShown,
+        rankWidth,
+        protectedKeys,
+      });
+      const visibleSpecs = computedLayout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
+      const rows = deriveTableAudit(flatRows, visibleSpecs, model.hour, model.empty, { rankShown, emptyKind: model.emptyKind });
       return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
     });
     return () => pipeline.audit(pipe, TABLE_AUDIT, null);
@@ -925,7 +995,7 @@ export default function FamilyTableHost<TOptions>({
         bindRef.current();
         const view = pipeline.view(pipe);
         const mirror = view?.fields?.mirror as MirrorModel | undefined;
-        if (mirror) paintMirror(mirror, true);
+        if (mirror) paintMirror(mirror);
       }
       wasPlaying = nowPlaying;
     });
@@ -1065,6 +1135,22 @@ export default function FamilyTableHost<TOptions>({
       ...col,
       width: resizing?.key === col.key ? resizing.width : (widthsState.widths[col.key] ?? (col.width || HEADER_FALLBACK_WIDTH)),
     }));
+    if (widthsState.signature) {
+      const byKey = new Map(base.map(col => [col.key, col]));
+      const visibleCols = widthsState.visible.map(key => byKey.get(key)).filter((col): col is NonNullable<typeof col> => col !== undefined);
+      if (visibleCols.length === widthsState.visible.length) {
+        const rank = meta.rankShown ? (meta.rankWidth || 36) : 0;
+        const totalWidth = rank + widthsState.moreWidth + visibleCols.reduce((sum, col) => sum + col.width, 0);
+        return {
+          columns: visibleCols,
+          hidden: [...widthsState.hidden],
+          totalWidth,
+          scrollable: widthsState.scrollable,
+          pinnedWidth: rank + (visibleCols[0]?.width ?? 0),
+          moreWidth: widthsState.moreWidth,
+        };
+      }
+    }
     const protectedKeys = new Set<string>();
     if (!meta.unsorted && settings.sort.column) protectedKeys.add(settings.sort.column);
     return layoutFamilyTable(base, Math.max(1, viewportWidth || 320), settings.overflow, {
@@ -1072,7 +1158,7 @@ export default function FamilyTableHost<TOptions>({
       rankWidth: meta.rankWidth || 36,
       protectedKeys,
     });
-  }, [activeColumns, settings, widthsState.widths, resizing, meta.unsorted, meta.rankShown, meta.rankWidth, viewportWidth]);
+  }, [activeColumns, settings, widthsState, resizing, meta.unsorted, meta.rankShown, meta.rankWidth, viewportWidth]);
 
   const headerColumns = useMemo<TableHeaderColumn[]>(() => layout.columns.map(col => {
     const spec = specMap.get(col.key);
