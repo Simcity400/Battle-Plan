@@ -124,7 +124,7 @@ export default function StabilityDrill({ client, clock, gate, source, branch, la
         formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
         tooltip={at => {
           const known = partsAt(parts.at(at), at);
-          if (!known) return fitTooltip([{ title: dayLabel(at), rows: [{ label: MEASURE_NAMES[measure], value: parts.loadedAt(at) ? 'Not recorded' : 'Loading…', tone: 'muted' }] }], viewport);
+          if (!known) return fitTooltip([{ title: dayLabel(at), rows: [{ label: MEASURE_NAMES[measure], value: gate.recorded(at, within) === null || parts.loadedAt(at) ? 'Not recorded' : 'Loading…', tone: 'muted' }] }], viewport);
           const rows: TooltipRow[] = [...known].sort((a, b) => Math.abs(percent(b.raw)) - Math.abs(percent(a.raw)))
             .map(item => ({ label: named(item.part).name, swatch: colorOf.get(item.part.id), value: formatPercent(item.raw, decimals, true), short: true }));
           rows.push({ label: 'Total', value: formatPercent(engineSum(known.map(item => item.raw)).toString(), decimals), strong: true });

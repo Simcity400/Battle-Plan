@@ -56,8 +56,8 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
   const states = series.states?.states;
   const at = useCallback((at: number): MeasureParts => partsAtStates(parts, (states ?? []).filter(state => state.tag === tag), Math.floor(at), names),
     [parts, states, tag, names]);
-  const loadedAt = useCallback((at: number) => tag !== null && parts.length > 0
-    && parts.every(part => (states ?? []).some(state => state.tag === tag && state.part === part && state.hour === Math.floor(at))), [parts, states, tag]);
+  const loadedAt = useCallback((at: number) => tag !== null && listed.data !== undefined
+    && parts.every(part => (states ?? []).some(state => state.tag === tag && state.part === part && state.hour === Math.floor(at))), [parts, states, tag, listed.data]);
   const followed = series.followed;
   const live = useMemo(() => followed && tag ? (render: (values: MeasureParts) => ReturnType<LiveDrillParts['read']>): LiveDrillParts =>
     liveFollowed(followed.store, followed.entry, entry => {

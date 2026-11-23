@@ -9,8 +9,8 @@ import { compareTags } from './tagOrder.ts';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
-import { productRequest } from './request.ts';
-import { gatedRead } from './gatedRead.tsx';
+import { productRequest } from './request.ts';
+import { gatedRead } from './gatedRead.ts';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 

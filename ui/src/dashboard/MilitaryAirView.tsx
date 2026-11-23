@@ -224,13 +224,15 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const tooltip = (row: LedgerRow, name: string) => militaryAirTooltip(row, from, family, name);
   if (!track) return <WidgetState kind="empty" message={'Load a campaign to see ' + title.toLowerCase() + '.'} />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="outside" />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} /></>;
-  if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message={air ? "Aircraft losses were not recorded." : "Bombing damage was not recorded."} /></>;
-  if (!air && selected.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={selected.reason} /></>;
+  const parentState = hour < track.branch.firstHour || hour > track.branch.lastHour ? <WidgetState kind="outside" />
+    : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+      : groupFailure && !groups.data ? null
+        : !data || grouped && !groups.data ? <WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} />
+          : !data.available ? <WidgetState kind="unavailable" message={air ? "Aircraft losses were not recorded." : "Bombing damage was not recorded."} />
+            : !air && selected.reason ? <WidgetState kind="unavailable" message={selected.reason} /> : undefined;
+  const drillShown = air ? airOpen || pinnedAir : !!drill;
+  if (parentState !== undefined && !drillShown) return <>{groupFailure}{parentState}</>;
   const open = (row: LedgerRow, dealt: boolean) => {
     if (active && airPickRef.current === airPickOwner)
       { setDrillOwner(airScope); bombingControl.show(JSON.stringify([row.tag, row.identity, dealt]), hour); }
@@ -274,7 +276,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         tooltip={item => ({ ...tooltip(item.row, item.label), countryFlag: item.countryFlag })} onSelect={(item, side) => open(item.row, side === 'right')}
         contextItems={item => [jumpItem(runtime, track.id, item.row.readHour), { label: 'Break down damage suffered', run: () => open(item.row, false) }, { label: 'Break down damage inflicted', run: () => open(item.row, true) }]} />;
   const unknown = index && ledgerDifference(index.unknown, from, hour);
-  const main = <div className="military-air-ledger">{content}
+  const main = parentState !== undefined ? parentState : <div className="military-air-ledger">{content}
     <p className="chart-line-key">Counted from {formatDateTime(from)}. {air ? AIR_LEDGER_NOTE : 'Building levels.'} {selected.rows.some(row => !row.complete) ? air ? LEDGER_GAP_NOTE : BOMBING_GAP_NOTE : ''}</p>
     {air && options.view === 'lines' && <p className="chart-line-key">Solid: enemy losses. Dashed: own losses.</p>}
     {!!index?.unknown.length && <p className="chart-line-key">Unattributed: {leftLabel.toLowerCase()} {ledgerLabel(unknown?.taken ?? 0n, family)}; {rightLabel.toLowerCase()} {ledgerLabel(unknown?.dealt ?? 0n, family)}.</p>}

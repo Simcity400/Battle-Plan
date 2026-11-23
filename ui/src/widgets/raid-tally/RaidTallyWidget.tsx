@@ -19,8 +19,9 @@ import { pausedKey, useHeadHour } from '../army-size/headHour';
 import { OPTIONS } from './definition';
 import { tallyEntries, tallyIdentities, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallySegmentAt, tallyTooltip, tallyValue } from './raidTallyData';
 import type { TallyMetric } from './raidTallyData';
-import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
-import { ReadView, readBlocked } from '../../dashboard/gatedRead.tsx';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import ReadView from '../../dashboard/ReadView';
+import { readBlocked } from '../../dashboard/gatedRead.ts';
 
 export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);

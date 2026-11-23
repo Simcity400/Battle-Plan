@@ -57,7 +57,8 @@ import './resourceBalance.css';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import { regionFollows, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import { UNRECORDED_MESSAGE } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const HOLDERS = { holders: true };
@@ -419,7 +420,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
     const shown: LineAt[] = lines.map(line => {
       const pools = values && poolsAt(values, line.resource.id);
       return { resource: line.resource, color: line.color, balance: pools ? balanceOf(pools) : null, deals: reply && values ? dealsOf(reply, line.resource.id, values) : null,
-        missing: !reply ? 'Loading…' : !isMember(within, at) ? 'Not in the group at this date' : reply.poolsMissing ?? (values ? poolsMissing(values, line.resource.id) : null) };
+        missing: !reply ? gate.recorded(at, within) === null ? UNRECORDED_MESSAGE : 'Loading…' : !isMember(within, at) ? 'Not in the group at this date' : reply.poolsMissing ?? (values ? poolsMissing(values, line.resource.id) : null) };
     });
     return overTimeTooltip(`${dayLabel(at)} · per day`, shown, data.decimals, labels.labelAt(at), viewport);
   };

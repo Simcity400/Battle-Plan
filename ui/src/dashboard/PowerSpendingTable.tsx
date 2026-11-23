@@ -31,8 +31,8 @@ import { NO_SPENDING_CATEGORIES, normalizePowerSpendingOptions, POWER_SPENDING_O
 import { formatPower, formatSpent, powerDecimals } from './powerDecimals';
 import { structureAt, structureParts, usePowerSpending } from './usePowerSpending.ts';
 import { useShownHour } from './widgetPerf.ts';
-import './powerSpending.css';
-import { ReadView } from './gatedRead.tsx';
+import './powerSpending.css';
+import ReadView from './ReadView';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly SpendingTableRow[] = [];

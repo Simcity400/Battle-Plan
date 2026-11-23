@@ -12,8 +12,8 @@ import type { PowerCurrency, SpendingSelection } from './powerSpending';
 import { useCountryGroups } from './useCountryGroups.ts';
 import { useGate } from './regionGate.ts';
 import { SPEC } from './regionTime.ts';
-import { productRequest } from './request.ts';
-import { gatedRead } from './gatedRead.tsx';
+import { productRequest } from './request.ts';
+import { gatedRead } from './gatedRead.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 

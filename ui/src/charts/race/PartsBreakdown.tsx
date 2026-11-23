@@ -149,6 +149,7 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
     const value = at?.get(item.id);
     return { id: item.id, label: item.label, value: value ?? null, color: colours.get(item.id), ...(value == null ? { text: 'Not known' } : {}) };
   }), [items, colours]);
+  const catalogued = !keyedFamily || held.data !== undefined;
   const headValues = useCallback(() => head?.values([tag]).get(tag), [head, tag]);
   const live = useMemo<LiveDrillParts | undefined>(() => {
     if (!head) return undefined;
@@ -156,13 +157,13 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
     return { read: () => {
       if (made?.version !== head.version()) {
         const now = rowsOf(headValues());
-        const sum = now.every(part => part.value !== null) ? now.reduce((total, part) => total + part.value!, 0) : null;
+        const sum = catalogued && now.every(part => part.value !== null) ? now.reduce((total, part) => total + part.value!, 0) : null;
         made = { version: head.version(), parts: { parts: now, total: sum, totalText: sum === null ? 'Not known' : format(sum) } };
       }
       shown(Math.floor(runtime.clock.getHour()) + offset);
       return made.parts;
     }, subscribe: head.subscribe };
-  }, [head, headValues, rowsOf, format, runtime.clock, offset, shown]);
+  }, [head, headValues, rowsOf, format, runtime.clock, offset, shown, catalogued]);
   useEffect(() => { if (!head) shown(values ? hour : null); }, [head, values, hour, shown]);
   const partHead = useCallback((id: string) => head ? () => head.values([tag]).get(tag)?.get(id) ?? null : null, [head, tag]);
   const atHour = rowsOf(values);

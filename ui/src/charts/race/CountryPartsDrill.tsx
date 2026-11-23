@@ -63,7 +63,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const tag = !pinned ? drill.breakdown : (pinned ? originTag ?? (widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultTag) : null);
   const boundAt = origin ?? (typeof widget.options?.drillOriginHour === 'number' ? widget.options.drillOriginHour : drillControl.hour);
   const originHour = boundAt ?? Number.NaN;
-  const missingPinnedDate = pinned && drill.breakdown == null && drillControl.outside !== null;
+  const missingPinnedDate = pinned && drillControl.outside !== null;
   useEffect(() => { if (pinned && boundAt !== null && tag && origin == null) setStoredOrigin({ owner: contextOwner, hour: boundAt, tag }); },
     [pinned, boundAt, tag, origin, contextOwner]);
   const clockHour = track ? Math.floor(playbackHour) + offset : null;
@@ -104,8 +104,8 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     : invalidSaved ? 'Saved country unavailable.'
       : saved === undefined && (hasSavedOrigin || widget.time.mode !== 'campaign') ? 'Saved country unavailable.'
         : !shownTag ? 'Country unavailable at this time.' : null;
-  const headerWanted = useMemo(() => pinned && countrySlot && headerReason === null && shownTag ? [{ tag: shownTag, hour }] : [],
-    [pinned, countrySlot, headerReason, shownTag, hour]);
+  const headerWanted = useMemo(() => pinned && countrySlot && headerReason === null && shownTag && drillControl.hour !== null ? [{ tag: shownTag, hour }] : [],
+    [pinned, countrySlot, headerReason, shownTag, hour, drillControl.hour]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && pinned && !!countrySlot);
   const header = pinned && countrySlot && createPortal(<DatedCountryChip label={headerReason === null && shownTag
     ? headerLabels.labelAt(hour)(shownTag) : null} hour={missingPinnedDate ? null : hour} reason={headerReason} />, countrySlot);

@@ -30,9 +30,10 @@ import { OPTIONS } from './definition';
 import { raidDescription, raidLogRows, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData';
 import '../../charts/log/log.css';
 import '../../dashboard/intelligence.css';
-import { productRequest } from '../../dashboard/request.ts';
-import { useCampaignGate } from '../../dashboard/regionGate';
-import { ReadView, readBlocked } from '../../dashboard/gatedRead.tsx';
+import { productRequest } from '../../dashboard/request.ts';
+import { useCampaignGate } from '../../dashboard/regionGate';
+import ReadView from '../../dashboard/ReadView';
+import { readBlocked } from '../../dashboard/gatedRead.ts';
 
 const NO_ROWS: readonly LogRow<RaidAt>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';

@@ -42,6 +42,7 @@ import './fuelBranches.css';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
+import { UNRECORDED_MESSAGE } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const UNNAMED = 'Country name unavailable';
@@ -249,7 +250,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
       const run = runAt(reached?.runs ?? [], at);
       const missing = reached?.missing.get(at);
       return { label: line.name, strong: true, swatch: line.color,
-        value: run ? percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES) : missing ? 'No share' : 'Loading…',
+        value: run ? percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES) : missing ? 'No share' : gate.recorded(at, within) === null ? UNRECORDED_MESSAGE : 'Loading…',
         detail: run ? undefined : missing, tone: run ? undefined : 'muted' as const };
     }) }], viewport);
   };

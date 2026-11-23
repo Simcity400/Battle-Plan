@@ -20,8 +20,8 @@ import { formatPower, powerDecimals } from '../../dashboard/powerDecimals';
 import { usePowerSpending } from '../../dashboard/usePowerSpending.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
-import { OPTIONS } from './definition';
-import { ReadView } from '../../dashboard/gatedRead.tsx';
+import { OPTIONS } from './definition';
+import ReadView from '../../dashboard/ReadView';
 
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];

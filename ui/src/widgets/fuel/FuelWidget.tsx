@@ -64,6 +64,7 @@ import { axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
 import { useGate } from '../../dashboard/regionGate';
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
+import { UNRECORDED_MESSAGE } from '../../dashboard/regionTime.ts';
 
 const STRIP_SHARE = 0.28;
 const DAY_HOURS = 24;
@@ -274,7 +275,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     if (single) {
       if (!isMember(membership?.get(tags[0]), at)) return fitTooltip([{ title: dayLabel(at), rows: [{ label: 'Not in the group at this date', tone: 'muted' as const }] }], viewport);
       const reply = replies?.[hoverTags.indexOf(tags[0])];
-      return fitTooltip(reply ? fuelTooltips(reply, dayLabel(at), colors, digits) : [{ title: dayLabel(at), rows: [{ label: hovered.error ? 'Could not load this day' : 'Loading…', tone: 'muted' as const }] }], viewport);
+      return fitTooltip(reply ? fuelTooltips(reply, dayLabel(at), colors, digits) : [{ title: dayLabel(at), rows: [{ label: hovered.error ? 'Could not load this day' : gate.recorded(at) === null ? UNRECORDED_MESSAGE : 'Loading…', tone: 'muted' as const }] }], viewport);
     }
     const rows: TooltipRow[] = tags.flatMap((tag): TooltipRow[] => {
       const label = hoverLabels.labelAt(at)(tag);
@@ -337,7 +338,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     hoursPerSecond: motionOf(runtime.clock.getSnapshot()), within: pickKey ? membership?.get(pickKey) ?? null : null, detailHours: DETAIL_HOURS,
     onPick: (hour: number) => { setDrillOwner(pickOwner); drillControl.pick(hour); },
     onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]) } : null;
-  const breakdown = at === null && track ? <WidgetState kind="outside" read={drillCoverage} />
+  const breakdown = at === null && track ? drillControl.gate.stage.stage === 'open' || drillControl.gate.stage.stage === 'outside' ? <WidgetState kind="outside" read={drillCoverage} /> : <GateState gate={drillControl.gate} loading="Loading country…" />
     : invalidSaved ? <WidgetState kind="unavailable" message="Choose a country again." /> : actorState ?? (track && chart && drillTag
     ? drillMeasure === 'consumption'
       ? <FuelConsumptionBreakdown runtime={runtime} gate={drillControl.gate} widget={widget} track={track} tag={drillTag} hour={drillFollows ? null : at} follows={drillFollows} digits={digits}
