@@ -40,7 +40,7 @@ const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<voi
     const act = <T,>(expression: string) => page.evaluate<T>(`window.findings.${expression}`);
     await act(`preload(${JSON.stringify(KINDS)})`);
     await run(act);
-  }, 240_000), [stubs]);
+  }, 240_000), [stubs], true);
 const scene = (value: unknown) => `mount(${JSON.stringify(value)})`;
 const pinAt = (hour: number) => ({ mode: 'pin', windows: { main: { firstOffset: hour - 100, lastOffset: hour - 100 } } });
 const NO_PIN = { mode: 'pin', windows: {} };
