@@ -34,7 +34,7 @@ in for the apps' key in a draft only.
 Environment: GITHUB_REPOSITORY, whose releases carry the installers and feeds; GH_TOKEN;
 TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD; AZURE_TENANT_ID, AZURE_CLIENT_ID,
 AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and AZURE_SIGNING_PROFILE, all or
-none, for Authenticode; LEAK_GATE_TERMS; PAUSE_NIGHTLY; OPENAI_API_KEY, for the notes' summary.
+none, for Authenticode; LEAK_GATE_TERMS; PAUSE_NIGHTLY; GROQ_API_KEY, for the notes' summary.
 """
 import argparse
 import base64
@@ -66,8 +66,8 @@ STABLE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 VERSION_LINE = re.compile(r'(?ms)^(\[workspace\.package\]\s*?\n(?:(?!\[).*\n)*?version = ")([^"]+)(")')
 MERGE = re.compile(r"^Merge pull request #(\d+) from ")
 SQUASHED = re.compile(r"\(#(\d+)\)$")
-SUMMARY_MODEL = "gpt-6.1-terra"
-SUMMARY_URL = "https://api.openai.com/v1/responses"
+SUMMARY_MODEL = "qwen/qwen3.8-27b"
+SUMMARY_URL = "https://api.groq.com/openai/v1/chat/completions"
 SUMMARY_TIMEOUT = 180
 HIGHLIGHTS = 7
 PULL_BODY_SHOWN = 300
@@ -259,13 +259,13 @@ def merged_pulls(repository, since, until):
 def read_highlights(reply, numbers):
     """The highlights in the model's reply and how many other pull requests change what users see.
     Refused unless the reply is complete and every pull request it cites is one of `numbers`."""
-    if not isinstance(reply, dict) or reply.get("status") != "completed":
-        raise Refused(f"the model's reply is {isinstance(reply, dict) and reply.get('status')}, not completed")
     try:
-        text = "".join(part.get("text") or "" for item in reply.get("output") or [] for part in item.get("content") or []
-                       if part.get("type") == "output_text").strip()
-    except (AttributeError, TypeError):
-        raise Refused("the model's reply is not a Responses API answer")
+        choice = reply["choices"][0]
+        finished, text = choice.get("finish_reason"), choice["message"]["content"]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        raise Refused("the model's reply is not a chat completion")
+    if finished != "stop" or not isinstance(text, str):
+        raise Refused(f"the model's reply ended {finished}, not complete")
     try:
         chosen = json.loads(text)
     except ValueError:
@@ -300,17 +300,18 @@ def summarize(pulls):
     when no summary is written, which the notes then say by listing the pull requests alone."""
     if not pulls:
         return [], 0
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    key = os.environ.get("GROQ_API_KEY", "").strip()
     if not key:
-        say("OPENAI_API_KEY is not set, so the notes list pull requests without a summary.")
+        say("GROQ_API_KEY is not set, so the notes list pull requests without a summary.")
         return None
     source = "\n\n".join(f"[{pull['number']}] {pull['title']}" + (f"\n{pull['body'][:PULL_BODY_SHOWN]}" if pull["body"] else "")
                          for pull in pulls)
     request = urllib.request.Request(SUMMARY_URL, method="POST", headers={
-        "Authorization": f"Bearer {key}", "Content-Type": "application/json"}, data=json.dumps({
-            "model": SUMMARY_MODEL, "reasoning": {"effort": "low"}, "instructions": SUMMARY_INSTRUCTIONS,
-            "text": {"format": {"type": "json_object"}},
-            "input": f"Choose highlights as JSON from these pull requests:\n{source}",
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "battleplan-release"}, data=json.dumps({
+            "model": SUMMARY_MODEL, "reasoning_effort": "low", "reasoning_format": "hidden",
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": SUMMARY_INSTRUCTIONS},
+                         {"role": "user", "content": f"Choose highlights as JSON from these pull requests:\n{source}"}],
         }).encode("utf-8"))
     try:
         with urllib.request.urlopen(request, timeout=SUMMARY_TIMEOUT) as answer:

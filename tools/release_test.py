@@ -403,10 +403,9 @@ class Finalize(unittest.TestCase):
             self.finalize('[workspace.package]\nversion = "1.4.3"\n', [1], moved=False)
 
 
-def model_reply(chosen, status="completed"):
+def model_reply(chosen, finished="stop"):
     text = chosen if isinstance(chosen, str) else json.dumps(chosen)
-    return {"status": status, "output": [{"type": "reasoning"},
-                                         {"type": "message", "content": [{"type": "output_text", "text": text}]}]}
+    return {"choices": [{"index": 0, "finish_reason": finished, "message": {"role": "assistant", "content": text}}]}
 
 
 class Notes(unittest.TestCase):
@@ -421,17 +420,18 @@ class Notes(unittest.TestCase):
 
     def test_a_reply_that_is_cut_short_malformed_or_cites_another_releases_pulls_writes_no_summary(self):
         cited = {"highlights": [{"label": "Feature", "detail": "Works.", "pulls": [99]}], "others": []}
-        for reply, reason in ((model_reply(cited, "incomplete"), "not completed"), (model_reply("{\"highlights\": ["), "not JSON"),
+        for reply, reason in ((model_reply(cited, "length"), "ended length"), (model_reply("{\"highlights\": ["), "not JSON"),
                               (model_reply(cited), "lacks"), (model_reply({"highlights": [], "others": [99]}), "not this release's"),
                               (model_reply({"highlights": [{"label": "", "detail": "Works.", "pulls": [1]}]}), "lacks"),
-                              ([], "not completed"), ({"status": "completed", "output": [None]}, "not a Responses API answer")):
+                              ([], "not a chat completion"), ({"choices": [None]}, "not a chat completion")):
             with self.assertRaisesRegex(release.Refused, reason):
                 release.read_highlights(reply, [1, 2])
-        with mock.patch.object(release, "urllib") as network, mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+        with mock.patch.object(release, "urllib") as network, mock.patch.dict(os.environ, {"GROQ_API_KEY": ""}):
             self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
             network.request.urlopen.assert_not_called()
         for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{")):
-            with mock.patch.object(release.urllib.request, "urlopen", mock.Mock(side_effect=failure)),                     mock.patch.dict(os.environ, {"OPENAI_API_KEY": "key"}):
+            failed = mock.Mock(side_effect=failure)
+            with mock.patch.object(release.urllib.request, "urlopen", failed), mock.patch.dict(os.environ, {"GROQ_API_KEY": "key"}):
                 self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
 
     def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
