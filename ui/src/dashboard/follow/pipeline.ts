@@ -1,6 +1,6 @@
 import { flushSync } from 'react-dom';
 import { engine } from '../../engine/frame.ts';
-import type { DashboardClient, DashboardSource, OpenedFollow } from '../client';
+import type { DashboardClient, DashboardSource, FollowOpen } from '../client';
 import type { PlaybackController, PlaybackSnapshot } from '../playback';
 import { canonical } from './canonical.ts';
 import { Page, type PageMessage, type PageSurface, type RebindChange, type WidgetView } from './page.ts';
@@ -20,7 +20,7 @@ export interface LaneWorker { postMessage(message: ToLane, transfer?: Transferab
 
 export interface PipelineHost {
   lanes: readonly LaneWorker[];
-  open(ports: readonly MessagePort[]): Promise<OpenedFollow>;
+  open(ports: readonly MessagePort[]): FollowOpen;
   channel(): { port1: MessagePort; port2: MessagePort };
   frameRate(): number;
   rate(): number;
@@ -51,9 +51,11 @@ const NO_CHANNEL = 'This connection has no channel for pushed answers';
 
 export class Pipeline {
   readonly page: Page<ImageBitmap>;
+  readonly generation: number;
   private readonly host: PipelineHost;
   private readonly clock: PlaybackController;
   private readonly client: DashboardClient;
+  private readonly abort = new AbortController();
   private readonly subs = new Map<string, SubState>();
   private readonly byId = new Map<number, SubState>();
   private readonly routes = new Map<string, RouteState>();
@@ -75,8 +77,8 @@ export class Pipeline {
   private stopClock: (() => void) | null = null;
   private rate: number;
 
-  constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost) {
-    this.clock = clock; this.client = client; this.host = host; this.rate = host.rate();
+  constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
+    this.clock = clock; this.client = client; this.host = host; this.rate = host.rate(); this.generation = generation;
     const count = host.lanes.length;
     perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
@@ -97,12 +99,15 @@ export class Pipeline {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.abort.abort();
     this.stopPublish?.(); this.stopPublish = null;
     this.stopClock?.(); this.stopClock = null;
     for (const lane of this.host.lanes) lane.onmessage = null;
     this.closeReader?.(); this.closeReader = null;
     this.host.close?.();
     for (const port of this.ports) port.close();
+    this.page.dispose();
+    perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
   }
@@ -114,13 +119,21 @@ export class Pipeline {
   }
 
   private open(): Promise<void> {
-    this.opened ??= this.host.open(this.ports).then(opened => {
-      const session = typeof opened === 'string' ? opened : opened?.session;
-      const close = typeof opened === 'object' && opened ? opened.close : undefined;
-      if (this.closed) { close?.(); return; }
-      if (close) this.closeReader = close;
-      if (typeof session === 'string') this.session = session;
-    });
+    if (!this.opened) {
+      const started = this.host.open(this.ports);
+      const ready = 'ready' in started ? started.ready : started;
+      if ('close' in started) {
+        if (this.closed) started.close();
+        else this.closeReader = started.close;
+      }
+      this.opened = ready.then(opened => {
+        const session = typeof opened === 'string' ? opened : opened?.session;
+        const close = typeof opened === 'object' && opened ? opened.close : undefined;
+        if (this.closed) { close?.(); return; }
+        if (close && !this.closeReader) this.closeReader = close;
+        if (typeof session === 'string') this.session = session;
+      });
+    }
     return this.opened;
   }
 
@@ -173,7 +186,7 @@ export class Pipeline {
       const answers = [...this.answered.get(held.id) ?? []];
       for (const [owner, answer] of answers) {
         const hour = clock(answer.hour), rows = answer.rows();
-        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name, surface, placement: held.id, owner, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
+        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name, surface, placement: held.id, owner, generation: this.generation, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
           since: hour, through: hour, eligibleHour: hour, entry: answer.entry, parts: [], drawMs: 0, ...rows ? { rows } : {},
           mode: 'picture', dim: false, reset: 0, binding: shown.binding, inspect: shown.inspect, tooltip: false });
       }
@@ -183,7 +196,7 @@ export class Pipeline {
       for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
       const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
       recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name,
-        surface, placement: held.id, owner, renderer: 'page',
+        surface, placement: held.id, owner, generation: this.generation, renderer: 'page',
         head: clock(view.target), hour, offset, ...shown.pin !== null ? { fixedHour: clock(shown.pin) } : {},
         ...view.h !== undefined ? { since: clock(view.h) } : {}, ...shown.installed ? { through: clock(shown.installed.c) } : {},
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
@@ -372,7 +385,7 @@ export class Pipeline {
     this.subs.delete(sub.key); this.byId.delete(id);
     sub.released = true;
     this.host.lanes[sub.lane]!.postMessage({ type: 'unfollow', sub: id });
-    if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route).catch(() => {});
+    if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route, new AbortController().signal).catch(() => {});
     if (!this.holds(sub.route)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
   }
 
@@ -457,10 +470,10 @@ export class Pipeline {
     if (held) this.host.lanes[held.lane]!.postMessage({ type: 'exact', sub, hour, data, refused });
   }
 
-  private ask(product: 'follow' | 'unfollow' | 'follow-clock', params: Record<string, unknown>, route: RouteState) {
+  private ask(product: 'follow' | 'unfollow' | 'follow-clock', params: Record<string, unknown>, route: RouteState, signal = this.abort.signal) {
     const sessioned = this.session ? { ...params, session: this.session } : params;
     return this.client.product(productRequest({ sourceId: route.source.id, revision: route.source.revision, product, params: sessioned as GatedParams }),
-      new AbortController().signal).then(reply => reply.data);
+      signal).then(reply => reply.data);
   }
 
   private register(sub: SubState, query: FollowQuery, product?: string) {
@@ -472,7 +485,7 @@ export class Pipeline {
       : this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes }, sub.route))
       .then(reply => {
         const data = reply as { available?: boolean; reason?: string; route?: number } | null;
-        if (this.closed || sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route).catch(() => {}); return; }
+        if (this.closed || sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {}); return; }
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
         const first = !this.holds(sub.route), moved = sub.route.native !== null && sub.route.native !== data.route;
         if (moved) sub.route.page = this.nextRoute++;
@@ -534,8 +547,10 @@ export class Pipeline {
           reason = failure.message;
         }
         if (!this.closed && reason !== null && this.holds(route) && route.page === page) {
-          route.error = { seek: this.page.seek, failure: failure! };
-          if (this.page.fail(page, command, reason)) this.flush();
+          if (this.page.fail(page, command, reason)) {
+            route.error = { seek: this.page.seek, failure: failure! };
+            this.flush();
+          }
         }
       });
     }
@@ -551,17 +566,22 @@ interface PipelineSlot {
 
 const pipelines = new WeakMap<PlaybackController, WeakMap<DashboardClient, PipelineSlot>>();
 const byClock = new WeakMap<PlaybackController, PipelineSlot>();
+const clockGeneration = new WeakMap<PlaybackController, number>();
 const clockListeners = new WeakMap<PlaybackController, Set<() => void>>();
 const ownerOf = new WeakMap<Pipeline, { clock: PlaybackController; slot: PipelineSlot }>();
 
 export const pipelineOf = (clock: PlaybackController) => byClock.get(clock)?.pipeline ?? null;
+export const pipelineGeneration = (clock: PlaybackController) => clockGeneration.get(clock) ?? 1;
 
 export function pipelineFor(clock: PlaybackController, client: DashboardClient, host: () => PipelineHost): Pipeline {
   let byClient = pipelines.get(clock);
   if (!byClient) pipelines.set(clock, byClient = new WeakMap());
   let slot = byClient.get(client);
   if (!slot) {
-    const pipeline = new Pipeline(clock, client, host());
+    const existing = byClock.get(clock);
+    const generation = existing ? (clockGeneration.get(clock) ?? 1) + 1 : (clockGeneration.get(clock) ?? 1);
+    clockGeneration.set(clock, generation);
+    const pipeline = new Pipeline(clock, client, host(), generation);
     slot = { pipeline, client, host, listeners: new Set() };
     byClient.set(client, slot);
     ownerOf.set(pipeline, { clock, slot });
@@ -590,7 +610,9 @@ export function restartPipeline(pipeline: Pipeline): Pipeline | null {
   const { clock, slot } = owned;
   if (slot.pipeline !== pipeline) return slot.pipeline;
   pipeline.close();
-  const next = new Pipeline(clock, slot.client, slot.host());
+  const generation = (clockGeneration.get(clock) ?? 0) + 1;
+  clockGeneration.set(clock, generation);
+  const next = new Pipeline(clock, slot.client, slot.host(), generation);
   slot.pipeline = next;
   byClock.set(clock, slot);
   ownerOf.set(next, { clock, slot });

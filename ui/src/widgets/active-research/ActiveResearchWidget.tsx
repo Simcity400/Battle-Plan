@@ -17,7 +17,7 @@ import { historyTokens, useResearchReply, useResearchSlots } from '../research/u
 import { useTechnologyArtwork } from '../research/useTechnologyArtwork';
 import { activeSlots, isOpenedResearch, openedResearch } from './activeResearchData';
 import type { ActiveSlot, OpenedResearch } from './activeResearchData';
-import ResearchWindow from './ResearchWindow';
+import ResearchWindow, { type ResearchWindowStatus } from './ResearchWindow';
 import './activeResearch.css';
 
 const NO_WARNINGS: string[] = [];
@@ -41,18 +41,23 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const tips = useOpenTooltip(owner, now.live.subscribe);
   const untip = tips.hide;
   const [opened, setOpened] = useState<{ on: string; research: OpenedResearch; x: number; y: number } | null>(null);
-  const lastReply = useRef(reply);
-  if (reply) lastReply.current = reply;
-  const popupReply = reply ?? lastReply.current;
   const describe = (research: OpenedResearch) => ({ icon: artwork.get(research.token)?.icon ?? undefined,
     name: contentTitle(research.firstObservedHour === null ? research.definition?.name : researchArt(artwork, research.token, research.databaseIndex)?.name,
       research.token, 'Technology name unavailable') });
   const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');
   const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
-  const popup = shown && track && tag && data && popupReply ? <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={popupReply}
+  const failure = history.error ?? now.error;
+  const retryFailure = history.error ? history.retry : now.retry;
+  const popupStatus: ResearchWindowStatus = now.read === 'off'
+    ? { kind: 'outside' }
+    : failure && !reply
+      ? { kind: 'error', failure, onRetry: retryFailure }
+      : !reply
+        ? { kind: 'loading' }
+        : { kind: 'ready', reply };
+  const popup = shown && track && tag && data ? <ResearchWindow key={JSON.stringify(shown.research)} runtime={runtime} widget={widget} track={track} tag={tag} data={data} status={popupStatus}
     opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
     shown={describe(shown.research)} feed={now.feed} installed={now.inspected} subscribe={now.live.subscribe} active={active} anchor={shown} onClose={() => setOpened(null)} /> : null;
-  const failure = history.error ?? now.error;
   let body: ReactNode;
   if (!track || !tag) {
     body = <WidgetState kind="nothing-chosen" prompt="Load a campaign and choose a country to see its research." />;

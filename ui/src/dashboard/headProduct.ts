@@ -156,14 +156,14 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
     return () => pipeline.answer(pipe, owner, null);
   }, [pipeline, pipe, owner, pinned, data, at, panelName, auditable]);
   useLayoutEffect(() => {
-    if (!perfLog || pipe === null || !pinned || !auditable) return;
-    perfLog.reader(pipe, owner, async hour => {
+    if (!perfLog || !pipeline || pipe === null || !pinned || !auditable) return;
+    return perfLog.reader(pipe, owner, async hour => {
       const read = exactNow.current;
       if (!read) return null;
       const raw = await read(hour);
       return { values: new Map(panelAuditRows(panelName, raw, exactLive(raw)).map(row => [row.key, row.value])) };
-    });
-  }, [pipe, owner, pinned, panelName, auditable]);
+    }, pipeline.generation);
+  }, [pipeline, pipe, owner, pinned, panelName, auditable]);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
     let texted = false;
@@ -173,22 +173,26 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
       if (texts) return [...texts].map(([key, value]) => ({ row: key, key, value }));
       return panel?.data === undefined ? undefined : panelAuditRows(panelName, panel.data, fields[`live:${sub}`] as ReadonlyMap<string, unknown> | null | undefined);
     });
-    perfLog.reader(pipe, sub, async hour => {
+    const stopReader = perfLog.reader(pipe, sub, async hour => {
       const read = exactNow.current;
       if (!read) return null;
       const raw = await read(hour), live = exactLive(raw);
       const rows = texted ? [...panelTexts(panelName, raw, live, hour) ?? []].map(([key, value]) => ({ row: key, key, value })) : panelAuditRows(panelName, raw, live);
       return { values: new Map(rows.map(row => [row.key, row.value])) };
-    });
-    return () => pipeline.audit(pipe, sub, null);
+    }, pipeline.generation);
+    return () => { stopReader(); pipeline.audit(pipe, sub, null); };
   }, [pipeline, pipe, sub, panelName, auditable]);
   useRecordedRows(panelName, pushed && data !== undefined && at !== null && exactRead ? {
     hour: at, rows: () => recordedPanelRows(panelName, data), exact: async () => recordedPanelRows(panelName, await exactRead(at)),
   } : undefined, pipe ?? undefined);
+  const followRetryable = following && (failedNamed !== undefined || (fromPanel.error !== undefined && !(fromPanel.error instanceof RefusedError)));
   const retry = useCallback(() => {
-    if (following && pipeline) restartPipeline(pipeline);
-    else asked.retry();
-  }, [following, pipeline, asked.retry]);
+    if (following) {
+      if (followRetryable && pipeline) restartPipeline(pipeline);
+      return;
+    }
+    asked.retry();
+  }, [following, followRetryable, pipeline, asked.retry]);
   const shownThrough = () => outside ? null : following ? (pipe === null || !pipeline ? null : pipeline.view(pipe)?.through ?? null) : data === undefined ? null : at;
   return {
     data, error, retry, root, hour, live: shownLive, ...coverageOf(gate.outside),

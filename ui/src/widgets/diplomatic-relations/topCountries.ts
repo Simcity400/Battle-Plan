@@ -61,6 +61,9 @@ export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, '
     : replyData ? replyTopTags(replyData) : null, [followed, followedText, replyData]);
   const unavailable = asked && columns && !rank ? 'No measure to rank the top countries by is in this recording.'
     : followed && refused ? `The top countries are not followed here: ${refused}` : null;
-  const retry = useCallback(() => { registry.retry(); if (followed && ranking.error) ranking.retry(); else reply.retry(); }, [registry.retry, followed, ranking.error, ranking.retry, reply.retry]);
+  const retry = useCallback(() => {
+    if (registry.error) registry.retry();
+    if (followed) { if (ranking.error) ranking.retry(); } else if (reply.error) reply.retry();
+  }, [registry.error, registry.retry, followed, ranking.error, ranking.retry, reply.error, reply.retry]);
   return { tags: asked ? tags : null, unavailable, error: asked ? registry.error ?? (followed ? ranking.error : reply.error) : undefined, retry };
 }

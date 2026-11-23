@@ -104,7 +104,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const stateError = stateRead.errorKey === JSON.stringify(asked) ? stateRead.error : undefined;
   const tileError = none.error ?? strained.error ?? held.error ?? total.error;
   const followErr = following ? followFailure(...followed) : null;
-  const retryAll = () => { followErr?.retry(); retry(); };
+  const retryAll = () => { if (followErr) followErr.retry(); else retry(); };
   const error = useHeldFailure(followErr?.error ?? (failure?.owner === owner ? failure.error : undefined) ?? stateError ?? (tileError ? asFailure(tileError) : undefined),
     states !== undefined || drawn, retryAll);
   return { refused: following ? followRefusal(...followed) : null, enabled, owner, drawn, shares, liveShares, sharesOf: (tag: string) => shares.get(tag) ?? NO_RUNS, missing, divisions, at, onSummaryView, onNavigateHour,

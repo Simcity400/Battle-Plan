@@ -26,6 +26,7 @@ import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { FollowedCard, FollowedWidgetKey } from './follow/store.ts';
+import { usePipelineGeneration } from './follow/useFollowed.ts';
 import { WidgetFrames } from './widgetClock';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
@@ -347,6 +348,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, hasCountryOpener, captionSlot, showTime, hasTimeOpener, definition?.skeleton, reportState, announce, clearAnnouncement, setDynamicViewSwitch, customSkeleton, setSkeleton]);
 
   const drawnHere = !prepared || definition?.preview !== false;
+  const pipelineGen = usePipelineGeneration(prepared ? null : runtime.clock);
 
   return <article ref={attach} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
     {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'data-fixed-hour': fixedAt === undefined ? undefined : fixedAt - campaignTrack!.axisOffset, 'aria-label': widget.title })}>
@@ -383,7 +385,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       <div ref={contentRef} className="dash-widget-content">
         <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
           {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
-            <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
+            <Body key={pipelineGen} widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
           </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
         </div>
         {widget.kind !== 'map' && readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}

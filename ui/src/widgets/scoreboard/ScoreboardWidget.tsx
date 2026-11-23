@@ -291,7 +291,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (coverage.outside) return <WidgetState kind="outside" read={coverage} />;
     if (followedHead && refused) return <WidgetState kind="unavailable" technical={refused} />;
     const followError = followedHead ? ranking.error ?? columnsFollowed.error : undefined;
-    if (followError) return <WidgetState kind="error" failure={followError} onRetry={() => { ranking.retry(); columnsFollowed.retry(); }} />;
+    if (followError) return <WidgetState kind="error" failure={followError} onRetry={() => { if (ranking.error) ranking.retry(); else if (columnsFollowed.error) columnsFollowed.retry(); }} />;
     if (!window && !followedHead) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (registryResult.error) return <WidgetState kind="error" failure={registryResult.error} onRetry={registryResult.retry} />;
     if (result.error && !followedHead) return <WidgetState kind="error" failure={result.error} onRetry={result.retry} />;
@@ -308,7 +308,8 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (top != null && !rank) return <WidgetState kind="unavailable" message="No measure to rank the top countries by is in this recording." />;
     if (followedHead && (ranking.outside || columnsFollowed.outside)) return <WidgetState kind="outside" />;
     if (followedHead && !families.length) return <WidgetState kind="unavailable" message={shown.map(column => column.reason).filter(Boolean).join(' ') || 'No selected column is followed in this recording.'} />;
-    if (followedHead ? top != null && !rankEntry?.answer : !reply) return <WidgetState kind="loading" label="Loading scoreboard…" />;
+    const columnsWaiting = followedHead && columnQueries.some((query, at) => query !== null && !columnsFollowed.entries[at]?.answer);
+    if (followedHead ? (top != null && !rankEntry?.answer) || columnsWaiting : !reply) return <WidgetState kind="loading" label="Loading scoreboard…" />;
     if (followedHead && top != null && rankEntry?.answer?.kind === 'notRecorded') return <WidgetState kind="unavailable" message={rankEntry.answer.reason} />;
     if (reply?.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
     if (!rows.length) return <WidgetState kind="unavailable" message="No countries available for this selection." />;

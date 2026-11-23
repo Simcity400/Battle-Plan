@@ -515,3 +515,132 @@ test('derived failure on a shared widget points at the sibling subscription carr
       'followFailure picks the subscription carrying the ShownError cause');
   } finally { shared.close(); }
 });
+
+test('close aborts in-flight follow requests, terminates a pending reader immediately, and disposes page bitmaps and widgets', async () => {
+  let readerClosed = false;
+  let resolveOpen!: () => void;
+  const openPending = new Promise<void>(resolve => { resolveOpen = resolve; });
+  const signals = new Map<string, AbortSignal[]>();
+  const clock = new (await import('../playback.ts')).PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 100 });
+  clock.seek(10);
+  const { Pipeline } = await import('./pipeline.ts');
+  const client = {
+    available: true,
+    openFollow: () => ({
+      ready: openPending.then(() => 'page1:1'),
+      close: () => { readerClosed = true; },
+    }),
+    product: (req: { product: string }, signal: AbortSignal) => {
+      const list = signals.get(req.product) ?? [];
+      list.push(signal);
+      signals.set(req.product, list);
+      return new Promise(() => {});
+    },
+  } as never;
+  const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
+  const pendingPipe = new Pipeline(clock, client, {
+    lanes: [{ onmessage: null, postMessage() {} }],
+    open: ports => (client as { openFollow(p: readonly MessagePort[]): unknown }).openFollow(ports) as never,
+    channel: () => new MessageChannel(),
+    frameRate: () => 60,
+    rate: () => 1,
+  });
+  const wPending = pendingPipe.acquire('p|0', { offset: 0, pin: null });
+  pendingPipe.subscribe(wPending, {}, source, '1', 0, { product: 'series-state' }, 'followed');
+  assert.equal(readerClosed, false);
+  pendingPipe.close();
+  assert.equal(readerClosed, true, 'closing while open is pending terminates the reader handle immediately');
+  resolveOpen();
+
+  const closedBitmaps: number[] = [];
+  const makeBitmap = (tag: number) => ({ width: 1, height: 1, close() { closedBitmaps.push(tag); } }) as unknown as ImageBitmap;
+  const env = managedInProcess();
+  try {
+    const p = env.pipeline;
+    const w = p.acquire('disp|0', { offset: 0, pin: null });
+    p.page.offer({ lane: 0, serial: 1, entries: [{ widget: w, id: 1, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 10, c: 10, lo: 10, hi: 10, mode: 'picture', surfaces: [makeBitmap(1)], content: {}, fields: {}, ms: 0 }] });
+    p.page.offer({ lane: 0, serial: 2, entries: [{ widget: w, id: 2, binding: 1, gen: { seek: p.page.seek, reset: 0 }, follows: true, h: 20, c: 20, lo: 20, hi: 20, mode: 'picture', surfaces: [makeBitmap(2)], content: {}, fields: {}, ms: 0 }] });
+    p.close();
+    assert.deepEqual(closedBitmaps.sort((a, b) => a - b), [1, 2], 'close disposes Page and closes queued and early bitmaps');
+    assert.equal(p.page.widgets.size, 0, 'close clears Page widgets');
+  } finally { env.close(); }
+
+  let releaseFollow!: () => void;
+  const followGate = new Promise<void>(resolve => { releaseFollow = resolve; });
+  let notifyFollow!: () => void;
+  const followStarted = new Promise<void>(resolve => { notifyFollow = resolve; });
+  let notifyUnfollow!: () => void;
+  const unfollowStarted = new Promise<void>(resolve => { notifyUnfollow = resolve; });
+  const followSignals: AbortSignal[] = [];
+  const unfollowSignals: AbortSignal[] = [];
+  const abortClient = {
+    available: true,
+    openFollow: async (ports: readonly MessagePort[]) => {
+      for (const p of ports) p.close();
+      return 'page1:2';
+    },
+    product: async (req: { product: string }, signal: AbortSignal) => {
+      if (req.product === 'follow') { followSignals.push(signal); notifyFollow(); await followGate; return { data: { available: true, route: NATIVE } }; }
+      if (req.product === 'unfollow') { unfollowSignals.push(signal); notifyUnfollow(); return { data: { available: true } }; }
+      return { data: { available: true } };
+    },
+  } as never;
+  const abortPipe = new Pipeline(clock, abortClient, {
+    lanes: [{ onmessage: null, postMessage() {} }],
+    open: ports => (abortClient as { openFollow(p: readonly MessagePort[]): Promise<string> }).openFollow(ports),
+    channel: () => new MessageChannel(),
+    frameRate: () => 60,
+    rate: () => 1,
+  });
+  const wAbort = abortPipe.acquire('a|0', { offset: 0, pin: null });
+  abortPipe.subscribe(wAbort, {}, source, '1', 0, { product: 'series-state' }, 'followed');
+  await followStarted;
+  assert.equal(followSignals.length, 1);
+  assert.equal(followSignals[0]!.aborted, false);
+  abortPipe.close();
+  assert.equal(followSignals[0]!.aborted, true, 'close aborts in-flight follow requests');
+  releaseFollow();
+  await unfollowStarted;
+  assert.equal(unfollowSignals.length, 1);
+  assert.equal(unfollowSignals[0]!.aborted, false, 'session unfollow cleanup stays independent of pipeline abort');
+});
+
+test('a superseded follow-clock rejection never overwrites a route failure cause accepted for a later command', async () => {
+  let rejectOldClock!: (err: unknown) => void;
+  let clockCall = 0;
+  let notifyFirstClock!: () => void;
+  const firstClockStarted = new Promise<void>(resolve => { notifyFirstClock = resolve; });
+  const env = managedInProcess({
+    gate: product => {
+      if (product === 'follow-clock') {
+        clockCall++;
+        if (clockCall === 1) {
+          notifyFirstClock();
+          return new Promise<void>((_resolve, reject) => { rejectOldClock = reject; });
+        }
+      }
+      return undefined;
+    },
+    followClock: () => ({ available: true }),
+  });
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const w = p.acquire('r6|0', { offset: 0, pin: null });
+    const s = p.subscribe(w, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await firstClockStarted;
+    const secondClock = env.nextEvent('follow-clock');
+    env.clock.seek(20);
+    rejectOldClock(new ShownError('Superseded clock error.', 'old clock 504'));
+    await secondClock;
+    assert.equal(p.status(s).error, undefined, 'superseded clock rejection must not write route.error for a later command');
+    env.fail('Current stream failed');
+    await env.waitView(p, w, v => v?.mode === 'failed');
+    const entry = installedEntry(p, w, s);
+    assert.equal(entry.status, 'failed');
+    assert.equal(entry.error?.message, 'Current stream failed', 'superseded clock rejection did not overwrite the current failure');
+  } finally {
+    env.close();
+  }
+});

@@ -6,7 +6,9 @@ import type { RaceItem } from './race';
 import type { PlaybackController } from '../../dashboard/playback';
 import type { ArsenalModel, RaceInspection } from '../../draw/arsenal';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
-import { useFollowedWidget, usePipelineOf } from '../../dashboard/follow/useFollowed.ts';
+import { pipelineOf } from '../../dashboard/follow/pipeline.ts';
+import { pageClock } from '../../dashboard/widgetClock.ts';
+import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { validateNuclearArsenal, arsenalNotice, arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
@@ -22,7 +24,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   const description = useRef<HTMLParagraphElement>(null), latest = useRef(props), update = useRef<() => void>(undefined);
   const owner = useId(), widgetKey = useWidgetKey();
   latest.current = props;
-  const pipeline = usePipelineOf(props.clock);
+  const pipeline = pipelineOf(pageClock(props.clock));
   const pinned = props.model.follow === undefined && props.model.fixed !== undefined ? props.model.fixed + props.model.offset : null;
   const pipe = useFollowedWidget(pipeline, pipeline && props.active ? `${widgetKey}|${props.model.offset}` : null, { offset: props.model.offset, pin: pinned });
   useLayoutEffect(() => {
@@ -127,7 +129,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
     pipeline.audit(pipe, RACE_AUDIT, fields => fields.audit as readonly { row: string; key: string; value?: string }[] | undefined);
-    perfLog.reader(pipe, RACE_AUDIT, async hour => {
+    const stopReader = perfLog.reader(pipe, RACE_AUDIT, async hour => {
       const read = latest.current.exactRead, model = latest.current.model;
       if (!read) return null;
       const reply = validateNuclearArsenal(await read(hour)), values = new Map<string, string>();
@@ -138,8 +140,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       }
       if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
       return { values, ranked: true };
-    });
-    return () => pipeline.audit(pipe, RACE_AUDIT, null);
+    }, pipeline.generation);
+    return () => { stopReader(); pipeline.audit(pipe, RACE_AUDIT, null); };
   }, [pipeline, pipe, auditable]);
   return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>

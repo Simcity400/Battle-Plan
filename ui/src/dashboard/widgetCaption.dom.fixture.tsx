@@ -21,7 +21,11 @@ import { useHeadProduct } from './headProduct.ts';
 import { useGate } from './regionGate.ts';
 import { SPEC } from './regionTime.ts';
 import { classifyFailure, ShownError } from './queryError.ts';
+import { useProduct } from './products.ts';
+import { productRequest } from './request.ts';
 import ActiveResearchWidget from '../widgets/active-research/ActiveResearchWidget.tsx';
+import ScoreboardWidget from '../widgets/scoreboard/ScoreboardWidget.tsx';
+import FactionTotalsView from '../charts/race/FactionTotalsView.tsx';
 
 declare global { interface Window { captionLayout: unknown } }
 
@@ -156,6 +160,42 @@ function HeadRetryProbeBody({ widget, runtime, active }: WidgetProps) {
   return <WidgetState kind="loading" label="Loading research…" />;
 }
 
+let nextRemountToken = 0;
+const remountProbeState: { token: number; retry: (() => void) | null } = { token: 0, retry: null };
+function RemountProbeBody({ widget, runtime, active }: WidgetProps) {
+  const token = useRef(0);
+  if (!token.current) token.current = ++nextRemountToken;
+  remountProbeState.token = token.current;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const head = useHeadProduct<{ ok: boolean }, 'research-slots'>(runtime, gate, 'research-slots', gate.track ? { country: 'GER' } as never : null, {
+    active,
+    validate: value => value as { ok: boolean },
+  });
+  remountProbeState.retry = head.retry;
+  if (head.error) return <WidgetState kind="error" what="probe" failure={head.error} onRetry={head.retry} />;
+  return <WidgetState kind="loading" label="Loading probe…" />;
+}
+
+const siblingRetryState: { retry: (() => void) | null } = { retry: null };
+function SiblingRetryProbeBody({ widget, runtime, active }: WidgetProps) {
+  const gate = useGate(runtime, widget, SPEC, active);
+  const track = gate.track;
+  const catalogue = useProduct<{ ok: boolean }>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-catalogue', params: { branchId: track.branch.id, holders: [{ country: 'GER' }], included: [] } }) : null, active, v => v as { ok: boolean });
+  const at = useHeadProduct<{ ok: boolean }, 'equipment-stockpile-at'>(runtime, gate, 'equipment-stockpile-at', track ? { country: 'GER' } as never : null, {
+    active,
+    validate: v => v as { ok: boolean },
+  });
+  const retryAll = () => { catalogue.retry(); at.retry(); };
+  siblingRetryState.retry = retryAll;
+  const err = catalogue.error ?? at.error;
+  if (err) return <WidgetState kind="error" what="stockpile" failure={err} onRetry={retryAll} />;
+  return <div className="sibling-retry-ok">Ready</div>;
+}
+
+function FactionRestartProbeBody(props: WidgetProps) {
+  return <FactionTotalsView {...props} options={props.widget.options ?? {}} kind="country-factories" measure="total" label="Factions" measureLabel="Factories" format={v => String(v)} />;
+}
+
 registerWidgets([{
   kind: 'caption-layout-test',
   version: 1,
@@ -268,6 +308,74 @@ registerWidgets([{
   defaultSize: { w: 6, h: 6 },
   playsBackDated: true,
   render: HeadRetryProbeBody,
+}, {
+  kind: 'remount-probe-test',
+  version: 1,
+  title: 'Remount probe',
+  icon: 'grid',
+  description: 'Body remount on pipeline restart test.',
+  data: true,
+  history: true,
+  countrySelection: false,
+  defaultCountries: { kind: 'all' },
+  timeModes: ['follow'],
+  defaultTime: 'follow',
+  scope: 'history',
+  minSize: { w: 2, h: 2 },
+  defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
+  render: RemountProbeBody,
+}, {
+  kind: 'scoreboard-restart-test',
+  version: 1,
+  title: 'Scoreboard',
+  icon: 'grid',
+  description: 'Scoreboard restart test.',
+  data: true,
+  history: true,
+  countrySelection: true,
+  defaultCountries: { kind: 'tags', tags: ['GER'] },
+  timeModes: ['follow'],
+  defaultTime: 'follow',
+  scope: 'history',
+  minSize: { w: 2, h: 2 },
+  defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
+  render: ScoreboardWidget,
+}, {
+  kind: 'faction-restart-test',
+  version: 1,
+  title: 'Factions',
+  icon: 'shield',
+  description: 'Faction totals restart test.',
+  data: true,
+  history: true,
+  countrySelection: true,
+  defaultCountries: { kind: 'factions', count: 5, membership: 'end' },
+  timeModes: ['follow'],
+  defaultTime: 'follow',
+  scope: 'history',
+  minSize: { w: 2, h: 2 },
+  defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
+  render: FactionRestartProbeBody,
+}, {
+  kind: 'sibling-retry-test',
+  version: 1,
+  title: 'Sibling retry',
+  icon: 'grid',
+  description: 'Healthy followed sibling retry test.',
+  data: true,
+  history: true,
+  countrySelection: false,
+  defaultCountries: { kind: 'all' },
+  timeModes: ['follow'],
+  defaultTime: 'follow',
+  scope: 'history',
+  minSize: { w: 2, h: 2 },
+  defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
+  render: SiblingRetryProbeBody,
 }]);
 
 const branch = { id: 'b1', sessionId: 'b1', firstHour: 43800000, lastHour: 43800200, main: true, fork: null, joins: [], sampleBoundary: '', gaps: [] };
@@ -489,12 +597,16 @@ window.captionLayout = {
     await settle();
     await settle();
     const titleTabIndexAfterPlayResize = header.querySelector<HTMLElement>('h2')?.tabIndex ?? -1;
+    host.style.width = '520px';
+    await settle();
+    await settle();
+    const titleTabIndexAfterStageUnclip = header.querySelector<HTMLElement>('h2')?.tabIndex ?? -1;
     clock.setPlaying(false);
     root.unmount();
     return {
       unloadedOscillations, triggerWidth, loadedStage, subjectCompact,
       stageBeforePlay, stageAfterContentGrowWhilePlaying, stageAfterPauseFlush,
-      wideStage, stageAfterResizeWhilePlaying, titleTabIndexAfterPlayResize,
+      wideStage, stageAfterResizeWhilePlaying, titleTabIndexAfterPlayResize, titleTabIndexAfterStageUnclip,
     };
   },
 
@@ -614,6 +726,8 @@ window.captionLayout = {
     let followCalls = 0;
     let openCalls = 0;
     let releaseRetryFollow: (() => void) | null = null;
+    let notifySecondFollow: (() => void) | null = null;
+    const secondFollowStarted = new Promise<void>(resolve => { notifySecondFollow = resolve; });
     const mockClient = {
       available: true,
       setMapViews: async () => {},
@@ -621,12 +735,13 @@ window.captionLayout = {
       openFollow: async (ports: readonly MessagePort[]) => {
         openCalls++;
         const owned = structuredClone([...ports], { transfer: [...ports] });
-        return { session: `session-head-retry-${openCalls}`, close: () => { for (const p of owned) p.close(); } };
+        return { session: `page-head-retry:${openCalls}`, close: () => { for (const p of owned) p.close(); } };
       },
       product: async (req: { product: string }) => {
         if (req.product === 'follow') {
           followCalls++;
           if (followCalls === 1) throw new ShownError('Desktop panel channel busy.', 'panel follow 503');
+          notifySecondFollow?.();
           await new Promise<void>(resolve => { releaseRetryFollow = resolve; });
           return { data: { available: true, route: 7 } };
         }
@@ -652,10 +767,10 @@ window.captionLayout = {
       const firstError = classifyFailure(headRetryState.error as never);
       const callsBeforeRetry = followCalls;
       (headRetryState.retry as (() => void) | null)?.();
+      await secondFollowStarted;
       await settle();
       const errorWhileInFlight = !!host.querySelector('[data-state="error"]');
       const loadingWhileInFlight = !!host.querySelector('[data-state="loading"]');
-      for (let i = 0; i < 60 && followCalls < 2; i++) await settle();
       (releaseRetryFollow as (() => void) | null)?.();
       await settle();
       const callsAfterRetry = followCalls;
@@ -674,6 +789,9 @@ window.captionLayout = {
     host.style.height = '400px';
     document.body.appendChild(host);
     const clock = makeClock();
+    let releaseHour150: (() => void) | null = null;
+    let notifyHour150Started: (() => void) | null = null;
+    const hour150Started = new Promise<void>(resolve => { notifyHour150Started = resolve; });
     const mockClient = {
       available: true,
       setMapViews: async () => {},
@@ -705,6 +823,13 @@ window.captionLayout = {
         }
         if (req.product === 'research-slots') {
           const hour = Number(req.params.hour ?? 43800100);
+          if (hour === 43800150) {
+            notifyHour150Started?.();
+            await new Promise<void>(resolve => { releaseHour150 = resolve; });
+          }
+          if (hour === 43800160) {
+            throw new ShownError('Research slot read failed.', 'slots 503');
+          }
           const slots = hour <= 43800110
             ? [{
                 index: 0,
@@ -722,6 +847,9 @@ window.captionLayout = {
             sourceId: req.sourceId, revision: req.revision, product: req.product,
             data: { tag: 'GER', readHour: hour, slots, missing: null, warnings: [], grants: { nextId: null, unavailable: null, grants: [] } },
           };
+        }
+        if (req.product === 'technology-effects') {
+          return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { hour: Number(req.params.hour ?? 43800100), runs: [], refusals: {}, unavailable: null, warnings: [] } };
         }
         if (req.product === 'research-breakdown') {
           return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { parts: [] } };
@@ -743,21 +871,215 @@ window.captionLayout = {
       const panelBefore = await waitFor(() => document.querySelector<HTMLElement>('.research-window'), host);
       await settle();
       const openBeforeEmpty = !!panelBefore;
-      panelBefore.style.left = '240px';
-      panelBefore.style.top = '180px';
+      panelBefore.style.left = '120px';
+      panelBefore.style.top = '48px';
       const closeBtn = panelBefore.querySelector<HTMLButtonElement>('.floating-panel-close')!;
       closeBtn.focus();
       const leftBefore = panelBefore.offsetLeft;
       const topBefore = panelBefore.offsetTop;
       root.render(createElement(ActiveResearchWidget, { widget: makeWidget(150), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
+      await hour150Started;
+      await settle();
+      const pendingShowsLoading = !!panelBefore.querySelector('.dossier > [data-state="loading"]');
+      const pendingShowsGoneVerdict = !!panelBefore.querySelector('.dossier > .dossier-missing');
+      (releaseHour150 as (() => void) | null)?.();
       await waitFor(() => host.querySelector('[data-state="empty"]'), host);
       await settle();
       const panelAfter = document.querySelector<HTMLElement>('.research-window');
       const openAfterEmpty = !!panelAfter;
       const samePanelNode = panelAfter === panelBefore;
-      const positionKept = !!panelAfter && panelAfter.offsetLeft === leftBefore && panelAfter.offsetTop === topBefore;
+      const positionBefore = { left: leftBefore, top: topBefore };
+      const positionAfter = panelAfter ? { left: panelAfter.offsetLeft, top: panelAfter.offsetTop } : null;
       const focusKept = document.activeElement === closeBtn;
-      return { openBeforeEmpty, openAfterEmpty, samePanelNode, positionKept, focusKept };
+      root.render(createElement(ActiveResearchWidget, { widget: makeWidget(160), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
+      await waitFor(() => panelBefore.querySelector('.dossier > [data-state="error"]'), host);
+      await settle();
+      const failedShowsError = !!panelBefore.querySelector('.dossier > [data-state="error"]');
+      const failedShowsGoneVerdict = !!panelBefore.querySelector('.dossier > .dossier-missing');
+      return { openBeforeEmpty, openAfterEmpty, samePanelNode, positionBefore, positionAfter, focusKept, pendingShowsLoading, pendingShowsGoneVerdict, failedShowsError, failedShowsGoneVerdict };
+    } finally {
+      (releaseHour150 as (() => void) | null)?.();
+      root.unmount();
+    }
+  },
+
+  async testDashboardRestartRemount() {
+    nextRemountToken = 0;
+    remountProbeState.token = 0;
+    remountProbeState.retry = null;
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.className = 'dash-grid-scroll';
+    host.style.width = '1280px';
+    host.style.height = '800px';
+    document.body.appendChild(host);
+    const clock = makeClock();
+    let openCalls = 0;
+    let notifySecondOpen: (() => void) | null = null;
+    const secondOpen = new Promise<void>(resolve => { notifySecondOpen = resolve; });
+    let releaseAfterRestart: (() => void) | null = null;
+    const afterRestartGate = new Promise<void>(resolve => { releaseAfterRestart = resolve; });
+    const mockClient = {
+      available: true,
+      setMapViews: async () => {},
+      onMapStates: async () => () => {},
+      openFollow: (ports: readonly MessagePort[]) => {
+        openCalls++;
+        const seq = openCalls;
+        const owned = structuredClone([...ports], { transfer: [...ports] });
+        if (seq === 2) notifySecondOpen?.();
+        return {
+          ready: Promise.resolve(`page-remount:${seq}`),
+          close: () => { for (const p of owned) p.close(); },
+        };
+      },
+      product: async (req: { sourceId: string; revision: string; product: string; params: Record<string, unknown> }) => {
+        const reply = (data: unknown) => ({ sourceId: req.sourceId, revision: req.revision, product: req.product, data });
+        if (req.product === 'scoreboard-columns') {
+          return reply({
+            branchId: 'b1',
+            columns: [{
+              key: 'factories', label: 'Factories', unit: '', decimals: 0, available: true, reason: null,
+              family: { kind: 'country-factories', measure: 'total' }, partial: null, noneAtZero: false,
+            }],
+            defaultColumns: ['factories'],
+            defaultSort: 'factories',
+            warnings: [],
+          });
+        }
+        if (req.product === 'country-groups') {
+          return reply({
+            branchId: 'b1',
+            warnings: [],
+            humans: [],
+            factions: [{
+              id: 'axis', firstHour: 43800000, lastHour: 43800200,
+              name: 'Axis', nameReason: null,
+              names: [{ firstHour: 43800000, lastHour: 43800200, name: 'Axis', reason: null }],
+              recordedName: 'Axis',
+              members: [{ tag: 'GER', firstHour: 43800000, lastHour: 43800200 }],
+              leaders: [{ tag: 'GER', firstHour: 43800000, lastHour: 43800200 }],
+              incomplete: [],
+            }],
+            wars: [],
+            warStarts: [],
+            capitulations: [],
+            identityChanges: [],
+            countryIdentities: [],
+            unobserved: { humans: [], factions: [], wars: [] },
+          });
+        }
+        if (req.product === 'follow') {
+          const query = req.params.query as { panel?: string } | undefined;
+          if (openCalls >= 2) {
+            await afterRestartGate;
+            return reply({ available: true, route: 1 });
+          }
+          if (query?.panel === 'research-slots') {
+            throw new ShownError('Follow stream interrupted.', 'remount 503');
+          }
+          return reply({ available: true, route: 1 });
+        }
+        return reply({ available: true, warnings: [], factions: [], countries: [], labels: [] });
+      },
+    };
+    const runtime = makeRuntime(clock, tracks, mockClient);
+    const template: DashboardTemplate = {
+      version: 1, name: 'Test', alignment: 'calendar',
+      roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
+      tracks: [{ id: 't1', roleId: 'primary', label: 'Primary', branchIndex: 0, anchorOffset: null }],
+      widgets: [
+        { id: 'rm1', kind: 'remount-probe-test', configVersion: 1, title: 'Remount probe', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} },
+        { id: 'sb1', kind: 'scoreboard-restart-test', configVersion: 1, title: 'Scoreboard', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} },
+        { id: 'ft1', kind: 'faction-restart-test', configVersion: 1, title: 'Factions', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'factions', count: 5, membership: 'end' }, options: { view: 'race' } },
+      ],
+      layouts: {
+        lg: [
+          { i: 'rm1', x: 0, y: 0, w: 8, h: 6 },
+          { i: 'sb1', x: 8, y: 0, w: 8, h: 6 },
+          { i: 'ft1', x: 16, y: 0, w: 8, h: 6 },
+        ],
+      },
+    };
+    const root = createRoot(host);
+    try {
+      root.render(createElement(DashboardGrid, { template, runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => host.querySelector('[data-widget="rm1"] [data-state="error"]'), host);
+      await settle();
+      const tokenBefore = remountProbeState.token;
+      const articleBefore = host.querySelector('[data-widget="rm1"]');
+      (remountProbeState.retry as (() => void) | null)?.();
+      await secondOpen;
+      await settle();
+      const tokenAfter = remountProbeState.token;
+      const articleSame = host.querySelector('[data-widget="rm1"]') === articleBefore;
+      const sbArticle = host.querySelector('[data-widget="sb1"]')!;
+      const ftArticle = host.querySelector('[data-widget="ft1"]')!;
+      const scoreboardLoading = !!sbArticle.querySelector('[data-state="loading"]');
+      const scoreboardHasTable = !!sbArticle.querySelector('.table-frame, canvas');
+      const factionLoading = !!ftArticle.querySelector('[data-state="loading"]');
+      const factionText = ftArticle.textContent ?? '';
+      return { tokenBefore, tokenAfter, articleSame, scoreboardLoading, scoreboardHasTable, factionLoading, factionHasEmptyCopy: /No faction totals known/i.test(factionText) };
+    } finally {
+      (releaseAfterRestart as (() => void) | null)?.();
+      root.unmount();
+    }
+  },
+
+  async testHealthyFollowNotRestarted() {
+    siblingRetryState.retry = null;
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.className = 'dash-grid-scroll';
+    host.style.width = '900px';
+    host.style.height = '400px';
+    document.body.appendChild(host);
+    const clock = makeClock();
+    let openCalls = 0;
+    let catalogueCalls = 0;
+    let notifySecondCatalogue: (() => void) | null = null;
+    const secondCatalogue = new Promise<void>(resolve => { notifySecondCatalogue = resolve; });
+    const mockClient = {
+      available: true,
+      setMapViews: async () => {},
+      onMapStates: async () => () => {},
+      openFollow: (ports: readonly MessagePort[]) => {
+        openCalls++;
+        const owned = structuredClone([...ports], { transfer: [...ports] });
+        return {
+          ready: Promise.resolve(`page-r8:${openCalls}`),
+          close: () => { for (const p of owned) p.close(); },
+        };
+      },
+      product: async (req: { sourceId: string; revision: string; product: string }) => {
+        const reply = (data: unknown) => ({ sourceId: req.sourceId, revision: req.revision, product: req.product, data });
+        if (req.product === 'equipment-stockpile-catalogue') {
+          catalogueCalls++;
+          if (catalogueCalls === 1) throw new ShownError('Catalogue read failed.', 'cat 503');
+          notifySecondCatalogue?.();
+          return reply({ ok: true });
+        }
+        if (req.product === 'follow') return reply({ available: true, route: 1 });
+        return reply({ available: true });
+      },
+    };
+    const runtime = makeRuntime(clock, tracks, mockClient);
+    const template: DashboardTemplate = {
+      version: 1, name: 'Test', alignment: 'calendar',
+      roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
+      tracks: [{ id: 't1', roleId: 'primary', label: 'Primary', branchIndex: 0, anchorOffset: null }],
+      widgets: [{ id: 'sr1', kind: 'sibling-retry-test', configVersion: 1, title: 'Sibling retry', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} }],
+      layouts: { lg: [{ i: 'sr1', x: 0, y: 0, w: 8, h: 6 }] },
+    };
+    const root = createRoot(host);
+    try {
+      root.render(createElement(DashboardGrid, { template, runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => host.querySelector('[data-state="error"]'), host);
+      await settle();
+      (siblingRetryState.retry as (() => void) | null)?.();
+      await secondCatalogue;
+      await settle();
+      return { openCalls, catalogueCalls };
     } finally {
       root.unmount();
     }

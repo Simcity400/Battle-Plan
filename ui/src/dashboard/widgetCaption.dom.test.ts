@@ -56,7 +56,7 @@ test('a widget body with a caption lays its content out in the reduced height be
     const headerDrop = await page.evaluate<{
       unloadedOscillations: number; triggerWidth: number; loadedStage: number; subjectCompact: boolean;
       stageBeforePlay: number; stageAfterContentGrowWhilePlaying: number; stageAfterPauseFlush: number;
-      wideStage: number; stageAfterResizeWhilePlaying: number; titleTabIndexAfterPlayResize: number;
+      wideStage: number; stageAfterResizeWhilePlaying: number; titleTabIndexAfterPlayResize: number; titleTabIndexAfterStageUnclip: number;
     }>('window.captionLayout.testHeaderDropStability()');
     assert.equal(headerDrop.unloadedOscillations, 0, 'absent subject slot converges without oscillating');
     assert.ok(headerDrop.triggerWidth > 120, `measured real compact view trigger width (${headerDrop.triggerWidth}px), not 84px fallback`);
@@ -66,6 +66,7 @@ test('a widget body with a caption lays its content out in the reduced height be
     assert.ok(headerDrop.stageAfterPauseFlush > headerDrop.stageBeforePlay, `deferred content re-measurement flushes once playback pauses (${headerDrop.stageBeforePlay} -> ${headerDrop.stageAfterPauseFlush})`);
     assert.ok(headerDrop.stageAfterResizeWhilePlaying > headerDrop.wideStage, 'container resize updates header drop stage immediately even while playing');
     assert.equal(headerDrop.titleTabIndexAfterPlayResize, 0, 'resizing narrow while playing rechecks title clipping and gives the title tabIndex=0');
+    assert.equal(headerDrop.titleTabIndexAfterStageUnclip, -1, 'clipping is rechecked after the new header stage commits, clearing tabIndex when the title fits');
 
     const reading = await page.evaluate<{
       loadingRole: string | null; loadingAnnouncement: string; announcedDuringError: string; loadingAfterRetryError: string;
@@ -107,11 +108,36 @@ test('a widget body with a caption lays its content out in the reduced height be
     assert.equal(headRetry.openCalls, 2, 'retry restarts the pipeline with a fresh openFollow call');
     assert.equal(headRetry.callsAfterRetry, 2, 'useHeadProduct.retry reissues the failed follow subscription while following');
 
-    const popup = await page.evaluate<{ openBeforeEmpty: boolean; openAfterEmpty: boolean; samePanelNode: boolean; positionKept: boolean; focusKept: boolean }>('window.captionLayout.testActiveResearchPopupOnEmpty()');
+    const popup = await page.evaluate<{
+      openBeforeEmpty: boolean; openAfterEmpty: boolean; samePanelNode: boolean;
+      positionBefore: { left: number; top: number }; positionAfter: { left: number; top: number } | null; focusKept: boolean;
+      pendingShowsLoading: boolean; pendingShowsGoneVerdict: boolean; failedShowsError: boolean; failedShowsGoneVerdict: boolean;
+    }>('window.captionLayout.testActiveResearchPopupOnEmpty()');
     assert.equal(popup.openBeforeEmpty, true);
+    assert.equal(popup.pendingShowsLoading, true, 'ResearchWindow shows loading while a sought hour is pending');
+    assert.equal(popup.pendingShowsGoneVerdict, false, 'ResearchWindow does not declare research gone while the sought hour is pending');
     assert.equal(popup.openAfterEmpty, true, 'seeking to an hour with no active research slots keeps an open ResearchWindow mounted');
     assert.equal(popup.samePanelNode, true, 'ResearchWindow is not remounted across an empty seek');
-    assert.equal(popup.positionKept, true, 'dragged ResearchWindow position survives an empty seek');
+    assert.deepEqual(popup.positionAfter, popup.positionBefore, 'dragged ResearchWindow position survives an empty seek');
     assert.equal(popup.focusKept, true, 'keyboard focus inside ResearchWindow survives an empty seek');
+    assert.equal(popup.failedShowsError, true, 'ResearchWindow shows an explicit error state when the sought hour fails');
+    assert.equal(popup.failedShowsGoneVerdict, false, 'ResearchWindow does not declare research gone when the sought hour fails');
+
+    const remount = await page.evaluate<{
+      tokenBefore: number; tokenAfter: number; articleSame: boolean;
+      scoreboardLoading: boolean; scoreboardHasTable: boolean;
+      factionLoading: boolean; factionHasEmptyCopy: boolean;
+    }>('window.captionLayout.testDashboardRestartRemount()');
+    assert.equal(remount.tokenBefore, 1);
+    assert.equal(remount.tokenAfter, 2, 'pipeline restart remounts widget bodies so ref-held component state does not survive');
+    assert.equal(remount.articleSame, true, 'widget frame and header stay mounted while only the body subtree remounts');
+    assert.equal(remount.scoreboardLoading, true, 'selected-country scoreboard shows loading after restart until the new pipeline answers');
+    assert.equal(remount.scoreboardHasTable, false, 'selected-country scoreboard does not render an unanswered table after restart');
+    assert.equal(remount.factionLoading, true, 'fixed-membership faction race shows loading after restart until the new pipeline answers');
+    assert.equal(remount.factionHasEmptyCopy, false, 'fixed-membership faction race does not show No faction totals known while restarting');
+
+    const siblingRetry = await page.evaluate<{ openCalls: number; catalogueCalls: number }>('window.captionLayout.testHealthyFollowNotRestarted()');
+    assert.equal(siblingRetry.catalogueCalls, 2, 'retrying a failed catalogue query retries that query');
+    assert.equal(siblingRetry.openCalls, 1, 'retrying a failed sibling query does not restart a healthy followed pipeline');
   }));
 });
