@@ -84,6 +84,36 @@ fn recording() -> Source {
     Source::from_replay(dashboard_base::SourceKey { source_id: "production".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
+fn moved_frame(hour: i32) -> DecodedFrame {
+    let mut frame = frame(hour);
+    if hour >= 1_150
+        && let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        for row in rows.iter_mut().filter(|row| row.id == 11) {
+            row.canonical_slot = 8;
+        }
+    }
+    frame
+}
+
+fn moved_recording() -> Source {
+    let frames = (FIRST..=LAST).map(moved_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(dashboard_base::SourceKey { source_id: "production-moved".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn a_scoped_reply_holds_only_what_its_identity_owned_inside_the_scope() {
+    let source = moved_recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into(), within: Some(vec![dashboard_base::span::HourSpan { first_hour: FIRST, last_hour: 1_205 }]) };
+    let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
+    let moved = reply.lines.iter().find(|line| line.key == "1#1").expect("raw country 11's line is GER's while 11 links to GER's slot");
+    assert_eq!(moved.steps, [step(1_000, 1_099, true, "100", 2), step(1_100, 1_149, false, "101", 2)], "the line leaves GER at the hour its raw country's link moves");
+    let ended = reply.lines.iter().find(|line| line.key == "2#1").and_then(|line| line.final_output.as_ref()).expect("GER's ended line keeps its final count");
+    assert!(ended.last_hour <= 1_205, "ended output is read only inside the scope, not through {}", ended.last_hour);
+}
+
 fn no_content() -> names::Context {
     Err("no content in the fixture".to_owned())
 }

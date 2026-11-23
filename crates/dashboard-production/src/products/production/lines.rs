@@ -221,7 +221,12 @@ fn part(values: &[Option<i64>]) -> Option<(OutputPart, i32, bool)> {
 
 fn ended_rows(appearance: &Appearance, index: &RunLines) -> Vec<super::OutputLife> {
     let held_to = appearance.pieces.last().map_or(appearance.last(), |piece| piece.held_to);
-    index.outputs_of(appearance.handle).iter().filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last() && ended <= held_to)).copied().collect()
+    index
+        .outputs_of(appearance.handle)
+        .iter()
+        .filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last() && ended <= held_to))
+        .map(|row| super::OutputLife { last: row.last.min(held_to), ..*row })
+        .collect()
 }
 
 fn ended_parts(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<BTreeMap<u128, (OutputPart, i32, bool)>> {
