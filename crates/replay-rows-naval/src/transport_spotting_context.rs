@@ -62,7 +62,7 @@ impl Value for SpottingSample {
         }
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        Option::<u32>::decode(input).map(Self::Recorded)
+        <Option<u32> as Value>::decode(input).map(Self::Recorded)
     }
 }
 

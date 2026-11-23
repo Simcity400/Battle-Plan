@@ -1,6 +1,6 @@
+use crate::event_feed_rows::EventFeedCountry;
 use replay_rows::{
     codec::{Decoder, invalid_static as invalid},
-    event_feed_rows::EventFeedCountry,
     value::{Value, value_struct},
 };
 use std::io;

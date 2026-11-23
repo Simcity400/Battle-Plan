@@ -32,5 +32,4 @@ replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-log = { workspace = true }
-unify-smallvec = { workspace = true }
 unify-windows = { workspace = true }

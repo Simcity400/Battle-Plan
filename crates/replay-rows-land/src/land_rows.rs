@@ -3,18 +3,6 @@ use replay_rows::value::value_struct;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct LandEquipmentLoss {
-    pub variant: u64,
-    pub amount_raw: i64,
-}
-value_struct!(LandEquipmentLoss {
-    variant: u64,
-    amount_raw: i64
-});
-impl OpaqueValue for LandEquipmentLoss {}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandSideLosses {
     pub manpower: i32,
     pub equipment: Vec<LandEquipmentLoss>,

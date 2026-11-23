@@ -70,35 +70,3 @@ pub fn check_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<()> {
     }
     Ok(())
 }
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct NavalModifierUse {
-    pub combat: u64,
-    pub side: u8,
-    pub battle_slot: u32,
-    pub source_scope: u8,
-    pub source_index: u32,
-    pub order: u32,
-}
-value_struct!(NavalModifierUse {
-    combat: u64,
-    side: u8,
-    battle_slot: u32,
-    source_scope: u8,
-    source_index: u32,
-    order: u32
-});
-opaque_value!(Vec<NavalModifierUse>);
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct NavalModifierKeyTree {
-    pub key: u32,
-    pub nodes: Vec<ModifierBreakdownNode>,
-}
-value_struct!(NavalModifierKeyTree {
-    key: u32,
-    nodes: Vec<ModifierBreakdownNode>
-});
-opaque_value!(Vec<NavalModifierKeyTree>);

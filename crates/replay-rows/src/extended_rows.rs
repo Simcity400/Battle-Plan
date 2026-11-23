@@ -14,6 +14,53 @@ pub struct NameOperands {
 value_struct!(NameOperands { kind: i32, order: i32, ordered: u8, programmatic: u8, custom: Vec<u8>, group: Vec<u8> });
 opaque_value!(Option<NameOperands>);
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct ConstructionRise {
+    pub hour: i32,
+    pub count: u32,
+}
+value_struct!(ConstructionRise { hour: i32, count: u32 });
+impl OpaqueValue for ConstructionRise {}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct LandEquipmentLoss {
+    pub variant: u64,
+    pub amount_raw: i64,
+}
+value_struct!(LandEquipmentLoss {
+    variant: u64,
+    amount_raw: i64
+});
+impl OpaqueValue for LandEquipmentLoss {}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum OutputPurpose {
+    #[default]
+    Unknown = 0,
+    New = 1,
+    Converted = 2,
+    Refit = 3,
+}
+
+impl OutputPurpose {
+    pub const fn raw(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_raw(raw: u8) -> Option<Self> {
+        Some(match raw {
+            0 => Self::Unknown,
+            1 => Self::New,
+            2 => Self::Converted,
+            3 => Self::Refit,
+            _ => return None,
+        })
+    }
+}
+
 #[path = "extended_rows/packet_hour.rs"]
 mod packet_hour;
 pub use packet_hour::*;

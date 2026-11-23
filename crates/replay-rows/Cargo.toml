@@ -16,6 +16,7 @@ test-support = ["capture"]
 [dependencies]
 game-model.workspace = true
 replay-spool.workspace = true
+serde = { workspace = true, features = ["derive"] }
 engine-allocation.workspace = true
 
 [lints]

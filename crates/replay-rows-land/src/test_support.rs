@@ -1,4 +1,5 @@
-use crate::{rows::CombatModifierValue, value::value_struct};
+use crate::CombatModifierValue;
+use replay_rows::value::value_struct;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OldDivision {

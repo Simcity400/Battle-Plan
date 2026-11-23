@@ -51,7 +51,7 @@ pub mod scope;
 pub mod sliced;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-pub use replay_rows::test_support;
+pub use replay_rows_land::test_support;
 #[doc(hidden)]
 pub use replay_rows::value;
 pub mod witness;

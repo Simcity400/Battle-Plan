@@ -1,31 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum OutputPurpose {
-    #[default]
-    Unknown = 0,
-    New = 1,
-    Converted = 2,
-    Refit = 3,
-}
-
-impl OutputPurpose {
-    pub const fn raw(self) -> u8 {
-        self as u8
-    }
-
-    pub fn from_raw(raw: u8) -> Option<Self> {
-        Some(match raw {
-            0 => Self::Unknown,
-            1 => Self::New,
-            2 => Self::Converted,
-            3 => Self::Refit,
-            _ => return None,
-        })
-    }
-}
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RocketProductionOutputRow {

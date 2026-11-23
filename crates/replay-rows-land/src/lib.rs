@@ -23,3 +23,7 @@ pub use unit_history::*;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_rows;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;

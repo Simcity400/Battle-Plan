@@ -2065,9 +2065,6 @@ pub use equipment_destruction_cause::*;
 #[path = "occupation_values.rs"]
 mod occupation_values;
 pub use occupation_values::*;
-#[path = "combat_modifier.rs"]
-mod combat_modifier;
-pub use combat_modifier::*;
 #[path = "power_values.rs"]
 mod power_values;
 pub use power_values::*;
@@ -2076,7 +2073,8 @@ mod variant_values;
 pub use variant_values::*;
 #[path = "industrial_organisations.rs"]
 mod industrial_organisations;
-pub use industrial_organisations::*;
+#[path = "fuel_demand_values.rs"]
+mod fuel_demand_values;
 #[path = "strategic_action.rs"]
 mod strategic_action;
 pub use strategic_action::*;

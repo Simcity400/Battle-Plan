@@ -52,14 +52,6 @@ pub struct CountryLinkRow {
     pub canonical_slot: u32,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ConstructionRise {
-    pub hour: i32,
-    pub count: u32,
-}
-replay_rows::value::value_struct!(ConstructionRise { hour: i32, count: u32 });
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProvinceRow {
@@ -215,5 +207,3 @@ row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: k
 row_codec!(StateRowAt141, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque}, |_row| Ok(()));
 
 impl OpaqueValue for StateInfrastructure {}
-
-impl OpaqueValue for ConstructionRise {}

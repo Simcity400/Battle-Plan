@@ -2,6 +2,8 @@
 pub mod checkpoint;
 pub mod codec;
 pub mod display;
+#[doc(hidden)]
+pub mod event_feed_values;
 pub mod fixed_point;
 #[doc(hidden)]
 pub mod measurement;
@@ -10,9 +12,6 @@ pub mod rows;
 pub mod sliced {
     pub mod ranges;
 }
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub mod test_support;
 #[doc(hidden)]
 pub mod value;
 

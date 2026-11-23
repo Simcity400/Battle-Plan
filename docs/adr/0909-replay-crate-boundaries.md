@@ -12,7 +12,7 @@ The crate boundaries leave the recording format and encoding paths intact.
 
 `replay-rows` owns the codecs and row traits. A domain value implements `OpaqueValue` to use the core's opaque encoding for its wrappers, including nested wrappers. Types with distinct native encodings keep their explicit implementations in the core. The core also implements codecs for values owned by `game-model`.
 
-World, events, air, naval, wars, economy, intelligence and projects build on the core. Weather builds on world, land builds on world and weather, and presentation builds on land and world. Politics uses presentation and world. Derived rows use the event-feed scope type.
+World, events, air, naval, wars, economy, intelligence and projects build on the core. Weather builds on world, land builds on world and weather, and presentation builds on land and world. Politics uses presentation and world. Derived rows build on the core, which supplies their shared event-feed, construction and equipment values.
 
 Table operations live in `replay-tables-<domain>`, or in the existing `ops` module for politics, intelligence and projects. World owns the modifier breakdown rows and their table operations. Their shared values and tree helpers stay in the core. `replay-data` re-exports the rows and operations and owns the closed `TableRows` enum. Letting its dependents build against a subset of tables would require a type-erased table store.
 

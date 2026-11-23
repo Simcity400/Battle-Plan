@@ -11,12 +11,11 @@ test = false
 doctest = false
 
 [features]
-test-support = ["replay-rows/test-support", "replay-rows-events/test-support"]
+test-support = ["replay-rows/test-support"]
 
 [dependencies]
 engine-reference-values.workspace = true
 replay-rows.workspace = true
-replay-rows-events.workspace = true
 replay-spool.workspace = true
 engine-allocation.workspace = true
 
