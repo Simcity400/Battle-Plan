@@ -8,4 +8,4 @@ The writer derives two other event kinds after the first hour. It compares owned
 
 The writer restores open cards and guarantee state from its own tables. Resume preserves the generation, cursors and last complete counter evidence. Published feed rows live for their read hour and are removed by the next writer hour. This lets the uninterrupted and resumed runs expose the same events without persisting scoped title or description strings in the derivation.
 
-[Writer](../../crates/recorder-derive/src/feed.rs) · [Captured operands](../../crates/recorder-derive/src/feed/inputs.rs) · [Open cards](../../crates/recorder-derive/src/feed/open.rs)
+[Writer](../../crates/recorder-derive-world/src/feed.rs) · [Captured operands](../../crates/recorder-derive-world/src/feed/inputs.rs) · [Open cards](../../crates/recorder-derive-world/src/feed/open.rs)

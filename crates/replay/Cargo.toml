@@ -12,7 +12,7 @@ doctest = false
 [features]
 default = ["recording"]
 journal = ["replay-frame/capture"]
-recording = ["journal", "dep:recorder-derive"]
+recording = ["journal", "dep:recorder-derive-framework"]
 test-support = ["recording", "replay-frame/test-support"]
 keep-journal = []
 memory-labels = ["engine-allocation/memory-labels"]
@@ -23,7 +23,7 @@ rayon.workspace = true
 engine-allocation = { workspace = true, features = ["zstd"] }
 job-priority.workspace = true
 replay-columnar.workspace = true
-recorder-derive = { workspace = true, optional = true }
+recorder-derive-framework = { workspace = true, optional = true }
 dashboard-declare.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
@@ -43,17 +43,11 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+recorder-derive.workspace = true
+recorder-derive-framework.workspace = true
 engine-occupation.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
-
-[[bin]]
-name = "journal-encode"
-required-features = ["recording"]
-
-[[bin]]
-name = "change-digest"
-required-features = ["recording"]
 
 [[bin]]
 name = "columnar-staging"
@@ -77,7 +71,3 @@ replay = { workspace = true, features = ["default", "journal", "recording", "tes
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
-unify-bytemuck = { workspace = true }
-unify-num-traits = { workspace = true }
-unify-smallvec = { workspace = true }

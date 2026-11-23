@@ -9,7 +9,15 @@ license.workspace = true
 [lib]
 doctest = false
 
+[features]
+keep-journal = ["replay/keep-journal"]
+memory-labels = ["replay/memory-labels", "recorder-derive/memory-labels"]
+multiplied = ["replay/multiplied"]
+
 [dependencies]
+blake3.workspace = true
+rayon.workspace = true
+recorder-derive.workspace = true
 replay = { workspace = true, features = ["recording"] }
 replay-columnar.workspace = true
 content-reader-country-names.workspace = true
@@ -46,7 +54,3 @@ replay = { workspace = true, features = ["default", "journal", "recording", "tes
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
-unify-bytemuck = { workspace = true }
-unify-num-traits = { workspace = true }
-unify-smallvec = { workspace = true }

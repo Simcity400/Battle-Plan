@@ -19,7 +19,7 @@ fn frame(hour: i32) -> DecodedFrame {
 }
 
 fn recording() -> Source {
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (100..=130).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (100..=130).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(crate::SourceKey { source_id: "lexicon".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 

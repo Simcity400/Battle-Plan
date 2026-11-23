@@ -1871,7 +1871,7 @@ mod tests {
             let frame = DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() };
             records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
-        Arc::new(replay::campaign::Replay::from_records(b"campaign".to_vec(), &[records]).unwrap())
+        Arc::new(replay::campaign::Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap())
     }
 
     #[test]

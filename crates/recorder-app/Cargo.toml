@@ -31,6 +31,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphic
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
+recorder-derive.workspace = true
 replay-identity = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -58,10 +59,7 @@ recorder-oracle-support = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-1 = { workspace = true }
-unify-bytemuck = { workspace = true }
+unify-bitflags = { workspace = true }
 unify-hashbrown = { workspace = true }
 unify-log = { workspace = true }
-unify-num-traits = { workspace = true }
-unify-smallvec = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }

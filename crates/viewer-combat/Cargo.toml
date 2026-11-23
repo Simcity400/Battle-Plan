@@ -50,6 +50,7 @@ viewer-gpu = { workspace = true, features = ["test-support"] }
 viewer-native-gui = { workspace = true, features = ["test-support"] }
 viewer-runtime = { workspace = true, features = ["test-support"] }
 viewer-unit-reads = { workspace = true, features = ["test-support"] }
+recorder-derive.workspace = true
 engine-heap.workspace = true
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
@@ -76,7 +77,6 @@ recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

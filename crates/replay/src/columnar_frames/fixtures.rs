@@ -4,6 +4,7 @@ use crate::{
     columnar_file::{FileWriter, HourWriter, Settings},
     frame::DecodedFrame,
 };
+use recorder_derive_framework::framework::Writers;
 use replay_columnar::{
     container::{SectionKey, Tags},
     envelope::{self, Identity},
@@ -49,15 +50,15 @@ pub(crate) fn identity(campaign: &[u8], capture_mode: u8) -> Identity {
 
 const LEVEL: i32 = 1;
 
-pub(crate) fn writer(identity: Identity, tamper: impl Fn(&mut Block) + Send + 'static) -> HourWriter<std::io::Cursor<Vec<u8>>> {
-    writer_with(identity, replay_columnar::unit::Settings::at(LEVEL), tamper)
+pub(crate) fn writer(writers: Writers, identity: Identity, tamper: impl Fn(&mut Block) + Send + 'static) -> HourWriter<std::io::Cursor<Vec<u8>>> {
+    writer_with(writers, identity, replay_columnar::unit::Settings::at(LEVEL), tamper)
 }
 
-fn writer_with(identity: Identity, unit: replay_columnar::unit::Settings, tamper: impl Fn(&mut Block) + Send + 'static) -> HourWriter<std::io::Cursor<Vec<u8>>> {
+fn writer_with(writers: Writers, identity: Identity, unit: replay_columnar::unit::Settings, tamper: impl Fn(&mut Block) + Send + 'static) -> HourWriter<std::io::Cursor<Vec<u8>>> {
     let file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: unit.level }, None)
         .unwrap()
         .with_tamper(tamper);
-    HourWriter::with_unit(file, unit.level, unit).unwrap()
+    HourWriter::with_unit(file, unit.level, unit, writers).unwrap()
 }
 
 fn finished(writer: HourWriter<std::io::Cursor<Vec<u8>>>) -> Vec<u8> {
@@ -82,12 +83,13 @@ fn pages_of(file: &[u8]) -> Vec<Vec<Extent>> {
 
 #[cfg(test)]
 pub(crate) fn recording(
+    writers: Writers,
     runs: &[(u64, i32, u32)],
     hour: impl Fn(u32, u32) -> i32,
     tamper: impl Fn(&mut Block) + Send + 'static,
 ) -> (Vec<u8>, Vec<Vec<Extent>>) {
     let columns: Vec<usize> = schema().unwrap().iter().map(Vec::len).collect();
-    let mut file = writer(identity(b"campaign", 0), tamper);
+    let mut file = writer(writers, identity(b"campaign", 0), tamper);
     for (run, &(branch, _, ordinals)) in (0..).zip(runs) {
         file.start_run(branch, envelope::epoch::START, hour(run, 0)).unwrap();
         for ordinal in 0..ordinals {
@@ -121,10 +123,10 @@ pub(crate) fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> i32 + '_ {
 }
 
 #[cfg(test)]
-pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut Block) + Send + 'static) -> Vec<u8> {
+pub(crate) fn native_recording(writers: Writers, units: u32, tamper: impl Fn(&mut Block) + Send + 'static) -> Vec<u8> {
     use super::synthetic::{Input, Sample, Synthetic};
     use crate::rows::CountryRow;
-    let mut file = writer(identity(b"native synthetic", 0), tamper);
+    let mut file = writer(writers, identity(b"native synthetic", 0), tamper);
     file.start_run(7, envelope::epoch::START, 100).unwrap();
     let mut synthetic = Synthetic::new(7, 100).unwrap();
     for ordinal in 0..units * envelope::UNIT_ORDINALS {
@@ -166,11 +168,11 @@ pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut Block) + Send + 
 
 pub type Seen = (DecodedFrame, Vec<Option<i32>>);
 
-pub fn churned(runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
+pub fn churned(writers: Writers, runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::{Input, Sample};
     use crate::rows::{CountryRow, WorldTensionRow};
     let streams = [TableId::Countries, TableId::WorldTension];
-    written(b"churned synthetic", runs, &streams, |synthetic, _, ordinal| {
+    written(writers, b"churned synthetic", runs, &streams, |synthetic, _, ordinal| {
         let mut rows = vec![
             CountryRow {
                 id: 1,
@@ -237,21 +239,21 @@ pub fn churned(runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
     })
 }
 
-pub fn edited(units: u32) -> (Vec<u8>, Vec<Seen>) {
+pub fn edited(writers: Writers, units: u32) -> (Vec<u8>, Vec<Seen>) {
     let unit = replay_columnar::unit::Settings { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..replay_columnar::unit::Settings::at(LEVEL) };
-    edited_with(unit, &[(1, 100, units)])
+    edited_with(writers, unit, &[(1, 100, units)])
 }
 
-pub fn restored(level: i32, runs: &[(u64, i32, u32)]) -> Vec<u8> {
+pub fn restored(writers: Writers, level: i32, runs: &[(u64, i32, u32)]) -> Vec<u8> {
     let unit = replay_columnar::unit::Settings { cap: 512, small: 64, restore_blocks: 1, whole_every: 3, pack_margin: 8, ..replay_columnar::unit::Settings::at(level) };
-    edited_with(unit, runs).0
+    edited_with(writers, unit, runs).0
 }
 
-pub fn one_large_unit(level: i32) -> Vec<u8> {
+pub fn one_large_unit(writers: Writers, level: i32) -> Vec<u8> {
     use super::synthetic::{Input, Sample, Synthetic};
     use crate::rows::CountryRow;
     let (branch, first_hour) = (1, 100);
-    let mut file = writer_with(identity(b"one large unit", 0), replay_columnar::unit::Settings::at(level), |_| {});
+    let mut file = writer_with(writers, identity(b"one large unit", 0), replay_columnar::unit::Settings::at(level), |_| {});
     let mut synthetic = Synthetic::new(branch, first_hour).unwrap();
     file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
     for ordinal in 0..8 * envelope::UNIT_ORDINALS {
@@ -271,7 +273,7 @@ pub fn one_large_unit(level: i32) -> Vec<u8> {
     finished(file)
 }
 
-fn edited_with(unit: replay_columnar::unit::Settings, runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
+fn edited_with(writers: Writers, unit: replay_columnar::unit::Settings, runs: &[(u64, i32, u32)]) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::{Input, Sample};
     use crate::rows::CountryRow;
     let present = |id: u32, ordinal: u32| match id {
@@ -286,7 +288,7 @@ fn edited_with(unit: replay_columnar::unit::Settings, runs: &[(u64, i32, u32)]) 
         political_power_raw: (id % 3 == 0).then(|| i64::from(ordinal / 7)),
         ..Default::default()
     };
-    written_captured_with(b"edited synthetic", None, unit, runs, &[TableId::Countries], |synthetic, _, ordinal| {
+    written_captured_with(writers, b"edited synthetic", None, unit, runs, &[TableId::Countries], |synthetic, _, ordinal| {
         let rows: Vec<CountryRow> = (1..=20).chain(100..200).filter(|&id| present(id, ordinal)).map(|id| row(id, ordinal)).collect();
         let input = match ordinal % 61 {
             30 => Input::Snapshot { rows: &rows[..3], partial: Some(2), read: true, sample: Sample::FromReadBit },
@@ -298,18 +300,19 @@ fn edited_with(unit: replay_columnar::unit::Settings, runs: &[(u64, i32, u32)]) 
 }
 
 pub fn written(
+    writers: Writers,
     campaign: &[u8],
     runs: &[(u64, i32, u32)],
     streams: &[TableId],
     write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
-    written_captured(campaign, None, runs, streams, write)
+    written_captured(writers, campaign, None, runs, streams, write)
 }
 
-pub fn recorded(campaign: &[u8], ordinals: u32, mut frame: impl FnMut(u32) -> crate::frame::FrameInput) -> Vec<u8> {
+pub fn recorded(writers: Writers, campaign: &[u8], ordinals: u32, mut frame: impl FnMut(u32) -> crate::frame::FrameInput) -> Vec<u8> {
     use crate::native_frame::FrameWriter;
     let mut writer = FrameWriter::new().unwrap();
-    let mut file = self::writer(identity(campaign, CaptureMode::Full.byte()), |_| {});
+    let mut file = self::writer(writers, identity(campaign, CaptureMode::Full.byte()), |_| {});
     for ordinal in 0..ordinals {
         let input = frame(ordinal);
         if ordinal == 0 {
@@ -324,16 +327,18 @@ pub fn recorded(campaign: &[u8], ordinals: u32, mut frame: impl FnMut(u32) -> cr
 }
 
 pub fn written_captured(
+    writers: Writers,
     campaign: &[u8],
     capture: Option<&crate::columnar_file::Capture>,
     runs: &[(u64, i32, u32)],
     streams: &[TableId],
     write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
-    written_captured_with(campaign, capture, replay_columnar::unit::Settings::at(LEVEL), runs, streams, write)
+    written_captured_with(writers, campaign, capture, replay_columnar::unit::Settings::at(LEVEL), runs, streams, write)
 }
 
 pub fn written_at(
+    writers: impl FnOnce(&[usize], &[usize]) -> Writers,
     format: u16,
     campaign: &[u8],
     runs: &[(u64, i32, u32)],
@@ -372,11 +377,12 @@ pub fn written_at(
     };
     let unit = replay_columnar::unit::Settings { restore_blocks: 1, ..replay_columnar::unit::Settings::at(LEVEL) };
     let file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, columns.len(), Settings { level: unit.level }, None).unwrap();
-    let file = HourWriter::framed(file, unit.level, unit, &columns).unwrap();
+    let file = HourWriter::framed(file, unit.level, unit, &columns, writers).unwrap();
     written_into(file, Some(&capture), Some((format, &columns)), runs, streams, write)
 }
 
 fn written_captured_with(
+    writers: Writers,
     campaign: &[u8],
     capture: Option<&crate::columnar_file::Capture>,
     unit: replay_columnar::unit::Settings,
@@ -384,7 +390,7 @@ fn written_captured_with(
     streams: &[TableId],
     write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
-    written_into(writer_with(identity(campaign, 0), unit, |_| {}), capture, None, runs, streams, write)
+    written_into(writer_with(writers, identity(campaign, 0), unit, |_| {}), capture, None, runs, streams, write)
 }
 
 fn written_into(

@@ -295,6 +295,7 @@ pub use hours::HourWriter;
 #[cfg(any(test, feature = "test-support"))]
 mod hours {
     use super::{BlockEnd, FileWriter};
+    use recorder_derive_framework::framework::Writers;
     use replay_columnar::{
         envelope::UNIT_ORDINALS,
         lane::{Clock, ClockHour},
@@ -328,7 +329,7 @@ mod hours {
         file: FileWriter<W>,
         store: Store,
         adapter: Journal,
-        writers: recorder_derive::Writers,
+        writers: Writers,
         columns: Vec<usize>,
         appended: Appended,
         running: bool,
@@ -338,27 +339,27 @@ mod hours {
     }
 
     impl<W: Write + Seek + Read> HourWriter<W> {
-        pub fn new(file: FileWriter<W>, level: i32) -> io::Result<Self> {
-            Self::with_unit(file, level, unit::Settings::at(level))
+        pub fn new(file: FileWriter<W>, level: i32, writers: Writers) -> io::Result<Self> {
+            Self::with_unit(file, level, unit::Settings::at(level), writers)
         }
 
-        pub fn with_unit(file: FileWriter<W>, level: i32, settings: unit::Settings) -> io::Result<Self> {
-            Self::with_schema(file, level, settings, crate::columnar_frames::schema()?, recorder_derive::writers())
+        pub fn with_unit(file: FileWriter<W>, level: i32, settings: unit::Settings, writers: Writers) -> io::Result<Self> {
+            Self::with_schema(file, level, settings, crate::columnar_frames::schema()?, writers)
         }
 
         #[cfg(any(test, feature = "test-support"))]
-        pub fn framed(file: FileWriter<W>, level: i32, settings: unit::Settings, columns: &[usize]) -> io::Result<Self> {
+        pub fn framed(file: FileWriter<W>, level: i32, settings: unit::Settings, columns: &[usize], writers: impl FnOnce(&[usize], &[usize]) -> Writers) -> io::Result<Self> {
             let mut kinds = crate::columnar_frames::schema()?;
             let current: Vec<usize> = kinds.iter().map(Vec::len).collect();
             kinds.truncate(columns.len());
             for (kinds, &held) in kinds.iter_mut().zip(columns) {
                 kinds.truncate(held);
             }
-            let writers = recorder_derive::writers_within(columns, &current);
+            let writers = writers(columns, &current);
             Self::with_schema(file, level, settings, kinds, writers)
         }
 
-        fn with_schema(mut file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: recorder_derive::Writers) -> io::Result<Self> {
+        fn with_schema(mut file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>, writers: Writers) -> io::Result<Self> {
             let tables = kinds.len();
             file.record_derived_versions(tables, &writers.table_versions())?;
             let columns = kinds.iter().map(Vec::len).collect();
@@ -376,7 +377,7 @@ mod hours {
         }
 
         #[cfg(any(test, feature = "test-support"))]
-        pub fn define(&mut self, definitions: recorder_derive::Definitions) {
+        pub fn define(&mut self, definitions: recorder_derive_framework::framework::Definitions) {
             self.writers.define(definitions);
         }
 

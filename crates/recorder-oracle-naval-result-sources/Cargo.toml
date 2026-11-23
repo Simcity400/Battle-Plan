@@ -15,6 +15,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
+recorder-derive.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -35,7 +36,3 @@ replay = { workspace = true, features = ["default", "journal", "recording", "tes
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
-unify-bytemuck = { workspace = true }
-unify-num-traits = { workspace = true }
-unify-smallvec = { workspace = true }

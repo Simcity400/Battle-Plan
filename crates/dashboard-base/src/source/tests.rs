@@ -8,6 +8,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 #[cfg(windows)]
 fn cached_content_replies_do_not_sweep_a_clean_generation() {
     let replay = Arc::new(Replay::from_records(
+        recorder_derive::writers(),
         CAMPAIGN.into(), &[records(1, vec![source(1, 100, Some(1))])],
     ).unwrap());
     let source = crate::Source::from_replay(
@@ -31,6 +32,7 @@ fn cached_content_replies_do_not_sweep_a_clean_generation() {
 fn air_superiority_inherited_state_is_independent_between_revisions() {
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 100, Some(1))])],
         )
@@ -147,7 +149,7 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
             ..Default::default()
         }]));
     let replay =
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
+        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
     let source = crate::Source::from_replay(
         crate::SourceKey {
             source_id: "source-1".into(),
@@ -191,7 +193,7 @@ fn warning_allocation_exhaustion_never_skips_localisation_or_saved_names() {
             ..Default::default()
         }]));
     let replay =
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
+        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
     let mut source = crate::Source::from_replay(
         crate::SourceKey {
             source_id: "naming-exhaustion".into(),
@@ -242,6 +244,7 @@ fn warning_allocation_exhaustion_never_skips_localisation_or_saved_names() {
 fn failed_diagnostic_initialization_never_caches_an_incomplete_naming_result() {
     let replay = Arc::new(
         Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 100, Some(1))])],
         )
