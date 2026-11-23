@@ -1,4 +1,4 @@
-import { runAt } from '../../charts/series';
+import { runAt } from '../../charts/series.ts';
 import type { Run } from '../../charts/series';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 

@@ -60,3 +60,63 @@ test('paused or after a seek the graph view ends at the head, never past it; whi
   assert.deepEqual(apmPausedView(last + 30, first, last, week), [last - week, last], 'a head past the branch ends at its last hour');
   assert.equal(apmPausedView(null, first, last, week), null);
 });
+
+import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
+import { apmTableColumns, apmTableProjection } from './apmProjection.ts';
+import type { ApmReply } from '../../generated/dashboard';
+
+test('apm-table resolves country at row observation hour including hour 0, gives each field its own missing/partial meaning, and checks membership gaps over the active window only', () => {
+  const reply: ApmReply = {
+    available: true,
+    warnings: [],
+    players: [{ id: 'p1', name: 'Alice', tags: ['GER'] }],
+    series: [
+      {
+        id: 'p1',
+        name: 'Alice',
+        tag: 'GER',
+        hour: 0,
+        summary: { apm: null, confirmedApm: null, orders: '12', pausedOrders: null, unpausedMinutes: 0, complete: true, gaps: true },
+        points: [],
+      },
+    ],
+  };
+  const labels = {
+    GER: [{ from: 0, name: 'Weimar', flag: 'old.png' }, { from: 50, name: 'Reich', flag: 'new.png' }],
+  };
+  const opts = {
+    players: true,
+    showPaused: true,
+    cellBars: false,
+    rankMarkers: false,
+    playerNames: { p1: 'Alice' },
+    labels,
+    unobserved: [[10, 20]] as readonly (readonly [number, number])[],
+    branchFirst: 0,
+    windowHours: 168,
+    staticSpan: [300, 400] as readonly [number, number],
+  };
+  const model = apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 400, opts);
+  assert.equal(model.empty, undefined, 'early unobserved gap [10,20] does not suppress range [300,400]');
+  const row = model.rows[0]!;
+  const resolvedCountry = resolveCellAtHour(row.cells.country!, 400);
+  assert.deepEqual(resolvedCountry.value, { kind: 'known', value: 'Weimar' }, 'country cell resolves at observation hour 0, not window end 400');
+  assert.equal(resolvedCountry.icon, 'old.png', 'flag resolves at observation hour 0');
+
+  assert.equal(row.cells.apm!.value.kind, 'notApplicable', 'zero unpaused minutes makes rate notApplicable');
+  assert.equal(row.cells.paused!.value.kind, 'notRecorded', 'unknown paused orders never inherits rate notApplicable');
+  assert.equal(row.cells.orders!.value.kind, 'partial', 'orders carry partial state when summary.gaps is true');
+  assert.equal(row.cells.minutes!.value.kind, 'partial', 'unpausedMinutes carries partial state when summary.gaps is true');
+
+  const cols = apmTableColumns(true, true, false);
+  const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols, new Set(), 400)!;
+  assert.equal(tip.rows.find(r => r.label === 'Country')?.value, 'Weimar');
+
+  const followOpts = { ...opts, staticSpan: null };
+  assert.equal(apmTableProjection.nextChange?.(EMPTY_SOURCES, 5, followOpts), 10, 'trailing window enters gap at 10');
+  assert.equal(apmTableProjection.nextChange?.(EMPTY_SOURCES, 15, followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
+  assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 180, followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
+  assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 188, followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
+});

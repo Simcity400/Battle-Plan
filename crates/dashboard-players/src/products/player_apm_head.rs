@@ -52,7 +52,6 @@ struct Part {
     tag: String,
     ranges: Vec<(u64, u64)>,
     versions: Vec<Version>,
-    display_at: (u64, u64),
 }
 
 struct Piece {
@@ -108,10 +107,9 @@ impl ApmHead {
                     }
                     let end = history.get(version + 1).map_or(departed, |next| next.at_qpc).min(departed);
                     let id = if params.group == ApmGroup::Country { tag.to_owned() } else { player.clone() };
-                    let part = parts.entry((id, tag.to_owned())).or_insert_with(|| Part { series: 0, tag: tag.to_owned(), ranges: Vec::new(), versions: Vec::new(), display_at: (0, 0) });
+                    let part = parts.entry((id, tag.to_owned())).or_insert_with(|| Part { series: 0, tag: tag.to_owned(), ranges: Vec::new(), versions: Vec::new() });
                     part.ranges.push((observation.at_qpc, end));
                     part.versions.push(Version { actor, version, from: observation.at_qpc, to: end });
-                    part.display_at = part.display_at.max((timeline.session, observation.at_qpc));
                 }
             }
             for part in parts.values_mut() {
@@ -186,9 +184,10 @@ impl ApmHead {
                 if present.is_empty() {
                     continue;
                 }
+                let display_at = (timeline.session, present.iter().map(|version| version.from).max().expect("present is non-empty"));
                 let entry = out.entry(part.series).or_default();
-                if entry.shown.is_none_or(|shown| shown <= part.display_at) {
-                    entry.shown = Some(part.display_at);
+                if entry.shown.is_none_or(|shown| shown <= display_at) {
+                    entry.shown = Some(display_at);
                     entry.tag.clone_from(&part.tag);
                 }
                 for &(from_hour, to_hour) in &spans {

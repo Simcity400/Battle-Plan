@@ -1,0 +1,486 @@
+import { Profiler } from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
+import { tooltipStore } from '../../charts/tooltip.ts';
+import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import type { WidgetRuntime } from '../../dashboard/definitions';
+import { pipelineFor, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
+import { FollowedWidgetKey } from '../../dashboard/follow/store.ts';
+import { answerBody } from '../../dashboard/follow/messages.fixture.ts';
+import { packet, resetStamps, splitForLanes } from '../../dashboard/follow/split.ts';
+import type { WidgetSpec } from '../../dashboard/model';
+import { PlaybackController } from '../../dashboard/playback.ts';
+import { tableSettingsOf } from './settings.ts';
+import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDomShared.ts';
+import FamilyTableHost from './FamilyTableHost.tsx';
+import '../../styles.css';
+
+const NATIVE = 7;
+
+function followMessage(hour: number, seek: number, answers: { id: number; hour: number; body: Uint8Array }[], reset = false) {
+  const out = new Uint8Array(24 + answers.reduce((sum, a) => sum + 16 + a.body.length, 0));
+  const view = new DataView(out.buffer);
+  view.setUint32(0, 0x334c4f46, true);
+  view.setUint32(4, (NATIVE << 1) | (reset ? 1 : 0), true);
+  view.setInt32(8, hour, true);
+  view.setUint32(12, answers.length, true);
+  view.setUint32(16, seek, true);
+  let at = 24;
+  for (const a of answers) {
+    view.setUint32(at, a.id, true);
+    view.setInt32(at + 4, a.hour, true);
+    view.setUint32(at + 8, a.body.length, true);
+    out.set(a.body, at + 16);
+    at += 16 + a.body.length;
+  }
+  return out;
+}
+
+let ports: readonly MessagePort[] = [];
+let seek = 0;
+const stamp = resetStamps();
+const send = (bytes: Uint8Array) => {
+  const resets = stamp(bytes);
+  const split = splitForLanes(bytes, ports.length);
+  if (split.kind !== 'failure') {
+    split.lanes.forEach((part, lane) => {
+      if (part) ports[lane]!.postMessage(packet('follow', part, resets), [part.buffer]);
+    });
+  }
+};
+
+const source = {
+  id: 'dom-test',
+  revision: 'r1',
+  path: 'p',
+  metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 2000 }] },
+} as unknown as DashboardSource;
+
+const client = {
+  available: true,
+  openFollow: (opened: readonly MessagePort[]) => { ports = opened; return Promise.resolve(); },
+  product: async (request: { product: string }) => {
+    if (request.product === 'follow') return { data: { available: true, route: NATIVE } };
+    return { data: { available: true } };
+  },
+} as unknown as DashboardClient;
+
+const clock = new PlaybackController();
+clock.setBounds({ firstHour: 0, lastHour: 2000 });
+const workers = [0, 1].map(() => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }));
+const host: PipelineHost = {
+  lanes: workers,
+  open: list => client.openFollow!(list),
+  channel: () => new MessageChannel(),
+  frameRate: () => 60,
+  rate: () => 1,
+};
+const pipeline = pipelineFor(clock, client, () => host);
+
+const runtime = {
+  client,
+  clock,
+  tracks: [{ id: 't1', source, branch: { id: '1', firstHour: 0, lastHour: 2000 }, axisOffset: 0 }],
+} as unknown as WidgetRuntime;
+
+const widget: WidgetSpec = {
+  id: 'w-scoreboard',
+  kind: 'scoreboard',
+  trackIds: ['t1'],
+  time: { mode: 'follow' },
+  countries: { kind: 'all' },
+  options: {},
+  layout: { x: 0, y: 0, w: 12, h: 12 },
+} as unknown as WidgetSpec;
+
+const LOOKS = {
+  GER: [{ from: 0, name: 'Germany' }],
+  FRA: [{ from: 0, name: 'France' }],
+  ITA: [{ from: 0, name: 'Italy' }],
+  ENG: [{ from: 0, name: 'United Kingdom' }],
+};
+
+const SPECS = scoreboardColumnsSpec(SCOREBOARD_FIXTURE_COLUMNS, null);
+const SETTINGS = {
+  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } }),
+  order: SPECS.map(s => s.key),
+  sort: { column: 'factories', direction: 'descending' as const },
+};
+
+const OPTIONS = {
+  shown: SCOREBOARD_FIXTURE_COLUMNS,
+  candidates: ['GER', 'FRA', 'ITA', 'ENG'],
+  top: null,
+  rankMarkers: false,
+  looks: LOOKS,
+};
+
+const SUBSCRIPTIONS = [
+  { name: 'factories', source, branch: '1', offset: 0, query: { product: 'series-state', params: { branchId: '1', col: 'factories' } }, channel: 'followed' as const },
+  { name: 'casualties', source, branch: '1', offset: 0, query: { product: 'series-state', params: { branchId: '1', col: 'casualties' } }, channel: 'followed' as const },
+];
+
+let commits = 0;
+let activated: string[] = [];
+let hostNode: HTMLDivElement | null = null;
+let subIds: Record<string, number> = {};
+let pipeId = -1;
+let totalInstallReads = 0;
+let installs = 0;
+let flushWrapped = false;
+
+const nextPoll = () => new Promise<void>(resolve => setTimeout(resolve, 16));
+async function until(predicate: () => boolean, limitMs = 6000) {
+  const deadline = performance.now() + limitMs;
+  while (!predicate() && performance.now() < deadline) await nextPoll();
+  return predicate();
+}
+
+function measureLayoutReadsDuring<T>(fn: () => T): { result: T; reads: number } {
+  let reads = 0;
+  const origGetRect = Element.prototype.getBoundingClientRect;
+  const origComputed = window.getComputedStyle;
+  const clientWidthDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
+  const clientHeightDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')!;
+  const offsetWidthDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')!;
+  const offsetHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')!;
+
+  Element.prototype.getBoundingClientRect = function (this: Element) { reads++; return origGetRect.call(this); };
+  window.getComputedStyle = function (...args: Parameters<typeof window.getComputedStyle>) { reads++; return origComputed.apply(window, args); };
+  Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get() { reads++; return clientWidthDesc.get!.call(this); } });
+  Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get() { reads++; return clientHeightDesc.get!.call(this); } });
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { reads++; return offsetWidthDesc.get!.call(this); } });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { reads++; return offsetHeightDesc.get!.call(this); } });
+
+  try {
+    const result = fn();
+    return { result, reads };
+  } finally {
+    Element.prototype.getBoundingClientRect = origGetRect;
+    window.getComputedStyle = origComputed;
+    Object.defineProperty(Element.prototype, 'clientWidth', clientWidthDesc);
+    Object.defineProperty(Element.prototype, 'clientHeight', clientHeightDesc);
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offsetWidthDesc);
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeightDesc);
+  }
+}
+
+function ensureFlushInstrumentation() {
+  if (flushWrapped) return;
+  flushWrapped = true;
+  const internal = pipeline as unknown as { flush(): void };
+  const origFlush = internal.flush.bind(pipeline);
+  internal.flush = () => {
+    const { reads } = measureLayoutReadsDuring(() => origFlush());
+    totalInstallReads += reads;
+  };
+  pipeline.onInstall(pipeId, () => { installs++; });
+}
+
+function sendHour(hour: number, fac: [bigint, bigint, bigint, bigint], cas: [bigint, bigint, bigint, bigint], reset = false) {
+  const names = ['GER', 'FRA', 'ITA', 'ENG'];
+  const keys = [1n, 2n, 3n, 4n];
+  const facBody = answerBody({
+    keys,
+    columns: 1,
+    names,
+    values: [...fac],
+    states: [0, 0, 0, fac[3] < 0n ? 2 : 0],
+    reasons: [null, null, null, fac[3] < 0n ? 'ENG factories not recorded' : null],
+  });
+  const casBody = answerBody({
+    keys,
+    columns: 1,
+    names,
+    values: [...cas],
+    states: [0, 0, 0, 0],
+  });
+  send(followMessage(hour, seek, [
+    { id: subIds.factories!, hour, body: facBody },
+    { id: subIds.casualties!, hour, body: casBody },
+  ], reset));
+}
+
+declare global {
+  interface Window {
+    tableFamilyDom: unknown;
+  }
+}
+
+window.tableFamilyDom = {
+  async mount() {
+    commits = 0;
+    activated = [];
+    totalInstallReads = 0;
+    installs = 0;
+    hostNode = document.createElement('div');
+    hostNode.style.cssText = 'width:460px;height:260px;display:flex;flex-direction:column;';
+    document.body.append(hostNode);
+    const root = createRoot(hostNode);
+    flushSync(() => root.render(
+      <FollowedWidgetKey.Provider value="dom-scoreboard">
+        <Profiler id="table-family" onRender={() => { commits++; }}>
+          <FamilyTableHost
+            declaration={scoreboardProjection}
+            options={OPTIONS}
+            label="Scoreboard"
+            subject="scoreboard"
+            widget={widget}
+            runtime={runtime}
+            active
+            columns={SPECS}
+            settings={SETTINGS}
+            subscriptions={SUBSCRIPTIONS}
+            offset={0}
+            pin={null}
+            bounds={[0, 2000]}
+            onActivate={key => { activated.push(key); }}
+          />
+        </Profiler>
+      </FollowedWidgetKey.Provider>,
+    ));
+
+    const ready = await until(() => {
+      const canvas = hostNode?.querySelector<HTMLCanvasElement>('canvas.tf-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeId = Number(canvas.dataset.placement);
+      return pipeId > 0;
+    });
+    if (!ready) throw new Error('Table canvas did not mount');
+
+    const internal = pipeline as unknown as { widgets: Map<number, { subs: Map<object, number> }> };
+    const subList = [...(internal.widgets.get(pipeId)?.subs.values() ?? [])];
+    subIds = { factories: subList[0]!, casualties: subList[1]! };
+    await until(() => pipeline.status(subIds.factories!).status === 'followed' && pipeline.status(subIds.casualties!).status === 'followed');
+
+    clock.seek(10);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(10, [50n, 40n, 30n, -1n], [0n, 100n, 200n, 0n], true);
+    const painted = await until(() => {
+      const view = pipeline.view(pipeId);
+      return view?.mode === 'picture' && !view.dim && (hostNode?.querySelectorAll('.table-accessibility tbody tr').length ?? 0) === 4;
+    });
+    ensureFlushInstrumentation();
+    return { painted, initialRows: [...hostNode.querySelectorAll('.table-accessibility tbody tr')].map(tr => tr.getAttribute('data-row-key')) };
+  },
+
+  async playLive(targetHour: number) {
+    commits = 0;
+    totalInstallReads = 0;
+    installs = 0;
+    let sentThrough = 10;
+    let flipFromHour = Number.MAX_SAFE_INTEGER;
+    const feed = (hour: number) => {
+      while (sentThrough < hour + 6) {
+        sentThrough++;
+        const fac: [bigint, bigint, bigint, bigint] = sentThrough >= flipFromHour
+          ? [15n, 95n, 30n, -1n]
+          : [85n, 40n, 30n, -1n];
+        sendHour(sentThrough, fac, [BigInt(sentThrough * 10), BigInt(sentThrough * 20), 0n, 0n]);
+      }
+    };
+    feed(10);
+    const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+
+    let playingDuringAdvance = false;
+    try {
+      const reached = await until(() => {
+        const snap = clock.getSnapshot();
+        const view = pipeline.view(pipeId);
+        if (snap.playing && (view?.h ?? 0) >= 14) playingDuringAdvance = true;
+        return snap.playing && (view?.h ?? 0) >= targetHour && !view?.dim;
+      }, 8000);
+      if (!reached) throw new Error(`Live playback did not reach hour ${targetHour} (at ${pipeline.view(pipeId)?.h})`);
+      const playingBeforePause = clock.getSnapshot().playing;
+      const playCommits = commits;
+      const playReads = totalInstallReads;
+      const playInstalls = installs;
+
+      const wantTop = 'FRA';
+      const pauseHour = sentThrough + 1;
+      flipFromHour = pauseHour;
+      feed(pauseHour);
+      const reachedFlip = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
+      if (!reachedFlip) throw new Error(`Live playback did not reach flipped hour ${pauseHour} (at ${pipeline.view(pipeId)?.h})`);
+
+      clock.setPlaying(false);
+      const flushedOnPause = await until(
+        () => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === wantTop,
+        800,
+      );
+      if (!flushedOnPause) {
+        throw new Error(`Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key')})`);
+      }
+
+      const view = pipeline.view(pipeId);
+      const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({
+        key: tr.getAttribute('data-row-key'),
+        cells: [...tr.querySelectorAll('td')].map(td => td.textContent),
+      }));
+      return {
+        playingDuringAdvance,
+        playingBeforePause,
+        commits: playCommits,
+        totalInstallReads: playReads,
+        pauseInstallReads: totalInstallReads,
+        installs: playInstalls,
+        flushedOnPause,
+        wantTop,
+        finalHour: view?.h ?? null,
+        mirrorRows,
+      };
+    } finally {
+      stopFeed();
+      clock.setPlaying(false);
+    }
+  },
+
+  async verifyRepaintAndHeld() {
+    const hashCanvas = async () => {
+      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.tf-canvas')!;
+      const bitmap = await createImageBitmap(canvas);
+      const out = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = out.getContext('2d')!;
+      ctx.drawImage(bitmap, 0, 0);
+      const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let hash = 2166136261;
+      for (let i = 0; i < data.length; i++) hash = Math.imul(hash ^ data[i]!, 16777619);
+      return `${bitmap.width}x${bitmap.height}:${(hash >>> 0).toString(16)}`;
+    };
+    const baseHour = (pipeline.view(pipeId)?.h ?? 30) + 5;
+    clock.seek(baseHour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(baseHour, [70n, 40n, 30n, -1n], [100n, 200n, 0n, 0n], true);
+    await until(() => pipeline.view(pipeId)?.h === baseHour && !pipeline.view(pipeId)?.dim);
+    let prevHash = await hashCanvas();
+    let stableCount = 0;
+    const settleDeadline = performance.now() + 2000;
+    while (stableCount < 3 && performance.now() < settleDeadline) {
+      await nextPoll();
+      const curHash = await hashCanvas();
+      if (curHash === prevHash) stableCount++;
+      else { stableCount = 0; prevHash = curHash; }
+    }
+    const beforeHash = prevHash;
+    sendHour(baseHour + 1, [75n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
+    clock.step(1);
+    await until(() => pipeline.view(pipeId)?.h === baseHour + 1 && !pipeline.view(pipeId)?.dim);
+    const afterHash = await hashCanvas();
+    for (let s = 0; s < 5; s++) clock.step(1);
+    await until(() => pipeline.view(pipeId)?.dim === true, 3000);
+    const dimView = pipeline.view(pipeId);
+    const held = !!hostNode!.querySelector('[data-held]');
+    sendHour(baseHour + 6, [70n, 40n, 30n, -1n], [100n, 200n, 0n, 0n]);
+    const recovered = await until(() => pipeline.view(pipeId)?.h === baseHour + 6 && !pipeline.view(pipeId)?.dim, 3000);
+    return { pixelsChanged: beforeHash !== afterHash, dim: !!dimView?.dim, held, recovered, through: dimView?.through ?? null, expectedThrough: baseHour + 1 };
+  },
+
+  bodyBox() {
+    const box = hostNode!.querySelector<HTMLDivElement>('.tf-body')!.getBoundingClientRect();
+    return { left: box.left, top: box.top, width: box.width, height: box.height };
+  },
+
+  async waitInspected(expectedKey?: string) {
+    const ok = await until(() => {
+      const tip = pipeline.view(pipeId)?.fields?.tooltip as { text?: { rowKey?: string } | null } | undefined;
+      if (!tip?.text?.rowKey) return false;
+      return expectedKey ? tip.text.rowKey === expectedKey : true;
+    }, 3000);
+    if (!ok) {
+      const view = pipeline.view(pipeId);
+      throw new Error(`waitInspected(${expectedKey}) failed: mode=${view?.mode} h=${view?.h} dim=${view?.dim} inspect=${(pipeline as unknown as { page: { widgets: Map<number, { inspect: string | null }> } }).page.widgets.get(pipeId)?.inspect} tip=${JSON.stringify(view?.fields?.tooltip)}`);
+    }
+    return ok;
+  },
+
+  async resortUnderPointer() {
+    activated = [];
+    const nextHour = (pipeline.view(pipeId)?.h ?? 50) + 1;
+    sendHour(nextHour, [20n, 90n, 80n, -1n], [1n, 2n, 3n, 4n]);
+    clock.step(1);
+    await until(() => pipeline.view(pipeId)?.h === nextHour && !pipeline.view(pipeId)?.dim);
+    await until(() => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === 'FRA');
+    const hashCanvas = async () => {
+      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.tf-canvas')!;
+      const bitmap = await createImageBitmap(canvas);
+      const out = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = out.getContext('2d')!;
+      ctx.drawImage(bitmap, 0, 0);
+      const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let hash = 2166136261;
+      for (let i = 0; i < data.length; i++) hash = Math.imul(hash ^ data[i]!, 16777619);
+      return `${bitmap.width}x${bitmap.height}:${(hash >>> 0).toString(16)}`;
+    };
+    let prevHash = await hashCanvas();
+    let stableCount = 0;
+    const settleDeadline = performance.now() + 2000;
+    while (stableCount < 3 && performance.now() < settleDeadline) {
+      await nextPoll();
+      const curHash = await hashCanvas();
+      if (curHash === prevHash) stableCount++;
+      else { stableCount = 0; prevHash = curHash; }
+    }
+    return [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => tr.getAttribute('data-row-key'));
+  },
+
+  readActivated() {
+    return [...activated];
+  },
+
+  async focusFirstAndWaitTooltip() {
+    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
+    const key = firstRow.getAttribute('data-row-key')!;
+    firstRow.focus();
+    const ready = await until(() => {
+      const tip = pipeline.view(pipeId)?.fields?.focusTooltip as { text?: { rowKey?: string } | null } | undefined;
+      return tip?.text?.rowKey === key;
+    }, 2000);
+    if (!ready) {
+      const view = pipeline.view(pipeId);
+      throw new Error(`focusFirstAndWaitTooltip(${key}) failed: active=${(document.activeElement as HTMLElement | null)?.outerHTML?.slice(0, 120)} dim=${view?.dim} focusTooltip=${JSON.stringify(view?.fields?.focusTooltip)} tooltip=${JSON.stringify(view?.fields?.tooltip)}`);
+    }
+    return { key, ready };
+  },
+
+  async pinFocusedRow() {
+    const active = document.activeElement as HTMLElement | null;
+    active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
+    await until(() => (tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
+    const pinned = tooltipStore.get();
+    const result = {
+      title: pinned?.content.title ?? null,
+      subtitle: pinned?.content.subtitle ?? null,
+      installReads: totalInstallReads,
+    };
+    active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await until(() => tooltipStore.get() === null || !(tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
+    return result;
+  },
+
+  async testKeyboardAndNarrow() {
+    activated = [];
+    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
+    const firstKey = firstRow.getAttribute('data-row-key');
+    firstRow.focus();
+    firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await until(() => {
+      const cur = (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key');
+      return !!cur && cur !== firstKey;
+    }, 2000);
+    const afterDown = (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') ?? null;
+    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await until(() => activated.length === 1, 2000);
+    const liveStatus = hostNode!.querySelector('.tf-live-region')?.textContent ?? '';
+
+    hostNode!.style.width = '210px';
+    await until(() => !!hostNode!.querySelector('.tf-more-cols'), 3000);
+    const moreBtn = hostNode!.querySelector<HTMLButtonElement>('.tf-more-cols');
+    const moreText = moreBtn?.textContent ?? '';
+    moreBtn?.click();
+    await until(() => !!document.querySelector('.tf-chooser'), 2000);
+    const menuOpen = !!document.querySelector('.tf-chooser');
+    return { afterDown, activated: [...activated], liveStatus, moreText, menuOpen, totalInstallReads };
+  },
+};

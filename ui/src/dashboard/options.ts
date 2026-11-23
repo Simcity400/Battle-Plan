@@ -19,7 +19,7 @@ export type OptionField = FieldBase & (
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
   | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
-  | { kind: 'table'; default: ''; columns: readonly import('../draw/tables/settings.ts').TableColumnDefaults[]; base: import('../draw/tables/settings.ts').TableBase }
+  | { kind: 'table'; default: ''; columns: readonly import('../families/table/settings.ts').TableColumnDefaults[]; base: import('../families/table/settings.ts').TableBase }
 );
 
 const TOKEN_TEXT = /^[^\s\p{Cc},]*$/u;

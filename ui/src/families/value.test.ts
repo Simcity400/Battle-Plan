@@ -1,0 +1,164 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { CELL, parseFollowed } from '../dashboard/follow/message.ts';
+import { message, type Spec } from '../dashboard/follow/messages.fixture.ts';
+import {
+  InvalidFamilyValueError,
+  assertValue,
+  compareValueRows,
+  compareValues,
+  knownValue,
+  notApplicable,
+  notRecorded,
+  partialValue,
+  valueFromLive,
+  valueFromNamedAnswer,
+  valueFromNullable,
+  valueFromRawBigInt,
+  valueFromWireCell,
+  wireFloat,
+  wireWhole,
+  zeroValue,
+} from './value.ts';
+import { auditValue, formatValueState, spokenValue } from './valueFormat.ts';
+
+const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
+
+test('value constructors enforce the five states and reject bare null, undefined, NaN and empty reasons', () => {
+  assert.deepEqual(knownValue(42), { kind: 'known', value: 42 });
+  assert.deepEqual(knownValue(0), { kind: 'zero', value: 0 });
+  assert.deepEqual(knownValue(0n), { kind: 'zero', value: 0n });
+  assert.deepEqual(zeroValue(0), { kind: 'zero', value: 0 });
+  assert.deepEqual(zeroValue(0n), { kind: 'zero', value: 0n });
+  assert.deepEqual(notRecorded('Unrecorded'), { kind: 'notRecorded', reason: 'Unrecorded' });
+  assert.deepEqual(notApplicable('Not at war'), { kind: 'notApplicable', reason: 'Not at war' });
+  assert.deepEqual(partialValue(12, 'Gaps excluded'), { kind: 'partial', value: 12, reason: 'Gaps excluded' });
+
+  assert.throws(() => knownValue(null as unknown as number), InvalidFamilyValueError);
+  assert.throws(() => knownValue(undefined as unknown as number), InvalidFamilyValueError);
+  assert.throws(() => knownValue(Number.NaN), InvalidFamilyValueError);
+  assert.throws(() => knownValue(Number.POSITIVE_INFINITY), InvalidFamilyValueError);
+  assert.throws(() => knownValue(''), InvalidFamilyValueError);
+  assert.throws(() => knownValue('   \t\n '), InvalidFamilyValueError);
+  assert.throws(() => partialValue('', 'reason'), InvalidFamilyValueError);
+  assert.throws(() => partialValue('  ', 'reason'), InvalidFamilyValueError);
+  assert.throws(() => assertValue({ kind: 'known', value: '' }), InvalidFamilyValueError);
+  assert.throws(() => assertValue({ kind: 'partial', value: '   ', reason: 'r' }), InvalidFamilyValueError);
+  assert.throws(() => notRecorded(''), InvalidFamilyValueError);
+  assert.throws(() => notApplicable('   '), InvalidFamilyValueError);
+  assert.throws(() => partialValue(Number.NaN, 'reason'), InvalidFamilyValueError);
+  assert.throws(() => partialValue(5, ''), InvalidFamilyValueError);
+  assert.throws(() => assertValue(null, 'test cell'), /InvalidFamilyValueError|expected a 5-state family Value/);
+  assert.throws(() => assertValue(undefined, 'test cell'), InvalidFamilyValueError);
+  assert.throws(() => assertValue({ kind: 'known', value: Number.NaN }), InvalidFamilyValueError);
+  assert.throws(() => assertValue({ kind: 'bogus' }), InvalidFamilyValueError);
+});
+
+test('wire and exact adapters map every wire state and nullable meaning into the five states', () => {
+  const big = (1n << 60n) + 7n;
+  const rows = answer({
+    keys: [1n, 2n, 3n, 4n, 5n, 6n],
+    columns: 1,
+    names: ['GER', 'ENG', 'FRA', 'SOV', 'ITA', 'JAP'],
+    values: [42n, 0n, 0n, 0n, 0n, big],
+    states: [CELL.value, CELL.value, CELL.missing, CELL.unrecorded, CELL.noRow, CELL.value],
+    reasons: [null, null, 'Missing in source', null, 'Not held', null],
+  });
+  assert.equal(rows.kind, 'rows');
+  assert.deepEqual(valueFromWireCell(rows, 0, 0), { kind: 'known', value: 42 });
+  assert.deepEqual(valueFromWireCell(rows, 1, 0), { kind: 'zero', value: 0 });
+  assert.deepEqual(valueFromWireCell(rows, 2, 0), { kind: 'notRecorded', reason: 'Missing in source' });
+  assert.deepEqual(valueFromWireCell(rows, 3, 0), { kind: 'notRecorded', reason: 'Not recorded at this hour' });
+  assert.deepEqual(valueFromWireCell(rows, 4, 0), { kind: 'notRecorded', reason: 'Not held' });
+  assert.deepEqual(valueFromWireCell(rows, 5, 0), { kind: 'known', value: big });
+
+  assert.deepEqual(valueFromNamedAnswer(rows, 'GER'), { kind: 'known', value: 42 });
+  assert.deepEqual(valueFromNamedAnswer(rows, 'ENG'), { kind: 'zero', value: 0 });
+  assert.deepEqual(valueFromNamedAnswer(rows, 'FRA'), { kind: 'notRecorded', reason: 'Missing in source' });
+  assert.deepEqual(valueFromNamedAnswer(rows, 'JAP'), { kind: 'known', value: big });
+  assert.deepEqual(valueFromNamedAnswer(rows, 'USA'), { kind: 'notRecorded', reason: 'Not in the answer' });
+
+  const refused = answer({ notRecorded: 'Table not recorded' });
+  assert.deepEqual(valueFromNamedAnswer(refused, 'GER'), { kind: 'notRecorded', reason: 'Table not recorded' });
+  assert.deepEqual(valueFromNamedAnswer(undefined, 'GER'), { kind: 'notRecorded', reason: 'Not read yet' });
+
+  const floatBits = new DataView(new ArrayBuffer(8));
+  floatBits.setFloat64(0, 12.5, true);
+  const floatRows = answer({ keys: [1n], columns: 2, values: [floatBits.getBigInt64(0, true), 7n], states: [CELL.value, CELL.value] });
+  assert.equal(floatRows.kind, 'rows');
+  assert.deepEqual(wireFloat(floatRows, 0), { kind: 'known', value: 12.5 });
+  assert.deepEqual(wireWhole(floatRows, 1), { kind: 'known', value: 7n });
+
+  assert.deepEqual(valueFromNullable(null, { kind: 'notApplicable', reason: 'No garrison' }), { kind: 'notApplicable', reason: 'No garrison' });
+  assert.deepEqual(valueFromNullable(null, { kind: 'notRecorded', reason: 'Omitted' }), { kind: 'notRecorded', reason: 'Omitted' });
+  assert.deepEqual(valueFromNullable(0, { kind: 'notRecorded', reason: 'Omitted' }), { kind: 'zero', value: 0 });
+  assert.deepEqual(valueFromNullable(5, { kind: 'notRecorded', reason: 'Omitted' }, { partial: 'Gaps' }), { kind: 'partial', value: 5, reason: 'Gaps' });
+  assert.deepEqual(valueFromRawBigInt('0', { kind: 'notRecorded', reason: 'No value' }), { kind: 'zero', value: 0n });
+  assert.deepEqual(valueFromRawBigInt('9007199254740993123', { kind: 'notRecorded', reason: 'No value' }), { kind: 'known', value: 9007199254740993123n });
+  assert.throws(() => valueFromRawBigInt('not-a-bigint', { kind: 'notRecorded', reason: 'No value' }), InvalidFamilyValueError);
+
+  const live = { get: (k: string) => (k === 'a' ? 0 : k === 'b' ? 9 : undefined), missing: () => 'Not live' };
+  assert.deepEqual(valueFromLive(live, 'a'), { kind: 'zero', value: 0 });
+  assert.deepEqual(valueFromLive(live, 'b', { partialReason: 'Subset' }), { kind: 'partial', value: 9, reason: 'Subset' });
+  assert.deepEqual(valueFromLive(live, 'c'), { kind: 'notRecorded', reason: 'Not live' });
+});
+
+test('sorting places notRecorded and notApplicable last in both directions and breaks ties by name then key', () => {
+  const rows = [
+    { key: 'z', name: 'Zulu', value: notRecorded('Missing') },
+    { key: 'b', name: 'Bravo', value: knownValue(10) },
+    { key: 'a', name: 'Alpha', value: zeroValue(0) },
+    { key: 'c2', name: 'Bravo', value: knownValue(10) },
+    { key: 'c1', name: 'Bravo', value: knownValue(10) },
+    { key: 'na', name: 'Aardvark', value: notApplicable('N/A') },
+    { key: 'p', name: 'Partial', value: partialValue(25, 'Gaps') },
+  ];
+
+  const desc = [...rows].sort((x, y) => compareValueRows(x, y, 'descending')).map(r => r.key);
+  assert.deepEqual(desc, ['p', 'b', 'c1', 'c2', 'a', 'na', 'z']);
+
+  const asc = [...rows].sort((x, y) => compareValueRows(x, y, 'ascending')).map(r => r.key);
+  assert.deepEqual(asc, ['a', 'b', 'c1', 'c2', 'p', 'na', 'z']);
+
+  assert.equal(compareValues(knownValue(1n << 80n), knownValue((1n << 80n) + 1n), 'descending') > 0, true);
+});
+
+test('formatting and spoken forms render zero as 0, never None or dash, and carry reasons for absent and partial values', () => {
+  const z1 = formatValueState(zeroValue(0), 'integer');
+  assert.equal(z1.kind, 'zero');
+  assert.equal(z1.text, '0');
+  const z2 = formatValueState(zeroValue(0n), { decimals: 0 });
+  assert.equal(z2.kind, 'zero');
+  assert.equal(z2.text, '0');
+  const nr = formatValueState(notRecorded('Unrecorded'), 'integer');
+  assert.equal(nr.kind, 'notRecorded');
+  assert.equal(nr.label, 'Not recorded');
+  const na = formatValueState(notApplicable('Not at war'), 'integer');
+  assert.equal(na.kind, 'notApplicable');
+  assert.equal(na.label, '\u2014');
+
+  const part = formatValueState(partialValue(120, 'Gaps excluded'), 'integer');
+  assert.equal(part.kind, 'partial');
+  assert.equal(part.text, '120');
+  assert.equal(part.reason, 'Gaps excluded');
+
+  assert.equal(spokenValue(zeroValue(0), 'integer'), '0');
+  assert.equal(spokenValue(notRecorded('No sensor'), 'integer'), 'Not recorded: No sensor');
+  assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
+  assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
+
+  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', '0']));
+  assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));
+  assert.equal(auditValue(notApplicable('Peacetime'), 'integer'), JSON.stringify(['notApplicable', 'Peacetime']));
+  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', '15', 'Gaps', false]));
+  assert.notEqual(auditValue(zeroValue(0), 'decimal1'), auditValue(knownValue(0.04), 'decimal1'));
+});
+
+test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
+  const big = (1n << 60n) + 7n;
+  assert.equal(spokenValue(knownValue(big), 'decimal1'), '1,152,921,504,606,846,983');
+  assert.equal(spokenValue(knownValue(big), 'percent2'), '1152921504606846983.00%');
+  assert.equal(spokenValue(knownValue(big), { decimals: 0, maxDecimals: 2 }), '1,152,921,504,606,846,983');
+  const bigSeconds = 3600n * 100000000000000000n + 61n;
+  assert.equal(spokenValue(knownValue(bigSeconds), 'clockSeconds'), '100000000000000000:01:01');
+});

@@ -78,3 +78,62 @@ fn a_step_of_fifteen_hours_reads_the_parts_at_the_windows_edges_never_the_comman
     assert_eq!(step(&dense, 300), at_200, "another hour, the same lookups");
     assert_eq!(at_200, 1 + 2 * (1 + 2 + 1) + 1, "what one step reads");
 }
+
+#[test]
+fn player_display_tag_uses_only_versions_present_in_the_window() {
+    let mut session = dashboard_base::test_fixtures::session(9);
+    session.qpc_frequency = 1;
+    let actor = |at_qpc: u64, tag: &[u8]| Actor {
+        id: 1,
+        player: 1,
+        country: 1,
+        since_qpc: 0,
+        at_qpc,
+        user: Vec::new(),
+        name: b"switcher".to_vec(),
+        tag: tag.to_vec(),
+    };
+    let spans: Vec<Span> = (0..60)
+        .map(|hour| Span { from_qpc: hour as u64 * 60, to_qpc: (hour as u64 + 1) * 60, complete: true, hour, paused: false })
+        .collect();
+    let batch = Batch {
+        kinds: vec![Kind { id: 1, token: 1, name: "synthetic order".into(), category: Category::Army }],
+        actors: vec![actor(0, b"GER"), actor(10 * 60, b"ITA"), actor(40 * 60, b"GER")],
+        events: vec![
+            Event { qpc: 2 * 60, hour: 2, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 1, paused: false },
+            Event { qpc: 15 * 60, hour: 15, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 2, paused: false },
+            Event { qpc: 45 * 60, hour: 45, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 3, paused: false },
+        ],
+        spans,
+        ..Default::default()
+    };
+    let packet = ControlRecord::PlayerCommands { session: 9, packet: Packet::pack(4, 1, 2, 0, 0, 60 * 60, 0, &batch).unwrap() };
+    let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
+    let mut head = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
+        branch_id: "4".into(),
+        group: ApmGroup::Player,
+        tags: None,
+        membership: None,
+        players: Vec::new(),
+        first_hour: 0,
+        last_hour: 59,
+        window_hours: 30,
+    })
+    .unwrap();
+    let amounts = head.amounts(0, 25);
+    let reply = query(&index, &ApmParams {
+        branch_id: "4".into(),
+        group: ApmGroup::Player,
+        registry: false,
+        first_hour: Some(0),
+        last_hour: Some(25),
+        tags: None,
+        membership: None,
+        players: Vec::new(),
+        buckets: 1,
+    }, &AtomicBool::new(false))
+    .unwrap();
+    assert_eq!(reply.series.len(), 1);
+    assert_eq!(reply.series[0].tag.as_deref(), Some("ITA"));
+    assert_eq!(amounts.values().next().unwrap().tag, "ITA");
+}
