@@ -1,10 +1,7 @@
 
 use super::{LAND_ROUTE, NAVAL_ROUTE, NO_ROUTE, RouteFields};
 use dashboard_core::protocol::PlanKind;
-use content_reader_core::{
-    adjacencies::SEA_CROSSING, province_geometry::ProvinceGeometry, province_graph::ProvinceGraph,
-    province_graph::heap_pop, province_graph::heap_push,
-};
+use content_reader_map::{adjacencies::SEA_CROSSING, province_geometry::ProvinceGeometry, province_graph::{ProvinceGraph, heap_pop, heap_push}};
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_gpu::{
     province_map::HeightField,

@@ -29,7 +29,7 @@ import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/gr
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows as FollowedRowsAnswer } from '../../dashboard/follow/message';
 import { shownThrough } from '../../dashboard/follow/store.ts';
@@ -38,7 +38,7 @@ import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useProduct } from '../../dashboard/products';
 import { useFrameWindows } from './frameWindows.ts';
@@ -155,6 +155,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     reportShown(shownThrough(entry));
   }, [woken, reportShown]));
   const followedHead = followsHead(followed) && followed.entry !== null;
+  const refused = followRefusal(followed);
   followedEntry.current = followedHead && liveRaceView ? followed.entry : null;
   followedRows.scope = followQuery ? canonical(followQuery) : '';
   followedRows.limit = stickyLimit(Math.max(1, resolved.top ?? resolved.tags.length));
@@ -356,6 +357,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
 
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
+    if (refused) return <WidgetState kind="unavailable" message={refused} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
     if (metadata.error) return <WidgetState kind="error" failure={asFailure(metadata.error)} onRetry={metadata.retry} />;

@@ -197,7 +197,7 @@ mod tests {
     use super::*;
     #[test]
     fn ordered_null_repeated_references_join_to_mod_goal_objects() {
-        let doc=content_reader_core::parser::parse(br#"first_wargoals={wargoal={id=3 type=4713} wargoal={id=0 type=0} wargoal={id=3 type=4713}}
+        let doc=content_reader_parser::parser::parse(br#"first_wargoals={wargoal={id=3 type=4713} wargoal={id=0 type=0} wargoal={id=3 type=4713}}
             diplomacy={wargoals={mod_claim={id={id=3 type=4713} wargoaldata_actor="ONE" wargoaldata_recipient="TWO" type=star_contest states={9 7 9} liberate={THREE ONE}}}}"#).unwrap();
         let handles = references(&doc.items, b"first_wargoals").unwrap();
         assert_eq!(handles, vec![(3_u64 << 32) | 4713, 0, (3_u64 << 32) | 4713]);
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(goal.countries, vec![b"THREE".to_vec(), b"ONE".to_vec()]);
         assert!(objects(&doc.items, &mut objects_by_id).is_err());
         let bad =
-            content_reader_core::parser::parse(b"first_wargoals={not_a_goal={id=3 type=4713}}").unwrap();
+            content_reader_parser::parser::parse(b"first_wargoals={not_a_goal={id=3 type=4713}}").unwrap();
         assert!(references(&bad.items, b"first_wargoals").is_err());
     }
 }
@@ -219,7 +219,7 @@ mod inventory_tests {
     use super::*;
     #[test]
     fn wargoal_inventory_keeps_used_and_unused_rosters_and_activity_ordinals() {
-        let doc=content_reader_core::parser::parse(br#"diplomacy={wargoals={custom={id={id=4 type=123} type=custom wargoaldata_actor=ONE wargoaldata_recipient=TWO states={7 8 7} puppets={THREE} expire=1940.1.1.1}} available_wargoals={wargoal={id=4 type=123}}}
+        let doc=content_reader_parser::parser::parse(br#"diplomacy={wargoals={custom={id={id=4 type=123} type=custom wargoaldata_actor=ONE wargoaldata_recipient=TWO states={7 8 7} puppets={THREE} expire=1940.1.1.1}} available_wargoals={wargoal={id=4 type=123}}}
         politics={timed_activities={other_activity={} timed_wargoal={owner=ONE target=TWO total_cost=90 daily_cost=1 points=17.5 pay_upfront=yes wargoal=custom states={8 7} threat=0.25}}}"#).unwrap();
         let saved = inventory(&doc.items).unwrap();
         assert_eq!(saved.goals, [4u64 << 32 | 123]);

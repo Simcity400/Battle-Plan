@@ -1,3 +1,4 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use super::{Inner, Lane, Lease, Request, queue::Receiver};
 use dashboard_base::{Source, SourceKey, products::{ContentOptions, LoadContext}};
 use dashboard_core::{map_settings, protocol::{CampaignMapSettings, replay_revision}, transport::{MapSettingsTarget, ProductRequest, SourceReply, bounded_json, bounded_text}};
@@ -212,7 +213,7 @@ impl Inner {
             return;
         };
         let warming = Arc::clone(source);
-        job_priority::spawn(content_reader_core::content::carry_generation(move || {
+        job_priority::spawn(content_reader_layers::content::carry_generation(move || {
             warming.in_scope(|| dashboard_base::content::warm(&warming, &content));
         }));
     }
@@ -449,15 +450,12 @@ impl Inner {
         }
         let mut store = self.map_settings.lock().map_err(|e| e.to_string())?;
         store.check()?;
+        let mut save_warning = None;
         if let Some(settings) = settings {
-            store
-                .save(key.clone(), settings)
-                .map_err(|e| e.to_string())?;
+            save_warning = store.save(key.clone(), settings).map_err(|e| e.to_string())?;
         }
         if let Some(setting) = flip {
-            store
-                .flip(key.clone(), setting)
-                .map_err(|e| e.to_string())?;
+            save_warning = store.flip(key.clone(), setting).map_err(|e| e.to_string())?.or(save_warning);
         }
         let replay = source.as_ref().map(|source| source.replay_ref());
         let recorded = replay
@@ -486,13 +484,14 @@ impl Inner {
             sample_counts,
             game_graphics: store.game().map(|game| game.graphics),
             game_settings_error: store.game_error(),
+            save_warning,
             presentation_generation: 0,
         };
         drop(store);
         self.content.update(|_| ());
         self.catch_up()?;
         reply.presentation_generation = self.presentation_generation();
-        match content_reader_core::content::visual::plan(
+        match content_reader_layers::content::visual::plan(
             &options,
             &selected,
             &recorded,
@@ -827,7 +826,7 @@ pub(super) struct MapSettingsJob {
     pub(super) source: Option<Arc<Source>>,
     pub(super) settings: Option<CampaignMapSettings>,
     pub(super) flip: Option<dashboard_core::protocol::MapSetting>,
-    pub(super) options: content_reader_core::ResolveOptions,
+    pub(super) options: content_reader_layers::ResolveOptions,
 }
 
 pub(super) struct OpenJob {

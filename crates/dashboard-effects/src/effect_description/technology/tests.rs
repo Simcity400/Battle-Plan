@@ -492,7 +492,7 @@ fn render_raid(fixture: &Fixture) -> Description {
         },
         EventScope::of(EventObject::Raid(RAID)),
     ]);
-    let items = content_reader_core::effect_keys::read_body(
+    let items = content_reader_script::effect_keys::read_body(
         b"raid_reduce_project_progress_ratio=0.03",
         content.key_names.unwrap(),
     )

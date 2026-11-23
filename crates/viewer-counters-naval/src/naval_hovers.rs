@@ -1,5 +1,5 @@
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use viewer_foundation::allegiance::Allegiance;
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn naval_inherited_controls_follow_visible_attachment_order_and_the_holder_clip() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read_at(br#"guiTypes = {
             containerWindowType = { name = unit_counter_navy size = { width = 66 height = 33 } clipping = no
                 buttonType = { name = count_bg quadTextureSprite = GFX_bg }
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn inherited_native_text_and_container_use_their_actual_shapes() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read_at(
             br#"guiTypes = {
             containerWindowType = { name = unit_counter_navy size = { width = 66 height = 33 }
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn full_frame_native_hit_does_not_replace_legacy_stretched_draw_bounds() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read_at(
             br#"guiTypes = { containerWindowType = {
             name = unit_counter_navy size = { width = 66 height = 33 } clipping = no

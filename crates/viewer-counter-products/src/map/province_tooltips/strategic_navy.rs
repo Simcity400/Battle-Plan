@@ -38,7 +38,7 @@ impl Default for Defines {
     }
 }
 impl Defines {
-    pub(super) fn load(d: &content_reader_core::defines::Defines) -> Self {
+    pub(super) fn load(d: &content_reader_defines::defines::Defines) -> Self {
         let fixed = |section, key| d.fixed5(section, key).map_err(|e| e.to_string());
         Self {
             sources: replay_derive::naval_dominance_derive::Defines::read(|section, key| {
@@ -90,7 +90,7 @@ pub(super) fn append(
         }
     };
     if !region_content.provinces.iter().any(|province| {
-        context.content.kinds.get(province) == Some(&content_reader_core::map::ProvinceKind::Sea)
+        context.content.kinds.get(province) == Some(&content_reader_map::map::ProvinceKind::Sea)
     }) {
         return;
     }
@@ -229,7 +229,7 @@ pub(super) fn append(
 fn terrain_category<'c>(
     content: &'c super::counter_content::Content,
     region: &content_reader_regions::regions::StrategicRegion,
-) -> Result<&'c content_reader_core::terrain::TerrainCategory, String> {
+) -> Result<&'c content_reader_key_names::terrain::TerrainCategory, String> {
     let terrain = content.movement_terrain.as_ref().map_err(Clone::clone)?;
     let index = region
         .naval_terrain

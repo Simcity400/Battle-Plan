@@ -1,5 +1,5 @@
 use super::{Atlas, Names, NameLayer, NameLayers};
-use viewer_layer_core::{layers::{Layer, Published, View}, test_support::rail_recording::{frames_until, recorded, side_of}};
+use viewer_layer_core::{layers::{Layer, Published, View}, test_support::{rail_recording::{frames_until, recorded, side_of}, recorded::seen}};
 use content_reader_localisation::localisation::Localisation;
 use map_display_data::landscape::{Placements, WorldName};
 use replay_columnar::{manifest::Status, state::Cell};
@@ -519,29 +519,44 @@ fn names_sent_again_whole_send_every_area_in_one_upload() {
     assert_eq!(scene.drawn(), layer.placements().country, "the areas draw today's placements");
 }
 
+fn made_ahead(side: &mut viewer_layer_core::playhead_host::MapSide, hour: i32) {
+    loop {
+        let before = side.entry().playhead().step_state();
+        let applied = side.applied().unwrap();
+        side.frame_synced(applied).unwrap();
+        if names(side).made_through() >= Some(hour) {
+            return;
+        }
+        if before.0 < Some(hour) {
+            assert!(side.wait_step_after(before, hour).unwrap(), "no step ends by hour {hour}, so the worker cannot make it: {}", seen(side));
+            continue;
+        }
+        let state = seen(side);
+        let layer = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Names>()).expect("the names layer is home");
+        assert!(layer.kept.back().is_some_and(|step| step.last() >= hour), "the step to hour {hour} is built but was not handed to the names worker: {state}");
+        let made = layer.made.as_ref().expect("the names worker runs").recv().unwrap_or_else(|_| panic!("the names worker stopped before making hour {hour}: {state}"));
+        if made.epoch == layer.epoch {
+            layer.fed.receive(made.stamp, made);
+        }
+    }
+}
+
+fn step_to(side: &mut viewer_layer_core::playhead_host::MapSide, hour: i32) -> viewer_layer_core::playhead_host::Frame {
+    loop {
+        let before = side.entry().playhead().step_state();
+        let frame = side.frame(hour).unwrap();
+        if frame.steps > 0 {
+            return frame;
+        }
+        assert!(side.wait_step_after(before, hour).unwrap(), "no step ends by hour {hour}, so no frame can take one: {}", seen(side));
+    }
+}
+
 fn ahead_steps(side: &mut viewer_layer_core::playhead_host::MapSide, mut each: impl FnMut(&mut viewer_layer_core::playhead_host::MapSide, &viewer_layer_core::playhead_host::Frame, i32) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let next = side.applied().unwrap() + 4;
-        loop {
-            let applied = side.applied().unwrap();
-            side.frame(applied).unwrap();
-            if side.entry().playhead().newest() >= Some(next) && names(side).made_through() >= Some(next) {
-                break;
-            }
-            assert!(Instant::now() < deadline, "the worker did not make hour {next} within 120 s");
-            std::thread::yield_now();
-        }
-        let mut stepped = None;
-        for _ in 0..50_000_000u64 {
-            let frame = side.frame(next).unwrap();
-            if frame.steps > 0 {
-                stepped = Some(frame);
-                break;
-            }
-            std::thread::yield_now();
-        }
-        let frame = stepped.unwrap_or_else(|| panic!("no frame took the step to hour {next}"));
+        made_ahead(side, next);
+        let frame = step_to(side, next);
         assert_eq!((frame.applied, frame.steps), (Some(next), 1), "a step of four hours a frame");
         if each(side, &frame, next) {
             return;
@@ -574,13 +589,7 @@ fn names_sought_back_restart_from_the_mirrors_and_show_nothing_made_before() {
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     ahead_steps(&mut side, |_, _, hour| hour >= 24);
     let applied = side.applied().unwrap();
-    for _ in 0..50_000_000u64 {
-        side.frame(applied).unwrap();
-        if names(&side).made_through() >= Some(applied + 8) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    made_ahead(&mut side, applied + 8);
     assert_eq!(names(&side).areas()[&2].tag.as_deref(), Some("CCC"), "renamed at hour 20");
     side.entry().playhead().seek(12);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());

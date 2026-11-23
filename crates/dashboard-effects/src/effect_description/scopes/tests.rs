@@ -36,7 +36,7 @@ fn format99_country_rosters_preserve_stored_order() {
             occupied: Recorded::Value(Some(references)),
             ..Default::default()
         }]));
-    let item = content_reader_core::parser::parse(b"every_neighbor_country={}")
+    let item = content_reader_parser::parser::parse(b"every_neighbor_country={}")
         .unwrap()
         .items
         .remove(0);
@@ -199,7 +199,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
             out: Description::default(),
             scripted_stack: Vec::new(),
         };
-        let item = content_reader_core::parser::parse(b"every_state_division={}")
+        let item = content_reader_parser::parser::parse(b"every_state_division={}")
             .unwrap()
             .items
             .remove(0);
@@ -267,7 +267,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
                 .collect(),
         ));
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-        let item = content_reader_core::parser::parse(b"every_active_scientist={}")
+        let item = content_reader_parser::parser::parse(b"every_active_scientist={}")
             .unwrap()
             .items
             .remove(0);
@@ -290,7 +290,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
         };
         rows[0].active = unavailable;
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-            let item = content_reader_core::parser::parse(b"random_active_scientist={}")
+            let item = content_reader_parser::parser::parse(b"random_active_scientist={}")
                 .unwrap()
                 .items
                 .remove(0);
@@ -355,7 +355,7 @@ fn inactive_scientists_still_consume_limit_variable_randomness() {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
         let evaluator = renderer.evaluator().unwrap();
         assert_eq!(evaluator.scoped_value(b"random_seed", scopes), Ok(967));
-        let item = content_reader_core::parser::parse(
+        let item = content_reader_parser::parser::parse(
             b"every_active_scientist={limit={check_variable={random < 1}}}",
         )
         .unwrap()
@@ -386,7 +386,7 @@ fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_fail
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    fixture.triggers.counts = Some(content_reader_core::trigger_keys::CountTriggerNames {
+    fixture.triggers.counts = Some(content_reader_script::trigger_keys::CountTriggerNames {
         ideology_types: [b"synthetic_type".to_vec()].into(),
         ..Default::default()
     });
@@ -492,11 +492,11 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
                 literal: b"two".to_vec(),
             },
         ]));
-    let mut database = content_reader_core::industrial_organisations::Database::default();
+    let mut database = content_reader_military::industrial_organisations::Database::default();
     database
         .read_file(
             b"base={visible={FROM={tag=AAA}}} one={include=base} two={visible={always=no}}",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
     let content = Content {
@@ -537,11 +537,11 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     let out = fixture.render("THIS={army_experience=2}", &mut graph, content);
     assert_eq!(out.text, "AAA \u{12}AAA XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    database = content_reader_core::industrial_organisations::Database::default();
+    database = content_reader_military::industrial_organisations::Database::default();
     database
         .read_file(
             b"base={visible={always=no}} one={visible={always=no}} two={delete_included_values={visible} include=base}",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         )
         .unwrap();
     let out = fixture.render(
@@ -1175,7 +1175,7 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             role: Some(1),
             ..Default::default()
         }]));
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.counts.ideologies.insert(b"ideology".to_vec());
     if let TableView::Complete(TableRows::Politics(rows)) =
         &mut *fixture.frame.tables[TableId::Politics.index()]
@@ -1231,8 +1231,8 @@ fn random_selectors_and_character_list_use_native_multiple_virtual() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-        for &(_, name) in content_reader_core::effect_keys::REGISTERED_EFFECTS.iter() {
-            let item = content_reader_core::parser::parse(format!("{name}={{}}").as_bytes())
+        for &(_, name) in content_reader_script::effect_keys::REGISTERED_EFFECTS.iter() {
+            let item = content_reader_parser::parser::parse(format!("{name}={{}}").as_bytes())
                 .unwrap()
                 .items
                 .remove(0);
@@ -1611,7 +1611,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
                 .unwrap()
                 .store_description_temp(b"stable".to_vec(), 100_000);
             assert_eq!(renderer.scoped_value(b"random_seed", scopes), Ok(967));
-            let item = content_reader_core::parser::parse(
+            let item = content_reader_parser::parser::parse(
                 format!("random_operative={{limit={{{limit}}}}}").as_bytes(),
             )
             .unwrap()
@@ -1645,7 +1645,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
         let evaluator = renderer.evaluator().unwrap();
         evaluator.store_description_temp(b"stable".to_vec(), 100_000);
         let effects = evaluator.variable_effects();
-        let item = content_reader_core::parser::parse(
+        let item = content_reader_parser::parser::parse(
             b"random_operative={limit={divide_temp_variable={stable=0} always=no}}",
         )
         .unwrap()
@@ -1837,7 +1837,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
         }]));
     let lookup = |_: &[u8]| {
         Ok(std::sync::Arc::new(content_reader_events::events::Event {
-            titles: content_reader_core::parser::parse(b"title=TIP").unwrap().items,
+            titles: content_reader_parser::parser::parse(b"title=TIP").unwrap().items,
             ..Default::default()
         }))
     };
@@ -1915,7 +1915,7 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
             },
         ]));
     let item =
-        content_reader_core::parser::parse(b"every_country_with_original_tag={original_tag=THIS}")
+        content_reader_parser::parser::parse(b"every_country_with_original_tag={original_tag=THIS}")
             .unwrap()
             .items
             .remove(0);

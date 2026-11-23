@@ -306,7 +306,6 @@ pub struct Holders {
     pub sizing: collector_workers::spool_phases::Phase,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuildAhead {
     Starting,
@@ -382,7 +381,7 @@ pub struct Captured {
     pub links_result: Outcome,
     pub table_ns: [u64; TABLE_COUNT],
     pub phases: HourPhases,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "acquisition_profile")]
     pub table_reads: [engine_native::memory::ReadCounts; TABLE_COUNT],
     pub total_ns: u64,
     pub force_full: bool,
@@ -400,7 +399,7 @@ impl Captured {
         };
         self.table_ns = [0; TABLE_COUNT];
         self.force_full = false;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(feature = "acquisition_profile")]
         {
             self.table_reads = collector_memory::read_accounting::ZERO;
         }
@@ -513,7 +512,7 @@ impl Captured {
             links_result: unavailable,
             table_ns: [0; TABLE_COUNT],
             phases: HourPhases::default(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(feature = "acquisition_profile")]
             table_reads: collector_memory::read_accounting::ZERO,
             total_ns: 0,
             force_full: false,
@@ -909,12 +908,8 @@ pub struct Shared {
     pub(crate) naval_combat_home: collector_naval_details::naval_combat_sources::Home,
     pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) build_ahead_seam: OnceLock<Box<dyn Fn(BuildAhead) + Send + Sync>>,
     #[cfg(test)]
     pub(crate) clock_frame_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) surplus_free_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -1080,24 +1075,6 @@ impl Shared {
         &self.naval_combat_home
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    /// # Safety
-    /// Install the callback only on fixture Shared storage in an isolated test before the
-    /// fixture's builder begins.
-    pub unsafe fn build_ahead_seam_for_test(
-        &self,
-    ) -> &OnceLock<Box<dyn Fn(BuildAhead) + Send + Sync>> {
-        &self.build_ahead_seam
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    /// # Safety
-    /// Install the callback only on fixture Shared storage in an isolated test before any fixture
-    /// frame is recycled.
-    pub unsafe fn surplus_free_seam(&self) -> &OnceLock<Box<dyn Fn() + Send + Sync>> {
-        &self.surplus_free_seam
-    }
-
     /// # Safety
     /// Only the native callback may advance this counter. The status writer may read it, and
     /// isolated fixtures may seed it before publication.
@@ -1128,11 +1105,12 @@ impl Shared {
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
         unsafe {
-            Self::with_sizing(
+            Self::with_fixture_sizing(
                 base,
                 trampoline,
                 frequency,
                 &crate::country_scale::Sizing::for_slots(0),
+                0,
             )
         }
         .expect("synthetic capture buffers")
@@ -1192,14 +1170,38 @@ impl Shared {
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
     ) -> std::io::Result<Self> {
-        #[cfg(any(test, feature = "test-support"))]
-        let fixed_layout_bytes = if engine_executable::executable_tables::is_initialized() {
-            engine_fixed_layout::fixed_layout::longest_name()
-        } else {
-            0
-        };
-        #[cfg(not(any(test, feature = "test-support")))]
         let fixed_layout_bytes = engine_fixed_layout::fixed_layout::longest_name();
+        // SAFETY: The caller excludes competing observer boundaries, capture and detach.
+        unsafe { Self::allocate(base, trampoline, frequency, sizing, fixed_layout_bytes) }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// The fixture must have exclusive use of the global observer bindings. Keep Shared alive
+    /// through callback quiescence once its doctrine store is bound.
+    pub unsafe fn with_fixture_sizing(
+        base: usize,
+        trampoline: usize,
+        frequency: u64,
+        sizing: &crate::country_scale::Sizing,
+        fixed_layout_bytes: usize,
+    ) -> std::io::Result<Self> {
+        // SAFETY: The isolated fixture owns these observer bindings.
+        let shared = unsafe {
+            Self::allocate(base, trampoline, frequency, sizing, fixed_layout_bytes)
+        }?;
+        shared.publish_steady_frames()?;
+        shared.bind_doctrine_observer();
+        Ok(shared)
+    }
+
+    unsafe fn allocate(
+        base: usize,
+        trampoline: usize,
+        frequency: u64,
+        sizing: &crate::country_scale::Sizing,
+        fixed_layout_bytes: usize,
+    ) -> std::io::Result<Self> {
         let fixed_layout_buffer = engine_allocation::default_vec::<u8>(fixed_layout_bytes)?;
         let roster = engine_allocation::boxed(Roster::with_counts(sizing.content))?;
         let country_cache =
@@ -1484,13 +1486,9 @@ impl Shared {
             naval_combat_home,
             weather_temperature: Mutex::new(Default::default()),
             builder_waker: OnceLock::new(),
-            #[cfg(any(test, feature = "test-support"))]
-            build_ahead_seam: OnceLock::new(),
-            #[cfg(test)]
+                    #[cfg(test)]
             clock_frame_seam: OnceLock::new(),
-            #[cfg(any(test, feature = "test-support"))]
-            surplus_free_seam: OnceLock::new(),
-        };
+                };
         Ok(shared)
     }
 
@@ -1580,20 +1578,8 @@ impl Shared {
     /// Only the session frame builder or isolated fixture may prepare a spare. Ensure the observer
     /// stores remain live throughout its preparation.
     pub unsafe fn build_frame_ahead(&self) -> std::io::Result<()> {
-        #[cfg(any(test, feature = "test-support"))]
-        self.build_ahead_seam(BuildAhead::Starting);
         let frame = self.new_frame()?;
-        self.publish_frame(frame, true)?;
-        #[cfg(any(test, feature = "test-support"))]
-        self.build_ahead_seam(BuildAhead::Free);
-        Ok(())
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn build_ahead_seam(&self, at: BuildAhead) {
-        if let Some(seam) = self.build_ahead_seam.get() {
-            seam(at);
-        }
+        self.publish_frame(frame, true)
     }
 
     /// # Safety
@@ -1602,7 +1588,19 @@ impl Shared {
     pub unsafe fn build_ahead_until(
         &self,
         stop: &AtomicBool,
+        follow: impl FnMut(),
+    ) -> std::io::Result<()> {
+        // SAFETY: The caller owns the builder and the observer storage outlives it.
+        unsafe { self.build_ahead_until_observing(stop, follow, |_| {}) }
+    }
+
+    /// # Safety
+    /// The ownership and lifetime requirements of build_ahead_until apply.
+    pub unsafe fn build_ahead_until_observing(
+        &self,
+        stop: &AtomicBool,
         mut follow: impl FnMut(),
+        mut observe: impl FnMut(BuildAhead),
     ) -> std::io::Result<()> {
         let _ = self.builder_waker.set(std::thread::current());
         loop {
@@ -1611,13 +1609,14 @@ impl Shared {
                 return Ok(());
             }
             if crate::frame_pool::builds_ahead(self.frames.len(), self.frames.spool_stalled()) {
+                observe(BuildAhead::Starting);
                 // SAFETY: The dedicated builder or owning fixture prepares a spare while observers
                 // remain live.
                 unsafe { self.build_frame_ahead() }?;
+                observe(BuildAhead::Free);
                 continue;
             }
-            #[cfg(any(test, feature = "test-support"))]
-            self.build_ahead_seam(BuildAhead::Parking);
+            observe(BuildAhead::Parking);
             std::thread::park();
         }
     }
@@ -1827,12 +1826,6 @@ impl Shared {
     /// Drop only this session's retired frame outside its owning slot, after any users of that
     /// frame have joined.
     pub unsafe fn free_surplus(&self, frame: Option<Box<Captured>>) {
-        #[cfg(any(test, feature = "test-support"))]
-        if frame.is_some()
-            && let Some(seam) = self.surplus_free_seam.get()
-        {
-            seam();
-        }
         drop(frame);
     }
 
@@ -2369,9 +2362,12 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
     unsafe { shared.history_frames.capture() };
     let _frame_priority = shared.frame_priority.callback();
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Callback);
+    #[cfg(feature = "acquisition_profile")]
     let _reads = collector_memory::read_accounting::Capture::new();
+    #[cfg(not(feature = "acquisition_profile"))]
+    let _reads = collector_memory::read_accounting::Scope::new();
     let memory = unsafe { LiveMemory::new() };
-    #[cfg(any(test, feature = "acquisition_profile"))]
+    #[cfg(feature = "acquisition_profile")]
     let memory = engine_native::memory::CountedMemory::new(memory);
     let world_generation = collector_lifetime::world_lifetime::generation();
     let clock_start = qpc();
@@ -2632,7 +2628,7 @@ impl Drop for CallbackPriority {
 /// bytes it reads against them.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     let memory = unsafe { LiveMemory::new() };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "acquisition_profile")]
     let memory = engine_native::memory::CountedMemory::new(memory);
     unsafe { acquire_with_memory(shared, dispatch, memory) };
 }
@@ -6166,7 +6162,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             shared.sample_roster(&memory, frame.clock.as_ref().map(Clock::borrowed));
         }
         frame.table_ns[0] = shared.ns(clock_ticks);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(feature = "acquisition_profile")]
         collector_memory::read_accounting::snapshot_into(&mut frame.table_reads);
         if frame.world_generation != collector_lifetime::world_lifetime::generation() {
             // SAFETY: The spool settled this frame's event-feed handoff before returning the slot.

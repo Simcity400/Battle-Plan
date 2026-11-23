@@ -18,6 +18,12 @@ test = false
 alloc-fault-injection = []
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 replay.workspace = true
 replay-capture-spool.workspace = true
 replay-files.workspace = true
@@ -35,7 +41,6 @@ engine-dlc.workspace = true
 job-priority.workspace = true
 replay-frame.workspace = true
 serde.workspace = true
-content-reader-core.workspace = true
 replay-data.workspace = true
 recorder-oracle.workspace = true
 recorder-movement-oracle.workspace = true
@@ -49,11 +54,12 @@ zstd = "0.13"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Console", "Win32_System_Registry", "Win32_System_Environment", "Win32_System_Performance", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 replay-journal = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 synthetic-game.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 recorder-test-support.workspace = true
 
 [lints]
@@ -65,7 +71,11 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-raids = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }

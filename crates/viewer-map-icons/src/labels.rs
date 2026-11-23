@@ -19,7 +19,8 @@ use viewer_gpu::province_schedule::Schedule;
 #[cfg(test)]
 use viewer_native_gui::test_support::gui;
 
-use content_reader_core::{gui::native, map::MapData, map::ProvinceKind};
+use content_reader_gui::gui::native;
+use content_reader_map::map::{MapData, ProvinceKind};
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -42,7 +43,7 @@ pub struct LabelDefines {
 }
 
 impl LabelDefines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let number = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
             if value.is_finite() {
@@ -161,7 +162,7 @@ pub struct LabelContent {
 }
 
 impl LabelContent {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             defines: LabelDefines::load(defines)?,
             anchors: BTreeMap::new(),
@@ -920,7 +921,7 @@ pub(crate) mod tests {
 
     #[test]
     fn native_labels_draw_at_their_anchors_in_depth_order_across_both_pools() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1012,7 +1013,7 @@ pub(crate) mod tests {
 
     #[test]
     fn labels_that_stood_still_are_kept_and_an_off_screen_dirty_capital_lays_out_its_window_alone() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1088,7 +1089,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_label_s_name_stands_on_its_own_anchor_and_its_dot_on_the_label_s() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1153,7 +1154,7 @@ pub(crate) mod tests {
 
     #[test]
     fn dump_icons_past_the_initial_pool_all_draw() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use viewer_native_gui::icon_windows::DumpFrames;
         let resources = gui::fixture();
         let windows = gui::windows(
@@ -1207,7 +1208,7 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_label_templates_are_named_and_counted_per_family() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(b"");
         let context = native_resources::Context {
@@ -1572,7 +1573,7 @@ pub(crate) mod tests {
             put_sample_campaign,
         };
         use viewer_map_modes::political::{build, FrameKey, test_support::map};
-        use content_reader_core::map::MapData;
+        use content_reader_map::map::MapData;
         let map = map();
         let mut frame = complete_frame(11, |table| {
             replay_data::rows::sample_extended_table(table, 0)

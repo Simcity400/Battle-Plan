@@ -5,7 +5,7 @@ use crate::{
 };
 use std::sync::{
     Arc, Mutex, PoisonError,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 use tauri::{
     AppHandle, Manager, Wry,
@@ -27,23 +27,59 @@ const RECORD_AT: usize = 1;
 const TOOLTIP_UNITS: usize = 127;
 const ICON_SIZE: u32 = 32;
 
-static DRAWN_THEME: AtomicU8 = AtomicU8::new(0);
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tray {
+    pub revision: u64,
+    pub light: Light,
+    pub tooltip: String,
+    pub can_start: bool,
+    pub can_stop: bool,
+}
 
-fn theme(light_taskbar: bool) -> u8 {
-    1 + u8::from(light_taskbar)
+impl Default for Tray {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            light: Light::Ready,
+            tooltip: tooltip(&Snapshot::default()),
+            can_start: false,
+            can_stop: false,
+        }
+    }
+}
+
+fn newer(wanted: &mut Tray, next: Tray) -> bool {
+    if next.revision < wanted.revision {
+        return false;
+    }
+    *wanted = next;
+    true
 }
 
 pub struct TrayMenu {
     menu: Menu<Wry>,
     start: MenuItem<Wry>,
     stop: Submenu<Wry>,
-    wanted: Mutex<(bool, bool)>,
+    wanted: Mutex<Tray>,
+    drawn: Mutex<(Light, bool, String)>,
     stop_shown: AtomicBool,
 }
 
 impl TrayMenu {
-    fn follow(&self) -> tauri::Result<()> {
-        let (can_start, can_stop) = *self.wanted.lock().unwrap_or_else(PoisonError::into_inner);
+    fn follow(&self, app: &AppHandle) -> tauri::Result<()> {
+        let Tray { light, tooltip, can_start, can_stop, .. } = self.wanted.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            let light_taskbar = crate::startup::light_taskbar();
+            let mut drawn = self.drawn.lock().unwrap_or_else(PoisonError::into_inner);
+            if (drawn.0, drawn.1) != (light, light_taskbar) {
+                tray.set_icon(Some(icon(light, light_taskbar)))?;
+                (drawn.0, drawn.1) = (light, light_taskbar);
+            }
+            if drawn.2 != tooltip {
+                tray.set_tooltip(Some(&tooltip))?;
+                drawn.2 = tooltip;
+            }
+        }
         if self.stop_shown.load(Ordering::Relaxed) != can_stop {
             let (shown, hidden): (&dyn IsMenuItem<Wry>, &dyn IsMenuItem<Wry>) = if can_stop {
                 (&self.stop, &self.start)
@@ -79,7 +115,12 @@ fn without_check_column(menu: HMENU) {
 }
 
 pub fn tooltip(snapshot: &Snapshot) -> String {
+    tooltip_for(snapshot, false)
+}
+
+pub fn tooltip_for(snapshot: &Snapshot, saving_to_quit: bool) -> String {
     let status = match snapshot.phase {
+        _ if saving_to_quit => "Saving a recording, then quitting",
         Phase::Waiting => "Waiting for the game",
         Phase::NotRecording => "Not recording",
         Phase::Recording => "Recording",
@@ -99,18 +140,35 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     if let Some(hours) = snapshot.behind.filter(|_| snapshot.phase == Phase::Recording) {
         text = format!("{text} · falling behind by {hours} hours");
     }
-    if let Some(problem) = &snapshot.problem {
-        text = format!("{text}\n{}", problem.text);
+    let question = snapshot.prompt.map(|prompt| {
+        let question = match (prompt.quitting, prompt.discarding) {
+            (true, true) => "Discard and quit?",
+            (false, true) => "Discard this session?",
+            (true, false) => "Quit BattlePlan Recorder?",
+            (false, false) => "Stop recording?",
+        };
+        format!("\n{question} Click to answer.")
+    }).unwrap_or_default();
+    let units = |text: &str| text.encode_utf16().count();
+    let status = cut(&text, TOOLTIP_UNITS - units(&question));
+    let problem = snapshot.problem.as_ref().map(|problem| format!("\n{}", problem.text)).unwrap_or_default();
+    let problem = cut(&problem, TOOLTIP_UNITS - units(&status) - units(&question));
+    format!("{status}{question}{problem}")
+}
+
+fn cut(text: &str, room: usize) -> String {
+    if text.encode_utf16().count() <= room {
+        return text.to_owned();
     }
-    if text.encode_utf16().count() <= TOOLTIP_UNITS {
-        return text;
+    if room == 0 {
+        return String::new();
     }
     let mut units = 0;
     let mut cut: String = text
         .chars()
         .take_while(|character| {
             units += character.len_utf16();
-            units < TOOLTIP_UNITS
+            units < room
         })
         .collect();
     cut.push('…');
@@ -171,26 +229,12 @@ pub fn icon_pixels(light: Light, size: u32, light_taskbar: bool) -> Vec<u8> {
     pixels
 }
 
-fn icon(light: Light) -> Image<'static> {
-    let light_taskbar = crate::startup::light_taskbar();
-    DRAWN_THEME.store(theme(light_taskbar), Ordering::Relaxed);
+fn icon(light: Light, light_taskbar: bool) -> Image<'static> {
     Image::new_owned(
         icon_pixels(light, ICON_SIZE, light_taskbar),
         ICON_SIZE,
         ICON_SIZE,
     )
-}
-
-pub fn follow_theme(app: &AppHandle, light: Light) {
-    let drawn = DRAWN_THEME.load(Ordering::Relaxed);
-    if drawn == 0 || drawn == theme(crate::startup::light_taskbar()) {
-        return;
-    }
-    if let Some(tray) = app.tray_by_id(TRAY_ID)
-        && let Err(error) = tray.set_icon(Some(icon(light)))
-    {
-        eprintln!("Tray icon could not change: {error}");
-    }
 }
 
 pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
@@ -202,20 +246,23 @@ pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &start, &quit])?;
     without_check_column(menu.hpopupmenu()? as HMENU);
+    let shown = Tray::default();
+    let light_taskbar = crate::startup::light_taskbar();
     app.manage(TrayMenu {
         menu: menu.clone(),
         start,
         stop,
-        wanted: Mutex::new((false, false)),
+        wanted: Mutex::new(shown.clone()),
+        drawn: Mutex::new((shown.light, light_taskbar, shown.tooltip.clone())),
         stop_shown: AtomicBool::new(false),
     });
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon(Light::Ready))
-        .tooltip(tooltip(&Snapshot::default()))
+        .icon(icon(shown.light, light_taskbar))
+        .tooltip(&shown.tooltip)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            OPEN => panel::open(app, None, panel::Opening::Panel),
+            OPEN => panel::open(app, None, false),
             START => recorder.record(),
             SAVE => recorder.save(app),
             DISCARD => recorder.ask_discard(app),
@@ -237,26 +284,21 @@ pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn show(app: &AppHandle, light: Light, tooltip: &str, can_start: bool, can_stop: bool) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID)
-        && let Err(error) = tray
-            .set_icon(Some(icon(light)))
-            .and_then(|()| tray.set_tooltip(Some(tooltip)))
-    {
-        eprintln!("Tray icon could not change: {error}");
-    }
+pub fn show(app: &AppHandle, next: Tray) {
     let Some(menu) = app.try_state::<TrayMenu>() else {
         return;
     };
-    *menu.wanted.lock().unwrap_or_else(PoisonError::into_inner) = (can_start, can_stop);
+    if !newer(&mut menu.wanted.lock().unwrap_or_else(PoisonError::into_inner), next) {
+        return;
+    }
     let handle = app.clone();
     let queued = app.run_on_main_thread(move || {
-        if let Err(error) = handle.state::<TrayMenu>().follow() {
-            eprintln!("Tray menu could not change: {error}");
+        if let Err(error) = handle.state::<TrayMenu>().follow(&handle) {
+            eprintln!("Tray icon could not change: {error}");
         }
     });
     if let Err(error) = queued {
-        eprintln!("Tray menu could not change: {error}");
+        eprintln!("Tray icon could not change: {error}");
     }
 }
 
@@ -267,6 +309,17 @@ mod tests {
     fn pixel(pixels: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
         let at = ((y * size + x) * 4) as usize;
         pixels[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn a_tray_state_computed_earlier_but_published_later_never_replaces_a_newer_one() {
+        let question = Tray { revision: 5, tooltip: "BattlePlan Recorder\nNot recording\nQuit BattlePlan Recorder? Click to answer.".into(), ..Tray::default() };
+        let mut wanted = Tray::default();
+        assert!(newer(&mut wanted, question.clone()), "the tray thread publishes the Quit question");
+        assert!(!newer(&mut wanted, Tray { revision: 4, ..Tray::default() }), "a worker’s status from before the Quit arrives after it");
+        assert_eq!(wanted, question, "and the tray keeps the question");
+        let saving = Snapshot { phase: Phase::Waiting, ..Snapshot::default() };
+        assert_eq!(tooltip_for(&saving, true), format!("{}\nSaving a recording, then quitting", app_update::recorder_name()));
     }
 
     #[test]
@@ -292,6 +345,12 @@ mod tests {
         assert_eq!(
             tooltip(&snapshot),
             format!("{name}\nRecording · Germany 1936–1943\n2 hours couldn’t be recorded.")
+        );
+        snapshot.prompt = Some(crate::panel::Prompt { id: 3, quitting: false, discarding: true, session_key: 1 });
+        assert_eq!(
+            tooltip(&snapshot),
+            format!("{name}\nRecording · Germany 1936–1943\nDiscard this session? Click to answer.\n2 hours couldn’t be recorded."),
+            "a prompt dismissed with its panel waits in the tray"
         );
     }
 
@@ -348,6 +407,20 @@ mod tests {
         assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
         assert!(text.starts_with(&format!("{}\nSaved · Nederland 🇳🇱", app_update::recorder_name())));
         assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn a_long_recording_name_leaves_room_for_the_question_that_waits() {
+        let snapshot = Snapshot {
+            phase: Phase::Recording,
+            name: Some("Nederland 🇳🇱 ".repeat(20)),
+            prompt: Some(crate::panel::Prompt { id: 1, quitting: true, discarding: false, session_key: 1 }),
+            ..Snapshot::default()
+        };
+        let text = tooltip(&snapshot);
+        assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
+        assert!(text.starts_with(&format!("{}\nRecording · Nederland 🇳🇱", app_update::recorder_name())), "{text}");
+        assert!(text.ends_with("…\nQuit BattlePlan Recorder? Click to answer."), "the name is cut, never the question: {text}");
     }
 
     #[test]

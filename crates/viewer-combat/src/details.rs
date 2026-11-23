@@ -398,7 +398,7 @@ fn entry(
                 text(
                     &mut values,
                     key,
-                    content_reader_core::fixed5::fixed5_to_string(raw, 0),
+                    content_reader_parser::fixed5::fixed5_to_string(raw, 0),
                 );
             } else {
                 values.entry(key.into()).or_default().text = None;
@@ -1160,7 +1160,7 @@ fn naval(
                         text(
                             &mut out.values,
                             key,
-                            content_reader_core::fixed5::fixed5_percent(raw, 0, true),
+                            content_reader_parser::fixed5::fixed5_percent(raw, 0, true),
                         );
                     }
                 }
@@ -1173,7 +1173,7 @@ fn naval(
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
                 TEXT,
                 positioning[side]
-                    .map(|raw| content_reader_core::fixed5::fixed5_percent(raw, 0, true))
+                    .map(|raw| content_reader_parser::fixed5::fixed5_percent(raw, 0, true))
                     .ok_or_else(|| {
                         format!(
                             "Naval combat {id} {label} positioning is hidden: the positioning modifier keys are refused or a required combat, ship or carrier-air operand is unavailable."
@@ -1196,7 +1196,7 @@ fn naval(
                             .map(|counter| counter.anti_air_base)
                     },
                 )
-                .map(|raw| content_reader_core::fixed5::fixed5_to_string(raw, 1))
+                .map(|raw| content_reader_parser::fixed5::fixed5_to_string(raw, 1))
                 .map_err(|reason| {
                     format!("Naval combat {id} {label} anti-air is hidden: {reason}.")
                 })

@@ -1,4 +1,5 @@
-use content_reader_core::{gui::native, gui::native::Element, unit_leader::Skills};
+use content_reader_gui::gui::native::{self, Element};
+use content_reader_key_names::unit_leader::Skills;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatSideDetails, rows::LandCombatSideInputs,
@@ -178,7 +179,7 @@ fn authored_key<'a>(
     if hash == 0 {
         return Ok(None);
     }
-    std::str::from_utf8(content_reader_core::parser::c_string(key))
+    std::str::from_utf8(content_reader_parser::parser::c_string(key))
         .map(Some)
         .map_err(|_| {
             format!("authored_tooltip_undecodable_key: {path}'s {field} key {key:?} is not UTF-8")

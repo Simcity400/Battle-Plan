@@ -735,14 +735,14 @@ fn mod_defines_override_all_three_type_colors_and_keep_texture_alpha() {
     std::fs::write(base.join("common/defines/00_base.lua"),b"NDefines={NGraphics={FRIEND_COLOR={0.1,0.2,0.3},ENEMY_COLOR={0.4,0.5,0.6},NEUTRAL_COLOR={0.7,0.8,0.9}}}").unwrap();
     std::fs::write(addon.join("common/defines/zz_tint.lua"),b"NDefines.NGraphics.FRIEND_COLOR={0.2,0.8,0.3};NDefines.NGraphics.ENEMY_COLOR={0.9,0.1,0.4};NDefines.NGraphics.NEUTRAL_COLOR={0.8,0.6,0.4}").unwrap();
     let layers =
-        content_reader_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
-    let defines = content_reader_core::defines::read(&layers).unwrap();
+        content_reader_layers::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+    let defines = content_reader_defines::defines::read(&layers).unwrap();
     let colors = Colors::read(&defines).unwrap();
     assert_eq!(colors, Colors::TEST);
     for side in [Side::Friend, Side::Enemy, Side::Neutral] {
         assert_eq!(colors.of(side)[3], 1.0);
     }
-    let defines = content_reader_core::defines::Defines::new().unwrap();
+    let defines = content_reader_defines::defines::Defines::new().unwrap();
     for file in [
         base.join("common/defines/00_base.lua"),
         addon.join("common/defines/zz_tint.lua"),

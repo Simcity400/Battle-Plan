@@ -1,6 +1,6 @@
 use super::*;
 use crate::triggers::{Eval, Scope};
-use content_reader_core::{scope, scope::Scope as Parsed};
+use content_reader_script::scope::{self, Scope as Parsed};
 use replay_data::rows::{
     CountryCounterInputRow, CountryRow, DivisionRow, DivisionStatusRow, FactionMemberRow,
     IndustrialOrganisationRow, OccupationSettingsRow, OperativeMembershipRow,
@@ -199,7 +199,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let collection =
-            content_reader_core::collections::compile(input, self.context.content.collections)?;
+            content_reader_politics::collections::compile(input, self.context.content.collections)?;
         let Some(selected) = self
             .evaluator()?
             .collection_representative(&collection, scopes)
@@ -208,11 +208,11 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let header = match &collection.header {
-            content_reader_core::collections::Header::Empty => String::new(),
-            content_reader_core::collections::Header::Key(key) => {
+            content_reader_politics::collections::Header::Empty => String::new(),
+            content_reader_politics::collections::Header::Key(key) => {
                 self.localised(key, &[], scopes, true)?
             }
-            content_reader_core::collections::Header::Bound(item) => {
+            content_reader_politics::collections::Header::Bound(item) => {
                 let Some(key) = item.value.scalar() else {
                     return Err("collection bound-name argument tree is unsupported".into());
                 };
@@ -250,7 +250,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn is_context(&self, item: &Item) -> bool {
         let name = key(item);
-        !content_reader_core::effect_keys::REGISTERED_EFFECTS
+        !content_reader_script::effect_keys::REGISTERED_EFFECTS
             .iter()
             .any(|(_, native)| native.eq_ignore_ascii_case(&name))
             && item.value.items().is_some()
@@ -586,7 +586,7 @@ impl Renderer<'_, '_, '_> {
                     field
                         .value
                         .scalar()
-                        .and_then(content_reader_core::parser::read_bool)
+                        .and_then(content_reader_parser::parser::read_bool)
                         == Some(true)
                 });
                 if !operative {
@@ -695,7 +695,7 @@ impl Renderer<'_, '_, '_> {
                     field
                         .value
                         .scalar()
-                        .and_then(content_reader_core::parser::read_bool)
+                        .and_then(content_reader_parser::parser::read_bool)
                         == Some(true)
                 });
                 let mut rows = Vec::new();
@@ -1380,7 +1380,7 @@ impl Renderer<'_, '_, '_> {
             field
                 .value
                 .scalar()
-                .and_then(content_reader_core::parser::read_bool)
+                .and_then(content_reader_parser::parser::read_bool)
                 == Some(true)
         });
         if targets.is_empty() && !visible {
@@ -1435,7 +1435,7 @@ impl Renderer<'_, '_, '_> {
             field
                 .value
                 .scalar()
-                .and_then(content_reader_core::parser::read_bool)
+                .and_then(content_reader_parser::parser::read_bool)
                 == Some(true)
         });
         let mut text = String::new();
@@ -1724,7 +1724,7 @@ impl Renderer<'_, '_, '_> {
         match field(items, "elections_allowed").and_then(|item| {
             item.value
                 .scalar()
-                .and_then(content_reader_core::parser::read_bool)
+                .and_then(content_reader_parser::parser::read_bool)
         }) {
             Some(false) => text.push_str(&self.line(
                 b"EFFECT_SET_POLITICS_NO_ELECTIONS",

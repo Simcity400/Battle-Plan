@@ -1,7 +1,8 @@
 
 use super::native_gui;
 use viewer_runtime::errors::invalid;
-use content_reader_core::{ResolvedLayers, gui::native};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::{io, sync::Arc};

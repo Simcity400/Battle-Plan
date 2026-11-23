@@ -1,5 +1,6 @@
 use engine_executable::modifier_keys;
-use content_reader_core::{ResolvedLayers, static_modifiers, static_modifiers::Request};
+use content_reader_layers::ResolvedLayers;
+use content_reader_politics::static_modifiers::{self, Request};
 use replay_data::{
     rows::ModifierDefinitionRow, rows::NavalCombatShipRow, rows::NavalCombatSideDetails,
     rows::NavalShipWeaponContext,
@@ -170,7 +171,7 @@ pub(super) struct Defines {
 }
 
 impl Defines {
-    pub(super) fn read(numbers: &content_reader_core::defines::Defines) -> Result<Self, String> {
+    pub(super) fn read(numbers: &content_reader_defines::defines::Defines) -> Result<Self, String> {
         let fixed = |name| {
             numbers
                 .fixed5("NNavy", name)

@@ -1,14 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { isMenuKey, rowDescriptionId, rowPoint } from './rowTooltips.ts';
 import { hideTooltip, showTooltip } from './tooltip';
 import type { TooltipContent } from './tooltip';
 
-export function useRowTooltips<K extends string | number>({ owner, active, content, revision, onMenu }: {
+export function useRowTooltips<K extends string | number>({ owner, active, content, revision, onMenu, refresh }: {
   owner: string; active: boolean; content: (key: K) => TooltipContent | null; revision: string;
   onMenu: (key: K, x: number, y: number) => void;
+  refresh?: (changed: () => void) => () => void;
 }) {
   const [hovered, setHovered] = useState<{ key: K; x: number; y: number } | null>(null);
+  const now = useRef({ hovered, active, content, revision });
+  now.current = { hovered, active, content, revision };
+  useEffect(() => refresh?.(() => {
+    const { hovered: at, active: on, content: read, revision: shown } = now.current;
+    const tip = at && on ? read(at.key) : null;
+    if (at && tip) showTooltip(owner, tip, at.x, at.y, `${at.key}:${shown}`); else hideTooltip(owner);
+  }), [refresh, owner]);
   useEffect(() => { if (!active) { setHovered(null); hideTooltip(owner); } }, [active, owner]);
   useEffect(() => {
     const shown = hovered && active ? content(hovered.key) : null;

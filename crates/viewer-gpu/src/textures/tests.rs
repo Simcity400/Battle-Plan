@@ -1,7 +1,7 @@
 use crate::gpu_contract::device_descriptor;
 #[cfg(test)]
 use crate::test_support::serial;
-use content_reader_core::{map::CountryColors, map::ProvinceDefinition};
+use content_reader_map::map::{CountryColors, ProvinceDefinition};
 
 use super::*;
 use std::collections::BTreeMap;
@@ -391,7 +391,7 @@ fn a_uniform_neighbourhood_sets_the_all_same_flag() {
 
 #[test]
 fn declared_atlas_indices_keep_native_bytes_and_only_unmapped_indices_warn() {
-    use content_reader_core::terrain::TerrainType;
+    use content_reader_key_names::terrain::TerrainType;
 
     let kind = |atlas_index| TerrainType {
         name: "t".into(),

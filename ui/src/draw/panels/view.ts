@@ -1,5 +1,4 @@
 import type { LiveValues } from '../../charts/live';
-import type { PictureInterval } from '../pictureDate';
 
 export interface RowCell {
   key: string; row: string; text: string; x: number; y: number; width: number; height: number;
@@ -8,7 +7,7 @@ export interface RowCell {
 }
 export interface PanelModel {
   widget?: string;
-  view: string; follow?: number; fixed?: number; offset: number; date?: PictureInterval;
+  view: string; follow?: number; fixed?: number; offset: number; date?: { since: number; through: number };
   structure: string; cells: RowCell[];
   reply?: unknown; clocked?: boolean;
 }
@@ -20,6 +19,7 @@ export interface PanelGeometry {
   knob?: (field: HTMLElement) => boolean;
   owns?: (field: HTMLElement) => boolean;
   extendInline?: string;
+  barVariable?: { host: string; name: string };
 }
 export interface PanelView {
   geometry?: PanelGeometry;

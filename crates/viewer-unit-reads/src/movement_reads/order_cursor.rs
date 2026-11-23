@@ -32,7 +32,7 @@ pub fn order_cursor(
 pub fn rule_relation(
     frame: &DecodedFrame,
     reads: ReadOperands<'_>,
-    rule: &content_reader_core::adjacency_rules::AdjacencyRule,
+    rule: &content_reader_map::adjacency_rules::AdjacencyRule,
     country: Country,
 ) -> Fact<content_reader_unit_path::unit_path::RuleReason> {
     if let Some(reason) = &rule.unsupported {

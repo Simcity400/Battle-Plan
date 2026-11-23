@@ -3,7 +3,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use viewer_native_gui::{native_gui::lifecycle::Tick, test_support::gui::{fixture, windows}};
 
     let mut values = super::super::Values::new();

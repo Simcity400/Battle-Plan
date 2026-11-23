@@ -55,7 +55,8 @@ viewer-weather-effects = { workspace = true }
 viewer-world = { workspace = true }
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-key-names.workspace = true
+content-reader-map.workspace = true
 content-reader-sound = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
 replay-recording.workspace = true
@@ -68,7 +69,11 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-naval-path = { workspace = true, features = ["test-support"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-effects = { workspace = true, features = ["test-support"] }

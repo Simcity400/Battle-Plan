@@ -186,7 +186,7 @@ impl Content {
         let cat = self.cat("Division names")?;
         let once = Arc::clone(&self.cache_of(cat).groups);
         let (groups, notes) = once.get_or_init(|| {
-            match content_reader_division_names::division_names::read_directories::<content_reader_core::Diagnostic>(&cat.content.layers, &content_reader_division_names::division_names::DIRECTORIES) {
+            match content_reader_division_names::division_names::read_directories::<content_reader_parser::Diagnostic>(&cat.content.layers, &content_reader_division_names::division_names::DIRECTORIES) {
                 Ok((database, notes)) => (Ok(Arc::new(database)), notes.into_iter().map(|(_, note)| note).collect()),
                 Err(error) => (Err(format!("Division name groups unavailable: {error}")), Vec::new()),
             }
@@ -297,7 +297,7 @@ fn icon_key(priority_unit: u32, custom: i32, unit: &[u8], exists: impl Fn(&str) 
 
 pub fn token_key(lexical: &[LexicalTokenRow], token: u32) -> Result<String, String> {
     let at = lexical.binary_search_by_key(&token, |row| row.token).map_err(|_| format!("Definition token {token} has no recorded spelling"))?;
-    std::str::from_utf8(content_reader_core::parser::c_string(&lexical[at].literal)).map(str::to_owned).map_err(|_| format!("Definition token {token} is not text"))
+    std::str::from_utf8(content_reader_parser::parser::c_string(&lexical[at].literal)).map(str::to_owned).map_err(|_| format!("Definition token {token} is not text"))
 }
 
 pub fn design_handle(id: u32) -> u64 {

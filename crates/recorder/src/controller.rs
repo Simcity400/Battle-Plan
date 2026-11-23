@@ -10,9 +10,9 @@ pub use recorder_platform::games::{
 };
 
 pub use crate::recording::{
-    CaptureOutcome, Control, Omission, Refusal, SavedWaiting, SetAside, Stage, UnloadObservation,
-    Waiting, WaitingCampaign, WaitingName, WaitingNames, discard_waiting, end_abandoned_sessions,
-    save_waiting, session_folders, waiting_campaigns, waiting_folder,
+    CaptureOutcome, Control, Omission, Refusal, SavedWaiting, SetAside, Stage, Stop, Undiscarded,
+    UnloadObservation, Waiting, WaitingCampaign, WaitingLock, WaitingName, WaitingNames,
+    end_abandoned_sessions, lock_waiting, session_folders, waiting_campaigns, waiting_folder,
 };
 
 pub struct Recording<'a> {

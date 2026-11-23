@@ -1,8 +1,10 @@
 mod channel;
 pub mod commands;
-mod control;
+pub mod control;
 mod feed;
 mod install;
+pub mod saving;
+pub mod session;
 mod label;
 
 pub use channel::Channel;
@@ -87,7 +89,7 @@ pub trait Host: Send + Sync + 'static {
     }
     fn install(&self, launch: Launch) -> Result<(), String>;
     fn close_for_update(&self) -> Result<(), String>;
-    fn closed_for_update(&self) {}
+    fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<Option<String>>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -171,6 +173,7 @@ pub struct UpdateState {
     pub message: Option<String>,
     pub error_context: Option<Action>,
     pub install_blocked: Option<String>,
+    pub channel_warning: Option<String>,
     pub downgrade: bool,
 }
 
@@ -294,9 +297,10 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         message: disabled.clone().or(saved.err()),
         error_context: None,
         install_blocked: None,
+        channel_warning: None,
         downgrade: false,
     };
-    let control_error = control::serve(role, Arc::new(Answering(Arc::clone(&host))))
+    let control_error = control::serve(role, Arc::clone(&host))
         .err()
         .map(|error| {
             format!(
@@ -328,22 +332,6 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
             .spawn(move || updates.poll(&app))?;
     }
     Ok(())
-}
-
-struct Answering(Arc<dyn Host>);
-
-impl control::Answer for Answering {
-    fn close_for_update(&self) -> Result<(), String> {
-        self.0.close_for_update()
-    }
-
-    fn closed_for_update(&self) {
-        self.0.closed_for_update()
-    }
-
-    fn busy(&self) -> Option<String> {
-        self.0.busy()
-    }
 }
 
 impl Updates {
@@ -678,7 +666,7 @@ impl Updates {
                 return Err("Wait for the update to finish before changing the channel.".into());
             }
             Self::available(inner)?;
-            channel::save(channel)?;
+            inner.state.channel_warning = channel::save(channel, |path, bytes| self.host.write_preference(path, bytes))?;
             if inner.state.channel != channel {
                 inner.state.channel = channel;
                 Self::forget_offer(inner);

@@ -1,6 +1,7 @@
 use viewer_models::{ModelInstance, ModelMesh};
 use viewer_unit_history::unit_history::LandFigure;
-use content_reader_core::{ResolvedLayers, mesh};
+use content_reader_layers::ResolvedLayers;
+use content_reader_mesh::mesh;
 use std::sync::Arc;
 
 const PARALLEL: f32 = 1e-4;

@@ -1,7 +1,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use content_reader_core::{equipment, mesh};
+use content_reader_key_names::equipment;
+use content_reader_mesh::mesh;
 
 use super::Content;
 
@@ -320,7 +321,7 @@ impl PlaneKeys {
             pools: BTreeSet::new(),
         };
         let mut untext = BTreeSet::new();
-        let mut text = |bytes: &[u8]| match content_reader_core::parser::text(bytes) {
+        let mut text = |bytes: &[u8]| match content_reader_parser::parser::text(bytes) {
             Ok(text) => Some(text.to_owned()),
             Err(_) => {
                 untext.insert(String::from_utf8_lossy(bytes).into_owned());

@@ -50,7 +50,7 @@ pub fn compare(
                     tokens
                         .get(&(character.name_token_id as u32))
                         .copied()
-                        .map(content_reader_core::parser::c_string)
+                        .map(content_reader_parser::parser::c_string)
                         .ok_or_else(|| invalid("faction slot advisor token spelling missing"))
                 })
                 .transpose()?;
@@ -78,7 +78,7 @@ pub fn compare(
                     .find(|row| row.slot as usize == ordinal && row.kind == kind)
                     .ok_or_else(|| invalid("faction slot modifier name missing"))?;
                 report.scalar_checks += 1;
-                if content_reader_core::parser::c_string(&actual_name.name) != saved.name.as_slice() {
+                if content_reader_parser::parser::c_string(&actual_name.name) != saved.name.as_slice() {
                     report.difference(
                         format!("{label}.{name}.name"),
                         &actual_name.name,
@@ -96,7 +96,7 @@ pub fn compare(
                     let key = tokens
                         .get(&definition.token)
                         .ok_or_else(|| invalid("faction slot modifier spelling missing"))?;
-                    actual_entries.push((content_reader_core::parser::c_string(key).to_vec(), row.raw));
+                    actual_entries.push((content_reader_parser::parser::c_string(key).to_vec(), row.raw));
                 }
                 actual_entries.sort_by(|a, b| a.0.cmp(&b.0));
                 let mut expected_entries = saved

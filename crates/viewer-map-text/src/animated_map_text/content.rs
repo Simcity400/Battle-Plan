@@ -1,9 +1,8 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, gui::native::sprites,
-    gui::native::sprites::AnimatedMapTextDefinition, gui::native::sprites::ObjectKind,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_gui::gui::native::sprites::{self, AnimatedMapTextDefinition, ObjectKind};
 use content_reader_image::native::Decode;
 use shader_pipeline::library::Effect;
 

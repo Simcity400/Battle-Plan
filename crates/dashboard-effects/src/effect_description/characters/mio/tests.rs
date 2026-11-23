@@ -295,10 +295,10 @@ fn mio_policy_uses_the_same_production_bonus_formatter() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
-    let mut database = content_reader_core::industrial_organisations::Database::default();
+    let mut database = content_reader_military::industrial_organisations::Database::default();
     database.policies.read_file(
         b"synthetic_policy={name=SYN_TRAIT production_bonus={SYN_TRAIT={production_capacity_factor=0.30006 production_cost_factor=-0.00001}}}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     ).unwrap();
     let TableView::Complete(TableRows::LexicalTokens(rows)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]

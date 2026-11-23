@@ -168,10 +168,7 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{
-        movement::MovementDefines, movement::MovementMap, movement::Neighbour,
-        movement::ProvinceTerrain,
-    };
+    use content_reader_map::movement::{MovementDefines, MovementMap, Neighbour, ProvinceTerrain};
     use replay_data::{
         rows::LexicalTokenRow, rows::Recorded, rows::ShipRow, rows::TableId, rows::TableRows,
         rows::tables,

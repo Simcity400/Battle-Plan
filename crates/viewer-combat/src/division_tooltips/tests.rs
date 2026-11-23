@@ -764,7 +764,7 @@ fn division_experience_hover_uses_localized_levels_and_exact_progress() {
     let text = division_experience_tooltip(
         &NoIcons,
         &loc,
-        content_reader_core::unit_leader::DivisionExperienceProgress {
+        content_reader_key_names::unit_leader::DivisionExperienceProgress {
             level: 7,
             next_level_fraction: 25_000,
             combat_bonus: -12_500,

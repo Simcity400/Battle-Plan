@@ -52,16 +52,16 @@ impl Default for Defines {
 
 impl Defines {
     pub fn read(
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         layers: &ResolvedLayers,
     ) -> io::Result<Self> {
         let requests = ["air_attack_factor", "air_defence_factor"].map(|key| {
-            content_reader_core::static_modifiers::Request {
+            content_reader_politics::static_modifiers::Request {
                 modifier: "night",
                 key,
             }
         });
-        let night = content_reader_core::static_modifiers::read(layers, &requests)?.values;
+        let night = content_reader_politics::static_modifiers::read(layers, &requests)?.values;
         let night: [Fact<i64>; 2] = night
             .into_iter()
             .map(|value| value.map_err(|why| format!("night {}: {}", why.key, why.reason)))
@@ -624,7 +624,7 @@ fn disruption(
         ONE.wrapping_add(multiply(speed, defines.disruption_speed)),
     )
     .wrapping_mul(i64::from(count));
-    let ratio = content_reader_core::province_geometry::native_fixed5_sqrt(fraction(raw, denominator));
+    let ratio = content_reader_map::province_geometry::native_fixed5_sqrt(fraction(raw, denominator));
     if !air_range::finite(ratio) {
         return 100;
     }
@@ -969,8 +969,8 @@ mod tests {
             }]),
         );
         let mut hour = hour(&frame, &anchors, &native, (&links, &ids));
-        let graph = content_reader_core::province_graph::ProvinceGraph::default();
-        let geometry = content_reader_core::province_geometry::ProvinceGeometry {
+        let graph = content_reader_map::province_graph::ProvinceGraph::default();
+        let geometry = content_reader_map::province_geometry::ProvinceGeometry {
             width: 100,
             height: 50,
             centroids: [(1, [31, 21])].into(),

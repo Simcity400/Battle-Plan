@@ -14,7 +14,7 @@ use dashboard_query::{
     read,
     series::{Line, Part},
 };
-use content_reader_core::unit_leader::{SubUnit, SubUnits};
+use content_reader_script::sub_units::{SubUnit, SubUnits};
 use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{AirForceWingSignatureRow, TableId};
 use serde::{Deserialize, Serialize};
@@ -569,7 +569,7 @@ fn variant_tokens(recording: &Recording, run: u32, hour: i32, variants: &BTreeSe
     Ok(tokens.into_iter().filter_map(|(variant, token)| Some((variant, spelled.get(&token)?.clone()))).collect())
 }
 
-fn variant_part(variant: u64, token: Option<&str>, units: Option<&content_reader_core::equipment::Database>, content: &Content, warnings: &mut BTreeSet<String>) -> ForcePart {
+fn variant_part(variant: u64, token: Option<&str>, units: Option<&content_reader_key_names::equipment::Database>, content: &Content, warnings: &mut BTreeSet<String>) -> ForcePart {
     if let (Some(token), Some(units)) = (token, units) {
         let archetype = units
             .named(token)
@@ -597,7 +597,7 @@ fn unidentified() -> ForcePart {
     ForcePart { key: UNIDENTIFIED.into(), name: Some("Other / not identified".into()), unresolved: true }
 }
 
-fn equipment(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<content_reader_core::equipment::Database>> {
+fn equipment(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<content_reader_key_names::equipment::Database>> {
     let catalogue = content.catalogue.as_ref()?;
     match catalogue::equipment_units(catalogue) {
         Ok(units) => {
@@ -695,7 +695,7 @@ fn navy_classes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u12
     let tokens: BTreeSet<u32> = parts.iter().map(|&part| part as u32).collect();
     let spelled = literals(recording, run, hour, &tokens)?;
     let units: Option<Arc<SubUnits>> = content.catalogue.as_ref().and_then(|catalogue| {
-        match catalogue.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_core::unit_leader::sub_units(&catalogue.content.layers)) {
+        match catalogue.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers)) {
             Ok(units) => {
                 warnings.extend(units.warnings().iter().cloned());
                 Some(units)
@@ -718,7 +718,7 @@ fn navy_classes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u12
                 NavyGrouping::Class => Some((format!("class:{registered}"), content.localise(registered))),
                 NavyGrouping::Type => {
                     let mask = units.category(registered.as_bytes()).ok()?;
-                    let names = match content_reader_core::equipment::category_names(mask) {
+                    let names = match content_reader_script::equipment_stats::category_names(mask) {
                         Ok(names) if !names.is_empty() => names,
                         Ok(_) => return None,
                         Err(bits) => {

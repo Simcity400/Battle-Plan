@@ -5,10 +5,7 @@ use crate::{
     native_windows::{NAVAL_COMBAT_WINDOW, NAVY_WINDOW, NativeWindows},
     sprites::SpriteSheet,
 };
-use content_reader_core::{
-    gui::native, gui::native::Element, gui::native::fonts::FontFacts,
-    gui::native::fonts::TextColors,
-};
+use content_reader_gui::gui::native::{self, Element, fonts::{FontFacts, TextColors}};
 use content_reader_localisation::localisation::Localisation;
 use std::collections::HashMap;
 

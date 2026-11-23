@@ -32,6 +32,11 @@ pub struct Addition<'a> {
 }
 
 pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
+    revise_under(&replay_settings::exit::EXIT, path, recording, addition, saved, level)
+}
+
+pub(crate) fn revise_under(exit: &replay_settings::exit::Exit, path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
+    let _receipt = exit.admit(replay_settings::exit::What::Change)?;
     let (root, before): (&Root, Revision) = (recording.root(), recording.revision());
     let records = match addition.records.filter(|records| !records.is_empty()) {
         Some(records) => Some(records.encode(FormatVersion::read(recording.format())?)?),

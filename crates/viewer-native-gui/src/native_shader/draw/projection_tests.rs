@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_written_font_viewport_is_the_compiled_projection() {
-    let program = content_reader_core::pdxshader::program::read_with::<Vec<u8>>(b"t.lua", &|_| None).unwrap();
+    let program = content_reader_gui::pdxshader::program::read_with::<Vec<u8>>(b"t.lua", &|_| None).unwrap();
     let quad = |font_viewport| Quad {
         path: String::new(),
         effect: Effect {

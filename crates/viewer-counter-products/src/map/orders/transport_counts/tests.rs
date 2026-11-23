@@ -10,7 +10,7 @@ fn source_to_id_distance_uses_native_wrap_sqrt_and_invalid_signed_slot_zero() {
     };
     assert_eq!(distance(&map, 1, 2), 500_002);
     assert_eq!(distance(&map, 1, 1), 0);
-    let zero = content_reader_core::province_geometry::native_fixed_sqrt(20);
+    let zero = content_reader_map::province_geometry::native_fixed_sqrt(20);
     for invalid in [0, 300, u32::MAX] {
         assert_eq!(distance(&map, 1, invalid), zero);
     }

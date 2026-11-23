@@ -1,6 +1,6 @@
 use super::test_support::{DIVISION, LAND, SPEED, content, frame, hour, moving, panel, provinces, put, status_row, two_leg_map, world};
 use super::*;
-use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
+use content_reader_map::movement::{Neighbour, ProvinceTerrain};
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
     rows::DivisionMovementRow, rows::DivisionMovementStats, rows::DivisionPanelStatsRow,
@@ -1026,9 +1026,9 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
         .map_err(str::to_owned)
 }
 
-fn sub_unit_database() -> std::sync::Arc<content_reader_core::unit_leader::SubUnits> {
+fn sub_unit_database() -> std::sync::Arc<content_reader_script::sub_units::SubUnits> {
     crate::test_support::enter_fixed_modifier_tables();
-    let mut units = content_reader_core::unit_leader::SubUnits::default();
+    let mut units = content_reader_script::sub_units::SubUnits::default();
     units.read(
         b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",
         "common/units/test.txt",

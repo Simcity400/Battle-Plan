@@ -25,7 +25,7 @@ use windows_sys::Win32::{
 const CLASS: &str = "BattlePlanMap";
 const WM_MOUSELEAVE: u32 = 0x02a3;
 const WM_APPLY_CAPTURE: u32 = WM_APP + 1;
-const WM_TAKE_FOCUS: u32 = WM_APP + 2;
+pub const WM_TAKE_FOCUS: u32 = WM_APP + 2;
 const WM_RETIRE: u32 = WM_APP + 3;
 
 #[derive(Debug, PartialEq)]

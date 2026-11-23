@@ -1,5 +1,5 @@
 
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use crate::{counter_groups, land_windows};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;

@@ -501,7 +501,7 @@ pub(crate) struct Design {
 
 pub(crate) struct Content {
     pub(crate) catalogue: Option<Arc<Catalogue>>,
-    pub(crate) units: Option<Arc<content_reader_core::equipment::Database>>,
+    pub(crate) units: Option<Arc<content_reader_key_names::equipment::Database>>,
 }
 
 impl Content {
@@ -607,7 +607,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     let lexical = frame.complete::<tables::LexicalTokens>().unwrap_or(&[]);
     let spell = |token: u32| -> Option<String> {
         let at = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
-        std::str::from_utf8(content_reader_core::parser::c_string(&lexical[at].literal)).ok().filter(|text| !text.is_empty()).map(str::to_owned)
+        std::str::from_utf8(content_reader_parser::parser::c_string(&lexical[at].literal)).ok().filter(|text| !text.is_empty()).map(str::to_owned)
     };
     let known_spelling = |token: u32| -> Result<String, String> {
         if token == 0 {
@@ -741,7 +741,7 @@ fn repairs(spans: &[SpanRead], named: &[HashMap<u64, Design>]) -> RepairRates {
 
 type RocketName = Result<(String, Option<String>), String>;
 
-fn rocket_name(buildings: &content_reader_core::buildings::Buildings, texts: Option<&dyn Texts>) -> RocketName {
+fn rocket_name(buildings: &content_reader_key_names::buildings::Buildings, texts: Option<&dyn Texts>) -> RocketName {
     let keys: Vec<&String> = buildings
         .declaration_order
         .iter()
@@ -767,7 +767,7 @@ fn cached_rocket_name(source: &Source, catalogue: &Arc<Catalogue>) -> RocketName
     {
         return name.clone();
     }
-    let name = content_reader_core::buildings::read(&catalogue.content.layers).map_err(|error| error.to_string()).and_then(|buildings| rocket_name(&buildings, Some(&**catalogue as &dyn Texts)));
+    let name = content_reader_key_names::buildings::read(&catalogue.content.layers).map_err(|error| error.to_string()).and_then(|buildings| rocket_name(&buildings, Some(&**catalogue as &dyn Texts)));
     held.0 = Some((Arc::clone(catalogue), name.clone()));
     name
 }

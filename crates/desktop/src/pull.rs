@@ -7,7 +7,7 @@ use tauri::{
 
 pub trait Outbox: Default {
     fn take(&mut self) -> Vec<Vec<u8>>;
-    fn restart(&mut self);
+    fn restart(&mut self, session: &str);
 }
 
 pub struct Asks<O, R> {
@@ -46,8 +46,8 @@ impl<O: Outbox, R> Asks<O, R> {
     pub fn ask(&mut self, session: String, asker: R) -> Vec<Answer<R>> {
         let mut answers: Vec<Answer<R>> = self.parked.take().map(|replaced| (replaced, Vec::new())).into_iter().collect();
         if self.session.as_deref() != Some(session.as_str()) {
+            self.outbox.restart(&session);
             self.session = Some(session);
-            self.outbox.restart();
             answers.push((asker, Vec::new()));
             return answers;
         }
@@ -100,6 +100,10 @@ impl<O: Outbox> Pull<O> {
         self.asks.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    pub fn outbox<T>(&self, read: impl FnOnce(&O) -> T) -> T {
+        read(&self.asks().outbox)
+    }
+
     pub fn offer(&self, put: impl FnOnce(&mut O)) {
         let answer = {
             let mut asks = self.asks();
@@ -136,7 +140,7 @@ mod tests {
         fn take(&mut self) -> Vec<Vec<u8>> {
             std::mem::take(&mut self.held)
         }
-        fn restart(&mut self) {
+        fn restart(&mut self, _session: &str) {
             self.held.clear();
             self.restarts += 1;
         }

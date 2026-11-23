@@ -17,6 +17,7 @@ import { drawableIcon } from '../../dashboard/artwork';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { headState, OUTSIDE_RECORDING } from '../../dashboard/HeadState';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -50,7 +51,8 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const { data, error, retry, root, hour, shownAt, live: shownLive } = useHeadProduct<AirAcesReply>(runtime, widget, 'air-aces', track ? PARAMS : null, { active, validate: validateAces, structure });
+  const head = useHeadProduct<AirAcesReply>(runtime, widget, 'air-aces', track ? PARAMS : null, { active, validate: validateAces, structure });
+  const { data, error, retry, root, read: reading, shownAt, live: shownLive } = head;
   useShownEachFrame(runtime.clock, shownAt, shownLive);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
   const read = data?.readHour ?? null;
@@ -85,7 +87,9 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const diagnostics = useMemo(() => [...data?.warnings ?? [], ...[...portraits.values()].filter((value): value is Error => value instanceof Error).map(error => error.message)], [data, portraits]);
   useDiagnostics(onDiagnostics, data ? diagnostics : null);
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
-  if (hour === null && !data && !error) return <div ref={root}><WidgetState kind="unavailable" message="This time is outside the recording." /></div>;
+  const shared = headState(head);
+  if (shared) return <div ref={root}>{shared}</div>;
+  if (reading === 'off' && !data && !error) return <div ref={root}><WidgetState kind="unavailable" message={OUTSIDE_RECORDING} /></div>;
   if (error && !data) return <div ref={root}><WidgetState kind="error" failure={error} onRetry={retry} /></div>;
   const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return <div ref={root}>{groupFailure}</div>;

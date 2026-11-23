@@ -17,7 +17,7 @@ pub struct Tints {
 }
 
 impl Tints {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let color = |name: &str| -> io::Result<[f32; 4]> {
             let values = defines.numbers("NGraphics", name)?;
             <[f64; 4]>::try_from(values)

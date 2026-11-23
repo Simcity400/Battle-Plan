@@ -217,13 +217,13 @@ fn render_with_nato(
 const UNIT: u64 = (7_u64 << 32) | 0x1269;
 
 #[allow(clippy::field_reassign_with_default)]
-fn bonus_names() -> content_reader_core::key_names::KeyNames {
-    let mut units = content_reader_core::unit_leader::SubUnits::default();
+fn bonus_names() -> content_reader_script::key_names::KeyNames {
+    let mut units = content_reader_script::sub_units::SubUnits::default();
     units.read(
         b"sub_units={syn_unit={}} sub_unit_categories={Syn_Category syn_category}",
         "synthetic",
     );
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.sub_units = Some(units);
     names
 }
@@ -815,7 +815,7 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
         "G={ordered={9={\"Mod %d\"}}}",
     )]);
     let layers =
-        content_reader_core::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&later.0, &[][..])])
+        content_reader_layers::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&later.0, &[][..])])
             .unwrap();
     let mut fixture = unit_fixture();
     fixture.catalogue = layers_catalogue(layers);
@@ -918,9 +918,9 @@ fn units_output_branches() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let equipment = equipment();
-    let mut sub_units = content_reader_core::unit_leader::SubUnits::default();
+    let mut sub_units = content_reader_script::sub_units::SubUnits::default();
     sub_units.read(b"sub_units={syn_unit={}}", "synthetic");
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.sub_units = Some(sub_units);
     let content = Content {
         key_names: Some(&names),
@@ -1511,8 +1511,8 @@ fn units_have_no_country_count_cap() {
     }
 }
 
-fn equipment() -> content_reader_core::equipment::Database {
-    content_reader_core::equipment::fixture::load(&[
+fn equipment() -> content_reader_key_names::equipment::Database {
+    content_reader_key_names::equipment::fixture::load(&[
         (
             "common/units/equipment/modules/synthetic.txt",
             "equipment_modules={syn_carrier={add_equipment_type=carrier} syn_sub={add_equipment_type=submarine}}",
@@ -1743,7 +1743,7 @@ fn units_equipment_branches() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = equipment_fixture();
     let equipment = equipment();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let content = Content {
         equipment: Some(&equipment),
         key_names: Some(&names),
@@ -2449,7 +2449,7 @@ fn units_equipment_role_branches() {
         expected.push((name, key));
     }
     source.push('}');
-    let equipment = content_reader_core::equipment::fixture::load(&[(
+    let equipment = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/synthetic.txt",
         &source,
     )])

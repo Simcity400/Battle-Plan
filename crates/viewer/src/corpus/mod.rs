@@ -238,7 +238,7 @@ fn stack(
     };
     if let Some(candidate) = candidates.iter().find(|candidate| candidate.id == plan.id) {
         report.descriptor_file = Some(candidate.file.clone());
-        if let Ok(descriptor) = content_reader_core::parser::parse(candidate.descriptor.as_bytes()) {
+        if let Ok(descriptor) = content_reader_parser::parser::parse(candidate.descriptor.as_bytes()) {
             let field = |key: &[u8]| {
                 descriptor
                     .get(key)
@@ -253,7 +253,7 @@ fn stack(
     let started = Instant::now();
     let gathered = stacks::user_folder(&scratch.join(&plan.id), language, candidates, &plan.mods)
         .and_then(|user_dir| {
-            content_reader_core::gather(&content_reader_core::GatherOptions {
+            content_reader_layers::gather(&content_reader_layers::GatherOptions {
                 game_dir: options.game_dir.clone(),
                 user_dir,
                 cache_dir: cache.join(&plan.id),

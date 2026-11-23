@@ -180,13 +180,13 @@ impl Store {
         Ok(settings)
     }
 
-    pub fn flip(&mut self, key: String, setting: crate::protocol::MapSetting) -> io::Result<()> {
+    pub fn flip(&mut self, key: String, setting: crate::protocol::MapSetting) -> io::Result<Option<String>> {
         self.update(key, |saved, key| {
             saved.flipped(key, setting).map_err(crate::invalid)
         })
     }
 
-    pub fn save(&mut self, key: String, settings: CampaignMapSettings) -> io::Result<()> {
+    pub fn save(&mut self, key: String, settings: CampaignMapSettings) -> io::Result<Option<String>> {
         self.update(key, |_, _| Ok(settings))
     }
 
@@ -194,50 +194,37 @@ impl Store {
         &mut self,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
         self.check().map_err(crate::invalid)?;
-        self.update_at(&path()?, key, choose)
+        self.update_at(&replay_settings::exit::EXIT, &path()?, key, choose)
     }
 
     fn update_at(
         &mut self,
+        exit: &replay_settings::exit::Exit,
         path: &std::path::Path,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
-    ) -> io::Result<()> {
-        let folder = path
-            .parent()
-            .ok_or_else(|| crate::invalid("Map settings have no folder"))?;
-        fs::create_dir_all(folder)?;
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path.with_extension("lock"))?;
-        lock.lock()?;
-        let saved = Self {
-            entries: Self::load_from(path)?.entries,
-            game: self.game,
-            ..Self::default()
-        };
-        let settings = choose(&saved, &key)?;
-        settings.validate().map_err(crate::invalid)?;
-        let mut entries = saved.entries;
-        entries.insert(key, settings);
-        let bytes = serde_json::to_vec(&entries)?;
-        if bytes.len() > 4 * 1024 * 1024 {
-            return Err(crate::invalid("Map settings exceed their size limit"));
-        }
-        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-        let written = fs::write(&temporary, bytes)
-            .and_then(|()| fs::rename(&temporary, path));
-        if written.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        written?;
-        self.entries = entries;
+    ) -> io::Result<Option<String>> {
+        let applied = exit.under_lock(&path.with_extension("lock"), replay_settings::exit::What::Change, |receipt| {
+            let saved = Self {
+                entries: Self::load_from(path)?.entries,
+                game: self.game,
+                ..Self::default()
+            };
+            let settings = choose(&saved, &key)?;
+            settings.validate().map_err(crate::invalid)?;
+            let mut entries = saved.entries;
+            entries.insert(key, settings);
+            let bytes = serde_json::to_vec(&entries)?;
+            if bytes.len() > 4 * 1024 * 1024 {
+                return Err(crate::invalid("Map settings exceed their size limit"));
+            }
+            Ok(receipt.replace(path, |out| io::Write::write_all(out, &bytes))?.with(entries, ()))
+        })?;
+        self.entries = applied.value;
         self.generation += 1;
-        Ok(())
+        Ok(applied.warning)
     }
 }
 
@@ -262,12 +249,12 @@ pub struct Reply {
     #[ts(
         type = "{ id: string, name: string, recordedId: string, source: string, problem: string | null }[]"
     )]
-    pub mods: Vec<content_reader_core::content::visual::InstalledMod>,
+    pub mods: Vec<content_reader_layers::content::visual::InstalledMod>,
     #[doc = " The mods the recording was made with, which every scope shows beneath visual mods."]
     pub recorded_mods: Vec<RecordedMod>,
     #[doc = " The resolved selection's mods in the engine's mount order, lowest precedence first."]
     #[ts(type = "{ id: string, name: string }[]")]
-    pub applied_mods: Vec<content_reader_core::content::visual::Choice>,
+    pub applied_mods: Vec<content_reader_layers::content::visual::Choice>,
     #[doc = " Selected mods that are not shown, and why."]
     pub applied_notes: Vec<String>,
     #[doc = " The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when"]
@@ -277,6 +264,8 @@ pub struct Reply {
     pub game_graphics: Option<MapGraphics>,
     #[doc = " Why the game's settings (graphics and volumes) could not be read."]
     pub game_settings_error: Option<String>,
+    #[doc = " Why this save, which BattlePlan applied, may not have reached the disk."]
+    pub save_warning: Option<String>,
     #[doc = " The service's presentation generation once this job checked every open source's visual"]
     #[doc = " mods: a later one than a client has seen means widget artwork changed."]
     #[ts(type = "number")]
@@ -284,10 +273,10 @@ pub struct Reply {
 }
 
 pub fn catalogue(
-    options: &content_reader_core::ResolveOptions,
+    options: &content_reader_layers::ResolveOptions,
     cancel: &AtomicBool,
-) -> io::Result<Vec<content_reader_core::content::visual::InstalledMod>> {
-    content_reader_core::content::visual::installed(options, cancel)
+) -> io::Result<Vec<content_reader_layers::content::visual::InstalledMod>> {
+    content_reader_layers::content::visual::installed(options, cancel)
 }
 
 pub fn game_audio(keys: &content_reader_settings::settings::SettingsKeys) -> MapAudio {
@@ -405,8 +394,8 @@ mod tests {
         assert_eq!(sample_counts(), Some(vec![1, 2, 4, 8]));
     }
 
-    fn choice(id: &str) -> content_reader_core::content::visual::Choice {
-        content_reader_core::content::visual::Choice {
+    fn choice(id: &str) -> content_reader_layers::content::visual::Choice {
+        content_reader_layers::content::visual::Choice {
             id: id.into(),
             name: id.into(),
         }
@@ -761,7 +750,7 @@ mod tests {
     fn renderers_see_one_selection_for_equivalent_choices() {
         let mut store = Store::default();
         let chosen =
-            |mods: Option<Vec<content_reader_core::content::visual::Choice>>| CampaignMapSettings {
+            |mods: Option<Vec<content_reader_layers::content::visual::Choice>>| CampaignMapSettings {
                 visual_mods: mods,
                 ..Default::default()
             };
@@ -802,18 +791,19 @@ mod tests {
             rivers: Some(false),
             ..Default::default()
         });
+        let writes = replay_settings::exit::Exit::new();
         first
-            .update_at(&path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
+            .update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
             .unwrap();
         second
-            .update_at(&path, "campaign-b".into(), |_, _| Ok(rivers_off.clone()))
+            .update_at(&writes, &path, "campaign-b".into(), |_, _| Ok(rivers_off.clone()))
             .unwrap();
         let saved = Store::load_from(&path).unwrap();
         assert_eq!(saved.preferences("campaign-a"), night_off);
         assert_eq!(saved.preferences("campaign-b"), rivers_off);
         assert_eq!(second.preferences("campaign-a"), night_off);
         first
-            .update_at(&path, "campaign-b".into(), |saved, key| {
+            .update_at(&writes, &path, "campaign-b".into(), |saved, key| {
                 saved
                     .flipped(key, MapSetting::DayNight)
                     .map_err(crate::invalid)
@@ -824,6 +814,10 @@ mod tests {
         assert_eq!(flipped.day_night, Some(false));
         assert_eq!(flipped.rivers, Some(false));
         assert_eq!(saved.preferences("campaign-a"), night_off);
+        writes.seal();
+        let refused = second.update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(rivers_off.clone())).unwrap_err();
+        assert_eq!(refused.to_string(), replay_settings::exit::CLOSED, "a save asked for once BattlePlan closes is refused, never cut off part way");
+        assert_eq!(Store::load_from(&path).unwrap().preferences("campaign-a"), night_off);
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

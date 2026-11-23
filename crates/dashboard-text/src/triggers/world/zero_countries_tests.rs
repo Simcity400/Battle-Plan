@@ -237,9 +237,9 @@ fn assert_reserved_empty(world: &World<'_>) {
     let reserved = world.slot(900).unwrap();
     assert_eq!(reserved, 0);
     assert!(world.complete_invasion_orders(reserved).unwrap().is_empty());
-    let trigger = content_reader_core::triggers::read(
+    let trigger = content_reader_script::triggers::read(
         b"has_naval_invasion_against_state = 64",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     );
     assert_eq!(trigger.items.len(), 1);
     assert_eq!(

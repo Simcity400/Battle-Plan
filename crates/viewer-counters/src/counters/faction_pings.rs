@@ -15,7 +15,7 @@ use viewer_gpu::province_schedule::Update;
 #[cfg(test)]
 use viewer_native_gui::test_support::gui as test_support_gui;
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::io;
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn pin_hover_distinguishes_refused_alpha_from_native_pass_through() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use viewer_native_gui::native_gui::lifecycle::Instance;
         let mut resources = test_support_gui::fixture();
         let gui = native::read(
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn pin_refresh_uses_native_nested_inherited_controls_and_text() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use viewer_native_gui::native_gui::{PartKind, lifecycle::Instance};
         let resources = test_support_gui::fixture();
         let gui=native::read(br#"guiTypes = { containerWindowType = {

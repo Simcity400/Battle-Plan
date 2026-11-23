@@ -78,7 +78,6 @@ impl super::Inner {
     }
 
     pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
-        self.refuse_exports("The map stopped before the export finished");
         let was_ready = self.status.ready;
         self.map = None;
         self.generation += 1;
@@ -117,10 +116,6 @@ enum Launched {
 
 impl super::Inner {
     pub(super) fn hear(&mut self, event: NativeEvent, generation: u64) -> Option<NativeEvent> {
-        if let NativeEvent::Export { request, answer } = event {
-            self.export_ended(generation, request, answer);
-            return None;
-        }
         (self.generation == generation && !self.shutting_down && self.map.is_some()).then_some(event)
     }
 
@@ -344,8 +339,8 @@ impl NativeHost {
             }
             NativeEvent::ToggleDiagnostics => {
                 drop(inner);
-                if let Err(error) = crate::video::change_map_diagnostics(app, None) {
-                    let _ = app.emit("map-diagnostics-error", error);
+                if let Err(failed) = crate::video::change_map_diagnostics(app, None) {
+                    crate::video::diagnostics_failed(app, None, &failed);
                 }
                 return;
             }
@@ -431,7 +426,6 @@ impl NativeHost {
                 inner.last_diagnostic = Some(message.clone());
                 inner.status.error = Some(message);
             }
-            NativeEvent::Export { .. } => unreachable!("answered above"),
         }
         inner.publish(app);
     }
@@ -539,56 +533,6 @@ mod tests {
         closing.shutting_down = true;
         assert!(!closing.map_ended(Ending::Failed("late".into())));
         assert!(closing.status.error.is_none());
-    }
-
-    fn asked(inner: &mut Inner, path: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
-        inner.export_requests += 1;
-        let request = inner.export_requests;
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer });
-        inner.pending.actions.push_back(dashboard_core::protocol::MapAction::Export { path: path.into(), view_id: None, request });
-        answered
-    }
-
-    fn export(request: u64, answer: Result<&str, &str>) -> dashboard_core::protocol::NativeEvent {
-        dashboard_core::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
-    }
-
-    #[test]
-    fn each_export_is_answered_with_its_own_end() {
-        let mut inner = showing("A");
-        let (mut first, mut second) = (asked(&mut inner, "map.png"), asked(&mut inner, "map.png"));
-        assert!(inner.hear(export(2, Err("Capture map.png failed: its recording closed")), 3).is_none());
-        assert_eq!(second.try_recv(), Ok(Err("Capture map.png failed: its recording closed".into())));
-        assert!(first.try_recv().is_err(), "the first is still waiting");
-        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(first.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 12".into())));
-        assert!(inner.exports.is_empty());
-    }
-
-    #[test]
-    fn a_closing_map_answers_the_exports_it_ended_and_refuses_the_rest() {
-        let mut inner = showing("A");
-        let (mut saved, mut waiting) = (asked(&mut inner, "saved.png"), asked(&mut inner, "waiting.png"));
-        inner.shutting_down = true;
-        assert!(inner.hear(export(1, Ok("Saved saved.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(saved.try_recv(), Ok(Ok("Saved saved.png: branch 1, hour 12".into())));
-        assert!(!inner.map_ended(Ending::Closed));
-        assert_eq!(waiting.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-    }
-
-    #[test]
-    fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
-        let mut inner = showing("A");
-        let mut refused = asked(&mut inner, "map.png");
-        assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
-        assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard_core::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
-        let mut next = asked(&mut inner, "map.png");
-        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none(), "the ended map's answer");
-        assert!(next.try_recv().is_err(), "is not the new map's");
-        assert!(inner.hear(export(2, Ok("Saved map.png: branch 1, hour 13")), 4).is_none());
-        assert_eq!(next.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 13".into())));
     }
 
     #[test]

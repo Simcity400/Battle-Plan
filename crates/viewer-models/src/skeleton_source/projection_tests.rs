@@ -246,7 +246,7 @@ fn expected_add(
         bound: 0.,
         convoy_radius: None,
         attachments: usize::from(name == "cavalry"),
-        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
     if name == "fallen" {
         *library
@@ -523,9 +523,9 @@ fn single_parse_bakes_keep_fixed_bytes_and_ordered_refusals() {
     assert_eq!(
         warnings,
         [
-            (content_reader_core::DiagnosticKind::Refused, attachment),
+            (content_reader_parser::DiagnosticKind::Refused, attachment),
             (
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!("No mesh resolved for {missing}; those objects are not drawn.")
             ),
         ]

@@ -1,4 +1,4 @@
-use content_reader_core::{fixed5::fixed5_percent, fixed5::fixed5_to_string};
+use content_reader_parser::fixed5::{fixed5_percent, fixed5_to_string};
 use replay_data::{rows::ModifierBreakdownNode, rows::ModifierDefinitionRow, rows::check_tree};
 
 pub const PERCENT_TIMES_HUNDRED: u32 = 1 << 0;

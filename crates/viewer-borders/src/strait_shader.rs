@@ -3,7 +3,8 @@ use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, pdxshader::program::Stage};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::pdxshader::program::Stage;
 use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 

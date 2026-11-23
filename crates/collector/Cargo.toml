@@ -79,7 +79,6 @@ unit_leader_changes = ["collector-runtime/unit_leader_changes"]
 census_changes = ["collector-runtime/census_changes"]
 unit_leader_trait_changes = ["collector-runtime/unit_leader_trait_changes"]
 
-
 [dependencies]
 collector-observers.workspace = true
 collector-operation-outcomes.workspace = true
@@ -130,6 +129,8 @@ collector-spool = { workspace = true, features = ["advisor_changes", "advisor_po
 collector-states = { workspace = true, features = ["default", "test-support"] }
 collector-visibility = { workspace = true, features = ["country_input_changes", "default", "test-support", "visibility_changes"] }
 collector-workers = { workspace = true, features = ["default", "test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }

@@ -1,4 +1,4 @@
-use content_reader_core::province_geometry::native_fixed_sqrt;
+use content_reader_map::province_geometry::native_fixed_sqrt;
 use content_reader_regions::regions::StrategicRegion;
 use content_reader_states::states::StateDefinition;
 use std::collections::{BTreeMap, BTreeSet};

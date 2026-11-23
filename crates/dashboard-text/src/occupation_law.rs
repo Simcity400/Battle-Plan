@@ -1,5 +1,5 @@
 
-use content_reader_core::occupation_laws::Law;
+use content_reader_politics::occupation_laws::Law;
 
 pub enum GroupLaw<'a> {
     Missing,

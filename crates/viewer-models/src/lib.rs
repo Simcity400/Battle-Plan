@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -42,7 +43,8 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, mesh, mesh::Descriptors};
+use content_reader_layers::ResolvedLayers;
+use content_reader_mesh::mesh::{self, Descriptors};
 use content_reader_image::{Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::DEPTH_MAP_FORMAT;
@@ -358,7 +360,7 @@ impl ModelLibrary {
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
         Self::load_with(layers, decode, descriptors, names, warnings, |_, _| None)
     }
@@ -368,7 +370,7 @@ impl ModelLibrary {
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
         spans: &mut BuilderSpans,
     ) -> io::Result<Self> {
         Self::load_with_spans(
@@ -389,7 +391,7 @@ impl ModelLibrary {
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
         refused: fn(&mesh::Roster, &str) -> Option<String>,
     ) -> io::Result<Self> {
         Self::load_with_spans(
@@ -412,7 +414,7 @@ impl ModelLibrary {
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
         refused: fn(&mesh::Roster, &str) -> Option<String>,
         spans: &mut BuilderSpans,
         labels: BakeLabels,
@@ -530,7 +532,7 @@ impl ModelLibrary {
         }
         if !library.animation_refusals.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!(
                     "Model animations that do not read, so their entities stand in their bind \
                      pose: {}.",
@@ -545,7 +547,7 @@ impl ModelLibrary {
         }
         if !library.attachment_refusals.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!(
                     "Attached entities refused: {}.",
                     library
@@ -564,7 +566,7 @@ impl ModelLibrary {
                 .collect();
             missing.sort();
             warnings.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!(
                     "No mesh resolved for {}; those objects are not drawn.",
                     missing.join(", ")
@@ -581,7 +583,7 @@ impl ModelLibrary {
         }
         if !meshless.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Warning,
+                content_reader_parser::DiagnosticKind::Warning,
                 format!(
                     "{} geometry-less entities ({}); states and map events run without geometry.",
                     meshless.len(),
@@ -602,7 +604,7 @@ impl ModelLibrary {
             }
         }
         if !unjointed.is_empty() {
-            warnings.push((content_reader_core::DiagnosticKind::Warning, format!(
+            warnings.push((content_reader_parser::DiagnosticKind::Warning, format!(
                 "These entity locators name a parent_joint the mesh lacks and stay in entity space, as the engine keeps them: {}.",
                 unjointed.into_iter().collect::<Vec<_>>().join(", ")
             )));
@@ -2792,7 +2794,7 @@ impl ModelPass {
                 bound: 0.,
                 convoy_radius: None,
                 attachments: 0,
-                cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+                cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
             });
         }
         let mut pass = Self::new(&library, label);
@@ -3983,7 +3985,7 @@ mod parallel_animation_tests {
                 bound: 1.,
                 convoy_radius: None,
                 attachments: 1,
-                cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+                cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
             }],
             ..Default::default()
         };

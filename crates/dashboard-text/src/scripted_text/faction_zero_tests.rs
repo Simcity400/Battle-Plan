@@ -135,7 +135,7 @@ fn fresh_entry_binding_of_actual_zero_obeys_each_trigger_mask_and_keeps_prev() {
         ),
     ]);
     let content = catalogue.scripted_content().unwrap();
-    let mut scripted = content_reader_core::scripted_triggers::read(&content.layers.layers).unwrap();
+    let mut scripted = content_reader_key_names::scripted_triggers::read(&content.layers.layers).unwrap();
     scripted
         .templates
         .get_mut(b"masked".as_slice())
@@ -147,7 +147,7 @@ fn fresh_entry_binding_of_actual_zero_obeys_each_trigger_mask_and_keeps_prev() {
             .unwrap()
             .inputs
             .set(Ok(entries::EnvironmentInputs::synthetic().with_triggers(
-                content_reader_core::trigger_keys::TriggerNames {
+                content_reader_script::trigger_keys::TriggerNames {
                     scripted,
                     ..Default::default()
                 }

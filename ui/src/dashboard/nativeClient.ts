@@ -1,6 +1,7 @@
 import { queryFailure, RefusedError } from './queryError.ts';
 import type { QueryError } from '../generated/dashboard';
 import { invoke } from '@tauri-apps/api/core';
+import { invokeWrite, tracked } from '../shell/writes.ts';
 import { listen } from '@tauri-apps/api/event';
 import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
@@ -23,7 +24,7 @@ function cancelled(): DOMException {
 }
 
 async function rawInvoke<T>(command: string, args: Record<string, unknown>, timing?: QueryTiming, dropped?: AbortSignal): Promise<T> {
-  const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
+  const result = await invoke<unknown>(command, args).catch((error: QueryError | string) => { throw queryFailure(error); });
   if (timing) timing.received = performance.now();
   if (dropped?.aborted) throw cancelled();
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;
@@ -123,46 +124,47 @@ export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
   ...(desktopAvailable ? {
     openFollow(ports: readonly MessagePort[]) {
-      return new Promise<void>((resolve, reject) => {
-        const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' });
+      return new Promise<string>((resolve, reject) => {
+        const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' }), session = crypto.randomUUID();
         const fail = (reason: string) => { reader.terminate(); reject(new Error(reason)); };
         reader.onmessage = ({ data }) => {
-          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(); }
+          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(session); }
           else if (data.reason) fail(data.reason);
         };
         reader.onerror = event => fail(event.message);
-        reader.postMessage({ ports, session: crypto.randomUUID() }, [...ports]);
+        reader.postMessage({ ports, session }, [...ports]);
       });
     },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
     replayLibraryStamp: () => invoke<string>('replay_library_stamp'),
-    setReplayFolder: (folder: string) => invoke<ReplayLibrary>('set_replay_folder', { folder }),
+    setReplayFolder: (folder: string) => invokeWrite<ReplayLibrary>('set_replay_folder', { folder }),
     chooseReplayFolder: (initial?: string) => invoke<string | null>('choose_replay_folder', { initial: initial ?? null }),
     chooseRecording: () => invoke<string | null>('choose_recording'),
-    renameRecording: (path: string, name: string) => invoke<string>('rename_recording', { path, name }),
+    renameRecording: (path: string, name: string) => invokeWrite<{ path: string; warning: string | null }>('rename_recording', { path, name }),
     locateRecordings: (recordings: { path: string; campaignKey: string }[]) => invoke<(string | null)[]>('locate_recordings', { recordings }),
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
-    setRecordingCompression: (compression: Compression) => invoke<RecorderSettings>('set_recording_compression', { compression }),
-    setAutoCompress: (enabled: boolean) => invoke<RecorderSettings>('set_auto_compress', { enabled }),
+    setRecordingCompression: (compression: Compression) => invokeWrite<RecorderSettings>('set_recording_compression', { compression }),
+    setAutoCompress: (enabled: boolean) => invokeWrite<RecorderSettings>('set_auto_compress', { enabled }),
     contentFolders: () => invoke<ContentFolders>('content_folders'),
     chooseContentFolder: (kind: 'game' | 'user', initial: string) => invoke<string | null>('choose_content_folder', { kind, initial }),
-    setContentFolders: (game: string, user: string) => invoke<ContentFolders>('set_content_folders', { game, user }),
+    setContentFolders: (game: string, user: string) => invokeWrite<ContentFolders>('set_content_folders', { game, user }),
   } : {}),
 
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
-    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, flip: null, target }), signal);
+    const asked = () => request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, flip: null, target }), signal);
+    const reply = await (settings ? tracked(asked) : asked());
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
     contentRevision(nativeDashboardClient).observePresentation(reply.presentationGeneration);
     return reply;
   },
   async flipMapSetting(sourceId, revision, setting, signal, target) {
-    const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings: null, flip: setting, target }), signal);
+    const reply = await tracked(() => request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings: null, flip: setting, target }), signal));
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
     contentRevision(nativeDashboardClient).observePresentation(reply.presentationGeneration);
     return reply;
   },
 
-  chooseHistory: async (path, segmentId, choice, signal) => { await request<unknown>('dashboard_history_choice', () => ({ path, segmentId, choice }), signal); },
+  chooseHistory: async (path, segmentId, choice, signal) => { await tracked(() => request<unknown>('dashboard_history_choice', () => ({ path, segmentId, choice }), signal)); },
   async openSource(path, signal): Promise<DashboardSource> {
     if (signal.aborted) throw cancelled();
     const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,

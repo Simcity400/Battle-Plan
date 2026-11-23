@@ -77,7 +77,7 @@ fn empty_containers_describe_and_probe_children_once() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let content = Content {
         key_names: Some(&names),
         ..Default::default()
@@ -90,7 +90,7 @@ fn empty_containers_describe_and_probe_children_once() {
         ),
     ] {
         let body = format!("{effect_key}={{{own} add_political_power=2 add_political_power=3}}");
-        let items = content_reader_core::effect_keys::read_body(body.as_bytes(), &names).unwrap();
+        let items = content_reader_script::effect_keys::read_body(body.as_bytes(), &names).unwrap();
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         let out = fixture.render_native(&body, &mut scopes, content);
         assert_eq!(out.text, "PP2\nPP3\n", "{effect_key}: {:?}", out.refusals);

@@ -1,5 +1,5 @@
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use crate::{air_grid, bases};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn air_site_style_uses_strategic_buttons_and_separate_rocket_wing_grid() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
             buttonType={name=bg_btn quadTextureSprite=GFX_even}
@@ -829,7 +829,7 @@ mod tests {
         use replay_frame::frame::TableView;
         use viewer_gpu::camera::{Free, Lens, Pose};
 
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
         *frame.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
@@ -899,7 +899,7 @@ mod tests {
         use replay_frame::frame::TableView;
         use viewer_gpu::camera::{Free, Lens, Pose};
 
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let (mut frame, vision) =
             wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
         *frame.tables[TableId::RadarCoverage.index()] =
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn air_update_uses_local_buttons_and_hides_the_air_mode_controls() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
                 buttonType = { name = bg_btn quadTextureSprite = GFX_even }
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn site_updates_show_the_plain_button_with_the_site_frame() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
                 buttonType = { name = bg_btn quadTextureSprite = GFX_even }
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[test]
     fn radar_update_shows_its_icon() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(r#"iconType = { name = radar_mapicon spriteType = GFX_even frame = 2 }"#);
         let resources = fixture();
         let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn strategic_location_update_sets_the_location_sprite_and_keeps_the_frame() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root =
             window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 }"#);
         let resources = fixture();
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn base_hits_use_drawn_scale_clip_and_sprite_hit_mode() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even position = { x = 2 y = 3 } scale = 2 }"#,
         );
@@ -1186,7 +1186,7 @@ mod tests {
 
     #[test]
     fn base_binders_do_not_bind_nested_controls() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"containerWindowType={name=nested
             buttonType={name=bg_btn quadTextureSprite=GFX_even}}"#,
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn facility_setter_rebuilds_the_drawable_and_keeps_an_undefined_sprite() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 rotation = 1 }"#,
         );
@@ -1260,7 +1260,7 @@ mod tests {
 
     #[test]
     fn naval_update_overrides_authored_scale_and_hides_strategic_controls() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
             buttonType = { name = bg_btn quadTextureSprite = GFX_even scale = 3 }
@@ -1321,7 +1321,7 @@ mod tests {
 
     #[test]
     fn navy_mode_draws_repair_capacity_and_clears_it_when_intel_or_mode_hides_it() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
             buttonType={name=bg_btn quadTextureSprite=GFX_even}
@@ -1395,7 +1395,7 @@ mod tests {
 
     #[test]
     fn air_mode_uses_the_strategic_button_and_colors_its_aircraft_capacity_text() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
             buttonType={name=bg_btn quadTextureSprite=GFX_even}
@@ -1458,7 +1458,7 @@ mod tests {
     }
     #[test]
     fn air_permission_count_and_background_follow_selection_and_native_warning_colour() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window(
             r#"
             buttonType={name=bg_btn quadTextureSprite=GFX_even}
@@ -1512,7 +1512,7 @@ mod tests {
 
     #[test]
     fn retained_base_offers_reproject_every_family_in_order_including_previously_hidden_anchors() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use viewer_gpu::camera::{Free, Lens, Pose};
         viewer_counter_kit::fixtures::with_counter_inputs_fixture(
             viewer_counter_kit::fixtures::action_gui(false),

@@ -302,14 +302,14 @@ pub(super) mod tests {
 
     #[test]
     fn task_force_handled_empty_suppresses_authored_text_and_dangling_first_falls_back() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let loc: Localisation = [
             ("TITLE".into(), "authored title".into()),
             ("BODY".into(), "authored body".into()),
         ]
         .into_iter()
         .collect();
-        let gui = content_reader_core::gui::native::read(
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY
         } }"#,
@@ -357,7 +357,7 @@ pub(super) mod tests {
 
     #[test]
     fn task_force_detailed_fallback_follows_eta_handled_flag_not_summary_text() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use replay_data::{
             rows::CountryAppearanceRow, rows::CountryRow, rows::PoliticsRow,
             rows::TaskForceCounterInputRow,
@@ -375,7 +375,7 @@ pub(super) mod tests {
         .into_iter()
         .collect();
         loc.language = "english".into();
-        let gui = content_reader_core::gui::native::read(
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY
         } }"#,

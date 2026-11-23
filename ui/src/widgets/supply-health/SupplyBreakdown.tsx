@@ -24,7 +24,7 @@ import { countryDrillSpans, countryDrillTagAt } from '../../dashboard/countryIde
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
 import { STATES, STATE_LABELS, supplyParts, supplyTooltip, totalDivisions } from './supplyHealthData.ts';
 import { useSupplySeries } from './supplySeries';
@@ -85,6 +85,7 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
     alpha: state === 'inSupply' ? 0.85 : 1 })), [colors]);
   const keyHours = useMemo(() => runs.map(run => run.firstHour), [runs]);
   if (!track || !tag) return <>{header}<WidgetState kind="empty" message="Choose a country for the supply classification." /></>;
+  if (supply.refused) return <>{header}<WidgetState kind="unavailable" message={supply.refused} /></>;
   if (error && !supply.drawn) return <>{header}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!identities) return <>{header}<WidgetState kind="loading" label="Loading supply classification…" /></>;
   return <>{header}<div className="supply-health-breakdown" ref={root}>

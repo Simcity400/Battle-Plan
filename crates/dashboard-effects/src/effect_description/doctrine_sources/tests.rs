@@ -1,11 +1,10 @@
 use super::*;
-use content_reader_core::{
-    doctrines::Database, doctrines::Name, doctrines::RewardSource, gui::native::BoundLocalization,
-};
+use content_reader_military::doctrines::{Database, Name, RewardSource};
+use content_reader_script::localization_binding::BoundLocalization;
 
 fn bound(body: &str) -> BoundLocalization {
     BoundLocalization::from_value(
-        &content_reader_core::parser::parse(body.as_bytes())
+        &content_reader_parser::parser::parse(body.as_bytes())
             .unwrap()
             .items[0]
             .value,
@@ -41,7 +40,7 @@ fn database() -> Database {
     sources.grand.insert(
         grand,
         DefinitionSources {
-            available: content_reader_core::parser::parse(
+            available: content_reader_parser::parser::parse(
                 b"ROOT={tag=AAA} FROM={tag=AAA} PREV={tag=AAA}",
             )
             .unwrap()
@@ -220,7 +219,7 @@ fn unknown_available_gate_keeps_independent_sources_and_is_not_false() {
         .grand
         .get_mut(&Token::c_str(b"g"))
         .unwrap()
-        .available = content_reader_core::parser::parse(b"has_completed_focus=synthetic_focus")
+        .available = content_reader_parser::parser::parse(b"has_completed_focus=synthetic_focus")
         .unwrap()
         .items;
     let (sources, refused) = run(&database, 1);

@@ -683,7 +683,7 @@ fn played_child_uses_own_phase_while_unplayed_child_copies_raw_parent_phase() {
 
 #[test]
 fn propagated_missing_child_state_is_noop_for_ordinary_native_nodes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut rig = with_child(stage_rig(false));
     rig.nodes[0].clips[0]
         .state
@@ -711,7 +711,7 @@ fn propagated_missing_child_state_is_noop_for_ordinary_native_nodes() {
 
 #[test]
 fn naval_parent_entry_forces_same_child_while_ordinary_packet_suppresses_it() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut rig = with_child(stage_rig(false));
     rig.nodes[0].native = Some(Arc::new(native_source()));
     rig.nodes[0].clips[1]

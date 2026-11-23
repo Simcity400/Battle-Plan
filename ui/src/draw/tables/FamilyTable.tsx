@@ -5,11 +5,23 @@ import type { Live } from '../../charts/live';
 import { readTokens } from '../../charts/tokens.ts';
 import { measuredWidget } from '../../dashboard/widgetPerf.ts';
 import type { TableBuild } from './builders';
-import { attachTable, type ExactRows, type TableHostHandle } from './host.ts';
+import { bitmapSurface, holdElement } from '../bitmapSurface.ts';
+import { pipelineOf } from '../../dashboard/follow/pipeline.ts';
+import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
+import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
+import { pageClock } from '../../dashboard/widgetClock.ts';
+import { perfLog } from '../../shell/perf.ts';
+import { auditRows } from '../views/table.ts';
+import { sortRowsAtHour } from './surface.ts';
+import type { AuditRow } from '../notifications';
+
+export type ExactRows = (hour: number) => Promise<{ rows: readonly TableRowModel[]; values: TableValues | null; empty?: string } | null>;
 import { carriedValues, type TableReading, type TableRowModel, type TableSurfaceModel, type TableTheme, type TableValues } from './surface.ts';
 import { updateTableSettings, type TableColumnDefaults } from './settings.ts';
 import { layoutTable, ROW_HEIGHT, type TableColumnLayout, type TableFormat, type TableSettings } from './logic.ts';
 import { columnWidthVar, DISPLAY_LABELS, TableHeader, type TableHeaderColumn } from './TableHeader.tsx';
+
+const TABLE_AUDIT = -1;
 
 export interface FamilyColumn extends TableColumnDefaults {
   priority: number;
@@ -42,6 +54,7 @@ export interface FamilyTableProps {
   fixed?: number;
   build?: TableBuild;
   tooltipKeys?: (row: string) => readonly string[];
+  tooltipColumns?: readonly string[];
   onHover: (row: string | null, at?: { x: number; y: number }, drawn?: TableReading) => void;
   exactRows?: ExactRows;
   headerSlot: HTMLElement | null;
@@ -61,8 +74,8 @@ function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | und
 }
 
 export default function FamilyTable({ label, className, clock, offset, columns: specs, rows, settings, onSettings, live, reply, follow, sources,
-  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, onHover, exactRows, headerSlot }: FamilyTableProps) {
-  const body = useRef<HTMLDivElement>(null), host = useRef<TableHostHandle | null>(null), widget = measuredWidget() ?? undefined;
+  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, tooltipColumns, onHover, exactRows, headerSlot }: FamilyTableProps) {
+  const body = useRef<HTMLDivElement>(null), widget = measuredWidget() ?? undefined;
   const [width, setWidth] = useState(0), [scrollLeft, setScrollLeft] = useState(0);
   const [resizing, setResizing] = useState<{ key: string; width: number } | null>(null);
   const theme = useMemo(() => themeOf(countryColours), [countryColours]);
@@ -87,11 +100,8 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       return tr;
     }));
   }, []);
-  const readMirror = useCallback(() => {
-    const handle = host.current, range = view.current, asked = ++mirrorAsked.current;
-    if (!handle || !range.count) return;
-    void handle.read({ rows: range }).then(reading => { if (asked === mirrorAsked.current) paintMirror(reading && { first: range.first, rows: reading.rows ?? [] }); });
-  }, [paintMirror]);
+  const rebind = useRef<() => void>(() => {});
+  const readMirror = useCallback(() => { ++mirrorAsked.current; rebind.current(); }, []);
   const rowHeight = ROW_HEIGHT[settings.density];
   useLayoutEffect(() => {
     const node = body.current; if (!node) return;
@@ -145,49 +155,106 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     return clock.subscribe(() => { const now = clock.getSnapshot().playing; if (playing && !now) readMirror(); playing = now; });
   }, [clock, readMirror]);
 
-  const hoverAsked = useRef(0);
+  const hoverAt = useRef<{ x: number; y: number } | null>(null);
   const totalWidth = layoutAt(drawnWidths.current, width).totalWidth;
-  const latest = useRef({ model, onHover, tooltipKeys, exactRows, totalWidth, layoutAt, width });
-  latest.current = { model, onHover, tooltipKeys, exactRows, totalWidth, layoutAt, width };
-  useEffect(() => {
-    const node = body.current; if (!node) return;
-    const handle = attachTable(node, clock, (...args) => latest.current.model(...args),
-      (visible, pending) => {
-        node.toggleAttribute('data-table-visible', visible); node.toggleAttribute('data-table-pending', !!pending);
-        if (visible) { accessible.current?.setAttribute('aria-rowcount', String(drawnCount.current + 1)); readMirror(); }
-        else { ++mirrorAsked.current; paintMirror(null); accessible.current?.setAttribute('aria-rowcount', '1'); }
-      },
-      (key, at) => {
-        const row = key?.startsWith('row:') && at ? key.split(':')[1]! : null, asked = ++hoverAsked.current;
-        if (row === null || !handle) { latest.current.onHover(null); return; }
-        void handle.read({ keys: latest.current.tooltipKeys?.(row) ?? [], detail: row }).then(reading => {
-          if (asked !== hoverAsked.current) return;
-          if (reading) latest.current.onHover(row, at, reading); else latest.current.onHover(null);
-        });
-      },
-      setScrollLeft, () => latest.current.totalWidth, () => latest.current.exactRows,
-      (count, empty) => {
-        const before = drawnCount.current;
-        drawnCount.current = count;
-        const table = accessible.current;
-        table?.setAttribute('aria-rowcount', String(count + 1));
-        if (empty) table?.setAttribute('aria-description', empty); else table?.removeAttribute('aria-description');
-        if (count === 0) { ++mirrorAsked.current; if (mirrored.current?.rows.length) paintMirror(null); }
-        else if (before === 0) readMirror();
-      },
-      widths => {
+  const latest = useRef({ model, onHover, tooltipKeys, tooltipColumns, exactRows, totalWidth, layoutAt, width });
+  latest.current = { model, onHover, tooltipKeys, tooltipColumns, exactRows, totalWidth, layoutAt, width };
+  const widgetKey = useWidgetKey();
+  const pipeline = pipelineOf(pageClock(clock));
+  const pipe = useFollowedWidget(pipeline, pipeline ? `${widgetKey}|${offset}` : null, { offset, pin: fixed === undefined ? null : fixed + offset });
+  const surface = useRef<{ canvas: HTMLCanvasElement; extent: HTMLDivElement; surface: ReturnType<typeof bitmapSurface> } | null>(null);
+  const bind = useCallback(() => {
+    const node = body.current, held = surface.current;
+    if (!node || !held || !pipeline || pipe === null) return;
+    const w = Math.max(1, node.clientWidth), h = Math.max(1, node.clientHeight);
+    const made = latest.current.model(pipe, 0, w, h);
+    made.scrollLeft = node.scrollLeft; made.scrollTop = node.scrollTop; made.headerHeight = 0;
+    held.extent.style.width = `${Math.max(w, latest.current.totalWidth)}px`;
+    Object.assign(held.canvas.style, { width: `${w}px`, height: `${h}px` });
+    const keys = latest.current.tooltipKeys;
+    const tips = keys ? Object.fromEntries(made.rows.map(row => [row.key, keys(row.key)])) : undefined;
+    pipeline.present(pipe, 'table');
+    pipeline.bind(pipe, [held.surface], { surfaces: [{ width: w, height: h, dpr: devicePixelRatio }], ...followed ? {} : { dated: { h: shownAt, c: shownAt } } },
+      {}, { model: made, ...tips ? { tooltipKeys: tips } : {}, ...latest.current.tooltipColumns ? { tooltipColumns: latest.current.tooltipColumns } : {}, window: view.current, ...perfLog ? { audit: true } : {} });
+  }, [pipeline, pipe, followed, shownAt, offset]);
+  useLayoutEffect(() => {
+    const node = body.current;
+    if (!node || !pipeline || pipe === null) return;
+    const extent = document.createElement('div');
+    const drawn = pipeline.held(pipe, 'table', () => {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'tf-canvas'; canvas.setAttribute('aria-hidden', 'true'); canvas.dataset.surface = 'table'; canvas.dataset.placement = String(pipe);
+      return { canvas, surface: bitmapSurface(canvas) };
+    })!;
+    const canvas = drawn.canvas;
+    extent.className = 'tf-extent'; extent.append(canvas); node.append(extent);
+    surface.current = { canvas, extent, surface: drawn.surface };
+    const rowSize = () => ROW_HEIGHT[latest.current.model(pipe, 0, 1, 1).settings.density];
+    const install = () => {
+      const shown = pipeline.view(pipe), frameNode = frame.current;
+      holdElement(frameNode, !!shown?.dim);
+      const visible = shown?.mode === 'picture';
+      node.toggleAttribute('data-table-visible', visible); node.toggleAttribute('data-table-pending', !visible);
+      if (!visible || !shown.fields) { paintMirror(null); latest.current.onHover(null); return; }
+      const rows = shown.fields.rows as { count: number; empty?: string } | undefined;
+      if (rows) {
+        drawnCount.current = rows.count;
+        accessible.current?.setAttribute('aria-rowcount', String(rows.count + 1));
+        if (rows.empty) accessible.current?.setAttribute('aria-description', rows.empty); else accessible.current?.removeAttribute('aria-description');
+        extent.style.height = `${Math.max(node.clientHeight, rowSize() * rows.count)}px`;
+      }
+      const widths = shown.fields.widths as Record<string, number> | undefined;
+      if (widths) {
         drawnWidths.current = widths;
-        for (const [key, at] of Object.entries(widths)) frame.current?.style.setProperty(columnWidthVar(key), `${at}px`);
+        for (const [key, at] of Object.entries(widths)) frameNode?.style.setProperty(columnWidthVar(key), `${at}px`);
         const next = latest.current.layoutAt(widths, latest.current.width), shape = shapeOf(next);
         latest.current.totalWidth = next.totalWidth;
         setShaped(held => held.shape === shape ? held : { widths, shape });
-      });
-    host.current = handle;
-    return () => { handle?.close(); host.current = null; };
-  }, [clock, readMirror, paintMirror]);
-  useEffect(() => { host.current?.refresh(); }, [model]);
-  useEffect(() => followed ? undefined : live.subscribe(() => host.current?.refresh()), [live, followed]);
-  useEffect(() => sources?.subscribe(() => host.current?.refresh()), [sources]);
+      }
+      paintMirror((shown.fields.mirror as { first: number; rows: NonNullable<TableReading['rows']> } | undefined) ?? null);
+      const tip = shown.tooltip as TableReading | null;
+      const at = hoverAt.current;
+      if (tip && at && typeof shown.fields.tooltip === 'object') {
+        const key = (shown.fields.tooltip as { key: string }).key;
+        latest.current.onHover(key.split(':')[1]!, at, tip);
+      } else latest.current.onHover(null);
+    };
+    install();
+    const stop = pipeline.onInstall(pipe, install);
+    const point = (event: PointerEvent) => {
+      if (!event.isTrusted) return;
+      hoverAt.current = { x: event.clientX, y: event.clientY };
+      const box = node.getBoundingClientRect();
+      pipeline.pointer(pipe, 0, [event.clientX - box.left, event.clientY - box.top]);
+    };
+    const leave = () => { hoverAt.current = null; latest.current.onHover(null); pipeline.pointer(pipe, 0, null); pipeline.inspect(pipe, null); };
+    const scrolled = () => { setScrollLeft(node.scrollLeft); bind(); };
+    node.addEventListener('pointermove', point); node.addEventListener('pointerleave', leave); node.addEventListener('scroll', scrolled, { passive: true });
+    const observer = new ResizeObserver(bind); observer.observe(node);
+    bind();
+    return () => {
+      stop(); observer.disconnect();
+      node.removeEventListener('pointermove', point); node.removeEventListener('pointerleave', leave); node.removeEventListener('scroll', scrolled);
+      extent.remove(); surface.current = null; holdElement(frame.current, false);
+    };
+  }, [pipeline, pipe, bind, paintMirror]);
+  useLayoutEffect(() => { rebind.current = bind; bind(); }, [model, bind]);
+  const auditable = !!exactRows;
+  const shownColumns = useRef<string[]>([]);
+  shownColumns.current = layout.columns.map(column => column.key);
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || !auditable) return;
+    pipeline.audit(pipe, TABLE_AUDIT, fields => fields.audit as readonly AuditRow[] | undefined);
+    perfLog.reader(pipe, TABLE_AUDIT, async hour => {
+      const exact = await latest.current.exactRows?.(hour);
+      if (!exact) return null;
+      const sorted = sortRowsAtHour(exact.rows, latest.current.model(pipe, 0, 1, 1).settings, exact.values, hour);
+      const rows = auditRows(sorted, shownColumns.current, exact.values, hour, exact.empty);
+      return { values: new Map(rows.map(row => [row.key, row.value])), ordered: true };
+    });
+    return () => pipeline.audit(pipe, TABLE_AUDIT, null);
+  }, [pipeline, pipe, auditable]);
+  useEffect(() => followed ? undefined : live.subscribe(bind), [live, followed, bind]);
   useLayoutEffect(() => {
     const node = body.current; if (!node) return;
     const observer = new ResizeObserver(() => setWidth(node.clientWidth));

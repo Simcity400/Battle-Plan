@@ -310,17 +310,12 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
 fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let _globals = super::test_globals();
     use crate::land_events::test_support;
-    let mut owned = test_support::own();
-    // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
-    unsafe { test_support::reset(&mut owned) };
+    let fixture = test_support::Fixture::new(1024);
     let mut events = crate::extended::land_events::Captured::with_capacities(
         &crate::extended::land_events::Capacities { words: 0 },
     );
-    // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
-    unsafe {
-        events.drain(10, true);
-        events.drain(11, false);
-    }
+    events.drain_from(&fixture.observer, 10, true);
+    events.drain_from(&fixture.observer, 11, false);
     let mut captured = Captured::with_capacities(&Capacities {
         rows: 1,
         variants: 1,
@@ -352,8 +347,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let allocated = captured.allocated_bytes();
     read(&mut captured, &worlds);
     assert_eq!(captured.allocated_bytes(), allocated);
-    // SAFETY: Unit test owns its isolated land-events fixture.
-    unsafe { events.lost_casualty_reads(captured.lost_reads()) };
+    events.lost_casualty_reads_from(&fixture.observer, captured.lost_reads());
     let [
         _,
         _,
@@ -364,7 +358,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     };
     assert_eq!(coverage[0].lost_events, 0);
     assert!(coverage[0].complete);
-    test_support::disable();
+    fixture.stop();
 }
 #[test]
 fn hourly_losses_off_thread_census_presizes_all_sides() {

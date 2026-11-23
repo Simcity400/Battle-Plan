@@ -10,15 +10,20 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["content-reader-core/test-support", "content-reader-regions/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support"]
+test-support = ["content-reader-script/test-support", "content-reader-regions/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 viewer-foundation.workspace = true
 viewer-gpu.workspace = true
 viewer-runtime.workspace = true
 viewer-unit-reads.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
-content-reader-core.workspace = true
 content-reader-localisation.workspace = true
 content-reader-regions.workspace = true
 content-reader-state-categories.workspace = true
@@ -32,10 +37,10 @@ shader-pipeline.workspace = true
 viewer-scene-base.workspace = true
 
 [dev-dependencies]
+content-reader-script = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-gpu = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 engine-executable.workspace = true
@@ -54,6 +59,10 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }

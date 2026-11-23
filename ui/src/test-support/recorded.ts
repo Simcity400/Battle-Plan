@@ -1,7 +1,8 @@
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from '../dashboard/client';
 import { queryFailure } from '../dashboard/queryError.ts';
 import type { QueryError, SourceReply } from '../generated/dashboard';
-import { FollowDecoder, type Release } from '../dashboard/follow/decode.ts';
+import { packet, resetStamps, splitForLanes } from '../dashboard/follow/split.ts';
+import { upgradeRecorded } from './recordedWire.ts';
 import { DATED_FOLLOW, DATED_PANEL, parseDatedPanels } from '../dashboard/follow/message.ts';
 import { isCellsId } from '../dashboard/follow/liveCells.ts';
 import { busy, busyPreparing } from '../shell/busy.ts';
@@ -145,7 +146,6 @@ export class RecordedClient implements DashboardClient {
   private unfollow?: ReplyEntry;
   private readonly ids = new Map<number, number>();
   private ports: readonly MessagePort[] = [];
-  private readonly decoder = new FollowDecoder();
 
   constructor(entries: readonly RecordedEntry[]) {
     for (const entry of entries) {
@@ -215,7 +215,6 @@ export class RecordedClient implements DashboardClient {
     } else if (product === 'unfollow') {
       const { id } = params as { id: number };
       for (const [recorded, local] of this.ids) if (local === id) this.ids.delete(recorded);
-      this.decoder.release(id);
       entry = this.unfollow;
     } else entry = this.replies.get(productKey(product, params));
     this.asked.push({ product, params, ...(asksFrom === undefined ? {} : { asksFrom }), served: entry !== undefined, at: performance.now(), lane, head: this.hourOf() });
@@ -251,21 +250,29 @@ export class RecordedClient implements DashboardClient {
 
   async openFollow(ports: readonly MessagePort[]) {
     this.ports = ports;
-    for (const port of ports) port.onmessage = ({ data }: MessageEvent<Release>) => this.decoder.release(data);
+    for (const port of ports) port.onmessage = () => {};
+  }
+
+  private readonly stamp = resetStamps();
+
+  private send(mapped: Uint8Array) {
+    const resets = this.stamp(mapped);
+    const split = splitForLanes(mapped.slice(), this.ports.length);
+    if (split.kind === 'failure') { for (const port of this.ports) port.postMessage({ kind: 'failure', reason: split.reason }); return; }
+    split.lanes.forEach((bytes, lane) => { if (bytes) this.ports[lane]!.postMessage(packet(split.kind, bytes, resets), [bytes.buffer]); });
   }
 
   private replay(ids: ReadonlySet<number>): void {
     for (const bytes of this.window) {
-      const mapped = remapMessage(bytes, id => ids.has(id) ? this.ids.get(id) : undefined);
-      if (mapped) { const item = this.decoder.item(mapped.slice().buffer); for (const port of this.ports) port.postMessage([item]); }
+      const mapped = remapMessage(upgradeRecorded(bytes), id => ids.has(id) ? this.ids.get(id) : undefined);
+      if (mapped) this.send(mapped);
     }
   }
 
   deliver(bytes: Uint8Array): boolean {
-    const mapped = remapMessage(bytes, id => this.ids.get(id));
+    const mapped = remapMessage(upgradeRecorded(bytes), id => this.ids.get(id));
     if (!mapped) return false;
-    const item = this.decoder.item(mapped.slice().buffer);
-    for (const port of this.ports) port.postMessage([item]);
+    this.send(mapped);
     return true;
   }
 

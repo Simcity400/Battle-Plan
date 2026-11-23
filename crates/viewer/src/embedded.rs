@@ -65,6 +65,7 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
 #[derive(Default)]
 pub struct Pending {
     pub actions: VecDeque<dashboard_core::protocol::MapAction>,
+    pub exports: Vec<crate::host::ExportJob>,
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
@@ -88,6 +89,7 @@ impl Pending {
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
+            && self.exports.is_empty()
             && !self.campaign_map
             && self.map_views.is_none()
             && self.seek.is_none()
@@ -98,10 +100,17 @@ impl Pending {
             && self.error.is_none()
     }
 
-    fn push(&mut self, command: NativeCommand) -> Result<(), String> {
+    fn push(&mut self, command: impl Into<crate::host::Command>) -> Result<(), String> {
         if self.close {
             return Ok(());
         }
+        let command = match command.into() {
+            crate::host::Command::Native(command) => command,
+            crate::host::Command::Export(job) => {
+                self.exports.push(job);
+                return Ok(());
+            }
+        };
         match command {
             NativeCommand::MapAction { action } => {
                 action.validate().map_err(str::to_owned)?;
@@ -317,7 +326,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn input(&self, command: NativeCommand) {
+    fn input(&self, command: crate::host::Command) {
         let mut pending = self
             .pending
             .lock()
@@ -415,12 +424,12 @@ fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     clockless(old) == clockless(new)
 }
 
-pub fn install_follow(send: impl Fn(u8, Vec<u8>) + Send + 'static) -> io::Result<bool> {
+pub fn install_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::Result<bool> {
     let push = Arc::new(dashboard_follow::push::Push::default());
     let drained = Arc::clone(&push);
     thread::Builder::new().name("follow push".into()).spawn(move || {
-        while let Some((kind, bytes, _, _)) = drained.take_kind() {
-            send(kind, bytes);
+        while let Some((kind, bytes, session)) = drained.take_sent() {
+            send(kind, bytes, session);
         }
     })?;
     Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads { push, hosts: Mutex::default(), building: Mutex::default() })))
@@ -456,6 +465,14 @@ impl FollowPlayheads {
 }
 
 impl dashboard_follow::registry::Playheads for FollowPlayheads {
+    fn credit(&self, session: u64, released: u64) {
+        self.push.credit(session, released);
+    }
+
+    fn restart(&self) -> u64 {
+        self.push.restart()
+    }
+
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn dashboard_follow::registry::Hosted>, String> {
         let push = &self.push;
         if let Some(failed) = push.failed() {
@@ -477,8 +494,8 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);
-        let hook = follow.hook(Box::new(move |_, message| {
-            if let Some(message) = message { out.offer(message.bytes); }
+        let hook = follow.hook(Box::new(move |stats, message| {
+            if let Some(message) = message { out.offer_from(stats.session, dashboard_follow::push::FOLLOW, message.bytes); }
         }));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;
@@ -547,7 +564,7 @@ impl dashboard_follow::panel::PanelReader for FollowRowReader {
 
 pub struct Parent {
     window: crate::host::Window,
-    commands: mpsc::Receiver<NativeCommand>,
+    commands: mpsc::Receiver<crate::host::Command>,
     events: crate::host::Events,
     service: Arc<dashboard::Service>,
 }
@@ -555,7 +572,7 @@ pub struct Parent {
 impl Parent {
     pub fn new(
         window: crate::host::Window,
-        commands: mpsc::Receiver<NativeCommand>,
+        commands: mpsc::Receiver<crate::host::Command>,
         events: crate::host::Events,
         service: Arc<dashboard::Service>,
     ) -> Self {
@@ -584,7 +601,6 @@ impl Parent {
             output_done,
             service,
             sent_maps: Sent::default(),
-            events: Arc::clone(&events),
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
@@ -592,13 +608,13 @@ impl Parent {
             .spawn_carried(move || {
                 while !input.stopped.load(Ordering::Acquire) {
                     let Ok(command) = commands.recv() else { break };
-                    let close = matches!(command, NativeCommand::Close);
+                    let close = matches!(command, crate::host::Command::Native(NativeCommand::Close));
                     input.input(command);
                     if close {
                         return;
                     }
                 }
-                input.input(NativeCommand::Close);
+                input.input(NativeCommand::Close.into());
             })?;
         let output = Arc::clone(&shared);
         let output_events = Arc::clone(&events);
@@ -713,7 +729,6 @@ pub struct Controller {
     output_done: mpsc::Receiver<()>,
     service: Arc<dashboard::Service>,
     sent_maps: Sent,
-    events: crate::host::Events,
 }
 
 impl Controller {
@@ -795,10 +810,6 @@ impl Controller {
         outgoing.toggle_diagnostics();
         drop(outgoing);
         self.shared.output_ready.notify_one();
-    }
-
-    pub fn report_export(&self, request: u64, answer: Result<String, String>) {
-        (self.events)(NativeEvent::Export { request, answer });
     }
 
     pub fn report_camera_mode(&self, mode: CameraMode, overlays: bool) {

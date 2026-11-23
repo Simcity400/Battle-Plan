@@ -35,6 +35,20 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
         const restored = await snapshot(); assert.equal(restored.active, '0:0:row');
         assert.deepEqual(restored.columns[0].rows.find(row => row.index === 0)!.opened, [true, true], 'End/Home restore conditional nested details');
       });
+      await context.test('a render that keeps the row keys keeps every row observed: none that stays is released or observed again', async () => {
+        type Seen = { observed: number; unobserved: number; keptObserved: number; keptUnobserved: number };
+        for (const strict of [true, false]) {
+          await act(`mount(1, false, 'nested', [], ${strict})`); await act('observations(true)');
+          await act('rerender()');
+          const kept = await act('observations(true)') as Seen;
+          assert.deepEqual([kept.observed, kept.keptUnobserved], [0, 0],
+            `a render with the same keys${strict ? ' under StrictMode' : ''} mounts no row and releases none that stays: ${JSON.stringify(kept)}`);
+        }
+        await act('scroll(3000)');
+        const scrolled = await act('observations()') as Seen;
+        assert.ok(scrolled.keptObserved > 0 && scrolled.unobserved > scrolled.keptUnobserved,
+          `rows that enter are observed and rows that leave released: ${JSON.stringify(scrolled)}`);
+      });
       await context.test('authored CSS row gaps survive expansion, offscreen prefixes and style changes without a trailing gap', async () => {
         await act('mount()'); await act('rowGap(1)');
         const initial = (await snapshot()).columns[0];

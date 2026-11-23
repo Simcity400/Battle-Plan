@@ -10,11 +10,9 @@ import { fitCountryFlag } from '../components/countryFlagPresentation.ts';
 import type { NuclearArsenalReply } from '../generated/dashboard';
 import { arsenalNotice, arsenalRows } from '../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import type { ArsenalSelection } from '../widgets/nuclear-arsenal/nuclearArsenalData';
-import { pictureHour } from './pictureDate.ts';
-import type { PictureInterval } from './pictureDate';
 
 export interface ArsenalFeed extends ArsenalSelection {
-  follow?: number; offset: number; fixed?: number; date?: PictureInterval; reply?: NuclearArsenalReply;
+  follow?: number; offset: number; fixed?: number; reply?: NuclearArsenalReply;
 }
 export interface ArsenalModel extends ArsenalFeed {
   widget?: string;
@@ -23,6 +21,16 @@ export interface ArsenalModel extends ArsenalFeed {
 }
 export interface RaceInspection { items: readonly RaceItem[]; item?: RaceItem; hour: number; position: number }
 export type RaceTarget = { x: number; y: number } | { index: number } | { key: string };
+
+export function arsenalNext(model: Pick<ArsenalModel, 'overlay' | 'membership' | 'top' | 'tags' | 'split'>, reply: NuclearArsenalReply | undefined, hour: number): number {
+  let next = Infinity;
+  if (reply && (model.overlay || !reply.missing && !arsenalRows(reply, hour, model).length)) next = (Math.floor(hour / 24) + 1) * 24;
+  for (const spans of model.membership?.values() ?? []) for (const span of spans) {
+    if (span.firstHour > hour) next = Math.min(next, span.firstHour);
+    else if (span.lastHour >= hour) next = Math.min(next, span.lastHour + 1);
+  }
+  return next;
+}
 
 export class ArsenalPicture {
   private readonly ctx: CanvasRenderingContext2D;
@@ -38,6 +46,8 @@ export class ArsenalPicture {
   private invalid = true;
   private notice?: string;
   private closed = false;
+  private geometry = '';
+  private named = '';
   changed = false;
 
   private point?: { x: number; y: number };
@@ -57,8 +67,7 @@ export class ArsenalPicture {
     if (!ctx) throw new Error('The Nuclear arsenal drawing surface is unavailable');
     this.ctx = ctx as unknown as CanvasRenderingContext2D;
   }
-  clear() {
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  forget() {
     this.state = this.layout = this.reply = this.day = this.hour = this.position = undefined;
     this.invalid = true;
     this.notice = undefined;
@@ -90,14 +99,16 @@ export class ArsenalPicture {
     return this.flags.get(url);
   }
 
-  draw(model: ArsenalModel, reply: NuclearArsenalReply | undefined, date: PictureInterval | undefined, head: number, fixed = model.fixed) {
+  draw(model: ArsenalModel, reply: NuclearArsenalReply | undefined, position: number | null) {
     this.changed = false;
-    const position = pictureHour(date, head + model.offset, fixed === undefined ? undefined : fixed + model.offset);
-    if (!reply || position === null) { if (this.state) this.clear(); return null; }
+    if (!reply || position === null) { if (this.state) this.forget(); return null; }
     const { tokens, width, height, dpr } = model, ctx = this.ctx;
+    const geometry = `${width}|${height}|${dpr}|${model.scroll}|${model.slots}`;
+    if (geometry !== this.geometry) { this.geometry = geometry; this.invalid = true; }
+    const named = [...model.looks].map(([tag, look]) => `${tag}\u0000${look.name}\u0000${look.flag ?? ''}`).join('\u0001');
+    if (named !== this.named) { this.named = named; this.invalid = true; }
     const previous = this.state, oldLayout = this.layout;
-    const items = !this.invalid && previous && this.reply === reply && !model.membership ? previous.items :
-      arsenalRows(reply, position, model).map(row => countryRaceItem(row, model.colours, tag => model.looks.get(tag)?.color ?? tokens.accent, tokens.muted));
+    const items = arsenalRows(reply, position, model).map(row => countryRaceItem(row, model.colours, tag => model.looks.get(tag)?.color ?? tokens.accent, tokens.muted));
     this.hour = position; this.position = position - model.offset;
     const day = model.overlay || !items.length ? dayLabel(position) : '';
     const notice = items.length ? undefined : arsenalNotice(reply, position);
@@ -179,6 +190,11 @@ export class ArsenalPicture {
     ctx.restore(); ctx.restore();
     if (this.point) this.hover(this.point);
     return this.position;
+  }
+
+  hitTest(): (point: { x: number; y: number }) => RaceItem | undefined {
+    const { state, layout } = this;
+    return point => state && layout ? rowAt(state.rows, layout, point, state.min, state.max)?.item : undefined;
   }
 
   inspect(target?: RaceTarget): RaceInspection | undefined {

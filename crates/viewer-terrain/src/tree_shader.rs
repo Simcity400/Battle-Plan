@@ -1,7 +1,5 @@
 use eframe::wgpu;
-use content_reader_core::{
-    pdxshader::DepthStencilState, pdxshader::RasterizerState, pdxshader::program::Stage,
-};
+use content_reader_gui::pdxshader::{DepthStencilState, RasterizerState, program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 

@@ -1,6 +1,6 @@
 use super::{NavyArt, NavyContext, NavyState, Update, navy_calls};
 use crate::{CounterDefines, CounterSettings, Countries, UiColors, type_tint};
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},

@@ -35,7 +35,7 @@ impl Picture {
         }
     }
 
-    pub fn regions_and_zone(&self, map: &content_reader_core::map::MapData) -> (Regions, Zone) {
+    pub fn regions_and_zone(&self, map: &content_reader_map::map::MapData) -> (Regions, Zone) {
         let field = |values: &Arc<Vec<u32>>| province_field::ProvinceField(Arc::new(province_field::Storage::Dense(Arc::clone(values))));
         let regions = Regions {
             country_of: field(&self.country_of),

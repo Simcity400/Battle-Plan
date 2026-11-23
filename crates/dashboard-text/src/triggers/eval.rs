@@ -5,13 +5,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-use content_reader_core::{
-    parser::Item, scope::Keyword as ScopeKeyword, scope::Names, scope::Scope as Parsed,
-    scope::ScopeKind, scope::TriggerScopes, scripted_triggers::Template, trigger_keys::CountKind,
-    trigger_keys::Dispatch, trigger_keys::Dispatched, trigger_keys::ScopeStep, trigger_keys::cycle,
-    trigger_keys::describe, trigger_keys::equipment_category_mask, trigger_keys::frame,
-    trigger_keys::registered_trigger, trigger_keys::trigger_class,
-};
+use content_reader_parser::parser::Item;
+use content_reader_script::{scope::{Keyword as ScopeKeyword, Names, Scope as Parsed, ScopeKind, TriggerScopes}, scripted_trigger_grammar::Template, trigger_keys::{CountKind, Dispatch, Dispatched, ScopeStep, cycle, describe, equipment_category_mask, frame, registered_trigger, trigger_class}};
 use replay_data::{rows::BuildingRow, rows::tables};
 
 use super::{
@@ -700,7 +695,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             ),
             Ok(text) => {
                 let parsed =
-                    super::refusal::deferred(|| content_reader_core::scope::parse(text, quoted, &names));
+                    super::refusal::deferred(|| content_reader_script::scope::parse(text, quoted, &names));
                 let asked = names.asked.take();
                 let why = (!asked.is_empty()).then(|| Failure::merge(asked));
                 if let Some(why) = &why {
@@ -717,8 +712,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let Dispatched {
             dispatch,
             unless_scope,
-        } = content_reader_core::trigger_keys::dispatch_with_error(
-            content_reader_core::trigger_keys::Key {
+        } = content_reader_script::trigger_keys::dispatch_with_error(
+            content_reader_script::trigger_keys::Key {
                 keyword: keyword.as_ref().map(|keyword| keyword.text()),
                 text: item.key.as_deref().unwrap_or_default(),
                 quoted: item.key_quoted,
@@ -731,10 +726,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .triggers
                     .ok()
                     .and_then(|triggers| match triggers.scripted.lookup(text) {
-                        content_reader_core::scripted_triggers::Lookup::Template(template) => {
+                        content_reader_script::scripted_trigger_grammar::Lookup::Template(template) => {
                             Some(template)
                         }
-                        content_reader_core::scripted_triggers::Lookup::Missing => None,
+                        content_reader_script::scripted_trigger_grammar::Lookup::Missing => None,
                     })
             },
         )?;
@@ -1576,7 +1571,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 let expected = item
                     .value
                     .scalar()
-                    .and_then(content_reader_core::parser::read_bool)
+                    .and_then(content_reader_parser::parser::read_bool)
                     .ok_or("is_country_leader needs yes or no")?;
                 if character == 0 || self.world.character_retired(character)? {
                     Eval::False

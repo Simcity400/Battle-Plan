@@ -1,7 +1,7 @@
 use crate::gui_windows as gui_windows;
 use std::collections::HashMap;
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use crate::combat_markers::LandMarker;
 use std::collections::BTreeMap;
 use super::{CounterInputs, CounterReport, Countries};
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn combat_binder_does_not_bind_nested_controls() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut root = window("Main_14");
         let mut background = root.children.remove(0);
         background.path = "test.nested.bg_btn".into();
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn unseen_frame_draws_authored_initial_or_last_seen_frame_with_native_children() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut resources = fixture();
         resources.add_sprite("GFX_synthetic_frame", [20, 10], 2);
         for authored in [1, 2] {
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn a_withheld_score_background_does_not_invent_a_window_hit() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window("Main_14");
         let resources = fixture();
         let mut placed = placed();
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn unsupported_progress_font_is_refused_by_name_and_counted() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use native_gui::lifecycle::{Admission, Pool};
         let root = window("Unsupported_14");
         let resources = fixture();
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn local_controls_use_authored_terrain_sprite_and_preserve_unchanged_drawable() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = window("Main_14");
         let mut resources = fixture();
         resources

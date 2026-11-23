@@ -86,7 +86,7 @@ pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
 pub struct SceneContent {
     pub tables: Option<engine_executable::executable_tables::Tables>,
     pub products: map_products::ProductContent,
-    pub map: Arc<content_reader_core::map::MapData>,
+    pub map: Arc<content_reader_map::map::MapData>,
     pub map_defines: viewer_gpu::camera::MapDefines,
     pub assets: viewer_world::scene_content::MapAssets,
     pub border_meshes: Arc<viewer_borders::borders::BorderMeshes>,

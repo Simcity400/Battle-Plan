@@ -1,7 +1,7 @@
 use super::{paths_named, withhold_named};
 use crate::binding::Bindings;
 use crate::content::Content;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_runtime::resource_origins::{self, Definition};

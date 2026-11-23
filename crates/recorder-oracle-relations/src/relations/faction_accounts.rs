@@ -23,7 +23,7 @@ pub fn compare(
     let spell = |token: u32| -> io::Result<Vec<u8>> {
         tokens
             .get(&token)
-            .map(|value| content_reader_core::parser::c_string(value).to_vec())
+            .map(|value| content_reader_parser::parser::c_string(value).to_vec())
             .ok_or_else(|| invalid("faction account definition lacks token spelling"))
     };
     let mut saved = expected.entries.clone();

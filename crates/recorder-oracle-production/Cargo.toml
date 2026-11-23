@@ -10,19 +10,22 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 replay.workspace = true
 game-model.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
-content-reader-core.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true
 recorder-derive.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 engine-scripts.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 
@@ -35,6 +38,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }

@@ -13,7 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-defines.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 viewer-foundation.workspace = true
@@ -32,6 +32,10 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-unit-path = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }

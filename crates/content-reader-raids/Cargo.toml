@@ -10,17 +10,22 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-division-names.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
 content-reader-division-names = { workspace = true, features = ["layer-fixtures"] }
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = ["content-reader-layers/test-support", "content-reader-script/test-support"]
 
 [lints]
 workspace = true
@@ -31,6 +36,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-division-names = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 content-reader-raids = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }

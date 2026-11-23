@@ -1,28 +1,3 @@
-export class PresentationRate {
-  private next: number | undefined;
-  private last = -Infinity;
-  reset() { this.next = undefined; this.last = -Infinity; }
-
-  due(at: number, cap: number, boundary?: number) {
-    if (!cap) return true;
-    const interval = 1000 / cap;
-    if (boundary !== undefined) {
-      if (boundary <= this.last) return false;
-      this.next = boundary + interval;
-    } else {
-      this.next ??= at;
-      if (at + .1 < this.next) return false;
-      this.next += (1 + Math.floor((at + .1 - this.next) / interval)) * interval;
-    }
-    this.last = at;
-    return true;
-  }
-}
-
-export function shownAt(at: number, began: number, interval: number) {
-  return interval > 0 && began < at + interval ? at + interval : began;
-}
-
 export class DisplayRate {
   private previous?: number;
   private gaps: number[] = [];

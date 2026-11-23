@@ -10,11 +10,12 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
 replay.workspace = true
 replay-files.workspace = true
 replay-settings.workspace = true
 engine-executable.workspace = true
-content-reader-core.workspace = true
 
 [dev-dependencies]
 replay-capture-spool.workspace = true
@@ -31,7 +32,9 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }

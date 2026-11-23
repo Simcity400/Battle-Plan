@@ -31,7 +31,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useFallbackHour } from '../../dashboard/follow/useFollow.ts';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { definition } from './definition';
 import { supplyCountrySelection } from './SupplyCountryChip';
@@ -62,7 +62,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const pinned = options.show === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
   const following = widget.time.mode === 'follow';
-  const playbackHour = useFallbackHour(runtime.clock, false);
+  const playbackHour = usePlaybackHour(runtime.clock, false);
   const drillFollows = drill.breakdown !== null && drill.follow;
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<string[]>([]);
@@ -174,6 +174,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
 
   const problem = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see supply health." />;
+    if (supply.refused) return <WidgetState kind="unavailable" message={supply.refused} />;
     if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Selected country unavailable." />;
     if (groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

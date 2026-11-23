@@ -44,7 +44,7 @@ fn append_rig(library: &mut ModelLibrary, slot: usize) {
         bound: 1.,
         convoy_radius: None,
         attachments: 1,
-        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
 }
 
@@ -375,7 +375,7 @@ fn actor_bits(player: &entity_animation::Player, rig: &Rig) -> String {
 
 #[test]
 fn late_mesh_admission_binds_events_without_changing_existing_actor_identities() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     for label in ["unit models", "map buildings", "general animation"] {
         for install in [false, true] {
             let mut library = ModelLibrary::default();
@@ -478,7 +478,7 @@ fn late_mesh_admission_binds_events_without_changing_existing_actor_identities()
 
 #[test]
 fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut library = ModelLibrary::default();
     for slot in 0..6 {
         append_rig(&mut library, slot);

@@ -11,7 +11,9 @@ use dashboard_text::{
     identity::{NamingCountry, built_template},
     idea_names::IdeaCountry,
 };
-use content_reader_core::{characters::BuiltTemplate, coverage::Gap, modifiers::Modifier, modifiers::Modifiers};
+use content_reader_key_names::characters::BuiltTemplate;
+use content_reader_parser::coverage::Gap;
+use content_reader_script::modifiers::{Modifier, Modifiers};
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{CharacterRow, LexicalTokenRow, ModifierDefinitionRow, TableId, tables};
 use serde::{Deserialize, Serialize};
@@ -601,11 +603,11 @@ fn known<'a, T>(found: Result<Option<&'a T>, &Gap>) -> (Option<&'a T>, Option<St
     }
 }
 
-fn targeted(groups: &[content_reader_core::modifiers::TargetedModifier]) -> Vec<EffectGroup> {
+fn targeted(groups: &[content_reader_script::modifiers::TargetedModifier]) -> Vec<EffectGroup> {
     groups.iter().map(|group| EffectGroup { target: group.tag.clone(), instant: false, lines: lines(&group.modifiers), tooltips: group.modifiers.tooltips() }).collect()
 }
 
-fn equipment(bonuses: &[content_reader_core::modifiers::EquipmentBonus]) -> Vec<EffectGroup> {
+fn equipment(bonuses: &[content_reader_script::modifiers::EquipmentBonus]) -> Vec<EffectGroup> {
     bonuses
         .iter()
         .map(|bonus| EffectGroup { target: Some(bonus.equipment.clone()), instant: bonus.instant, lines: bonus.values.iter().map(|m| line(m, false)).collect(), tooltips: Vec::new() })

@@ -1,4 +1,4 @@
-use content_reader_core::pdxshader::program::Stage;
+use content_reader_gui::pdxshader::program::Stage;
 use shader_pipeline::{binding, gpu};
 use std::ops::Range;
 

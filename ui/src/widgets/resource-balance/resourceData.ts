@@ -290,3 +290,13 @@ export function overTimeTooltip(title: string, lines: readonly LineAt[], decimal
   }
   return fitTooltip(forms(), height, { more: hidden => `${hidden} more` });
 }
+
+export const describeResource = (resource: ResourceInfo, balance: Balance | null, decimals: number) => balance
+  ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, decimals)}, demand ${formatAmount(balance.demand, decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, decimals)}`
+  : `${resourceName(resource)}: not recorded at this time`;
+
+export const segmentLook = (raw: bigint, colour: string | undefined) => raw < 0n
+  ? { background: 'transparent', 'box-shadow': `inset 0 0 0 1.5px ${colour}` } : { background: colour ?? '', 'box-shadow': 'none' };
+
+export const legendFlags = (balances: readonly (Balance | null)[]) =>
+  `${balances.some(balance => balance && balance.fromSubjects !== 0n)}|${balances.some(balance => balance && balance.toOverlord !== 0n)}`;

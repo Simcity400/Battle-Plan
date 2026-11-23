@@ -31,9 +31,9 @@ use crate::layouts::column_layout;
 use crate::layouts::gun_counter;
 use crate::layouts::land_counter;
 use crate::layouts::window;
-use content_reader_core::gui::native;
-use content_reader_core::map::MapData;
-use content_reader_core::map::ProvinceKind;
+use content_reader_gui::gui::native;
+use content_reader_map::map::MapData;
+use content_reader_map::map::ProvinceKind;
 use dashboard_text::table_access::TokenKeys;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -168,7 +168,7 @@ pub struct CounterDefines {
 }
 
 impl CounterDefines {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let number = |name| defines.number("NGraphics", name).map(|value| value as f32);
         let fixed = |name| {
             defines
@@ -483,7 +483,7 @@ pub fn seeded_only(anchors: &BTreeMap<(u32, u32), [f32; 3]>, province: u32, kind
 
 pub struct CounterInputs<'a> {
     pub content: &'a CounterMap,
-    pub equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
+    pub equipment: Result<&'a content_reader_key_names::equipment::Database, &'a str>,
     pub assets: &'a CounterArt,
     pub windows: &'a SharedNativeWindows,
     pub fonts: &'a text::Fonts,
@@ -2464,7 +2464,7 @@ impl CounterArt {
 pub struct CounterMap {
     pub naval_mission_allegiance_group_cutoff: Result<f32, String>,
     pub terrain: Arc<TerrainContent>,
-    pub wing_types: Result<Arc<content_reader_core::unit_leader::SubUnits>, String>,
+    pub wing_types: Result<Arc<content_reader_script::sub_units::SubUnits>, String>,
     pub recorded_labels: Option<Arc<viewer_runtime::recorded_labels::RecordedLabels>>,
     pub port_mission_defines: viewer_unit_reads::port_mission_defines::Defines,
     pub anchors: Arc<BTreeMap<(u32, u32), [f32; 3]>>,
@@ -2494,7 +2494,7 @@ pub struct CounterMap {
     pub ability_comms_scaling: Result<Arc<Vec<i64>>, String>,
     pub ability_no_hq_scaling: Result<i64, String>,
     pub subunit_tokens: Result<TokenKeys, String>,
-    pub ideologies: content_reader_core::ideologies::Ideologies,
+    pub ideologies: content_reader_key_names::ideologies::Ideologies,
 }
 
 impl CounterMap {

@@ -3,8 +3,8 @@ use dashboard_effects::ScriptedEffects;
 use dashboard_base::catalogue::Catalogue;
 use crate::products;
 use dashboard_core::findings::{Finding, Kind};
-use content_reader_core::content::ResolvedContent;
-use content_reader_core::content::diagnostics::Once as OnceLock;
+use content_reader_layers::content::ResolvedContent;
+use content_reader_layers::content::diagnostics::Once as OnceLock;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -25,11 +25,11 @@ struct Content {
     catalogue: OnceLock<Result<Arc<Catalogue>, String>>,
     tags: OnceLock<
         Result<
-            std::collections::BTreeMap<String, content_reader_core::country_tags::CountryTag>,
+            std::collections::BTreeMap<String, content_reader_key_names::country_tags::CountryTag>,
             String,
         >,
     >,
-    ideologies: OnceLock<Result<content_reader_core::ideologies::Ideologies, String>>,
+    ideologies: OnceLock<Result<content_reader_key_names::ideologies::Ideologies, String>>,
 }
 
 impl Content {
@@ -44,21 +44,21 @@ impl Content {
     }
     fn tags(
         &self,
-    ) -> Result<&std::collections::BTreeMap<String, content_reader_core::country_tags::CountryTag>, String>
+    ) -> Result<&std::collections::BTreeMap<String, content_reader_key_names::country_tags::CountryTag>, String>
     {
         self.tags
             .get_or_init(|| {
-                content_reader_core::country_tags::read_definitions(&self.resolved.layers)
+                content_reader_key_names::country_tags::read_definitions(&self.resolved.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(Clone::clone)
     }
 
-    fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, String> {
+    fn ideologies(&self) -> Result<&content_reader_key_names::ideologies::Ideologies, String> {
         self.ideologies
             .get_or_init(|| {
-                content_reader_core::ideologies::read(&self.resolved.layers)
+                content_reader_key_names::ideologies::read(&self.resolved.layers)
                     .map(|(ideologies, _)| ideologies)
                     .map_err(|error| error.to_string())
             })
@@ -184,7 +184,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok(format!("{names} Slots, assignments, progress, modifiers and grants require the recorded research tables."))
         }
         doctrines::Doctrines::KEY | <doctrine_mastery::DoctrineMastery as AtHour>::KEY | <doctrine_mastery::rewards::DoctrineRewards as AtHour>::KEY => {
-            let database = content_reader_core::doctrines::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+            let database = content_reader_military::doctrines::read(&content.resolved.layers).map_err(|error| error.to_string())?;
             let catalogue = content.catalogue()?;
             for folder in database.entries.values() {
                 if let Err(why) = dashboard_base::catalogue::localised_bytes(&catalogue.localisation, &folder.name, dashboard_base::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine folder name", why)); }
@@ -241,7 +241,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok(format!("Air parts group recorded variants under their equipment's archetype through the equipment database ({} types); totals and parts require the recorded air force tables.", units.equipment.len()))
         }
         forces::NavySize::KEY => {
-            content_reader_core::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
+            content_reader_key_names::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
         volunteers::VolunteersExpeditionaries::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
@@ -268,7 +268,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         subjects::Subjects::KEY => {
             let catalogue = content.catalogue()?;
-            let (states, _) = content_reader_core::autonomy::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+            let (states, _) = content_reader_politics::autonomy::read(&content.resolved.layers).map_err(|error| error.to_string())?;
             let named = states.states.iter().map(|state| state.id.as_str()).collect();
             subjects::levels(&named, Some(&states), Some(catalogue));
             take(catalogue, "subject level names", findings);
@@ -321,8 +321,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
         {
             let layers = &content.resolved.layers;
-            let goals = content_reader_core::faction_goals::cached(layers)?;
-            let upgrades = content_reader_core::faction_upgrades::cached(layers)?;
+            let goals = content_reader_politics::faction_goals::cached(layers)?;
+            let upgrades = content_reader_politics::faction_upgrades::cached(layers)?;
             for warning in goals.warnings.iter().chain(&upgrades.warnings) {
                 findings.push(Finding::new(Kind::Warning, key, warning));
             }
@@ -376,7 +376,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         <leaders::UnitLeaders as at_hour::AtHour>::KEY | <leaders::career::LeaderHour as at_hour::AtHour>::KEY | leaders::career::LeaderCareer::KEY | leaders::career::LeaderChoices::KEY => {
             let catalogue = content.catalogue()?;
-            let read = content_reader_core::unit_leader::Leaders::<String>::load(&catalogue.content.layers, &|_| None).map_err(|why| why.to_string())?;
+            let read = content_reader_key_names::unit_leader::Leaders::<String>::load(&catalogue.content.layers, &|_| None).map_err(|why| why.to_string())?;
             findings.extend(read.misreads.iter().map(|message| Finding::new(Kind::Misread, "unit leaders", message)));
             findings.extend(read.skills.warnings().iter().map(|message| Finding::new(Kind::Refused, "leader skill definitions", message)));
             findings.extend(read.skills.conditions().iter().map(|condition| Finding::new(Kind::Offline, "leader skill definitions", format!("Maximum skill needs recorded modifier definitions: {condition}"))));
@@ -433,7 +433,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         naval::losses::NavalLosses::KEY => Ok("No content dependency: counts are the recorded naval loss totals.".into()),
         naval::sunk::ShipsSunk::KEY | naval::sunk::ShipsSunkManifest::KEY | naval::battles::NavalBattleDetails::KEY => {
             let catalogue = content.catalogue()?;
-            content_reader_core::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
+            content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }
@@ -509,7 +509,7 @@ fn wargoals_check(content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     );
     let mut seen = std::collections::BTreeSet::new();
     for name in &definitions.names {
-        if !seen.insert(content_reader_core::tokens::Token::c_str(name)) {
+        if !seen.insert(content_reader_parser::tokens::Token::c_str(name)) {
             continue;
         }
         let key = String::from_utf8_lossy(name);

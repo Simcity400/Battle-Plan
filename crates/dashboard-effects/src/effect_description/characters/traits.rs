@@ -1,9 +1,7 @@
 
 use super::*;
-use content_reader_core::{
-    modifiers::EquipmentBonus, modifiers::Modifiers, unit_leader::Adjuster, unit_leader::Leaders,
-    unit_leader::SubUnit, unit_leader::TraitEffects,
-};
+use content_reader_script::{modifiers::{EquipmentBonus, Modifiers}, sub_units::SubUnit};
+use content_reader_key_names::unit_leader::{Adjuster, Leaders, TraitEffects};
 use replay_data::rows::{ModifierDefinitionRow, SimulationFeatureRow, UnitLeaderTraitRow};
 use std::{borrow::Cow, collections::BTreeSet};
 
@@ -183,7 +181,7 @@ impl Renderer<'_, '_, '_> {
             text.push_str("\u{11}!: \n");
             let mut first = true;
             for value in &bonus.values {
-                let Some(index) = content_reader_core::equipment::stat_index(value.name.as_bytes())
+                let Some(index) = content_reader_script::equipment_stats::stat_index(value.name.as_bytes())
                 else {
                     continue;
                 };
@@ -204,7 +202,7 @@ impl Renderer<'_, '_, '_> {
         value: i64,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let (_, name, positive) = content_reader_core::equipment::stat_metadata()[index];
+        let (_, name, positive) = content_reader_script::equipment_stats::stat_metadata()[index];
         let mut text = self.char_native_text(name.as_bytes(), &[], scopes, false)?;
         let candidate = format!("{name}_MOD_DIFF");
         let key: &[u8] = if self.context.localisation.get(&candidate).is_some() {
@@ -225,7 +223,7 @@ impl Renderer<'_, '_, '_> {
 
     fn char_country_trait_body(
         &self,
-        trait_: &content_reader_core::leader_traits::LeaderTrait,
+        trait_: &content_reader_military::leader_traits::LeaderTrait,
         prefix: &str,
         scopes: Scopes,
     ) -> Result<String, String> {
@@ -638,7 +636,7 @@ impl Renderer<'_, '_, '_> {
         ];
         if timed {
             let days = operand(item, "days")
-                .map(content_reader_core::fixed5::decimal_i32)
+                .map(content_reader_parser::fixed5::decimal_i32)
                 .unwrap_or(0);
             arguments.push(("NUMDAYS", Argument::Int32(days)));
         }
@@ -690,7 +688,7 @@ impl Renderer<'_, '_, '_> {
         let name = trait_operand(item);
         let traits = self.char_country_traits()?;
         let Some(trait_) = traits
-            .by_token(&content_reader_core::tokens::Token::c_str(name))
+            .by_token(&content_reader_parser::tokens::Token::c_str(name))
             .map_err(|why| why.to_string())?
         else {
             return Ok(String::new());
@@ -734,7 +732,7 @@ impl Renderer<'_, '_, '_> {
                 return Ok(None);
             };
             traits
-                .by_token(&content_reader_core::tokens::Token::c_str(
+                .by_token(&content_reader_parser::tokens::Token::c_str(
                     source.value.scalar().unwrap_or_default(),
                 ))
                 .map_err(|why| why.to_string())

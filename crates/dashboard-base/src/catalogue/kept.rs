@@ -1,7 +1,7 @@
 
 use crate::Source;
-use content_reader_core::content::diagnostics::Diagnostics;
-use content_reader_core::kept::{Input, put_bytes};
+use content_reader_layers::content::diagnostics::Diagnostics;
+use content_reader_layers::kept::{Input, put_bytes};
 use content_reader_gfx::gfx::{SpriteSet, SpriteType};
 use content_reader_localisation::localisation::Localisation;
 use std::{
@@ -156,7 +156,7 @@ pub(crate) fn kept<P: Part>(
 
 fn checksum(bytes: &[u8]) -> [u8; CHECKSUM] {
     let pieces: Vec<&[u8]> = bytes.chunks(PIECE).collect();
-    let digests = content_reader_core::parallel::map(&pieces, |piece| *blake3::hash(piece).as_bytes());
+    let digests = content_reader_layers::parallel::map(&pieces, |piece| *blake3::hash(piece).as_bytes());
     let mut whole = blake3::Hasher::new();
     whole.update(&(bytes.len() as u64).to_le_bytes());
     for digest in &digests {

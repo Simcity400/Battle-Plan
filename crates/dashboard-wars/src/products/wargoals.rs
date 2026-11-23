@@ -183,7 +183,7 @@ fn reply(frame: &DecodedFrame, p: &WargoalsAsk, slot: u32, catalogue: &Result<Ar
     let held = catalogue.as_ref().ok().map(|cat| {
         cat.content
             .layers
-            .derived::<content_reader_core::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>()
+            .derived::<content_reader_layers::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>()
     });
     let definitions = match (catalogue.as_ref(), held.as_ref()) {
         (Ok(cat), Some(held)) => held

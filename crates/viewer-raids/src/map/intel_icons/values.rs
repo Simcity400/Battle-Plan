@@ -212,11 +212,11 @@ pub fn preparation(row: &OperationRow) -> Result<i64, String> {
 }
 
 pub fn percent(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_percent(value, 0, true)
+    content_reader_parser::fixed5::fixed5_percent(value, 0, true)
 }
 
 pub fn percent_points(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_percent(value, 0, false)
+    content_reader_parser::fixed5::fixed5_percent(value, 0, false)
 }
 
 pub fn coloured(code: char, text: &str) -> String {

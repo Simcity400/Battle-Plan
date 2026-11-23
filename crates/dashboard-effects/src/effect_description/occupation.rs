@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::occupation_modifiers::Definition;
+use content_reader_politics::occupation_modifiers::Definition;
 
 pub fn occupation_modifier_description(
     definition: &Definition,
@@ -41,7 +41,7 @@ pub fn occupation_modifier_description(
         }
     }
     let modifiers = (|| {
-        let mut modifiers = content_reader_core::modifiers::values(&definition.state_modifier);
+        let mut modifiers = content_reader_script::modifiers::values(&definition.state_modifier);
         filter_registered(&mut modifiers, context.content.key_names)?;
         Ok::<_, String>(modifiers)
     })();
@@ -90,12 +90,12 @@ fn section_gap(text: &mut String) {
 }
 
 fn filter_registered(
-    modifiers: &mut content_reader_core::modifiers::Modifiers,
-    names: Option<&content_reader_core::key_names::KeyNames>,
+    modifiers: &mut content_reader_script::modifiers::Modifiers,
+    names: Option<&content_reader_script::key_names::KeyNames>,
 ) -> Result<(), String> {
     let mut failure = None;
     modifiers.values.retain(|value| {
-        match content_reader_core::modifiers::registered(value.name.as_bytes(), names) {
+        match content_reader_script::modifiers::registered(value.name.as_bytes(), names) {
             Some(registered) => registered,
             None => {
                 failure.get_or_insert_with(|| {
@@ -151,10 +151,10 @@ mod tests {
     #[test]
     fn occupation_badge_active_description_omits_detail_and_enable_effects() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let items = |body: &[u8]| content_reader_core::parser::parse(body).unwrap().items;
+        let items = |body: &[u8]| content_reader_parser::parser::parse(body).unwrap().items;
         let definition = Definition {
             token: "mod_badge".into(),
-            kind: content_reader_core::occupation_modifiers::Kind::StateCompliance,
+            kind: content_reader_politics::occupation_modifiers::Kind::StateCompliance,
             threshold: 3_100_000,
             margin: 300_000,
             tooltip: "MOD_TAIL".into(),
@@ -179,10 +179,10 @@ mod tests {
         let definition = Definition {
             token: "mod_badge".into(),
             tooltip: "MOD_TAIL".into(),
-            state_modifier: content_reader_core::parser::parse(b"custom_modifier_tooltip=MOD_RAW")
+            state_modifier: content_reader_parser::parser::parse(b"custom_modifier_tooltip=MOD_RAW")
                 .unwrap()
                 .items,
-            on_disable: content_reader_core::parser::parse(b"unimplemented_effect=yes")
+            on_disable: content_reader_parser::parser::parse(b"unimplemented_effect=yes")
                 .unwrap()
                 .items,
             ..Default::default()

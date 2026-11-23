@@ -52,7 +52,7 @@ fn province_names_keep_emitted_empty_sparse_rows_and_first_nul_prefixes() {
                 },
             ]));
         save.provinces.get_mut(&2).unwrap().name =
-            Some(content_reader_core::parser::c_string(stored).to_vec());
+            Some(content_reader_parser::parser::c_string(stored).to_vec());
         let mut report = Report::default();
         compare_province_names(&frame, &save, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);

@@ -55,7 +55,7 @@ pub fn activation_test_emitter() -> Emitter {
         leads: true,
         delay: 0.0,
         local_space: false,
-        render: content_reader_core::particles::RenderDescriptor::read(&[]).unwrap(),
+        render: content_reader_mesh::particles::RenderDescriptor::read(&[]).unwrap(),
         system_local_space: false,
     }
 }

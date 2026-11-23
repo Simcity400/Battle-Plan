@@ -51,7 +51,7 @@ impl<'a> Sources<'a> {
     fn definition(
         &self,
         variant: &VariantDefinitionRow,
-    ) -> Result<(usize, &content_reader_core::equipment::Database), String> {
+    ) -> Result<(usize, &content_reader_key_names::equipment::Database), String> {
         let database = self
             .content
             .assets

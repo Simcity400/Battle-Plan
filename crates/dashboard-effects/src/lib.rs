@@ -27,7 +27,7 @@ mod fixtures {
         )
     }
 
-    pub fn layers_catalogue(layers: content_reader_core::ResolvedLayers) -> Catalogue {
+    pub fn layers_catalogue(layers: content_reader_layers::ResolvedLayers) -> Catalogue {
         tests::with_effect_describer(tests::layers_catalogue(layers), super::effect_describer)
     }
 }

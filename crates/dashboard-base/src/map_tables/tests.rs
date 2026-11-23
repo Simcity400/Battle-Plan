@@ -407,7 +407,7 @@ fn source_census_follows_aliases_macros_and_production_after_test_modules() {
             rows!(CountryGameScoreInputs);
             let _ = T::WarOwnedRelations;
             read::<WarOwnedRelations>();
-            let _: content_reader_core::intelligence::OperationTokens;
+            let _: content_reader_military::intelligence::OperationTokens;
             let _ = "tables::Decisions"; // tables::TimedIdeas
         }
     "#;

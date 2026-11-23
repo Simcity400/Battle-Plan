@@ -1,7 +1,7 @@
 
 use viewer_layer_core::layers::{Carried, Settling, Dirty, Gpu, Inputs, Installs, Layer, Num, Scope, Scoped, Shown, Sight, Text, View, Wrote};
 use viewer_layer_core::playhead_host::mirror::{Cell, Mirror, Mirrors};
-use content_reader_core::map::{MapData, ProvinceKind};
+use content_reader_map::map::{MapData, ProvinceKind};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
 use replay_data::{Hour, rows::TableId};

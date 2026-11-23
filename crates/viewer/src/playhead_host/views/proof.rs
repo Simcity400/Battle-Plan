@@ -47,7 +47,7 @@ pub(crate) struct Line {
 }
 
 impl Line {
-    pub(crate) fn open(views: Views, branch: replay_data::BranchId, names: &str, timing: bool, path: &std::path::Path, content: &content_reader_core::ResolveOptions) -> io::Result<Self> {
+    pub(crate) fn open(views: Views, branch: replay_data::BranchId, names: &str, timing: bool, path: &std::path::Path, content: &content_reader_layers::ResolveOptions) -> io::Result<Self> {
         let mut readers = Vec::new();
         let mut roster = None;
         let mut window = None;

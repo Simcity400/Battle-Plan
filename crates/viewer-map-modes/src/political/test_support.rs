@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::map::{CountryColors, ProvinceDefinition};
+use content_reader_map::map::{CountryColors, ProvinceDefinition};
 use content_reader_regions::regions::StrategicRegion;
 use replay_data::rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, ProvinceRow, TableId, TableRows};
 use replay_frame::frame::{Metrics, TableView};

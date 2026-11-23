@@ -11,12 +11,14 @@ import { jumpItem } from '../../charts/jump';
 import { useRowTooltips } from '../../charts/useRowTooltips';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { LiveValues } from '../../charts/live';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { headState } from '../../dashboard/HeadState';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
@@ -39,10 +41,12 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const root = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
-  useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
-  const { data, error, retry } = head;
+  const painted = useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
+  const offset = track?.axisOffset ?? 0;
+  const drawn = head;
+  const { data, error, retry } = drawn;
   const attach = useCallback((element: HTMLDivElement | null) => { root.current = element; head.root(element); }, [head.root]);
-  const live = head.live;
+  const live = drawn.live;
   const paintArt = useCallback((icons: ReadonlyMap<string, string | null>) => {
     for (const img of root.current?.querySelectorAll<HTMLImageElement>('img[data-doctrine-art]') ?? []) {
       const src = icons.get(img.dataset.doctrineArt!);
@@ -57,7 +61,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const chosen = contentSet(options.folders).map(contentKey);
   const shown = useMemo(() => data?.folders.filter(folder => !chosen.length || chosen.includes(folder.id)) ?? [],
     [data, JSON.stringify(chosen)]);
-  const hourShown = () => head.shownAt() ?? Math.floor(runtime.clock.getHour());
+  const hourShown = () => drawn.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
   const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describing.hour } } : null,
@@ -70,7 +74,10 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     const found = tracks.get(rest[0]);
     if (!found) return null;
     const { folder, item } = found;
-    const numbers = trackNumbers(live.read(), rest[0]);
+    const inspected = painted.inspected();
+    if (inspected === null) return null;
+    const numbers = trackNumbers(inspected ? paintedValues(inspected.live) : live.read(), rest[0]);
+    const date = dayLabel(inspected ? inspected.date.through : hourShown());
     if (kind === 'mark') {
       const index = Number(rest[1]);
       const next = item.rewards[index];
@@ -84,23 +91,30 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
         { label: 'Mastery', value: met === null || missing === null ? 'Not recorded' : met ? 'Requirement met' : `${masteryText(missing)} to go` }],
       ...description ? { description } : {} };
     }
-    return trackTooltip(folder, item, numbers, dayLabel(hourShown()));
-  }, [tracks, described.data, head.hour, live]);
-  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
+    return trackTooltip(folder, item, numbers, date);
+  }, [tracks, described.data, head.hour, live, painted, offset]);
+  const spoken = (key: string) => { const shown = content(key); return shown ? tooltipText(shown) : ''; };
+  const refresh = useMemo(() => {
+    const pipeline = head.pipeline, pipe = head.followedWidget;
+    return pipeline && pipe !== undefined ? (changed: () => void) => { const installed = pipeline.onInstall(pipe, changed), dated = pipeline.onDate(pipe, changed); return () => { installed(); dated(); }; } : undefined;
+  }, [head.pipeline, head.followedWidget]);
+  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, refresh, revision: `${head.hour}:${described.data ? 'described' : ''}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, hourShown())]); } });
   useEffect(() => {
     const [kind, key] = tips.hovered?.split('#') ?? [];
     const [folder, item] = (key ?? '').split('|').map(Number);
     setDescribing(kind === 'mark' && Number.isSafeInteger(folder) && Number.isSafeInteger(item) ? { folder: folder!, track: item!, hour: hourShown() } : null);
   }, [tips.hovered]);
-  useDiagnostics(onDiagnostics, data ? [...data.warnings, ...(described.data?.warnings ?? [])] : null);
-  const nameHour = head.at ?? head.hour;
+  useDiagnostics(onDiagnostics, head.data ? [...head.data.warnings, ...(described.data?.warnings ?? [])] : null);
+  const nameHour = drawn.at ?? drawn.hour;
   const country = useCountryNamesAt(runtime.client, track, useMemo(() => tag && nameHour !== null && data && !data.folders.length ? [{ hour: nameHour, tag }] : [],
     [tag, nameHour, data]), active);
   const countryName = tag && nameHour !== null ? nameReadText(country.get(nameKey(nameHour, tag))) : undefined;
-  const pill = headerSlot && data && createPortal(<span className="pill">{activeTracks(data.folders)} tracks active</span>, headerSlot);
+  const pill = headerSlot && head.data && createPortal(<span className="pill">{activeTracks(head.data.folders)} tracks active</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="flask" message="Load a campaign to see doctrines." />;
   if (!tag) return <WidgetState kind="empty" icon="flask" message="Choose a country in the widget's header." />;
+  const shared = headState(drawn);
+  if (shared) return <div ref={attach} className="doctrine-mastery">{shared}</div>;
   if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <div ref={attach} className="doctrine-mastery"><WidgetState kind="loading" label="Loading doctrines…" /></div>;
@@ -126,7 +140,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
           const texts = trackTexts(numbers);
           const ratio = trackRatio(item, numbers.mastery);
           return <div key={key} data-track={key} className={`doctrine-mastery-track${item.sub === null ? ' is-empty' : ''}`} {...tips.rowProps(`track#${key}`)}>
-            {tips.hovered === `track#${key}` && <span id={tips.descriptionId(`track#${key}`)} className="sr-only">{tooltipText(trackTooltip(folder, item, numbers, dayLabel(hourShown())))}</span>}
+            {tips.hovered === `track#${key}` && <span id={tips.descriptionId(`track#${key}`)} className="sr-only">{spoken(`track#${key}`)}</span>}
             <div className="doctrine-mastery-sub">{artNode(item.sub?.icon)}
               <span>{choiceName(item.sub, 'No subdoctrine chosen')}</span></div>
             <div className="doctrine-mastery-meter">
@@ -152,6 +166,13 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
       }))}</tbody></table>}
     {menu.menu}
   </div>;
+}
+
+function paintedValues(values: ReadonlyMap<string, number | string>): LiveValues<number> {
+  return {
+    get: key => { const value = values.get(key); return typeof value === 'number' ? value : undefined; },
+    missing: key => { const value = values.get(key); return typeof value === 'string' ? value : 'Not recorded'; },
+  };
 }
 
 function trackTooltip(folder: MasteryFolder, item: MasteryTrack, numbers: TrackNumbers, date: string): TooltipContent {

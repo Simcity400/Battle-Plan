@@ -1,7 +1,7 @@
 use shader_pipeline::*;
 use super::*;
 use viewer_gpu::test_support::gpu::*;
-use content_reader_core::{pdxshader::program::Program, pdxshader::program::Stage};
+use content_reader_gui::pdxshader::program::{Program, Stage};
 use std::{
     collections::BTreeMap,
     path::Path,

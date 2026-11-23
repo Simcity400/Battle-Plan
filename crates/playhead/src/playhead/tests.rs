@@ -2978,7 +2978,12 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
     stepper.epoch = playhead.epoch().wrapping_add(1);
     stepper.publish_caught_up(&mut control, Some(last));
     assert_eq!(control.caught_up_at, None, "mismatched epoch blocks setting caught_up_at");
+    control.newest = None;
+    stepper.publish_newest(&mut control, last);
+    assert_eq!(control.newest, None, "a step of an abandoned epoch leaves the newest hour a seek cleared");
     stepper.epoch = playhead.epoch();
     stepper.publish_caught_up(&mut control, Some(last));
     assert_eq!(control.caught_up_at, Some(last), "current control state accepts caught_up_at");
+    stepper.publish_newest(&mut control, last);
+    assert_eq!(control.newest, Some(last), "a step of the current epoch is the newest hour");
 }

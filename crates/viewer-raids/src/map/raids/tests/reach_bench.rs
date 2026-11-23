@@ -1,7 +1,7 @@
 
 use std::time::Instant;
 
-use content_reader_core::province_graph::ProvinceGraph;
+use content_reader_map::province_graph::ProvinceGraph;
 use replay_data::{
     rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow, rows::FactionMemberRow,
     rows::NavalBaseRow, rows::RelationLinkRow, rows::WarRelationRow,

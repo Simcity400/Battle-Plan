@@ -2,7 +2,7 @@ use crate::triggers::Failure;
 
 use std::{cell::RefCell, rc::Rc};
 
-use content_reader_core::{scope::Keyword, scope::Scope as Parsed};
+use content_reader_script::scope::{Keyword, Scope as Parsed};
 
 use super::{Evaluator, Scope, Scopes, UnknownLinks, saved_event_targets::Reader};
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};

@@ -1,23 +1,23 @@
 use super::*;
 use crate::triggers::{AuthoredStates, PreparedContent};
-use content_reader_core::content::diagnostics::Once as OnceLock;
+use content_reader_layers::content::diagnostics::Once as OnceLock;
 
 #[derive(Default)]
 pub(super) struct PreparedInputs {
     states: OnceLock<Result<PreparedStates, String>>,
     continents: OnceLock<Result<Vec<String>, String>>,
-    triggers: OnceLock<Result<content_reader_core::trigger_keys::TriggerNames, String>>,
-    buildings: OnceLock<Result<content_reader_core::buildings::Buildings, String>>,
+    triggers: OnceLock<Result<content_reader_script::trigger_keys::TriggerNames, String>>,
+    buildings: OnceLock<Result<content_reader_key_names::buildings::Buildings, String>>,
     bonuses: OnceLock<Result<[i64; 2], String>>,
     roles: OnceLock<Result<LeaderRoles, String>>,
-    constants: OnceLock<Result<content_reader_core::script_constants::Constants, String>>,
-    traits: OnceLock<Result<content_reader_core::unit_leader::Traits, String>>,
+    constants: OnceLock<Result<content_reader_politics::script_constants::Constants, String>>,
+    traits: OnceLock<Result<content_reader_key_names::unit_leader::Traits, String>>,
     invasion_days: OnceLock<Result<i32, String>>,
-    mio_traits: OnceLock<Result<std::sync::Arc<content_reader_core::mio_traits::Catalog>, String>>,
-    equipment_groups: OnceLock<Result<content_reader_core::equipment::Groups, String>>,
+    mio_traits: OnceLock<Result<std::sync::Arc<content_reader_military::mio_traits::Catalog>, String>>,
+    equipment_groups: OnceLock<Result<content_reader_key_names::equipment::Groups, String>>,
     pub(super) dlcs: OnceLock<Result<BTreeSet<String>, String>>,
     pub(super) neighbors: OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
-    pub(super) terrain: OnceLock<Option<content_reader_core::movement::MovementMap>>,
+    pub(super) terrain: OnceLock<Option<content_reader_map::movement::MovementMap>>,
 }
 
 #[cfg(test)]
@@ -40,12 +40,12 @@ struct PreparedStates {
 }
 
 impl ScriptedContent {
-    fn prepared_buildings(&self) -> Result<&content_reader_core::buildings::Buildings, &str> {
+    fn prepared_buildings(&self) -> Result<&content_reader_key_names::buildings::Buildings, &str> {
         self.prepared_environment()?
             .prepared
             .buildings
             .get_or_init(|| {
-                content_reader_core::buildings::read(&self.layers.layers)
+                content_reader_key_names::buildings::read(&self.layers.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
@@ -99,7 +99,7 @@ impl ScriptedContent {
         if let Some(Ok(inputs)) = environment.inputs.get() {
             return Ok(inputs.world(self, environment, frame));
         }
-        static TRIGGERS: OnceLock<content_reader_core::trigger_keys::TriggerNames> = OnceLock::new();
+        static TRIGGERS: OnceLock<content_reader_script::trigger_keys::TriggerNames> = OnceLock::new();
         let dlcs = environment
             .prepared
             .dlcs
@@ -129,23 +129,23 @@ impl ScriptedContent {
 }
 
 impl PreparedContent for ScriptedContent {
-    fn ideas(&self) -> Result<&content_reader_core::ideas::IdeaContent, &str> {
+    fn ideas(&self) -> Result<&content_reader_politics::ideas::IdeaContent, &str> {
         self.prepared_environment()?.ideas()
     }
-    fn mio_traits(&self) -> Result<&content_reader_core::mio_traits::Catalog, &str> {
+    fn mio_traits(&self) -> Result<&content_reader_military::mio_traits::Catalog, &str> {
         self.prepared_environment()?
             .prepared
             .mio_traits
-            .get_or_init(|| content_reader_core::mio_traits::cached(&self.layers.layers))
+            .get_or_init(|| content_reader_military::mio_traits::cached(&self.layers.layers))
             .as_deref()
             .map_err(String::as_str)
     }
-    fn equipment_groups(&self) -> Result<&content_reader_core::equipment::Groups, &str> {
+    fn equipment_groups(&self) -> Result<&content_reader_key_names::equipment::Groups, &str> {
         self.prepared_environment()?
             .prepared
             .equipment_groups
             .get_or_init(|| {
-                let groups = content_reader_core::equipment::Groups::load(&self.layers.layers)
+                let groups = content_reader_key_names::equipment::Groups::load(&self.layers.layers)
                     .map_err(|error| error.to_string())?;
                 match &groups.lost {
                     Some(lost) => Err(format!("the equipment groups are unread past {lost}")),
@@ -179,7 +179,7 @@ impl PreparedContent for ScriptedContent {
             .prepared
             .continents
             .get_or_init(|| {
-                content_reader_core::terrain::read_default_map(&self.layers.layers)
+                content_reader_key_names::terrain::read_default_map(&self.layers.layers)
                     .and_then(|map| self.layers.layers.read(&map.file("continent")?))
                     .and_then(|bytes| {
                         content_reader_equipment_graphics::equipment_graphics::context::continent_names(
@@ -191,31 +191,31 @@ impl PreparedContent for ScriptedContent {
             .as_deref()
             .map_err(String::as_str)
     }
-    fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, &str> {
+    fn ideologies(&self) -> Result<&content_reader_key_names::ideologies::Ideologies, &str> {
         self.prepared_environment()?
             .ideologies_result()
             .as_ref()
             .map_err(String::as_str)
     }
-    fn triggers(&self) -> Result<&content_reader_core::trigger_keys::TriggerNames, &str> {
+    fn triggers(&self) -> Result<&content_reader_script::trigger_keys::TriggerNames, &str> {
         let environment = self.prepared_environment()?;
         environment
             .prepared
             .triggers
             .get_or_init(|| {
                 let buildings = self.prepared_buildings();
-                let scripted = content_reader_core::scripted_triggers::read(&self.layers.layers)
+                let scripted = content_reader_key_names::scripted_triggers::read(&self.layers.layers)
                     .map_err(|error| error.to_string())?;
                 let counts = buildings.ok().and_then(|buildings| {
                     let ideologies = environment.ideologies().ok()?;
-                    let resources = content_reader_core::resources::read(&self.layers.layers).ok()?;
-                    Some(content_reader_core::trigger_keys::CountTriggerNames::new(
+                    let resources = content_reader_key_names::resources::read(&self.layers.layers).ok()?;
+                    Some(content_reader_key_names::key_name_products::count_trigger_names(
                         buildings,
                         ideologies,
                         &resources.0,
                     ))
                 });
-                Ok(content_reader_core::trigger_keys::TriggerNames { scripted, counts })
+                Ok(content_reader_script::trigger_keys::TriggerNames { scripted, counts })
             })
             .as_ref()
             .map_err(String::as_str)
@@ -224,8 +224,8 @@ impl PreparedContent for ScriptedContent {
         &self,
     ) -> Result<
         (
-            &content_reader_core::unit_leader::Traits,
-            &content_reader_core::leader_traits::LeaderTraits,
+            &content_reader_key_names::unit_leader::Traits,
+            &content_reader_military::leader_traits::LeaderTraits,
         ),
         &str,
     > {
@@ -234,7 +234,7 @@ impl PreparedContent for ScriptedContent {
             .prepared
             .traits
             .get_or_init(|| {
-                content_reader_core::unit_leader::Traits::registered(&self.layers.layers)
+                content_reader_key_names::unit_leader::Traits::registered(&self.layers.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
@@ -247,7 +247,7 @@ impl PreparedContent for ScriptedContent {
                 .map_err(String::as_str)?,
         ))
     }
-    fn resources(&self) -> Result<(&content_reader_core::buildings::Buildings, [i64; 2]), &str> {
+    fn resources(&self) -> Result<(&content_reader_key_names::buildings::Buildings, [i64; 2]), &str> {
         let environment = self.prepared_environment()?;
         let buildings = self.prepared_buildings()?;
         let bonuses = environment
@@ -266,19 +266,19 @@ impl PreparedContent for ScriptedContent {
             .prepared
             .roles
             .get_or_init(|| {
-                content_reader_core::characters::leader_templates(&self.layers.layers)
+                content_reader_key_names::characters::leader_templates(&self.layers.layers)
                     .map(LeaderRoles::new)
                     .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(String::as_str)
     }
-    fn constants(&self) -> Result<&content_reader_core::script_constants::Constants, &str> {
+    fn constants(&self) -> Result<&content_reader_politics::script_constants::Constants, &str> {
         self.prepared_environment()?
             .prepared
             .constants
             .get_or_init(|| {
-                content_reader_core::script_constants::read(&self.layers.layers)
+                content_reader_politics::script_constants::read(&self.layers.layers)
                     .map_err(|error| error.to_string())
             })
             .as_ref()

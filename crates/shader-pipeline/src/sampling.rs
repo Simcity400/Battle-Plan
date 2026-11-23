@@ -1,8 +1,5 @@
 
-use content_reader_core::pdxshader::{
-    Address,
-    program::{Filter, Sampler},
-};
+use content_reader_gui::pdxshader::{Address, program::{Filter, Sampler}};
 use std::collections::BTreeMap;
 
 fn resource_names(wgsl: &str, group: u32) -> Result<BTreeMap<String, u32>, String> {
@@ -437,7 +434,7 @@ fn arguments(source: &str, paren: usize) -> Result<(usize, Vec<String>), String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::pdxshader::program::Filter;
+    use content_reader_gui::pdxshader::program::Filter;
 
     #[test]
     fn mirror_once_gathers_and_offsets_lower_to_native_addressing() {

@@ -386,7 +386,7 @@ mod tests {
             rig.nodes[0].clips[0]
                 .state
                 .events
-                .push(content_reader_core::mesh::EntityEvent {
+                .push(content_reader_mesh::mesh::EntityEvent {
                     particle: Some("wake".into()),
                     keep_particle: true,
                     ..Default::default()

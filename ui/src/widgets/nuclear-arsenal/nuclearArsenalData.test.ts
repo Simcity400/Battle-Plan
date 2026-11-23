@@ -46,20 +46,19 @@ test('a held empty stockpile is dated at the displayed hour, including a later d
   const picture = new ArsenalPicture({ getContext: () => ctx } as unknown as OffscreenCanvas, () => {}, item => hits.push(item?.key));
   const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0,
     width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
-  const coverage = { since: read.hour, through: shownAt };
-  picture.draw(model, read, coverage, read.hour);
+  picture.draw(model, read, read.hour);
   assert.ok(ink.includes('No nuclear stockpile recorded on 1 Jan 1936.'));
   cleared.length = ink.length = 0;
-  picture.draw(model, read, coverage, shownAt);
+  picture.draw(model, read, shownAt);
   assert.ok(ink.includes(expected));
   assert.ok(cleared.every(([, , w, h]) => w < model.width || h < model.height), 'changing the notice keeps the rest of the plot');
   assert.deepEqual(picture.rows(), [{ row: 'empty', key: 'notice', value: expected }]);
-  picture.draw(model, REPLY, coverage, shownAt);
+  picture.draw(model, REPLY, shownAt);
   const ys = Array.from({ length: model.height }, (_, y) => y);
   const y = ys.find(y => picture.inspect({ x: 100, y })?.item)!;
   picture.hover({ x: 100, y });
-  picture.draw(model, { ...REPLY, countries: [{ ...REPLY.countries[0], tag: 'MOD' }] }, coverage, shownAt);
-  picture.draw(model, read, coverage, shownAt);
+  picture.draw(model, { ...REPLY, countries: [{ ...REPLY.countries[0], tag: 'MOD' }] }, shownAt);
+  picture.draw(model, read, shownAt);
   assert.deepEqual(hits, ['USA', 'MOD', undefined]);
 
 });
@@ -79,4 +78,53 @@ test('the nuclear panel audit names every field that changes its rendered struct
   assert.notDeepEqual(recordedPanelRows('nuclear-arsenal', { ...REPLY,
     countries: [{ ...REPLY.countries[0], counts: [...REPLY.countries[0].counts, { ordinal: 1, value: 0, ready: 0 }] }],
   }), rows, 'a new weapon type changes the rendered structure');
+});
+
+test('review 4 finding 13: a paused race redraws when its scroll or size changes, though its rows, day and notice stand', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0, overlay: false,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, REPLY, 100);
+  picture.draw(model, REPLY, 100);
+  assert.equal(picture.changed, false, 'nothing to redraw');
+  picture.draw({ ...model, scroll: 40 }, REPLY, 100);
+  assert.equal(picture.changed, true, 'the new scroll is drawn');
+  picture.draw({ ...model, scroll: 40, width: 420 }, REPLY, 100);
+  assert.equal(picture.changed, true, 'the new size is drawn');
+});
+
+test('review 4 finding 15: the race audits ranked rows as the auditor reads them: the row is the country, the key its part', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0, overlay: false, split: true,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, REPLY, 100);
+  const [first] = picture.rows()!;
+  assert.deepEqual([first!.row, first!.key, `${first!.row}:${first!.key}`], ['USA', 'total', 'USA:total']);
+});
+
+test('review 5 finding 15: a paused race draws a new selection or weapon-type split of the same reply', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const read = { ...REPLY, countries: [...REPLY.countries, { tag: 'MOD', countryId: 2, total: 3, counts: [{ ordinal: 0, value: 3, ready: 0 }] }] };
+  const model = { colours: new Map(), looks: new Map(), top: null, tags: ['USA'], offset: 0, scroll: 0, overlay: false, split: false,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, read, 100);
+  picture.draw({ ...model, tags: ['MOD'] }, read, 100);
+  assert.deepEqual(picture.inspect()!.items.map(item => item.key), ['MOD'], 'the new selection is drawn');
+  picture.draw({ ...model, tags: ['MOD'], split: true }, read, 100);
+  assert.deepEqual(picture.rows()!.map(row => row.key), ['total', '0'], 'the split by weapon type is drawn');
+});
+
+test('review 7 B: a paused race repaints when a country name or flag lands, with nothing else changed', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0, overlay: false, split: false,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, REPLY, 100);
+  picture.draw(model, REPLY, 100);
+  assert.equal(picture.changed, false);
+  picture.draw({ ...model, looks: new Map([['USA', { name: 'United States', color: '#00f' }]]) }, REPLY, 100);
+  assert.equal(picture.changed, true, 'the looked-up name is drawn');
 });

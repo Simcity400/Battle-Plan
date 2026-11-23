@@ -1,7 +1,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use content_reader_core::{movement::ProvinceTerrain, terrain::TerrainDefinitions};
+use content_reader_map::movement::ProvinceTerrain;
+use content_reader_key_names::terrain::TerrainDefinitions;
 use content_reader_regions::regions::StrategicRegion;
 
 use map_display_data::landscape::{ModeLayer, Style};

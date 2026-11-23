@@ -1,11 +1,5 @@
 
-use content_reader_core::{
-    ResolveOptions,
-    content::{
-        ResolvedContent,
-        visual::{self, Choice, RecordedMod},
-    },
-};
+use content_reader_layers::{ResolveOptions, content::{ResolvedContent, visual::{self, Choice, RecordedMod}}};
 use std::{
     io,
     sync::{Arc, atomic::AtomicBool},

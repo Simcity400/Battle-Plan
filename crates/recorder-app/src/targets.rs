@@ -126,7 +126,7 @@ pub fn session_target_at(
         choice.folder = Some(name);
         (folder, new_file)
     })
-    .map(|(_, target)| target)
+    .map(|applied| applied.logged("The recording’s folder choice").result)
     .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
 }
 
@@ -278,7 +278,7 @@ pub(crate) mod tests {
             session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (root.clone(), false)
         );
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -295,7 +295,7 @@ pub(crate) mod tests {
         recording_file(&earlier, CAMPAIGN);
         let contents = fs::read(&earlier).unwrap();
         assert_eq!(recording(&root, CAMPAIGN), Some(earlier.clone()));
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -319,7 +319,7 @@ pub(crate) mod tests {
         fs::create_dir_all(&second).unwrap();
         recording_file(&second.join("Germany 1941.battleplan"), CAMPAIGN);
         fs::create_dir_all(root.join(format!("{CAMPAIGN} (3)"))).unwrap();
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.get_mut(CAMPAIGN).unwrap().next = NextLoad::NewFile;
         })
         .unwrap();
@@ -336,7 +336,7 @@ pub(crate) mod tests {
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
         fs::create_dir_all(&root).unwrap();
-        RecorderSettings::update_at(&settings, |settings| {
+        let _ = RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();

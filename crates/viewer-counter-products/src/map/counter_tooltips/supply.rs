@@ -139,7 +139,7 @@ fn footer(
     let received = (|| {
         let value = round_two(ratio(scalar.received, scalar.asked)?);
         let colour = if value < 100_000 { 'R' } else { 'W' };
-        let percent = content_reader_core::fixed5::fixed5_percent(value, 0, true);
+        let percent = content_reader_parser::fixed5::fixed5_percent(value, 0, true);
         let percent = format!("\u{11}{colour}{percent}\u{11}!");
         localise(
             context.loc,
@@ -179,7 +179,7 @@ fn footer(
             }
             if origins.received < origins.requested {
                 let text = ratio(origins.received, origins.requested).and_then(|fraction| {
-                    let percent = content_reader_core::fixed5::fixed5_percent(
+                    let percent = content_reader_parser::fixed5::fixed5_percent(
                         round_two(100_000_i64.wrapping_sub(fraction)),
                         0,
                         true,

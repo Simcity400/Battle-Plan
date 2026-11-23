@@ -5,7 +5,6 @@ use replay_data::rows::TableId;
 use std::{
     cell::RefCell,
     marker::PhantomData,
-    mem::MaybeUninit,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -18,29 +17,19 @@ pub type TableCounts = [ReadCounts; TABLE_COUNT];
 pub const ZERO: TableCounts = [ReadCounts::ZERO; TABLE_COUNT];
 
 struct State {
-    #[cfg(any(test, feature = "test-support"))]
-    tables: TableCounts,
     current: usize,
 }
 
 impl State {
     const fn new() -> Self {
         Self {
-            #[cfg(any(test, feature = "test-support"))]
-            tables: ZERO,
             current: TableId::Clock.index(),
         }
     }
 
     fn flush(&mut self) {
-        #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
-        let reads = ReadCounts::take_current();
         #[cfg(feature = "acquisition_profile")]
-        crate::acquisition_profile::boundary(self.current, reads);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.tables[self.current] += reads;
-        }
+        crate::acquisition_profile::boundary(self.current, ReadCounts::take_current());
         if let Some(key) = engine_sites::take_taint() {
             withhold(self.current, key);
         }
@@ -112,118 +101,186 @@ pub fn with_table<R>(owner: TableId, work: impl FnOnce() -> R) -> R {
 }
 
 #[must_use]
-pub struct Capture {
-    previous: MaybeUninit<State>,
-    open: bool,
+pub struct Scope {
+    previous: usize,
     _thread: PhantomData<Rc<()>>,
 }
 
-impl Default for Capture {
+impl Default for Scope {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Capture {
+impl Scope {
     pub fn new() -> Self {
-        let mut capture = Self {
-            previous: MaybeUninit::uninit(),
-            open: false,
-            _thread: PhantomData,
-        };
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
+        let previous = STATE.with_borrow_mut(|state| {
             state.flush();
-            let previous = capture.previous.as_mut_ptr();
-            // SAFETY: every field of `previous` is written before `open` is set.
-            unsafe {
-                #[cfg(any(test, feature = "test-support"))]
-                std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
-                std::ptr::addr_of_mut!((*previous).current).write(state.current);
-            }
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                state.tables = ZERO;
-            }
-            state.current = TableId::Clock.index();
+            std::mem::replace(&mut state.current, TableId::Clock.index())
         });
-        capture.open = true;
         #[cfg(feature = "acquisition_profile")]
         crate::acquisition_profile::enter();
-        capture
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn finish(mut self) -> TableCounts {
-        let mut tables = ZERO;
-        self.restore(Some(&mut tables));
-        tables
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn finish_into(mut self, tables: &mut TableCounts) {
-        self.restore(Some(tables));
-    }
-
-    fn restore(&mut self, #[allow(unused_variables)] tables: Option<&mut TableCounts>) {
-        if !std::mem::take(&mut self.open) {
-            return;
+        Self {
+            previous,
+            _thread: PhantomData,
         }
-        // SAFETY: `open` was set only after `new` initialized `previous`.
-        let previous = unsafe { self.previous.assume_init_ref() };
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        STATE.with_borrow_mut(|state| {
             state.flush();
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                if let Some(tables) = tables {
-                    *tables = state.tables;
-                }
-                state.tables = previous.tables;
-            }
-            state.current = previous.current;
+            state.current = self.previous;
         });
         #[cfg(feature = "acquisition_profile")]
         crate::acquisition_profile::leave();
     }
 }
 
-impl Drop for Capture {
-    fn drop(&mut self) {
-        self.restore(None);
+#[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+mod counted {
+    use super::*;
+    use engine_native::read_counts::{ReadChange, ReadObserver};
+
+    thread_local! {
+        static COUNTS: RefCell<TableCounts> = const { RefCell::new(ZERO) };
+    }
+
+    fn record(change: ReadChange) {
+        let table = STATE.with_borrow(|state| state.current);
+        COUNTS.with_borrow_mut(|counts| match change {
+            ReadChange::Add(reads) => counts[table] += reads,
+            ReadChange::Defer(reads) => counts[table] -= reads,
+        });
+    }
+
+    #[must_use]
+    pub struct Capture {
+        _scope: Scope,
+        previous: Option<(TableCounts, Option<ReadObserver>)>,
+    }
+
+    impl Default for Capture {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Capture {
+        pub fn new() -> Self {
+            let scope = Scope::new();
+            #[cfg(not(feature = "acquisition_profile"))]
+            let _ = ReadCounts::take_current();
+            let counts = COUNTS.replace(ZERO);
+            let observer = ReadCounts::replace_observer(Some(record));
+            Self {
+                _scope: scope,
+                previous: Some((counts, observer)),
+            }
+        }
+
+        pub fn finish(mut self) -> TableCounts {
+            let mut tables = ZERO;
+            self.restore(Some(&mut tables));
+            tables
+        }
+
+        pub fn finish_into(mut self, tables: &mut TableCounts) {
+            self.restore(Some(tables));
+        }
+
+        fn restore(&mut self, tables: Option<&mut TableCounts>) {
+            if let Some((previous, observer)) = self.previous.take() {
+                #[cfg(not(feature = "acquisition_profile"))]
+                let _ = ReadCounts::take_current();
+                ReadCounts::replace_observer(observer);
+                COUNTS.with_borrow_mut(|counts| {
+                    if let Some(tables) = tables {
+                        *tables = *counts;
+                    }
+                    *counts = previous;
+                });
+            }
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            self.restore(None);
+        }
+    }
+
+    pub fn merge(counts: &TableCounts) {
+        COUNTS.with_borrow_mut(|totals| {
+            for (total, extra) in totals.iter_mut().zip(counts) {
+                *total += *extra;
+            }
+        });
+    }
+
+    pub fn snapshot() -> TableCounts {
+        let mut tables = ZERO;
+        snapshot_into(&mut tables);
+        tables
+    }
+
+    pub fn snapshot_into(tables: &mut TableCounts) {
+        STATE.with_borrow_mut(State::flush);
+        COUNTS.with_borrow(|counts| *tables = *counts);
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn merge(counts: &TableCounts) {
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        for (total, extra) in state.tables.iter_mut().zip(counts) {
-            *total += *extra;
-        }
-    });
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn snapshot() -> TableCounts {
-    let mut tables = ZERO;
-    snapshot_into(&mut tables);
-    tables
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn snapshot_into(tables: &mut TableCounts) {
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        state.flush();
-        *tables = state.tables;
-    })
-}
+#[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+pub use counted::{Capture, merge, snapshot, snapshot_into};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures {
-    use super::ReadCounts;
+    use super::{Capture, ReadCounts, TableCounts, ZERO};
     use engine_native::{Memory, memory::CountedMemory, memory::SliceMemory};
+    use std::{collections::HashMap, hash::Hash, sync::Mutex};
+
+    pub struct ReadTrace<K>(Mutex<HashMap<K, TableCounts>>);
+
+    impl<K> Default for ReadTrace<K> {
+        fn default() -> Self {
+            Self(Mutex::default())
+        }
+    }
+
+    impl<K: Eq + Hash> ReadTrace<K> {
+        pub fn record<R>(&self, key: K, run: impl FnOnce() -> R) -> R {
+            let _record = Recorded {
+                trace: self,
+                capture: Some(Capture::new()),
+                key: Some(key),
+            };
+            run()
+        }
+
+        pub fn take(&self, key: K) -> TableCounts {
+            self.0.lock().unwrap().remove(&key).unwrap_or(ZERO)
+        }
+    }
+
+    struct Recorded<'a, K: Eq + Hash> {
+        trace: &'a ReadTrace<K>,
+        capture: Option<Capture>,
+        key: Option<K>,
+    }
+
+    impl<K: Eq + Hash> Drop for Recorded<'_, K> {
+        fn drop(&mut self) {
+            let counts = self.capture.take().unwrap().finish();
+            #[cfg(feature = "acquisition_profile")]
+            super::merge(&counts);
+            let mut by_key = self.trace.0.lock().unwrap();
+            let total = by_key.entry(self.key.take().unwrap()).or_insert(ZERO);
+            for (total, counts) in total.iter_mut().zip(counts) {
+                *total += counts;
+            }
+        }
+    }
 
     pub fn read(len: usize) {
         let source = [7; 32];
@@ -249,6 +306,35 @@ mod tests {
     use super::fixtures::{copies, read};
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    #[test]
+    fn deferred_plan_reads_only_count_under_the_destination_table() {
+        let capture = Capture::new();
+        let mut table = table(TableId::ArmyOrders);
+        read(3);
+        let census_reads = ReadCounts::take_current();
+        read(7);
+        use engine_native::{
+            Memory,
+            memory::{CountedMemory, SliceMemory},
+        };
+
+        let memory = CountedMemory::new(SliceMemory {
+            base: 0,
+            bytes: &[],
+        });
+        let plan_reads = memory.take_deferred_reads();
+        census_reads.add_current();
+        read(5);
+        table.select(TableId::ArmyOrderPlans);
+        memory.add_deferred_reads(plan_reads);
+        read(11);
+        drop(table);
+        let mut expected = ZERO;
+        expected[TableId::ArmyOrders.index()] = copies(2, 8);
+        expected[TableId::ArmyOrderPlans.index()] = copies(2, 18);
+        assert_eq!(capture.finish(), expected);
+    }
 
     #[test]
     fn repeated_phase_switches_and_nested_visitors_partition_every_request_once() {

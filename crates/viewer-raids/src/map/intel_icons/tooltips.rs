@@ -83,7 +83,7 @@ fn defense_breakdown(
     let mut text = values::coloured('H', &header);
     text.push('\n');
     if defines.base != 0 {
-        let base = content_reader_core::fixed5::fixed5_to_string(defines.base, 1);
+        let base = content_reader_parser::fixed5::fixed5_to_string(defines.base, 1);
         text.push_str(&localise(
             hour.localisation,
             "MODIFIER_BASE_VALUE_STR",
@@ -159,7 +159,7 @@ fn defense_breakdown(
         text.push_str(": ");
         text.push_str(&values::coloured(
             'H',
-            &content_reader_core::fixed5::fixed5_to_string(contribution, 1),
+            &content_reader_parser::fixed5::fixed5_to_string(contribution, 1),
         ));
         text.push('\n');
     }
@@ -201,7 +201,7 @@ pub(super) fn operative<'h, 'f>(
 pub(super) fn offer(
     hour: &Hour<'_, '_>,
     row: &replay_data::rows::AgencyBufferedOffer,
-    definition: Result<&content_reader_core::intelligence::Operation, String>,
+    definition: Result<&content_reader_military::intelligence::Operation, String>,
 ) -> Tooltip {
     let mut text = Tooltip::default();
     text.line(
@@ -286,7 +286,7 @@ fn codename(hour: &Hour<'_, '_>, character: &CharacterOperativeRow) -> Result<St
 pub(super) fn operation(
     hour: &Hour<'_, '_>,
     row: &OperationRow,
-    definition: Option<&content_reader_core::intelligence::Operation>,
+    definition: Option<&content_reader_military::intelligence::Operation>,
     state: OperationState,
     value: Option<Result<i64, String>>,
 ) -> Tooltip {

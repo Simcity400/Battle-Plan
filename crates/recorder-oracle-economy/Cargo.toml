@@ -10,9 +10,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-parser.workspace = true
 engine-production.workspace = true
 engine-air-history.workspace = true
-content-reader-core.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 content-reader-save.workspace = true
@@ -28,6 +28,8 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }

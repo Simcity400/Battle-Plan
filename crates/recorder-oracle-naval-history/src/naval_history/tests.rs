@@ -150,7 +150,7 @@ fn run_oob_saved(frame: &DecodedFrame, divisions: &BTreeMap<u64, Division>, text
         ..CountryRow::default()
     };
     let links = BTreeMap::from([(7, &germany)]);
-    let saved = saved::parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap();
+    let saved = saved::parse(&content_reader_parser::parser::parse(text).unwrap().items).unwrap();
     let mut report = Report::default();
     let _ = compare_order_of_battle(frame, divisions, &saved, &links, &mut report);
     report
@@ -258,7 +258,7 @@ fn a_division_parent_pointer_is_compared_only_where_the_save_has_that_division()
 
 #[test]
 fn unavailable_tables_do_not_suppress_independent_naval_and_theatre_diagnostics() {
-    let saved = saved::parse(&content_reader_core::parser::parse(br#"
+    let saved = saved::parse(&content_reader_parser::parser::parse(br#"
         region={} rail_way={rail_way={1={cooldown=2}}}
         countries={GER={
             theatres={theatre={id={id=0 type=67}
@@ -385,7 +385,7 @@ fn unavailable_tables_do_not_suppress_independent_naval_and_theatre_diagnostics(
 #[test]
 fn railway_cooldown_omission_does_not_invent_zero() {
     let saved = saved::parse(
-        &content_reader_core::parser::parse(b"rail_way={rail_way={1={cooldown=2} 2={}}}")
+        &content_reader_parser::parser::parse(b"rail_way={rail_way={1={cooldown=2} 2={}}}")
             .unwrap()
             .items,
     )
@@ -466,7 +466,7 @@ fn rail_adjacency() -> saved::RailwayAdjacency {
 }
 
 fn rail_save() -> saved::Pack {
-    saved::parse(&content_reader_core::parser::parse(b"rail_way={rail_way={1={rail_way={5 0 -7}} 2={rail_way={-1 2147483647 9}} 3={rail_way={0 8 0}} 4={rail_way={6 0 0}}}}").unwrap().items).unwrap()
+    saved::parse(&content_reader_parser::parser::parse(b"rail_way={rail_way={1={rail_way={5 0 -7}} 2={rail_way={-1 2147483647 9}} 3={rail_way={0 8 0}} 4={rail_way={6 0 0}}}}").unwrap().items).unwrap()
 }
 
 fn rail_rows() -> Vec<RailEdgeRow> {
@@ -626,7 +626,7 @@ fn railway_edge_mapping_errors_and_duplicate_keys_fail() {
 
 #[test]
 fn theatre_oracle_checks_typed_parent_handles_priority_and_membership_order() {
-    let saved = saved::parse(&content_reader_core::parser::parse(br#"countries={GER={
+    let saved = saved::parse(&content_reader_parser::parser::parse(br#"countries={GER={
         theatres={theatre={id={id=4294967295 type=67} theater_group={id={id=0 type=68} priority=-1 name="group" orders_group={id=4294967295 type=53}}}}
         air_theatre={id={id=4294967295 type=77} country=GER name="theatre"
             air_group={id={id=0 type=78} air_theatre={id=4294967295 type=77} name="air" air_wing={{id=4294967295 type=69}}}}
@@ -718,7 +718,7 @@ fn theatre_oracle_checks_typed_parent_handles_priority_and_membership_order() {
 
 #[test]
 fn supremacy_uses_runtime_slot_and_compares_every_fixed5_unit() {
-    let text = content_reader_core::parser::parse(br#"region={1={dominance={values={
+    let text = content_reader_parser::parser::parse(br#"region={1={dominance={values={
         { --- {current=90071992547.40993 base_target=-92233720368547.75808 target=92233720368547.75807 individual_ratio=-0.00001 previous=0 decline_from=1.00001} }
     }}}}"#).unwrap();
     let saved = saved::parse(&text.items).unwrap();
@@ -795,7 +795,7 @@ fn supremacy_uses_runtime_slot_and_compares_every_fixed5_unit() {
 
 #[test]
 fn supremacy_country_aliases_keep_tuple_multiplicity_and_missing_values_are_empty() {
-    let text = content_reader_core::parser::parse(br#"region={1={dominance={values={
+    let text = content_reader_parser::parser::parse(br#"region={1={dominance={values={
         { GER {current=0.00001 base_target=0 target=0 individual_ratio=0 previous=0 decline_from=0} }
         { GER {current=0.00002 base_target=0 target=0 individual_ratio=0 previous=0 decline_from=0} }
     }}}}"#).unwrap();
@@ -842,7 +842,7 @@ fn supremacy_country_aliases_keep_tuple_multiplicity_and_missing_values_are_empt
     )
     .unwrap();
     assert_eq!(report.differences.len(), 1);
-    let empty = content_reader_core::parser::parse(b"region={1={dominance={}}}").unwrap();
+    let empty = content_reader_parser::parser::parse(b"region={1={dominance={}}}").unwrap();
     let empty = saved::parse(&empty.items).unwrap();
     let mut report = Report::default();
     compare_supremacy(&supremacy_frame(vec![one]), &empty, &links, &mut report).unwrap();
@@ -1033,7 +1033,7 @@ fn anonymous_ship_fields_compare_exactly_and_omissions_remain_limits() {
 #[test]
 fn sunk_ship_lexical_classes_keep_nul_limits_and_explicit_pointer_presence() {
     let saved = saved::parse(
-        &content_reader_core::parser::parse(
+        &content_reader_parser::parser::parse(
             br#"history={sunk_ship={
         name="visible" killer_name="" country=--- killer_country=--- level=0
         definition=destroyer killer_definition=none date=1939.1.1.1

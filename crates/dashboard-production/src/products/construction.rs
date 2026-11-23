@@ -11,7 +11,8 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_query::{Query, read, series::MissingSpan};
-use content_reader_core::{content::diagnostics::Diagnostics, gui::native};
+use content_reader_layers::content::diagnostics::Diagnostics;
+use content_reader_gui::gui::native;
 use replay_lanes::lanes::Cell;
 use replay_data::rows::{ConstructionLineEndRow, ConstructionProjectRow as P, TableId, column};
 use serde::{Deserialize, Serialize};
@@ -465,7 +466,7 @@ struct NamedType {
 }
 
 struct Naming {
-    buildings: Result<content_reader_core::buildings::Buildings, String>,
+    buildings: Result<content_reader_key_names::buildings::Buildings, String>,
     state_keys: Result<dashboard_text::scripted_text::StateNames, String>,
     state_warnings: Vec<String>,
     strip: Result<LineSprite, String>,
@@ -477,8 +478,8 @@ struct Naming {
 impl Naming {
     fn read(catalogue: &Catalogue) -> Self {
         let layers = &catalogue.content.layers;
-        let ((buildings, state_keys, state_warnings, strip, repair_icon), fallbacks) = content_reader_core::content::diagnostics::observe(|| {
-            let buildings = content_reader_core::buildings::read(layers).map_err(|error| format!("Building types are unavailable in the recorded content: {error}"));
+        let ((buildings, state_keys, state_warnings, strip, repair_icon), fallbacks) = content_reader_layers::content::diagnostics::observe(|| {
+            let buildings = content_reader_key_names::buildings::read(layers).map_err(|error| format!("Building types are unavailable in the recorded content: {error}"));
             let (state_keys, state_warnings) = match dashboard_text::scripted_text::read_state_content(layers) {
                 Ok(states) => {
                     let warnings = dashboard_text::scripted_text::live_state_warnings(&states.warnings).map(|why| format!("State names: {why}")).collect();
@@ -553,7 +554,7 @@ impl Naming {
 
     fn name_type(&self, catalogue: &Catalogue, token: &str) -> NamedType {
         let mut listed = Vec::new();
-        let ((name, icon), fallbacks) = content_reader_core::content::diagnostics::observe(|| {
+        let ((name, icon), fallbacks) = content_reader_layers::content::diagnostics::observe(|| {
             let declaration = self.buildings.as_ref().ok().and_then(|buildings| match buildings.by_token(token) {
                 Ok(Some(building)) => Some(building),
                 Ok(None) => {

@@ -1,5 +1,5 @@
 use super::tooltips::Details;
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::collections::BTreeMap;
 use viewer_native_gui::{
     gui_resources::{hit_rectangle, hit_rectangles},
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn an_opened_details_window_draws_its_panel_rows_and_type_buttons() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(
             br#"guiTypes = {
             containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn separated_panel_backgrounds_do_not_block_the_gap_between_them() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(
             br#"guiTypes = {
             containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn unnamed_separated_panel_backgrounds_hit_independently() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = gui::windows(
             br#"guiTypes = {
             containerWindowType = { name = raid_map_target_details_window size = { width = 0 height = 0 }

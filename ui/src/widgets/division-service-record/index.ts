@@ -9,10 +9,10 @@ import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt
 import { useProduct } from '../../dashboard/products';
 import { divisionChoices, validateDivisionCareers } from './careersData';
 import ServiceRecordWidget from './ServiceRecordWidget';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 
 function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const playbackHour = useFallbackHour(runtime.clock, widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);

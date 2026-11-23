@@ -1,5 +1,5 @@
 use super::super::{Decimal, block, decimal, field, integer, invalid, required_bytes, scalar};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -186,8 +186,8 @@ mod tests {
     use super::*;
     #[test]
     fn network_auxiliary_parser_preserves_duplicate_occurrences_and_exact_signed_payloads() {
-        let parsed=content_reader_core::parser::parse(b"vertices=2 edges={0 1 0 1} depth={-1 7} sub_network_count=3 prev_max_depth=-4 prev_gain_sources={0 0}").unwrap();
-        let items=content_reader_core::parser::parse(br#"operatives={{ {id=4294967295 type=4713} -7} {{id=4294967295 type=4713} -7}} max_coverage_by_occupied_tag={ { "XYZ"
+        let parsed=content_reader_parser::parser::parse(b"vertices=2 edges={0 1 0 1} depth={-1 7} sub_network_count=3 prev_max_depth=-4 prev_gain_sources={0 0}").unwrap();
+        let items=content_reader_parser::parser::parse(br#"operatives={{ {id=4294967295 type=4713} -7} {{id=4294967295 type=4713} -7}} max_coverage_by_occupied_tag={ { "XYZ"
  { owned_worth=-3 states=2 intel_network_gain_factor=0 enemy_operative_detection_chance=0 enemy_operative_detection_chance_factor=-0.00001 } } } sub_intel_networks={{modifiers={own_operative_detection_chance=-0.00001 own_operative_detection_chance_factor=2} coverage_stats={core_states=-1 controlled_states=2 owned_worth=3} total_coverable={core_states=4 controlled_states=5 owned_worth=6} strength_sum=7 strength_sum_over_cores=8 national_coverage=9 coverage_per_occupied={ { "ROM" { owned_worth=0 states=1 } } { "ROM" { owned_worth=0 states=1 } } } operatives={{id=0 type=0}} states={{0 -1.00001}{0 0}} core_states={0 0}}}"#).unwrap();
         let result = parse(&items.items, &parsed.items).unwrap();
         assert_eq!(result.edges, vec![(0, 1), (0, 1)]);
@@ -219,7 +219,7 @@ mod tests {
             br#"max_coverage_by_occupied_tag={ { "XYZ" } }"#,
             br#"max_coverage_by_occupied_tag={ { "XYZ" { owned_worth=-3 owned_worth=-3 } } }"#,
         ] {
-            let items = content_reader_core::parser::parse(refused).unwrap();
+            let items = content_reader_parser::parser::parse(refused).unwrap();
             assert!(parse(&items.items, &parsed.items).is_err(), "{}", String::from_utf8_lossy(refused));
         }
     }

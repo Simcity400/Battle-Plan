@@ -53,7 +53,7 @@ pub fn hour<'a>(
 }
 pub fn content(terrain: &[u8]) -> Content {
     Content {
-        terrain: content_reader_core::terrain::parse_definitions(terrain).unwrap(),
+        terrain: content_reader_key_names::terrain::parse_definitions(terrain).unwrap(),
         allegiance_group_cutoff: 500.0,
         naval_terrain: BTreeMap::new(),
         dominance: replay_derive::naval_dominance_derive::Defines::default(),
@@ -82,7 +82,7 @@ pub fn anchors() -> Anchors {
         terrain: Default::default(),
         wing_types: Ok(Arc::new(Default::default())),
         port_mission_defines: viewer_unit_reads::port_mission_defines::Defines::read(
-            &content_reader_core::defines::Defines::new().unwrap(),
+            &content_reader_defines::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(BTreeMap::new()),
         stack_scales: BTreeMap::new(),
@@ -158,7 +158,7 @@ fn force_frame() -> DecodedFrame {
 
 #[test]
 fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut frame = force_frame();
     let content = content(b"categories={ocean={}}");
     let mut anchors = anchors();
@@ -252,7 +252,7 @@ fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
 
 #[test]
 fn ship_indexes_stay_cold_until_a_mission_chain_needs_ships() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut frame = frame();
     set(
         &mut frame,
@@ -283,7 +283,7 @@ fn ship_indexes_stay_cold_until_a_mission_chain_needs_ships() {
 
 #[test]
 fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut frame = force_frame();
     let content=content(b"categories={ocean={naval_coordination=0.5 cruiser={naval_coordination=0.9} cruiser={naval_coordination=-0.9}}}");
     let mut anchors = anchors();
@@ -363,7 +363,7 @@ fn p3_terrain_merges_common_before_clamping_and_keeps_the_first_class_bucket() {
 
 #[test]
 fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut frame = force_frame();
     let content = content(b"categories={ocean={}}");
     let mut anchors = anchors();
@@ -386,11 +386,11 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
             ..Default::default()
         }]),
     );
-    let graph = content_reader_core::province_graph::ProvinceGraph {
+    let graph = content_reader_map::province_graph::ProvinceGraph {
         edges: [(1, vec![(2, Some(300_000))]), (2, vec![(1, Some(300_000))])].into(),
         ..Default::default()
     };
-    let geometry = content_reader_core::province_geometry::ProvinceGeometry {
+    let geometry = content_reader_map::province_geometry::ProvinceGeometry {
         centroids: [(1, [0, 0]), (2, [3, 0]), (3, [0, 0]), (4, [3, 0])].into(),
         land: [3, 4].into(),
         width: 10,
@@ -448,7 +448,7 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
 
 #[test]
 fn unlinked_mission_owner_is_named_without_losing_the_other_operands() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut frame = force_frame();
     if let TableView::Complete(TableRows::NavalMissionTaskForces(rows)) =
         &mut *frame.tables[TableId::NavalMissionTaskForces.index()]

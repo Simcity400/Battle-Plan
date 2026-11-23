@@ -6,7 +6,7 @@ use crate::{
 };
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 use std::ptr::NonNull;
-use std::{cell::Cell, ops::AddAssign};
+use std::{cell::Cell, ops::{AddAssign, SubAssign}};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadCounts {
@@ -18,7 +18,15 @@ pub struct ReadCounts {
     pub bytes: u64,
 }
 
+pub enum ReadChange {
+    Add(ReadCounts),
+    Defer(ReadCounts),
+}
+
+pub type ReadObserver = fn(ReadChange);
+
 thread_local! {
+    static OBSERVER: Cell<Option<ReadObserver>> = const { Cell::new(None) };
     static COUNTS: Cell<ReadCounts> = const { Cell::new(ReadCounts::ZERO) };
 }
 
@@ -34,6 +42,10 @@ impl ReadCounts {
 
     pub fn take_current() -> Self {
         COUNTS.with(|counts| counts.replace(Self::ZERO))
+    }
+
+    pub fn replace_observer(observer: Option<ReadObserver>) -> Option<ReadObserver> {
+        OBSERVER.replace(observer)
     }
 
     #[inline]
@@ -58,6 +70,18 @@ impl AddAssign for ReadCounts {
         self.plan_calls = self.plan_calls.saturating_add(rhs.plan_calls);
         self.spans = self.spans.saturating_add(rhs.spans);
         self.bytes = self.bytes.saturating_add(rhs.bytes);
+    }
+}
+
+impl SubAssign for ReadCounts {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.copy_calls = self.copy_calls.saturating_sub(rhs.copy_calls);
+        self.scattered_calls = self.scattered_calls.saturating_sub(rhs.scattered_calls);
+        self.record_calls = self.record_calls.saturating_sub(rhs.record_calls);
+        self.plan_calls = self.plan_calls.saturating_sub(rhs.plan_calls);
+        self.spans = self.spans.saturating_sub(rhs.spans);
+        self.bytes = self.bytes.saturating_sub(rhs.bytes);
     }
 }
 
@@ -88,10 +112,26 @@ impl<M> CountedMemory<M> {
         }
         #[cfg(not(all(windows, target_env = "msvc", target_arch = "x86_64")))]
         counts.add_current();
+
+        if let Some(observe) = OBSERVER.get() {
+            observe(ReadChange::Add(counts));
+        }
     }
 }
 
 impl<M: Memory> Memory for CountedMemory<M> {
+    fn take_deferred_reads(&self) -> ReadCounts {
+        let reads = ReadCounts::take_current();
+        if let Some(observe) = OBSERVER.get() {
+            observe(ReadChange::Defer(reads));
+        }
+        reads
+    }
+
+    fn add_deferred_reads(&self, reads: ReadCounts) {
+        self.add_counts(reads);
+    }
+
     #[inline]
     fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
         #[cfg(feature = "acquisition_profile")]

@@ -3,7 +3,7 @@ import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureText } from '../../dashboard/queryError.ts';
 import type { Failure } from '../../dashboard/queryError';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { panelReply } from '../../dashboard/follow/panel.ts';
 import { followsHead, panelStructure, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { createPortal } from 'react-dom';

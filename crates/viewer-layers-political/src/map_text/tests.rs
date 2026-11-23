@@ -1,7 +1,7 @@
 
 use super::{MapText, Presented, Source, TABLES};
 use viewer_layer_core::{layers::{Layer, Upstream, View}, test_support::recorded, vision, playhead_host::{MapSide, open}};
-use content_reader_core::buildings::Buildings;
+use content_reader_key_names::buildings::Buildings;
 use content_reader_localisation::localisation::Localisation;
 use map_display_data::{MapTextResult, PopupResult};
 use playhead::Settings;

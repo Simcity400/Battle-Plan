@@ -1,4 +1,5 @@
-use content_reader_core::{defines::Defines, map::MapData};
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::MapData;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
@@ -192,7 +193,7 @@ fn prepare(
 mod tests {
     use crate::air_assignment::Field;
     use super::*;
-    use content_reader_core::map::CountryColors;
+    use content_reader_map::map::CountryColors;
     use replay_data::rows::*;
     use replay_frame::frame::TableView;
     use viewer_foundation::test_support::{test_frame, test_put as put};

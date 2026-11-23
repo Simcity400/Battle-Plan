@@ -1,5 +1,5 @@
 use viewer_layers_counters::{land_markers::Front, naval_counters::Admits};
-use content_reader_core::movement::MovementMap;
+use content_reader_map::movement::MovementMap;
 use viewer_counter_kit::combat_markers::LandCombatDefines;
 use viewer_gpu::camera::Placement;
 

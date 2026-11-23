@@ -165,7 +165,7 @@ fn launch_assets() -> (AircraftAssets, std::path::PathBuf) {
         std::fs::write(path, bytes).unwrap();
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let definition = |id| content_reader_core::map::ProvinceDefinition {
+    let definition = |id| content_reader_map::map::ProvinceDefinition {
         id,
         rgb: [0, 0, 0],
         kind: ProvinceKind::Land,

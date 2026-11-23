@@ -2,6 +2,7 @@
 
 mod dashboard_service;
 mod follow_push;
+mod leaving;
 mod pull;
 mod native;
 mod perf;
@@ -15,11 +16,11 @@ mod video;
 
 use dashboard_core::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
+use leaving::{Answered, Batch, Closing, Leaving, Reach, Stop, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::http::HeaderValue;
-use tauri::{Emitter, Manager, State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -86,7 +87,7 @@ async fn export_map(
     host: State<'_, NativeHost>,
     popouts: State<'_, popout::PopOuts>,
     view_id: Option<String>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<viewer::host::Saved>, String> {
     let popout = (view_id.as_deref() == Some(popout::VIEW_ID))
         .then(|| popouts.current_generation())
         .flatten();
@@ -200,56 +201,313 @@ fn context() -> tauri::Context {
     context
 }
 
-#[derive(Default)]
-struct UnsavedWork {
-    unsaved: AtomicBool,
-    discarded: AtomicBool,
+fn main_page(webview: &tauri::Webview) -> Result<(), String> {
+    if webview.label() == "main" {
+        Ok(())
+    } else {
+        Err("Only BattlePlan’s main window decides whether it may close.".into())
+    }
 }
 
-impl UnsavedWork {
-    const UPDATE_REFUSED: &'static str =
-        "BattlePlan has unsaved changes. Save or discard them in BattlePlan, then restart to update.";
+struct Receipt {
+    app: tauri::AppHandle,
+    seq: u64,
+    reported: bool,
+}
 
-    fn kept(&self) -> bool {
-        self.unsaved.load(Ordering::Acquire) && !self.discarded.load(Ordering::Acquire)
-    }
-
-    fn update_refused(&self) -> Option<String> {
-        self.kept().then(|| Self::UPDATE_REFUSED.to_owned())
-    }
-
-    fn holds_close<E: std::fmt::Display>(&self, ask: impl FnOnce() -> Result<(), E>) -> bool {
-        if !self.kept() {
-            return false;
+impl Receipt {
+    fn report(&mut self, reached: bool) {
+        if std::mem::replace(&mut self.reported, true) {
+            return;
         }
-        if let Err(error) = ask() {
-            eprintln!("Couldn’t ask about unsaved changes before closing, so BattlePlan stays open: {error}");
+        if !reached {
+            eprintln!("BattlePlan’s page didn’t run its close questions.");
         }
-        true
+        if let Some(why) = self.app.state::<Leaving>().delivered(self.seq, reached) {
+            offer_to_close(&self.app, why);
+        }
     }
+}
 
-    fn close_discarding<E>(&self, close: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
-        self.discarded.store(true, Ordering::Release);
-        let closed = close();
-        if closed.is_err() {
-            self.discarded.store(false, Ordering::Release);
-        }
-        closed
+impl Drop for Receipt {
+    fn drop(&mut self) {
+        self.report(false);
     }
+}
+
+fn reach(webview: tauri::Webview, callback: u32) -> Reach {
+    Arc::new(move |batch: Batch| {
+        let receipt = std::sync::Mutex::new(Some(Receipt { app: webview.app_handle().clone(), seq: batch.seq, reported: false }));
+        let questions = match serde_json::to_string(&batch) {
+            Ok(questions) => questions,
+            Err(error) => {
+                eprintln!("BattlePlan couldn’t write its close questions for its page: {error}");
+                return;
+            }
+        };
+        let script = format!("window.__TAURI_INTERNALS__.callbacks.get({callback})?.({questions}) === true");
+        let ran = move |result: String| {
+            let taken = receipt.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            if let Some(mut receipt) = taken {
+                receipt.report(result == "true");
+            }
+        };
+        if let Err(error) = webview.eval_with_callback(script, ran) {
+            eprintln!("BattlePlan couldn’t pass its close questions to its page: {error}");
+        }
+    })
 }
 
 #[tauri::command]
-fn set_unsaved_work(work: State<'_, UnsavedWork>, unsaved: bool) {
-    work.unsaved.store(unsaved, Ordering::Release);
+fn close_watch_document(webview: tauri::Webview, leaving: State<'_, Leaving>) -> Result<u64, String> {
+    main_page(&webview)?;
+    Ok(leaving.document())
 }
 
 #[tauri::command]
-fn close_discarding_unsaved_work(window: WebviewWindow, work: State<'_, UnsavedWork>) -> Result<(), String> {
-    work.close_discarding(|| window.close()).map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
+fn watch_close_requests(
+    webview: tauri::Webview,
+    leaving: State<'_, Leaving>,
+    document: u64,
+    seq: u64,
+    callback: u32,
+) -> Result<(), String> {
+    main_page(&webview)?;
+    leaving.watch(document, seq, move || reach(webview, callback)).map_err(str::to_owned)
 }
 
-fn ask_before_close(app: &tauri::AppHandle) -> bool {
-    app.state::<UnsavedWork>().holds_close(|| app.emit_to("main", "close-requested", ()))
+#[tauri::command]
+fn refresh_close_requests(webview: tauri::Webview, leaving: State<'_, Leaving>, document: u64, seq: u64, attempt: u64) -> Result<u64, String> {
+    main_page(&webview)?;
+    leaving.refresh(document, seq, attempt).map_err(str::to_owned)
+}
+
+struct Attempt {
+    app: tauri::AppHandle,
+    document: u64,
+    attempt: u64,
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        self.app.state::<Leaving>().attempt_ended(self.document, self.attempt);
+    }
+}
+
+fn install_attempt(invoke: tauri::ipc::Invoke) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Asked {
+        document: Option<u64>,
+        attempt: u64,
+    }
+    let app = invoke.message.webview().app_handle().clone();
+    let asked = match invoke.message.payload() {
+        tauri::ipc::InvokeBody::Json(value) => serde_json::from_value::<Asked>(value.clone()).map_err(|error| error.to_string()),
+        tauri::ipc::InvokeBody::Raw(_) => Err("A restart is asked with its page and attempt.".to_owned()),
+    };
+    let registered = asked.and_then(|asked| {
+        let document = asked.document.ok_or_else(|| leaving::UNWATCHED.to_owned())?;
+        app.state::<Leaving>().attempt(document, asked.attempt).map_err(str::to_owned)?;
+        Ok(Attempt { app: app.clone(), document, attempt: asked.attempt })
+    });
+    let attempt = match registered {
+        Ok(attempt) => attempt,
+        Err(refused) => {
+            invoke.resolver.reject(refused);
+            return true;
+        }
+    };
+    invoke.resolver.respond_async(async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _attempt = attempt;
+            app_update::commands::install_now(&app)
+        })
+        .await
+        .map_err(|error| tauri::ipc::InvokeError::from(error.to_string()))?
+        .map_err(tauri::ipc::InvokeError::from)
+    });
+    true
+}
+
+#[tauri::command]
+fn answer_close_question(
+    webview: tauri::Webview,
+    leaving: State<'_, Leaving>,
+    id: u64,
+    stays: bool,
+    basis: Vec<u64>,
+) -> Result<bool, String> {
+    main_page(&webview)?;
+    Ok(match leaving.answer(id, stays, &basis) {
+        Answered::Leave | Answered::Heard => true,
+        Answered::Unknown => false,
+    })
+}
+
+#[tauri::command]
+fn leave_app(webview: tauri::Webview, leaving: State<'_, Leaving>) -> Result<(), String> {
+    main_page(&webview)?;
+    leaving.exit();
+    Ok(())
+}
+
+fn close_without_answer(owner: Option<isize>, why: Unanswered) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MessageBoxW};
+    let reason = match why {
+        Unanswered::Close => "BattlePlan’s page hasn’t answered, so it can’t say whether it has unsaved changes.",
+        Unanswered::Unresponsive => "BattlePlan’s page isn’t responding, so it can’t say whether it has unsaved changes.",
+        Unanswered::Unreached => "BattlePlan couldn’t ask its page whether it has unsaved changes.",
+        Unanswered::Blind => "BattlePlan can’t follow its page’s reloads and crashes, so it can’t ask whether it has unsaved changes.",
+    };
+    let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let text = wide(&format!("{reason}\n\nClose BattlePlan now? Anything unsaved is lost. Choose No to keep waiting."));
+    let caption = wide("BattlePlan");
+    let owner = owner.map_or(std::ptr::null_mut(), |hwnd| hwnd as *mut std::ffi::c_void);
+    unsafe { MessageBoxW(owner, text.as_ptr(), caption.as_ptr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES }
+}
+
+fn offer_to_close(app: &tauri::AppHandle, why: Unanswered) {
+    let owner = app.get_webview_window("main").and_then(|window| window.hwnd().ok()).map(|hwnd| hwnd.0 as isize);
+    let handle = app.clone();
+    let shown = std::thread::Builder::new().name("close choice".into()).spawn(move || {
+        let close = close_without_answer(owner, why);
+        let leaving = handle.state::<Leaving>();
+        leaving.chosen();
+        if close {
+            leaving.exit();
+        }
+    });
+    if let Err(error) = shown {
+        eprintln!("BattlePlan couldn’t offer to close without its page’s answer, so the window stays open: {error}");
+        app.state::<Leaving>().chosen();
+    }
+}
+
+fn stop_page(window: WebviewWindow) -> Stop {
+    Arc::new(move || {
+        let stopped = window.with_webview(|webview| {
+            if let Err(error) = unsafe { webview.controller().CoreWebView2().and_then(|page| page.Stop()) } {
+                eprintln!("BattlePlan couldn’t stop its page’s reload while it leaves: {error}");
+            }
+        });
+        if let Err(error) = stopped {
+            eprintln!("BattlePlan couldn’t stop its page’s reload while it leaves: {error}");
+        }
+    })
+}
+
+trait Shut {
+    fn disable(&self);
+    fn hide(&self) -> tauri::Result<()>;
+}
+
+struct MainWindow {
+    window: WebviewWindow,
+    hwnd: isize,
+}
+
+impl Shut for MainWindow {
+    fn disable(&self) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+        unsafe { EnableWindow(self.hwnd as *mut std::ffi::c_void, 0) };
+    }
+
+    fn hide(&self) -> tauri::Result<()> {
+        self.window.hide()
+    }
+}
+
+fn shut(window: &impl Shut) {
+    window.disable();
+    if let Err(error) = window.hide() {
+        eprintln!("BattlePlan couldn’t hide its window while it leaves, so a dialog that closes could let input back into its page: {error}");
+    }
+}
+
+fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
+    let app = window.app_handle().clone();
+    let main = MainWindow { window: window.clone(), hwnd: window.hwnd()?.0 as isize };
+    app.state::<Leaving>().follow(
+        stop_page(window.clone()),
+        Arc::new(move || shut(&main)),
+    );
+    window.with_webview(move |webview| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+        };
+        use webview2_com::{ContentLoadingEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, ProcessFailedEventHandler};
+        let failed = {
+            let app = app.clone();
+            ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                unsafe { args.ProcessFailedKind(&mut kind)? };
+                let leaving = app.state::<Leaving>();
+                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+                    || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                {
+                    eprintln!("BattlePlan’s page process ended, so closing no longer waits for it.");
+                    leaving.page_gone();
+                } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE && leaving.page_unresponsive() {
+                    eprintln!("BattlePlan’s page isn’t responding, so its update questions were refused and the user is asked whether to close.");
+                    offer_to_close(&app, Unanswered::Unresponsive);
+                }
+                Ok(())
+            }))
+        };
+        let starting = {
+            let app = app.clone();
+            NavigationStartingEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut navigation = 0_u64;
+                unsafe { args.NavigationId(&mut navigation)? };
+                if !app.state::<Leaving>().navigation_starting(navigation) {
+                    eprintln!("BattlePlan is leaving, so its page doesn’t reload until it has left or stays.");
+                    unsafe { args.SetCancel(true)? };
+                }
+                Ok(())
+            }))
+        };
+        let loading = {
+            let app = app.clone();
+            ContentLoadingEventHandler::create(Box::new(move |page, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut navigation = 0_u64;
+                unsafe { args.NavigationId(&mut navigation)? };
+                if app.state::<Leaving>().content_loading(navigation) {
+                    eprintln!("BattlePlan is leaving, so the page a reload began loading is stopped.");
+                    if let Some(page) = page {
+                        unsafe { page.Stop()? };
+                    }
+                }
+                Ok(())
+            }))
+        };
+        let completed = {
+            let app = app.clone();
+            NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut navigation = 0_u64;
+                unsafe { args.NavigationId(&mut navigation)? };
+                app.state::<Leaving>().navigation_completed(navigation);
+                Ok(())
+            }))
+        };
+        let mut token = 0_i64;
+        let watched = unsafe {
+            webview.controller().CoreWebView2().and_then(|page| {
+                page.add_ProcessFailed(&failed, &mut token)?;
+                page.add_NavigationStarting(&starting, &mut token)?;
+                page.add_ContentLoading(&loading, &mut token)?;
+                page.add_NavigationCompleted(&completed, &mut token)
+            })
+        };
+        if let Err(error) = watched {
+            eprintln!("BattlePlan can’t follow its page’s reloads and crashes, so it refuses updates by name and asks at each close: {error}");
+            app.state::<Leaving>().blind();
+        }
+    })
 }
 
 #[tauri::command]
@@ -290,6 +548,13 @@ fn main() {
     if let Err(error) = dashboard_text::artwork::configure_desktop() {
         eprintln!("{error}");
     }
+    let exiting: &'static Exiting = match start_exit_worker() {
+        Ok(exiting) => exiting,
+        Err(error) => {
+            eprintln!("BattlePlan couldn’t start, because the thread that closes it in order didn’t start: {error}");
+            std::process::exit(2);
+        }
+    };
     let page_origin = context.config().build.dev_url.as_ref().filter(|_| tauri::is_dev())
         .map_or_else(|| "http://tauri.localhost".to_owned(), |url| url.origin().ascii_serialization());
     let artwork_origin = match HeaderValue::from_str(&page_origin) {
@@ -300,21 +565,32 @@ fn main() {
         }
     };
     let app = tauri::Builder::default()
+        .invoke_system(include_str!("ipc.js"))
         .register_asynchronous_uri_scheme_protocol("push", move |context, request, responder| {
             use tauri::http::{StatusCode, header};
             if request.headers().get(header::ORIGIN).and_then(|origin| origin.to_str().ok()) != Some(&page_origin) {
                 return pull::refuse(responder, StatusCode::FORBIDDEN, "Only the dashboard may pull followed answers");
             }
-            if request.uri().path() != "/follow" {
-                return pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream");
+            match request.uri().path() {
+                "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
+                "/credit" => match (pull::param(&request, "session"), pull::param(&request, "released").and_then(|released| released.parse::<u64>().ok())) {
+                    (Some(session), Some(released)) => {
+                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(session)) {
+                            dashboard_follow::registry::registry().credit(epoch, released);
+                        }
+                        pull::refuse(responder, StatusCode::NO_CONTENT, "");
+                    }
+                    _ => pull::refuse(responder, StatusCode::BAD_REQUEST, "Credit names its session and the bytes it has released"),
+                },
+                _ => pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream"),
             }
-            context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);
         })
         .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
             serve_artwork(request, responder, artwork_origin.clone())
         })
         .manage(video::VideoState::default())
-        .setup(|app| {
+        .setup(move |app| {
+            let _ = exiting.app.set(app.handle().clone());
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = video::restore(&window)
             {
@@ -331,12 +607,16 @@ fn main() {
             recorder::start_recorder();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
-            viewer::host::install_follow(move |kind, payload| {
+            viewer::host::install_follow(move |kind, payload, session| {
                 if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
-                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer_kind(kind, payload));
+                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer(payload, session));
                 }
             })?;
             if let Some(window) = app.get_webview_window("main") {
+                watch_page(&window)?;
+                if let Err(error) = app_update::session::follow(window.hwnd()?.0 as isize, Arc::new(SessionEnding(app.handle().clone(), exiting))) {
+                    eprintln!("BattlePlan can’t hear Windows end the session, so a sign-out or shutdown may not wait for its changes to be saved: {error}");
+                }
                 app.state::<NativeHost>().ensure_started(&window)?;
             }
             Ok(())
@@ -345,8 +625,9 @@ fn main() {
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
         .manage(follow_push::FollowPush::default())
-        .manage(UnsavedWork::default())
-        .invoke_handler(tauri::generate_handler![
+        .manage(Leaving::default())
+        .invoke_handler({
+            let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
             video::map_diagnostics,
@@ -355,8 +636,11 @@ fn main() {
             video::set_map_muted,
             desktop_state,
             playback_pressure_merges,
-            set_unsaved_work,
-            close_discarding_unsaved_work,
+            close_watch_document,
+            watch_close_requests,
+            refresh_close_requests,
+            answer_close_question,
+            leave_app,
             set_map_view,
             select_native_view,
             map_action,
@@ -405,81 +689,138 @@ fn main() {
             app_update::commands::app_update_install,
             app_update::commands::app_update_set_channel,
             app_update::commands::app_update_open_release,
-        ])
+            ];
+            move |invoke| if invoke.message.command() == "app_update_install" { install_attempt(invoke) } else { commands(invoke) }
+        })
         .build(context)
         .expect("Couldn’t start BattlePlan");
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == "main" && ask_before_close(app) => api.prevent_close(),
-        tauri::RunEvent::WindowEvent {
-            label,
-            event: tauri::WindowEvent::CloseRequested { api, .. },
-            ..
-        } if label == "main" && exit_after_maps(app) => api.prevent_close(),
-        tauri::RunEvent::ExitRequested { api, .. } if exit_after_maps(app) => api.prevent_exit(),
-        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            shutdown(app);
-            perf::close();
+        } if label == "main" => {
+            api.prevent_close();
+            match app.state::<Leaving>().close_requested() {
+                Closing::Through => app.state::<Leaving>().exit(),
+                Closing::Held => {}
+                Closing::Offer(why) => offer_to_close(app, why),
+            }
+        }
+        tauri::RunEvent::ExitRequested { api, .. } if !exiting.done.is_set() => {
+            app.state::<Leaving>().exit();
+            api.prevent_exit();
+        }
+        tauri::RunEvent::Exit => {
+            app.state::<Leaving>().exit();
+            exiting.done.wait_serving_sent_messages();
         }
         _ => {}
     });
 }
 
-fn exit_after_maps(app: &tauri::AppHandle) -> bool {
-    static EXIT: ExitOrder = ExitOrder::new();
-    EXIT.begin(
-        || {
-            let handle = app.clone();
-            std::thread::Builder::new()
-                .name("ordered exit".into())
-                .spawn(move || {
-                    let ended = shutdown(&handle);
-                    perf::finish(&handle);
-                    EXIT.done();
-                    if ended {
-                        handle.exit(0);
-                    } else {
-                        std::process::exit(0);
-                    }
-                })
-                .map(drop)
-        },
-        || {
-            perf::close();
-            std::process::exit(0);
-        },
-    )
+struct Exiting {
+    done: app_update::session::Done,
+    app: std::sync::OnceLock<tauri::AppHandle>,
 }
 
-struct ExitOrder(std::sync::atomic::AtomicU8);
+struct SessionEnding(tauri::AppHandle, &'static Exiting);
 
-impl ExitOrder {
-    const RUNNING: u8 = 1;
-    const DONE: u8 = 2;
-
-    const fn new() -> Self {
-        Self(std::sync::atomic::AtomicU8::new(0))
+impl app_update::session::Ending for SessionEnding {
+    fn commit(&self) {
+        self.0.state::<Leaving>().exit();
     }
 
-    fn begin(&self, start: impl FnOnce() -> std::io::Result<()>, fallback: impl FnOnce()) -> bool {
-        use std::sync::atomic::Ordering;
-        match self.0.compare_exchange(0, Self::RUNNING, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => {}
-            Err(Self::RUNNING) => return true,
-            Err(_) => return false,
+    fn done(&self) -> &app_update::session::Done {
+        &self.1.done
+    }
+
+    fn saving(&self) -> Option<&'static str> {
+        replay_settings::exit::EXIT.held().map(saving)
+    }
+
+    fn check_drafts(&self, answer: Box<dyn FnOnce(app_update::session::Drafts) + Send>) {
+        let app = self.0.clone();
+        let asked = std::thread::Builder::new().name("shutdown drafts".into()).spawn(move || {
+            answer(match app.state::<Leaving>().shutdown_query() {
+                Some(false) => app_update::session::Drafts::Clean,
+                Some(true) => app_update::session::Drafts::Unsaved,
+                None => app_update::session::Drafts::Unknown,
+            });
+        });
+        if let Err(error) = asked {
+            eprintln!("BattlePlan couldn’t ask its page about unsaved changes before Windows ends the session: {error}");
         }
-        if start().is_err() {
-            fallback();
-        }
-        true
     }
 
-    fn done(&self) {
-        self.0.store(Self::DONE, std::sync::atomic::Ordering::Release);
+    fn retire_drafts(&self) {
+        self.0.state::<Leaving>().retire_shutdown_query();
     }
+}
+
+const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn saving(held: replay_settings::exit::What) -> &'static str {
+    match held {
+        replay_settings::exit::What::Install => "Starting the update before BattlePlan closes…",
+        replay_settings::exit::What::Export => "Saving the map picture before BattlePlan closes…",
+        _ => "Saving your changes before BattlePlan closes…",
+    }
+}
+
+fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("shutdown".into())
+        .spawn(move || {
+            let _ = done.send(work());
+        })
+        .ok()?;
+    finished.recv_timeout(limit).ok()
+}
+
+fn ordered<P: Send + 'static>(
+    page: impl FnOnce() -> P,
+    steps: impl FnOnce() -> bool + Send + 'static,
+    summary: impl FnOnce(P) + Send + 'static,
+    limit: std::time::Duration,
+) -> Option<bool> {
+    let page = page();
+    let deadline = std::time::Instant::now().checked_add(limit);
+    let ended = within(limit, steps);
+    let left = deadline.map_or(limit, |deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+    let summarized = within(left, move || summary(page));
+    ended.filter(|_| summarized.is_some())
+}
+
+fn end_now() -> ! {
+    std::process::exit(0);
+}
+
+fn start_exit_worker() -> std::io::Result<&'static Exiting> {
+    static EXITING: std::sync::OnceLock<Exiting> = std::sync::OnceLock::new();
+    let done = app_update::session::Done::new()?;
+    let exiting: &'static Exiting = EXITING.get_or_init(|| Exiting { done, app: std::sync::OnceLock::new() });
+    std::thread::Builder::new().name("ordered exit".into()).spawn(move || {
+        let exit = &replay_settings::exit::EXIT;
+        exit.wait_sealed();
+        app_update::saving::wait_until_empty(app_update::app_name(), &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving), &|| exiting.done.awaited());
+        app_update::control::stop();
+        exiting.done.set();
+        let Some(app) = exiting.app.get().cloned() else { end_now() };
+        let steps = app.clone();
+        let ended = ordered(|| perf::finish_page(&app), move || shutdown(&steps), perf::finish, EXIT_BOUND);
+        if ended != Some(true) {
+            if ended.is_none() {
+                eprintln!("BattlePlan’s shutdown didn’t finish within {} seconds, so it ends now.", EXIT_BOUND.as_secs());
+            }
+            end_now();
+        }
+        app.exit(0);
+        std::thread::sleep(EXIT_BOUND);
+        end_now();
+    })?;
+    Ok(exiting)
 }
 
 fn shutdown(app: &tauri::AppHandle) -> bool {
@@ -495,60 +836,69 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, UnsavedWork};
-    use std::sync::atomic::Ordering;
+    use super::{Shut, ordered, shut, within};
+    use std::cell::Cell;
+    use std::time::Duration;
 
     #[test]
-    fn unsaved_work_refuses_an_update_until_it_is_saved_or_discarded() {
-        let work = UnsavedWork::default();
-        assert_eq!(work.update_refused(), None, "nothing unsaved lets the update close the app");
-        work.unsaved.store(true, Ordering::Release);
-        assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
-        work.discarded.store(true, Ordering::Release);
-        assert_eq!(work.update_refused(), None, "work the user chose to discard no longer holds the update");
-        work.discarded.store(false, Ordering::Release);
-        work.unsaved.store(false, Ordering::Release);
-        assert_eq!(work.update_refused(), None, "saved work no longer holds the update");
+    fn a_shutdown_that_stalls_after_battleplan_commits_to_exit_ends_the_process_instead_of_leaving_it_running_unseen() {
+        let (_never, stalled) = std::sync::mpsc::channel::<()>();
+        let ended = within(Duration::ZERO, move || stalled.recv().is_ok());
+        assert_eq!(ended, None, "a dashboard worker stuck reading an unresponsive share doesn’t hold the exit");
+        assert_eq!(within(Duration::MAX, || true), Some(true), "a shutdown that finishes ends in order");
+
+        let (_never, stalled) = std::sync::mpsc::channel::<()>();
+        let (wrote, written) = std::sync::mpsc::channel();
+        let ended = ordered(|| Some(true), move || stalled.recv().is_ok(), move |page| wrote.send(page).unwrap(), Duration::ZERO);
+        assert_eq!(ended, None);
+        assert_eq!(written.recv(), Ok(Some(true)), "a page that took its whole wait still has its summary written, though the steps after it overran");
+
+        let (_never, stalled) = std::sync::mpsc::channel::<()>();
+        let ended = ordered(|| (), || true, move |()| { let _ = stalled.recv(); }, Duration::from_millis(100));
+        assert_eq!(ended, None, "a measurement summary that stalls ends the process from the exit thread, never on the UI thread after it");
     }
 
-    #[test]
-    fn unsaved_work_holds_a_close_even_when_the_question_cannot_be_asked() {
-        let work = UnsavedWork::default();
-        assert!(!work.holds_close(|| -> Result<(), &'static str> { unreachable!() }), "nothing unsaved closes at once");
-        work.unsaved.store(true, Ordering::Release);
-        let mut asked = 0;
-        assert!(work.holds_close(|| -> Result<(), &'static str> {
-            asked += 1;
+    struct Window {
+        enabled: Cell<bool>,
+        visible: Cell<bool>,
+    }
+
+    impl Shut for Window {
+        fn disable(&self) {
+            self.enabled.set(false);
+        }
+
+        fn hide(&self) -> tauri::Result<()> {
+            self.visible.set(false);
             Ok(())
-        }));
-        assert_eq!(asked, 1);
-        assert!(work.holds_close(|| Err("no window")), "unsaved work is never closed silently");
+        }
+    }
+
+    struct Modal {
+        disabled_owner: bool,
+    }
+
+    impl Modal {
+        fn open(owner: &Window) -> Self {
+            Self { disabled_owner: owner.enabled.replace(false) }
+        }
+
+        fn close(self, owner: &Window) {
+            if self.disabled_owner {
+                owner.enabled.set(true);
+            }
+        }
     }
 
     #[test]
-    fn a_failed_discarding_close_leaves_the_work_guarded() {
-        let work = UnsavedWork::default();
-        work.unsaved.store(true, Ordering::Release);
-        assert_eq!(work.close_discarding(|| Err("no window")), Err("no window"));
-        assert!(work.kept(), "a close that failed doesn’t authorise a later close or update");
-        assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
-        assert_eq!(work.close_discarding(|| Ok::<(), &str>(())), Ok(()));
-        assert!(!work.kept(), "the closing window isn’t asked again");
+    fn a_dialog_that_closes_after_battleplan_commits_to_exit_lets_no_input_back_into_its_window() {
+        let window = Window { enabled: Cell::new(true), visible: Cell::new(true) };
+        let choice = Modal::open(&window);
+        shut(&window);
+        choice.close(&window);
+        assert!(window.enabled.get(), "the dialog re-enables the window it disabled, as Windows does");
+        assert!(!window.visible.get(), "so the window is out of input by a means no dialog undoes");
     }
 
-    #[test]
-    fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {
-        let exit = ExitOrder::new();
-        let mut fell_back = 0;
-        let held = exit.begin(|| Err(std::io::Error::other("no thread")), || fell_back += 1);
-        assert!(held, "the window must outlive the map's surface");
-        assert_eq!(fell_back, 1);
-        assert!(exit.begin(|| unreachable!(), || unreachable!()), "a later close is held too");
 
-        let exit = ExitOrder::new();
-        assert!(exit.begin(|| Ok(()), || unreachable!()));
-        assert!(exit.begin(|| unreachable!(), || unreachable!()));
-        exit.done();
-        assert!(!exit.begin(|| unreachable!(), || unreachable!()), "once the maps end, closes go through");
-    }
 }

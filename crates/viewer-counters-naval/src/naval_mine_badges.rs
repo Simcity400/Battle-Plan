@@ -1,4 +1,4 @@
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;

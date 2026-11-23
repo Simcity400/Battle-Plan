@@ -93,10 +93,10 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
         reason: "unused alias country lists not sampled".into(),
     };
-    let mut names = content_reader_core::key_names::KeyNames::default();
+    let mut names = content_reader_script::key_names::KeyNames::default();
     names.countries = [b"AAA".to_vec()].into();
     names.aliases = [b"ali".to_vec()].into();
-    fixture.aliases = Arc::new(content_reader_core::tag_aliases::parse(
+    fixture.aliases = Arc::new(content_reader_key_names::tag_aliases::parse(
         &[(
             "common/country_tag_aliases/synthetic.txt",
             b"ALI={original_tag=AAA set_temp_variable={n=9}}".as_slice(),
@@ -318,7 +318,7 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
             Ok(967)
         );
         let body =
-            content_reader_core::parser::parse(b"set_temp_variable_to_random={var=n min=2 max=4}")
+            content_reader_parser::parser::parse(b"set_temp_variable_to_random={var=n min=2 max=4}")
                 .unwrap();
         assert_eq!(renderer.group(&body.items, scopes, 0), "");
         assert_eq!(
@@ -414,7 +414,7 @@ fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
                 .scoped_value(b"random_seed", scopes),
             Ok(1494)
         );
-        let body = content_reader_core::parser::parse(
+        let body = content_reader_parser::parser::parse(
             b"set_temp_variable_to_random={var=n min=-2.25 max=3.75 integer=yes}",
         )
         .unwrap();
@@ -546,7 +546,7 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
         );
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
             let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-            let body = content_reader_core::parser::parse(script.as_bytes()).unwrap();
+            let body = content_reader_parser::parser::parse(script.as_bytes()).unwrap();
             assert_eq!(renderer.group(&body.items, scopes, 0), "");
             assert_eq!(
                 renderer.evaluator().unwrap().scoped_value(b"n", scopes),
@@ -666,7 +666,7 @@ fn withheld_required_trucks_refuses_only_truck_need_while_other_vehicle_temps_wo
     ] {
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
             let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-            let body = content_reader_core::parser::parse(script.as_bytes()).unwrap();
+            let body = content_reader_parser::parser::parse(script.as_bytes()).unwrap();
             assert_eq!(renderer.group(&body.items, scopes, 0), "");
             assert_eq!(
                 renderer.evaluator().unwrap().scoped_value(b"n", scopes),
@@ -685,7 +685,7 @@ fn withheld_required_trucks_refuses_only_truck_need_while_other_vehicle_temps_wo
     rows[0].required_trucks_raw = Recorded::Value(Some(9_000_000));
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        let body = content_reader_core::parser::parse(
+        let body = content_reader_parser::parser::parse(
             b"get_supply_vehicles_temp={var=n type=truck need=yes}",
         )
         .unwrap();

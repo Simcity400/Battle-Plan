@@ -56,9 +56,9 @@ import { nameReadFailure, nameReadMetadata, nameReadText } from '../../dashboard
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import type { NameAt } from '../../dashboard/countryNamesAt';
-import { followStore } from '../../dashboard/follow/connection.ts';
+import { followStore } from '../../dashboard/follow/store.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followRefusal, followsHead, usePlaybackHour, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { shownThrough } from '../../dashboard/follow/store.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
@@ -144,7 +144,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const stabilityFollowed = useFollow(store, stabilityQuery, root, useCallback((entry: FollowEntry) => reportShown(shownThrough(entry)), [reportShown]));
   const warFollowed = useFollow(store, warQuery, root, NO_PAINT);
   const headFollowed = followsHead(stabilityFollowed) && followsHead(warFollowed);
-  const clockHour = useFallbackHour(runtime.clock, active && (focused && single !== null && following || following && !headFollowed && !pinnedMeasure));
+  const refused = followRefusal(stabilityFollowed, warFollowed);
+  const clockHour = usePlaybackHour(runtime.clock, active && focused && single !== null && following);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -157,9 +158,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const membership = resolved.membership ?? undefined;
   const stability = useMeasureSeries(runtime.client, track?.source, track?.branch.id, FAMILY, 'stability', resolved.tags,
-    headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.stability !== false, false, membership, lastHour, following);
+    following ? null : head, hoverHour, active && !pinnedMeasure && options.stability !== false, false, membership, lastHour, following);
   const warSupport = useMeasureSeries(runtime.client, track?.source, track?.branch.id, FAMILY, 'warSupport', resolved.tags,
-    headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.warSupport !== false, false, membership, lastHour, following);
+    following ? null : head, hoverHour, active && !pinnedMeasure && options.warSupport !== false, false, membership, lastHour, following);
   const series = { stability, warSupport } as const;
   const decimals = stability.decimals ?? warSupport.decimals ?? 0;
   const stabilityEntry = headFollowed ? stabilityFollowed.entry : null;
@@ -170,7 +171,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     const stops = heads.flatMap(([entry, headOf]) => entry && known ? resolved.tags.map((tag, row) => followAtHead(headOf(tag), () => rowAmount(entry.answer, row, decimals))) : []);
     return () => stops.forEach(stop => stop());
   }, [stabilityEntry, warEntry, resolved.tags, stability.head, warSupport.head, decimals, known]);
-  useEffect(() => { if (!headFollowed) reportShown(stability.states || warSupport.states ? head : null); }, [headFollowed, stability.states, warSupport.states, head, reportShown]);
+  useEffect(() => { if (!following) reportShown(stability.states || warSupport.states ? head : null); }, [following, stability.states, warSupport.states, head, reportShown]);
   const chartData = useMemo<ChartData>(() => ({ revision: () => [stability.revision(), warSupport.revision()],
     subscribe: listener => { const stops = [stability.subscribe(listener), warSupport.subscribe(listener)]; return () => stops.forEach(stop => stop()); } }),
   [stability.revision, stability.subscribe, warSupport.revision, warSupport.subscribe]);
@@ -333,6 +334,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const retry = () => { stability.retry(); warSupport.retry(); };
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
+  if (refused) return <WidgetState kind="unavailable" message={refused} />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;

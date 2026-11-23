@@ -152,7 +152,7 @@ impl Renderer<'_, '_, '_> {
         };
         let name = self.decision_title(definition, scopes)?;
         let mut effects = String::new();
-        if content_reader_core::parser::read_bool_field(fields, "show_effect_tooltip", false) {
+        if content_reader_parser::parser::read_bool_field(fields, "show_effect_tooltip", false) {
             for (body, header) in [
                 (
                     &definition.complete_effect,
@@ -208,7 +208,7 @@ impl Renderer<'_, '_, '_> {
                 effects.insert(0, '\n');
             }
         }
-        if content_reader_core::parser::read_bool_field(fields, "show_modifiers", false)
+        if content_reader_parser::parser::read_bool_field(fields, "show_modifiers", false)
             && (!definition.modifier.is_empty() || !definition.targeted_modifier.is_empty())
         {
             match self.decision_modifier_details(definition, scopes) {
@@ -257,7 +257,7 @@ impl Renderer<'_, '_, '_> {
             ..Default::default()
         };
         let mut text = self.modifier_description_with(
-            &content_reader_core::modifiers::values(&definition.modifier),
+            &content_reader_script::modifiers::values(&definition.modifier),
             "",
             options,
         )?;
@@ -283,7 +283,7 @@ impl Renderer<'_, '_, '_> {
             text.push_str("\u{11}H");
             text.push_str(&name);
             text.push_str("\u{11}!\n");
-            let modifiers = content_reader_core::modifiers::targeted(fields).modifiers;
+            let modifiers = content_reader_script::modifiers::targeted(fields).modifiers;
             text.push_str(&self.modifier_description_with(&modifiers, "  ", options)?);
         }
         Ok(text)
@@ -661,7 +661,7 @@ impl Renderer<'_, '_, '_> {
         {
             self.organisation_name(reference)?
         } else {
-            String::from_utf8(content_reader_core::parser::c_string(operand).to_vec())
+            String::from_utf8(content_reader_parser::parser::c_string(operand).to_vec())
                 .map_err(|_| "MIO operand is not UTF-8")?
         };
         self.char_native_line(
@@ -765,7 +765,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )?;
-        if content_reader_core::parser::read_bool_field(children(item), "show_modifiers", true)
+        if content_reader_parser::parser::read_bool_field(children(item), "show_modifiers", true)
             && let Some(policy) = definition
         {
             let body = self.char_mio_policy_modifiers(&policy, scopes);
@@ -803,7 +803,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let name = content_reader_core::parser::c_string(item.value.scalar().unwrap_or_default());
+        let name = content_reader_parser::parser::c_string(item.value.scalar().unwrap_or_default());
         for (event, option) in self.context.text.content().event_index().options(name)? {
             if let Some(why) = &event.refused {
                 return Err(why.clone());
@@ -857,7 +857,7 @@ impl Renderer<'_, '_, '_> {
                 };
                 if item
                     .keyword()
-                    .and_then(|key| content_reader_core::effect_keys::registered(&key.folded()))
+                    .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()))
                     == Some(0x3FF4)
                 {
                     return Ok(true);
@@ -868,8 +868,8 @@ impl Renderer<'_, '_, '_> {
                         pending.push(self.effect_children(branch));
                     }
                 } else if class.vtable == 0x142A32320 {
-                    for member in content_reader_core::effect_keys::random_list_members(item)? {
-                        pending.push(content_reader_core::effect_keys::random_member_fields(&member));
+                    for member in content_reader_script::effect_keys::random_list_members(item)? {
+                        pending.push(content_reader_script::effect_keys::random_member_fields(&member));
                     }
                 }
             }

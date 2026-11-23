@@ -3,7 +3,7 @@ use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationRecord {
-    pub data: content_reader_core::gui::native::sprites::AnimationData,
+    pub data: content_reader_gui::gui::native::sprites::AnimationData,
     pub mask: usize,
     pub texture: usize,
     pub texture_size: [i32; 2],

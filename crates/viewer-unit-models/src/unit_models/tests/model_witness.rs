@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use super::*;
 use viewer_models::entity_animation::{IDLE, TRAINING};
 use replay_data::rows::{

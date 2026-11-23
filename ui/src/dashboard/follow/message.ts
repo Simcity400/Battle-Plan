@@ -17,6 +17,7 @@ export interface MessageViews {
 
 export interface FollowedRows {
   kind: 'rows' | 'log' | 'changed';
+  canonical: boolean;
   rows: number;
   columns: number;
   views: MessageViews;
@@ -26,7 +27,8 @@ export interface FollowedRows {
   states: number;
   reasons: number;
   names: number;
-  texts: Uint32Array;
+  ends: Uint32Array;
+  text: number;
   decoded: (string | undefined)[];
 }
 
@@ -35,6 +37,7 @@ export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedR
 export interface FollowedPanel {
   data?: unknown;
   refused: string | null;
+  bytes?: Uint8Array;
 }
 
 const FAILURE_MAGIC = 0x314e4546;
@@ -57,45 +60,31 @@ export interface FollowedMessage {
 const decoder = new TextDecoder();
 const aligned = (at: number) => (at + 7) & ~7;
 
-function texts(views: MessageViews, data: DataView, at: number, count: number): [string[], number] {
-  const out: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const length = data.getUint32(at, true);
-    out.push(decoder.decode(views.u8.subarray(at + 4, at + 4 + length)));
-    at += 4 + length;
-  }
-  return [out, aligned(at)];
+function textTable(views: MessageViews, at: number, count: number, end: number): { ends: Uint32Array; text: number; next: number } {
+  if (at + (count + 1) * 4 > end) throw new Error('A followed answer ends early.');
+  const ends = new Uint32Array(views.u8.buffer, views.u8.byteOffset + at, count + 1);
+  if (ends[0] !== 0) throw new Error("A followed answer's text offsets do not start at zero.");
+  for (let i = 0; i < count; i++) if (ends[i]! > ends[i + 1]!) throw new Error("A followed answer's text offsets do not ascend.");
+  const text = aligned(at + (count + 1) * 4), next = aligned(text + ends[count]!);
+  if (next > end) throw new Error('A followed answer ends early.');
+  return { ends, text, next };
 }
 
-function textStarts(data: DataView, at: number, count: number, end: number): [Uint32Array, number] {
-  const starts = new Uint32Array(count);
-  for (let i = 0; i < count; i++) {
-    if (at + 4 > end) throw new Error('A followed answer ends early.');
-    starts[i] = at;
-    at += 4 + data.getUint32(at, true);
-  }
-  return [starts, aligned(at)];
-}
-
-function textAt(answer: FollowedRows, at: number): string | null {
-  if (at >= answer.texts.length) return null;
+export function textAt(answer: FollowedRows, at: number): string | null {
+  if (at + 1 >= answer.ends.length) return null;
   let text = answer.decoded[at];
-  if (text === undefined) {
-    const start = answer.texts[at]!, u8 = answer.views.u8;
-    const length = u8[start]! | u8[start + 1]! << 8 | u8[start + 2]! << 16 | u8[start + 3]! << 24;
-    text = answer.decoded[at] = decoder.decode(u8.subarray(start + 4, start + 4 + length));
-  }
+  if (text === undefined) text = answer.decoded[at] = decoder.decode(answer.views.u8.subarray(answer.text + answer.ends[at]!, answer.text + answer.ends[at + 1]!));
   return text;
 }
 
 function body(views: MessageViews, data: DataView, start: number, end: number): FollowedAnswer {
-  const kind = data.getUint8(start);
+  const kind = data.getUint8(start), flags = data.getUint8(start + 1);
   const rows = data.getUint32(start + 4, true), columns = data.getUint32(start + 8, true), count = data.getUint32(start + 12, true);
   let at = start + 16;
   if (kind === 0) {
-    const [[reason]] = texts(views, data, at, count);
-    if (reason === undefined) throw new Error('A followed answer that is not recorded gives no reason.');
-    return { kind: 'notRecorded', reason };
+    const table = textTable(views, at, count, end);
+    if (count < 1) throw new Error('A followed answer that is not recorded gives no reason.');
+    return { kind: 'notRecorded', reason: decoder.decode(views.u8.subarray(table.text + table.ends[0]!, table.text + table.ends[1]!)) };
   }
   if (kind !== 1 && kind !== 2 && kind !== 3) throw new Error(`No followed answer kind ${kind}.`);
   const cells = rows * columns;
@@ -107,9 +96,10 @@ function body(views: MessageViews, data: DataView, start: number, end: number): 
   const states = at; at = aligned(at + cells);
   const reasons = at / 4; at = aligned(at + rows * 4);
   const names = at / 4; at = aligned(at + rows * 4);
-  const [starts, next] = textStarts(data, at, count, end);
+  const { ends, text, next } = textTable(views, at, count, end);
   if (next !== end) throw new Error('A followed answer holds bytes past its texts.');
-  return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', rows, columns, views, keys, values, hours, states, reasons, names, texts: starts, decoded: [] };
+  return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', canonical: (flags & 1) !== 0, rows, columns, views, keys, values, hours, states, reasons, names,
+    ends, text, decoded: [] };
 }
 
 function viewsOf(bytes: ArrayBuffer | Uint8Array) {
@@ -129,7 +119,7 @@ export function parseAnswer(bytes: Uint8Array): FollowedAnswer {
   return body(views, data, 0, byteLength);
 }
 
-export const DATED_FOLLOW = 0x324c4f46, DATED_PANEL = 0x324c4e50;
+export const DATED_FOLLOW = 0x334c4f46, DATED_PANEL = 0x324c4e50;
 
 export function wireKind(bytes: ArrayBuffer | Uint8Array): number {
   const v = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -189,9 +179,23 @@ export function rowKeys(answer: FollowedAnswer | undefined): string {
 
 export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; waiting?: boolean }
 
+export const DATED_PANEL_VERSION = 6;
+
+export function parseDatedPanelRecord(record: Uint8Array): DatedPanel {
+  const data = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  if (record.byteLength < 16) throw new Error('Invalid dated panel record.');
+  const id = data.getUint32(0, true), hour = data.getInt32(4, true), kind = data.getUint8(8), length = data.getUint32(12, true), end = 16 + length;
+  if (end > record.length || ![0, 1, 3, 5].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+  if (kind === 5) return { id, hour, panel: null, waiting: true };
+  const body = record.subarray(16, end);
+  const panel: DatedPanel = { id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null, bytes: body } };
+  if (data.getUint8(9) & 1) panel.stepped = true;
+  return panel;
+}
+
 export function parseDatedPanels(bytes: Uint8Array) {
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== 6) throw new Error('Invalid dated panel header.');
+  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== DATED_PANEL_VERSION) throw new Error('Invalid dated panel header.');
   const count = data.getUint32(8, true), clock = data.getInt32(12, true), route = data.getUint32(16, true), seek = data.getUint32(20, true);
   const panels: DatedPanel[] = [];
   let completed: number | undefined;
@@ -204,17 +208,31 @@ export function parseDatedPanels(bytes: Uint8Array) {
       if (id !== 0 || i !== count - 1) throw new Error('Invalid completed product step.');
       completed = hour; at = aligned(end); continue;
     }
-    if (kind === 5) { panels.push({ id, hour, panel: null, waiting: true }); at = aligned(end); continue; }
-    const body = bytes.subarray(at + 16, end);
-    panels.push({ id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null } });
-    if (data.getUint8(at + 9) & 1) panels.at(-1)!.stepped = true;
+    panels.push(parseDatedPanelRecord(bytes.subarray(at, end)));
     at = aligned(end);
   }
   if (at !== bytes.length) throw new Error('Unexpected bytes after dated panels.');
   return { route, clock, seek, panels, completed };
 }
 
-export type FollowItem =
-  | { kind: 'panels'; batch: ReturnType<typeof parseDatedPanels> }
-  | { kind: 'followed'; message: FollowedMessage }
-  | { kind: 'failure'; reason: string };
+const shapes = new WeakMap<Uint8Array, string>();
+
+export function answerShape(body: Uint8Array): string {
+  let held = shapes.get(body);
+  if (held !== undefined) return held;
+  let answer: FollowedAnswer;
+  try { answer = parseAnswer(body); } catch { answer = { kind: 'notRecorded', reason: 'unreadable' }; }
+  if (answer.kind === 'notRecorded') held = `refused:${answer.reason}`;
+  else {
+    const u64 = answer.views.u64, keys = new Uint8Array(u64.buffer, u64.byteOffset + answer.keys * 8, answer.rows * 16);
+    let sum = 0, mix = 0;
+    for (let row = 0; row < answer.rows; row++) {
+      let hash = 0x811c9dc5;
+      for (const at of [row * 8, (answer.rows + row) * 8]) for (let k = 0; k < 8; k++) hash = Math.imul(hash ^ keys[at + k]!, 0x01000193);
+      sum = sum + (hash >>> 0) >>> 0; mix = (mix ^ hash) >>> 0;
+    }
+    held = `${answer.kind}:${answer.columns}:${answer.rows}:${sum.toString(36)}:${mix.toString(36)}`;
+  }
+  shapes.set(body, held);
+  return held;
+}

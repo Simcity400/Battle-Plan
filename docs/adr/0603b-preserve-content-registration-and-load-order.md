@@ -12,4 +12,4 @@ Leader traits append in file order after the null object, including duplicates. 
 
 Diagnostics preserve the producer's message and category. A logged or misread field allows native reading to continue. An unsettled suffix means reading can no longer establish its contents. Unsupported forms, refused definitions, ambiguous lookups and presentation fallbacks identify distinct failure or substitution states.
 
-[Load-point names](../../crates/content-reader-core/src/key_names.rs) · [Ideologies](../../crates/content-reader-core/src/ideologies.rs) · [Organisation templates](../../crates/content-reader-core/src/industrial_organisations.rs) · [Intelligence definitions](../../crates/content-reader-core/src/intelligence.rs)
+[Load-point names](../../crates/content-reader-script/src/key_names.rs) · [Ideologies](../../crates/content-reader-key-names/src/ideologies.rs) · [Organisation templates](../../crates/content-reader-military/src/industrial_organisations.rs) · [Intelligence definitions](../../crates/content-reader-military/src/intelligence.rs)

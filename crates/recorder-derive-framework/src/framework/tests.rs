@@ -866,7 +866,7 @@ impl Writer for Thresholds {
 }
 
 fn thresholds() -> Definitions {
-    let needs = content_reader_core::unit_leader::needs::SubUnitNeeds {
+    let needs = content_reader_key_names::unit_leader::needs::SubUnitNeeds {
         needs: [("infantry".to_owned(), vec![("infantry_equipment".to_owned(), 10_000_000)])].into(),
         dropped: Vec::new(),
     };

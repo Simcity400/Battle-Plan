@@ -1,13 +1,14 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedContent, ResolvedLayers,
     key_names::KeyNames,
     script_files::ScriptPath,
     parser::{
         Item,
-        native::{self, Shape},
     },
 };
-use content_reader_core::content::diagnostics::Observed;
+use content_reader_layers::content::diagnostics::Observed;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,

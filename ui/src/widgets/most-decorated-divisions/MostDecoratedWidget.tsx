@@ -19,7 +19,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { useFallbackHour } from '../../dashboard/follow/useFollow';
+import { usePlaybackHour } from '../../dashboard/follow/useFollow';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { careerTooltip, careersStructure, divisionKey as rowKey, divisionName, experienceRatio, medalName, medalsValue, pinnedRecord, validateDivisionCareers } from '../division-service-record/careersData';
@@ -36,7 +36,7 @@ const RECORD_LOG = logSettings({});
 export default function MostDecoratedWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const playback = useFallbackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);

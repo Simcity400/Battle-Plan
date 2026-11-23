@@ -197,7 +197,6 @@ fn worker_sampler_concurrent_join_waits_for_panic_status_publication() {
         thread: Mutex::new(Some(panicked)),
         ready: AtomicBool::new(true),
         join_complete: AtomicBool::new(false),
-        follower_waits: std::sync::atomic::AtomicUsize::new(0),
     });
     let metadata = META.lock().unwrap_or_else(|e| e.into_inner());
     let first = Arc::clone(&control);
@@ -208,12 +207,17 @@ fn worker_sampler_concurrent_join_waits_for_panic_status_publication() {
     let second = Arc::clone(&control);
     let second_returned = Arc::new(AtomicBool::new(false));
     let returned = Arc::clone(&second_returned);
+    let follower_waits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let waits = Arc::clone(&follower_waits);
     let follower = thread::spawn(move || {
-        second.stop_join();
+        second.stop_join_waiting(|| {
+            waits.fetch_add(1, Ordering::Release);
+            thread::yield_now();
+        });
         returned.store(true, Ordering::Release);
     });
     let guard = std::time::Instant::now() + Duration::from_secs(120);
-    while control.follower_waits.load(Ordering::Acquire) < 2 && !follower.is_finished() {
+    while follower_waits.load(Ordering::Acquire) < 2 && !follower.is_finished() {
         if std::time::Instant::now() >= guard {
             drop(metadata);
             panic!("the follower neither waited nor returned under the hang guard");
@@ -261,7 +265,8 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     });
     let job_barrier = Arc::clone(&barrier);
     let run = move |_: &mut ()| {
-        let _job = job(crate::roles::Role::World);
+        // SAFETY: The isolated fixture owns this registered worker for the duration of the job.
+        let _job = unsafe { job(crate::roles::Role::World) };
         let _ = entered_tx.send(());
         let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
         job_barrier.wait();

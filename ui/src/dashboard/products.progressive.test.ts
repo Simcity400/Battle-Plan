@@ -4,6 +4,7 @@ import * as React from 'react';
 import { forgetProducts, loadProduct, useProduct, useProducts } from './products.ts';
 import { contentRevision } from './contentRevision.ts';
 import { HeldFailures } from './heldFailures.ts';
+import { failureText, queryFailure } from './queryError.ts';
 import { registerPageJoin } from './pageJoins.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client.ts';
 
@@ -19,6 +20,7 @@ const first: Page = { rows: ['first'], cursor: 'second' };
 const second: Page = { rows: ['second'], cursor: null };
 const cursorOf = (asked: ProductRequest) => (asked.params as { cursor?: string }).cursor;
 
+const lost = 'BattlePlan couldn’t reach its desktop host for dashboard_product: the IPC request failed (TypeError: Failed to fetch).';
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function gate<T>() {
   let resolve!: (value: T) => void;
@@ -106,12 +108,12 @@ test('a mounted paged read failing after its first page keeps that page shown, s
   } finally { hook.unmount(); }
 });
 
-test('in a widget frame a failure after a publication keeps the reply, said once by the frame with its Retry', async () => {
+test('in a widget frame a failure after a publication keeps the reply, said once by the frame by its name with its Retry', async () => {
   let reads = 0;
   const client = { product: async (at: ProductRequest) => {
     reads++;
     if (cursorOf(at) === undefined) return { ...at, data: first };
-    throw new Error('synthetic page failure');
+    throw queryFailure(lost);
   } } as unknown as DashboardClient;
   const frame = new HeldFailures();
   let heard = 0;
@@ -122,17 +124,18 @@ test('in a widget frame a failure after a publication keeps the reply, said once
     const failed = hook.render();
     assert.equal(failed.data, first, 'the published reply stays');
     assert.equal(failed.error, undefined, 'the body says an error only when nothing was published');
-    assert.deepEqual(frame.read().map(error => error.message), ['synthetic page failure'], 'the frame says the failure');
+    assert.deepEqual(frame.read().map(error => error.message), [lost], 'the frame says the failure');
+    assert.equal(failureText(frame.read()[0], 'Couldn’t load.'), 'BattlePlan couldn’t reach its desktop host for dashboard_product.', 'by its name');
     hook.render();
     assert.equal(heard, 1, 'the same failure is said once');
     const asked = reads;
-    frame.retry(new Error('synthetic page failure'));
+    frame.retry(frame.read()[0]!);
     assert.equal(hook.render().data, undefined, 'Retry asks again');
     assert.deepEqual(frame.read().map(error => error.message), [], 'the notice leaves while the reply is asked again');
     await flush();
     assert.ok(reads > asked);
     assert.equal(hook.render().data, first);
-    assert.deepEqual(frame.read().map(error => error.message), ['synthetic page failure']);
+    assert.deepEqual(frame.read().map(error => error.message), [lost]);
   } finally { hook.unmount(); unsubscribe(); }
   assert.deepEqual(frame.read().map(error => error.message), [], 'a reader that leaves takes its notice with it');
 });

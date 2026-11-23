@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::gui::native::sprites::FrameAnimation;
+use content_reader_gui::gui::native::sprites::FrameAnimation;
 use content_reader_image::dds;
 
 pub(super) fn frame(
@@ -164,7 +164,7 @@ fn frame_offset(plain: &Plain, step: [f32; 2], frame: u64) -> [f32; 2] {
     [x as f32 * step[0], y as f32 * step[1]]
 }
 
-fn active_at_rest(data: &content_reader_core::gui::native::sprites::AnimationData) -> bool {
+fn active_at_rest(data: &content_reader_gui::gui::native::sprites::AnimationData) -> bool {
     (data.trigger_frames == 0 || data.trigger_frames & 2 != 0)
         && (data.frames == u32::MAX || data.frames & 2 != 0)
         && (data.looping || data.time >= 0.0 || data.time.is_nan())
@@ -206,7 +206,7 @@ pub(super) fn optional(
 }
 
 fn at_rest(
-    data: &content_reader_core::gui::native::sprites::AnimationData,
+    data: &content_reader_gui::gui::native::sprites::AnimationData,
     size: [u32; 2],
     overlay: [i32; 2],
 ) -> [f32; 17] {
@@ -275,7 +275,7 @@ fn at_rest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::gui::native::sprites::AnimationData;
+    use content_reader_gui::gui::native::sprites::AnimationData;
 
     #[test]
     fn s4_native_frames_keep_offsets_past_the_strip_in_every_direction() {

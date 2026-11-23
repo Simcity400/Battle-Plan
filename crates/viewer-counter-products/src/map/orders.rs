@@ -24,7 +24,7 @@ use std::{
     io,
 };
 
-use content_reader_core::{map::MapData, movement::MovementMap};
+use content_reader_map::{map::MapData, movement::MovementMap};
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::FrontRow, rows::LandTheatreRow,
     rows::OrdersGroupPlanRow, rows::OrdersGroupRow, rows::TableId, rows::tables,

@@ -14,7 +14,7 @@ replay-data.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
-content-reader-core.workspace = true
+content-reader-parser.workspace = true
 recorder-oracle-characters.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 
@@ -25,6 +25,9 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }

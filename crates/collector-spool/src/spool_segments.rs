@@ -1,4 +1,4 @@
-use collector_workers::spool_phases::{HELPER, Phase};
+use collector_workers::spool_phases::{HELPER, Phase, PhaseObserver, Steps};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{BranchId, Hour, rows::TableId};
 use replay_frame::{
@@ -40,8 +40,18 @@ fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
 pub(crate) fn encode(
     encoder: &FrameEncoder,
     source: &FrameInput,
+    target: (BranchId, Hour, bool),
+    helpers: collector_workers::spool_helper::Helpers<'_>,
+) -> [Option<TableSegment>; TABLE_COUNT] {
+    encode_with_steps(encoder, source, target, helpers, &HELPER)
+}
+
+fn encode_with_steps(
+    encoder: &FrameEncoder,
+    source: &FrameInput,
     (branch, hour, force): (BranchId, Hour, bool),
     helpers: collector_workers::spool_helper::Helpers<'_>,
+    steps: &Steps<impl PhaseObserver + Sync>,
 ) -> [Option<TableSegment>; TABLE_COUNT] {
     let context = encoder.frame_context(branch, hour, force);
     let mut order = [(0_usize, 0_usize); TABLE_COUNT];
@@ -83,7 +93,7 @@ pub(crate) fn encode(
         collector_memory::terminal::set_context(allocation_context);
         let _span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
-        unsafe { HELPER.span(Phase::Encode) };
+        unsafe { steps.span(Phase::Encode) };
         work();
     };
     // SAFETY: The spool owns this conversion round and uses no helper in a competing round.
@@ -156,8 +166,7 @@ mod tests {
         ];
         let mut whole = FrameEncoder::new();
         let mut split = FrameEncoder::new();
-        let helper_encodes = || HELPER.phase(Phase::Encode).0;
-        let before = helper_encodes();
+        let steps = Steps::counted();
         for hour in 0..6 {
             let input = frame(hour, 10 + hour as u32 / 2);
             let force = hour == 4;
@@ -166,7 +175,9 @@ mod tests {
                 pool: &pool[..if hour % 2 == 0 { 2 } else { 1 }],
                 backlogged: false,
             };
-            let mut segments = encode(&split, &input, (1, hour, force), helpers);
+            let before = steps.entries(Phase::Encode);
+            let mut segments = encode_with_steps(&split, &input, (1, hour, force), helpers, &steps);
+            assert_eq!(steps.entries(Phase::Encode) - before, helpers.pool.len());
             for table in [TableId::Provinces, TableId::States, TableId::Countries] {
                 assert!(segments[table.index()].is_some(), "{table:?}");
             }
@@ -182,6 +193,6 @@ mod tests {
                 "hour {hour}"
             );
         }
-        assert!(helper_encodes() > before);
+        assert!(steps.entries(Phase::Encode) > 0);
     }
 }

@@ -1,3 +1,4 @@
+use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 use viewer_layers_political::left_to_layers::LeftToLayers;
 
 #[cfg(test)]
@@ -44,7 +45,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use content_reader_core::{ResolveOptions, map};
+use content_reader_layers::ResolveOptions;
+use content_reader_map::map;
 use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{BranchId, rows::tables as row_tables};
 use replay_frame::frame::DecodedFrame;
@@ -111,8 +113,8 @@ pub type VisualFallback<'a> = (
 fn decided(
     fallback: Option<VisualFallback<'_>>,
     options: &ResolveOptions,
-    selected: &[content_reader_core::content::visual::Choice],
-    recorded: &[content_reader_core::content::visual::RecordedMod],
+    selected: &[content_reader_layers::content::visual::Choice],
+    recorded: &[content_reader_layers::content::visual::RecordedMod],
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Option<(
     crate::visual_fallback::FallbackKey,
@@ -121,7 +123,7 @@ fn decided(
     let (recording, decisions) = fallback?;
     let key = crate::visual_fallback::FallbackKey {
         recording: recording.to_owned(),
-        revision: content_reader_core::content::visual::revision(options, selected, recorded, cancel)
+        revision: content_reader_layers::content::visual::revision(options, selected, recorded, cancel)
             .ok()?,
     };
     let decision = decisions.get(&key)?;
@@ -131,19 +133,19 @@ fn decided(
 fn visual_revision_now(
     options: &ResolveOptions,
     replay: &Replay,
-    visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
+    visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
 ) -> Option<String> {
     let selected = visual_mods.filter(|selected| !selected.is_empty())?;
     let recorded: Vec<_> = replay
         .identity
         .mods
         .iter()
-        .map(|recorded| content_reader_core::content::visual::RecordedMod {
+        .map(|recorded| content_reader_layers::content::visual::RecordedMod {
             id: recorded.id.clone(),
             name: recorded.display_name.clone(),
         })
         .collect();
-    content_reader_core::content::visual::revision(
+    content_reader_layers::content::visual::revision(
         options,
         selected,
         &recorded,
@@ -165,12 +167,12 @@ fn until_current<T>(
 }
 
 fn load_sprawl(
-    layers: &content_reader_core::ResolvedLayers,
+    layers: &content_reader_layers::ResolvedLayers,
     decode: content_reader_image::native::Decode,
     plan: &sprawl::SprawlPlan,
     (defines, graphics): (
-        &content_reader_core::defines::Defines,
-        &content_reader_core::defines::Defines,
+        &content_reader_defines::defines::Defines,
+        &content_reader_defines::defines::Defines,
     ),
 ) -> io::Result<(Sprawl, Vec<String>)> {
     layers.artwork("city sprawl", |stack| {
@@ -185,7 +187,7 @@ fn load_sprawl(
 }
 
 pub struct Content {
-    loading: content_reader_core::content::Loading,
+    loading: content_reader_layers::content::Loading,
     first_frame_reported: std::sync::atomic::AtomicBool,
     scene: SceneContent,
     pub combat: Arc<combat::Content>,
@@ -194,7 +196,7 @@ pub struct Content {
     pub political_gpu: viewer_map_modes::political_gpu::Cache,
     pub scene_textures: viewer_world::scene::TextureCache,
     pub texture_quality: u8,
-    pub visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
+    pub visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
     pub visual_revision: String,
     pub fallback: Option<crate::visual_fallback::Built>,
     pub camera_law: CameraLaw,
@@ -208,7 +210,7 @@ pub struct Content {
     pub game_dev_master: f32,
     pub cursors: crate::cursors::Cursors,
     pub warnings: Vec<String>,
-    pub uncovered_reads: content_reader_core::content::UncoveredReads,
+    pub uncovered_reads: content_reader_layers::content::UncoveredReads,
     pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
     pub border_assets: BorderAssets,
@@ -1527,7 +1529,7 @@ impl Content {
                 "stage": "complete first hour",
                 "at": crate::perf_log::epoch_ms(),
                 "artwork_pending": self.icons.lazy.has_pending(),
-                "reads": content_reader_core::content::io_counts::snapshot(),
+                "reads": content_reader_layers::content::io_counts::snapshot(),
                 "graph": self.loading.counts(),
             });
             if let Ok(bytes) = serde_json::to_vec(&counts) {
@@ -1553,10 +1555,10 @@ impl Document {
         options: &ResolveOptions,
         allow_unverified: bool,
         initial: &InitialHour,
-        visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
+        visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
     ) -> io::Result<Self> {
-        let _generation = content_reader_core::content::Generation::inherit();
+        let _generation = content_reader_layers::content::Generation::inherit();
         let path = fs::canonicalize(path)?;
         let replay = Arc::new(Replay::open_timelines(&path)?);
         let source = dashboard_base::Source::from_replay(
@@ -1604,7 +1606,7 @@ impl Document {
         initial: &InitialHour,
         replay: Arc<Replay>,
         source: &dashboard_base::Source,
-        visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
+        visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
         target: LoadTarget,
@@ -1685,8 +1687,8 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
-        resolved: Arc<content_reader_core::content::ResolvedContent>,
-        visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
+        resolved: Arc<content_reader_layers::content::ResolvedContent>,
+        visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
@@ -1717,12 +1719,12 @@ impl Document {
         initial: &InitialHour,
         replay: Arc<Replay>,
         tables: Option<engine_executable::executable_tables::Tables>,
-        resolved: Arc<content_reader_core::content::ResolvedContent>,
-        visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
+        resolved: Arc<content_reader_layers::content::ResolvedContent>,
+        visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
-        let _generation = content_reader_core::content::Generation::inherit();
+        let _generation = content_reader_layers::content::Generation::inherit();
         let mut warnings = dashboard_base::metadata::build_warnings(&replay);
         warnings.extend(replay.compatibility_gaps());
         warnings.extend(replay.warnings.iter().cloned());
@@ -1760,7 +1762,7 @@ impl Document {
                 .identity
                 .mods
                 .iter()
-                .map(|recorded| content_reader_core::content::visual::RecordedMod {
+                .map(|recorded| content_reader_layers::content::visual::RecordedMod {
                     id: recorded.id.clone(),
                     name: recorded.display_name.clone(),
                 })
@@ -1782,7 +1784,7 @@ impl Document {
                 }
                 None => match {
                     let _stage = viewer_runtime::load_record::stage("document.visual_apply");
-                    content_reader_core::content::visual::apply(
+                    content_reader_layers::content::visual::apply(
                         &mut content.layers,
                         options,
                         selected,
@@ -1849,17 +1851,17 @@ impl Document {
         path: &Path,
         options: &ResolveOptions,
         initial: &InitialHour,
-        visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
+        visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
         replay: Arc<Replay>,
         tables: Option<engine_executable::executable_tables::Tables>,
-        content: content_reader_core::content::ResolvedContent,
+        content: content_reader_layers::content::ResolvedContent,
         product_loader: &map_products::loader::Loader,
         mut warnings: Vec<String>,
         recorded_language: String,
         visual_revision: String,
         fallback: Option<crate::visual_fallback::Built>,
-        uncovered_reads: content_reader_core::content::UncoveredReads,
+        uncovered_reads: content_reader_layers::content::UncoveredReads,
     ) -> io::Result<Self> {
         let serial = viewer_runtime::load_record::stage("content.serial");
         let game_version = replay.identity.game_version.clone();
@@ -1867,7 +1869,7 @@ impl Document {
         std::thread::scope(|prefix| {
             let scripted_content = Arc::clone(&content);
             let scripted_language = recorded_language.clone();
-            let h_scripted = content_reader_core::parallel::spawn(prefix, move || {
+            let h_scripted = content_reader_layers::parallel::spawn(prefix, move || {
                 let _startup = crate::perf_log::StartupSpan::new("document_scripted_text");
                 let _stage = viewer_runtime::load_record::stage("content.scripted");
                 Arc::new(dashboard_base::catalogue::read_scripted_content(
@@ -1901,7 +1903,7 @@ impl Document {
                 defines.graphics_for(&content.layers)
             };
             let game_speeds = viewer_gpu::frame::GameSpeeds::load(&defines);
-            let defines_for = |stack: &content_reader_core::ResolvedLayers| {
+            let defines_for = |stack: &content_reader_layers::ResolvedLayers| {
                 if stack.shows_visual_mods() {
                     &art_defines
                 } else {
@@ -1999,7 +2001,7 @@ impl Document {
             };
             warnings.extend(region_notes);
             drop(serial);
-            let mut dag = content_reader_core::parallel::dag::Dag::default();
+            let mut dag = content_reader_layers::parallel::dag::Dag::default();
             let layers = &content.layers;
             let h_assets = dag.add(&[], || {
                 let _stage = viewer_runtime::load_record::stage("wave1.assets");
@@ -2084,13 +2086,13 @@ impl Document {
                     )
                 })?;
                 let states = content_reader_states::states::read(layers, &defines, &map.definitions)?;
-                let adjacencies = content_reader_core::adjacencies::read(layers)?;
+                let adjacencies = content_reader_map::adjacencies::read(layers)?;
                 Ok((border_assets, states, adjacencies))
             });
             let h_rail_reads = dag.add(&[], || -> io::Result<_> {
                 let _stage = viewer_runtime::load_record::stage("wave1.rail_reads");
-                let (cities, city_styles) = content_reader_core::cities::read(layers)?;
-                let buildings_read = content_reader_core::positions::read_buildings(layers)?;
+                let (cities, city_styles) = content_reader_map::cities::read(layers)?;
+                let buildings_read = content_reader_map::positions::read_buildings(layers)?;
                 let building_types = product_loader.buildings()?;
                 let rail_defines = viewer_world::map_assets::graphics_define(
                     layers,
@@ -2631,7 +2633,7 @@ impl Document {
             raid_assets.trigger_content.terrain = movement.clone();
             let map_modes = {
                 let mode_layers = product_loader.reader(&content.layers, "display/modes");
-                let scripted_modes = content_reader_core::scripted_map_modes::read(&mode_layers)?;
+                let scripted_modes = content_reader_map::scripted_map_modes::read(&mode_layers)?;
                 for (field, count) in scripted_modes.refusal_counts() {
                     warnings.push(format!(
                         "Scripted map modes: {count} unread entries {field}"
@@ -2684,7 +2686,7 @@ impl Document {
                     },
                 )?)
             };
-            let scripted = content_reader_core::parallel::join(h_scripted);
+            let scripted = content_reader_layers::parallel::join(h_scripted);
             let mut intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
             intel_assets.scripted = Some(Arc::clone(&scripted));
             warnings.extend(intel_assets.warnings.iter().cloned());
@@ -2699,7 +2701,7 @@ impl Document {
             )
             .and_then(|defines| {
                 Ok(viewer_map_icons::occupation_icons::Content {
-                    definitions: content_reader_core::occupation_modifiers::Definitions::read(
+                    definitions: content_reader_politics::occupation_modifiers::Definitions::read(
                         &content.layers,
                     )?,
                     defines,
@@ -2907,7 +2909,7 @@ impl Document {
                     "The resources map mode draws no state icons: {why}"
                 )),
             }
-            let adjacency_icons = match content_reader_core::adjacency_rules::read(&content.layers) {
+            let adjacency_icons = match content_reader_map::adjacency_rules::read(&content.layers) {
                 Ok(rules) => {
                     viewer_map_icons::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
                         .with_build(game_version)
@@ -3006,7 +3008,7 @@ impl Document {
             let loading = content.layers.loading();
             if let Some(path) = std::env::var_os("BATTLEPLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
                 let counts = serde_json::json!({
-                    "reads": content_reader_core::content::io_counts::snapshot(),
+                    "reads": content_reader_layers::content::io_counts::snapshot(),
                     "graph": content.layers.content_counts(),
                 });
                 std::fs::write(path, serde_json::to_vec(&counts).map_err(io::Error::other)?)?;
@@ -3044,7 +3046,7 @@ impl Document {
                 air_transfer_color,
                 counter_content,
                 combat,
-                visual_mods: visual_mods.map(<[content_reader_core::content::visual::Choice]>::to_vec),
+                visual_mods: visual_mods.map(<[content_reader_layers::content::visual::Choice]>::to_vec),
                 visual_revision,
                 fallback,
                 texture_quality,
@@ -3838,7 +3840,7 @@ impl<'a> Hour<'a> {
         let counters = &self.counters;
         let anchor = |province: u32, kind: u32| counters.anchor(province, kind);
         let declared = |name: &str| self.unit_models.declares(name);
-        let evaluate = |items: &[content_reader_core::parser::Item], scopes| {
+        let evaluate = |items: &[content_reader_parser::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
         let variant_model = |variant: u64, country: u32| {
@@ -3970,7 +3972,7 @@ impl<'a> Hour<'a> {
             force.province
         };
         if state.is_some()
-            && self.counters.kinds.get(&province) == Some(&content_reader_core::map::ProvinceKind::Land)
+            && self.counters.kinds.get(&province) == Some(&content_reader_map::map::ProvinceKind::Land)
             && let Some(icon) = self.counters.site_icons
                 [viewer_foundation::building_facts::AIR_BASE]
                 .get(&province)
@@ -4106,7 +4108,7 @@ impl<'a> Hour<'a> {
     ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         if !naval {
             let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
-            let evaluate = |items: &[content_reader_core::parser::Item], scopes| self.trigger_world().evaluate(items, scopes);
+            let evaluate = |items: &[content_reader_parser::parser::Item], scopes| self.trigger_world().evaluate(items, scopes);
             let limits = viewer_unit_models::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
             let prepared = self.unit_models.prepare_shipless(self.frame, ours, &self.counters.terrain.combat_terrain, limits, &self.names.localisation);
             lap("um_owned");
@@ -4159,7 +4161,7 @@ impl<'a> Hour<'a> {
                 viewer_unit_reads::task_force_visual::MissionSkips::read(self.frame)?;
             lap("um_ship_inputs");
             let region = |province| content.region(province);
-            let evaluate = |items: &[content_reader_core::parser::Item], scopes| {
+            let evaluate = |items: &[content_reader_parser::parser::Item], scopes| {
                 self.trigger_world().evaluate(items, scopes)
             };
             let limits =
@@ -4281,7 +4283,7 @@ impl<'a> Hour<'a> {
                 &land,
             )
         };
-        let evaluate = |items: &[content_reader_core::parser::Item], scopes| {
+        let evaluate = |items: &[content_reader_parser::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
         let models = viewer_aircraft::aircraft::ModelMemo::default();
@@ -5150,7 +5152,7 @@ const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 #[cfg(test)]
 fn song_chances(
     content: &viewer_audio::Content,
-    mut evaluate: impl FnMut(&[content_reader_core::parser::Item]) -> Result<i64, String>,
+    mut evaluate: impl FnMut(&[content_reader_parser::parser::Item]) -> Result<i64, String>,
 ) -> viewer_audio::Chances {
     let mut refusals = Vec::new();
     let weights = content
@@ -5174,9 +5176,9 @@ fn song_chances(
 
 
 fn load_rivers(
-    layers: &content_reader_core::ResolvedLayers,
-    art_defines: &content_reader_core::defines::Defines,
-    defines: &content_reader_core::defines::Defines,
+    layers: &content_reader_layers::ResolvedLayers,
+    art_defines: &content_reader_defines::defines::Defines,
+    defines: &content_reader_defines::defines::Defines,
     image: &RiverImage<'_>,
     heights: &HeightField<'_>,
 ) -> io::Result<(RiverMesh, rivers::Trace, Duration, Option<String>)> {
@@ -5299,13 +5301,13 @@ mod tests {
         };
         let base = root.join("base");
         let mut layers =
-            content_reader_core::ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-        let selected = [content_reader_core::content::visual::Choice {
+            content_reader_layers::ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+        let selected = [content_reader_layers::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+        content_reader_layers::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
             .unwrap();
         let plan = viewer_buildings::sprawl::SprawlPlan {
             buildings: vec![viewer_buildings::sprawl::SprawlBuilding {
@@ -5320,7 +5322,7 @@ mod tests {
             entities: vec!["house".into()],
             bounds: Default::default(),
         };
-        let defines = content_reader_core::defines::read(&layers).unwrap();
+        let defines = content_reader_defines::defines::read(&layers).unwrap();
         let (sprawl, _) =
             load_sprawl(&layers, Default::default(), &plan, (&defines, &defines)).unwrap();
         let _ = std::fs::remove_dir_all(&root);
@@ -5373,13 +5375,13 @@ mod tests {
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
         };
-        let selected = [content_reader_core::content::visual::Choice {
+        let selected = [content_reader_layers::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let revision =
-            content_reader_core::content::visual::revision(&options, &selected, &[], &cancel).unwrap();
+            content_reader_layers::content::visual::revision(&options, &selected, &[], &cancel).unwrap();
         let key = crate::visual_fallback::FallbackKey {
             recording: "A".into(),
             revision,
@@ -5501,7 +5503,7 @@ mod tests {
             music.songs.push(Song {
                 track: index,
                 station: station.into(),
-                chance: content_reader_core::parser::parse(chance).unwrap().items,
+                chance: content_reader_parser::parser::parse(chance).unwrap().items,
                 source: String::new(),
             });
         }
@@ -5795,9 +5797,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let layers =
-            content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
+            content_reader_layers::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
                 .unwrap();
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load(
                 "common/defines/00_graphics.lua",

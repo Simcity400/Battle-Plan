@@ -1,5 +1,5 @@
 
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use std::io;
 use super::{
     ABILITY_WINDOW, AbilityGrid, Child, ColumnLayout, GUN_WINDOW, GunCounter, LAND_WINDOW,
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn counter_action_land_child_loads_its_authored_sprite() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = NativeWindows::read(
             br#"guiTypes={containerWindowType={name=unit_counter_navy}
                 containerWindowType={name=naval_combat_mapicon}
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn counter_action_centred_child_keeps_the_land_layout() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=unit_counter
             iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn counter_layout_refusals_are_independent_and_do_not_abort_loading() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let source = br#"guiTypes={
             containerWindowType={name=unit_counter size={width=76 height=24}}
             containerWindowType={name=unit_counter_railway_gun size={width=100% height=24}}
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn counter_templates_use_the_native_registry_and_accept_eof() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let guis = native::Guis::new(vec![
             (
                 MAPICONS_GUI.into(),
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn counter_lookup_keeps_native_kind_and_window_local_depth() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let guis = native::Guis::new(vec![(
             MAPICONS_GUI.into(),
             native::read(
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn counter_text_grid_and_ability_lookups_are_window_local() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let guis = native::Guis::new(vec![(
             MAPICONS_GUI.into(),
             native::read(
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn counter_button_lookup_rejects_icon_and_checkbox_arrays() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         for kind in ["iconType", "checkboxType"] {
             let guis = native::read(format!(
                 "guiTypes={{containerWindowType={{name=test {kind}={{name=count_bg spriteType=GFX_wrong}}}}}}"
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn unported_counter_button_draw_forms_are_refused_by_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         for (field, name) in [
             ("centerPosition=yes", "centerPosition"),
             ("rotation=1", "rotation"),

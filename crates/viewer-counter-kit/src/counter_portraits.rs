@@ -1,3 +1,4 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::collections::BTreeSet;
 use std::{collections::BTreeMap, io, sync::Arc};
@@ -6,7 +7,9 @@ use viewer_runtime::errors::examples;
 use viewer_runtime::test_support::test_tga_rgba8;
 use viewer_runtime::parallel::map;
 
-use content_reader_core::{ResolvedLayers, characters, characters::Authored, gui::native::resources};
+use content_reader_layers::ResolvedLayers;
+use content_reader_key_names::characters::{self, Authored};
+use content_reader_gui::gui::native::resources;
 use content_reader_gfx::gfx::SpriteSet;
 use content_reader_image::{dds, native::Decode};
 
@@ -177,7 +180,7 @@ pub fn load(
             .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))
     });
     let mut characters = BTreeMap::<String, Authored>::new();
-    let mut coverage = content_reader_core::coverage::Coverage::default();
+    let mut coverage = content_reader_parser::coverage::Coverage::default();
     for (path, parsed_path) in paths.iter().zip(parsed) {
         coverage.next_file();
         let (found, stop) = parsed_path?;
@@ -323,7 +326,7 @@ mod tests {
 
     #[test]
     fn portrait_sprite_uses_the_native_decoder_and_client_setting() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use super::*;
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_portrait_native_texture_{}",
@@ -335,7 +338,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            content_reader_core::gui::native::sprites::read_sprites(
+            content_reader_gui::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_portrait texturefile = gfx/portrait.tga } }",
             ),
         )]);

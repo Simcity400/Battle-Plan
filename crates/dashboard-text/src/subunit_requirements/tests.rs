@@ -544,8 +544,8 @@ fn a_quoted_type_sets_no_category() {
             bare = { type = SUPPORT }
         }"#,
     );
-    let support = content_reader_core::equipment::category_mask("support").unwrap();
-    let infantry = content_reader_core::equipment::category_mask("infantry").unwrap();
+    let support = content_reader_script::equipment_stats::category_mask("support").unwrap();
+    let infantry = content_reader_script::equipment_stats::category_mask("infantry").unwrap();
     assert_eq!(content.subunit("quoted").unwrap().category, 0);
     assert_eq!(content.subunit("quoted_list").unwrap().category, infantry);
     assert_eq!(content.subunit("bare").unwrap().category, support);

@@ -25,7 +25,7 @@ use viewer_gpu::unit_pose::{
     remaining_hours,
 };
 
-use content_reader_core::{movement::MovementMap, province_graph::RaidPath, province_graph::raid_route};
+use content_reader_map::{movement::MovementMap, province_graph::{RaidPath, raid_route}};
 use content_reader_raids::{
     raids::PathArrowDefines, raids::RaidArrowKind, raids::RaidGraphicsDefines, raids::RaidType,
 };

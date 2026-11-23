@@ -5,7 +5,7 @@ use dashboard_base::{
     products::politics_content,
 };
 use dashboard_core::config::LoadContext;
-use content_reader_core::intelligence::AgencyUpgrades;
+use content_reader_military::intelligence::AgencyUpgrades;
 use content_reader_localisation::localisation::Argument;
 use std::sync::Arc;
 
@@ -48,7 +48,7 @@ pub fn content(source: &Source, load: &LoadContext) -> Result<Arc<AgencyContent>
 impl AgencyContent {
     pub fn load(catalogue: Arc<Catalogue>) -> Self {
         let mut warnings = Vec::new();
-        let upgrades = content_reader_core::intelligence::read_agency_upgrades(&catalogue.content.layers).map_err(|error| format!("Acquired upgrade content unavailable: {error}"));
+        let upgrades = content_reader_military::intelligence::read_agency_upgrades(&catalogue.content.layers).map_err(|error| format!("Acquired upgrade content unavailable: {error}"));
         match &upgrades {
             Ok(upgrades) => warnings.extend(upgrades.warnings.iter().cloned()),
             Err(why) => warnings.push(why.clone()),
