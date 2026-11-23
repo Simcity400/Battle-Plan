@@ -81,6 +81,52 @@ export interface DashboardMapState {
 
 export type MapSettingsTarget = { scope: 'global' } | { scope: 'campaign' } | { scope: 'widget'; id: string };
 
+export interface GameWindowRequest {
+  sourceId: string;
+  revision: string;
+  branchId: string;
+  hour: number;
+  kind: string;
+  target?: unknown;
+  scale: number;
+  scroll?: Readonly<Record<string, number>>;
+  subView?: string | null;
+}
+
+export interface GameWindowTooltip {
+  title: string;
+  body: string | null;
+  detail: string | null;
+}
+
+export interface GameWindowScrollRegion {
+  target: string;
+  vertical: boolean;
+  wheelFactor: number;
+}
+
+export interface GameWindowRegion {
+  path: string;
+  rect: readonly [number, number, number, number];
+  clip: readonly [number, number, number, number] | null;
+  disabled: boolean;
+  close: boolean;
+  scroll: GameWindowScrollRegion | null;
+  tooltip: GameWindowTooltip | null;
+}
+
+export interface GameWindowRender {
+  pngBase64: string;
+  logicalSize: readonly [number, number];
+  pixelSize: readonly [number, number];
+  scale: number;
+  readHour: number | null;
+  artFromCurrentInstall: boolean;
+  artLabel: string | null;
+  regions: readonly GameWindowRegion[];
+  warnings: readonly string[];
+}
+
 export interface DashboardClient {
   available: boolean;
   nativeMaps?: boolean;
@@ -88,6 +134,7 @@ export interface DashboardClient {
   releaseSource(id: string): Promise<void>;
   chooseHistory?(path: string, segmentId: string, choice: string | null, signal: AbortSignal): Promise<void>;
   product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>>;
+  renderGameWindow?(request: GameWindowRequest, signal: AbortSignal): Promise<GameWindowRender>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
   flipMapSetting?(sourceId: string, revision: string, setting: 'dayNight' | 'alliedPlans', signal: AbortSignal, target: MapSettingsTarget): Promise<MapSettingsReply>;
   contentFolders?(signal: AbortSignal): Promise<ContentFolders>;

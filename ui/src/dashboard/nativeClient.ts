@@ -8,7 +8,7 @@ import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
 import { MAX_PENDING_REQUESTS } from '../generated/dashboard.ts';
-import type { DashboardClient, DashboardMapState, MapObserveEvent, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, GameWindowRender, GameWindowRequest, MapObserveEvent, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { keepDigest } from './replyDigest.ts';
 import { parseReplyBytes } from './replyParse.ts';
@@ -193,6 +193,19 @@ export const nativeDashboardClient: DashboardClient = {
     const refused = opened.refusal(query);
     if (refused) return Promise.reject(new RefusedError(refused));
     return request<ProductReply<T>>('dashboard_product', () => ({ query }), signal, undefined, asksFrom);
+  },
+
+  async renderGameWindow(windowRequest: GameWindowRequest, signal: AbortSignal): Promise<GameWindowRender> {
+    if (!desktopAvailable) throw new Error('Open BattlePlan in the desktop app to display game windows.');
+    if (signal.aborted) throw cancelled();
+    const done = busy('requests');
+    try {
+      const release = await admitted(signal);
+      try {
+        if (signal.aborted) throw cancelled();
+        return await rawInvoke<GameWindowRender>('render_game_window', { request: windowRequest }, undefined, signal);
+      } finally { release(); }
+    } finally { done(); }
   },
 
   releaseSource,

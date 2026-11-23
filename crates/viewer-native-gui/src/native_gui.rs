@@ -1587,7 +1587,7 @@ fn pointer_targets(
     Ok((hovered, boxes, target))
 }
 
-pub(crate) fn part_rect(kind: &PartKind) -> Option<Rect> {
+pub fn part_rect(kind: &PartKind) -> Option<Rect> {
     match kind {
         PartKind::Sprite { geometry, .. }
         | PartKind::Cell { geometry, .. }
@@ -2896,6 +2896,7 @@ impl<'a> Walk<'a> {
             let drawn = [sprite, FALLBACK_SPRITE]
                 .into_iter()
                 .find_map(|name| self.info_ref(path, name));
+            let button_sized = (button.size[0] > 0 && button.size[1] > 0).then_some(button.size);
             if let Some(info) = &drawn
                 && matches!(info.kind, SpriteKind::Text { .. })
             {
@@ -2926,7 +2927,10 @@ impl<'a> Walk<'a> {
                 }
                 frame_size = Some([0, 0]);
             } else {
-                frame_size = drawn.map(|info| info.extent());
+                frame_size = drawn.map(|info| match (&info.kind, button_sized) {
+                    (SpriteKind::CorneredTile { .. }, Some(sized)) => sized,
+                    _ => info.extent(),
+                });
             }
             let (frame, centre) = match (standard, button.center_position) {
                 (true, true) => (FrameSource::Own(own_frame), Centre::Unscaled),
@@ -2934,7 +2938,8 @@ impl<'a> Walk<'a> {
                 (false, true) => (FrameSource::State(own_frame), Centre::Position),
                 (false, false) => (FrameSource::State(own_frame), Centre::None),
             };
-            if let Some((part, hit)) = self.state_part(
+            self.sized = button_sized;
+            let drawn_part = self.state_part(
                 element,
                 sprite,
                 frame,
@@ -2944,8 +2949,9 @@ impl<'a> Walk<'a> {
                 place,
                 centre,
                 clip,
-            )? && !button.always_transparent
-            {
+            );
+            self.sized = None;
+            if let Some((part, hit)) = drawn_part? && !button.always_transparent {
                 self.hits.push(Hittable {
                     path: path.clone(),
                     part,
@@ -3908,6 +3914,13 @@ impl Walk<'_> {
             },
             None => info,
         };
+        if let Some(button) = button
+            && button.size[0] > 0
+            && button.size[1] > 0
+            && matches!(info.kind, SpriteKind::CorneredTile { .. })
+        {
+            return Ok(Some(button.size));
+        }
         Ok(Some(info.scaled_extent(
             bound.and_then(|bound| bound.scale).unwrap_or(scale),
         )))

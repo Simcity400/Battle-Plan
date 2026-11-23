@@ -572,6 +572,51 @@ fn a_cornered_tile_slices_its_texture() {
 }
 
 #[test]
+fn a_cornered_tile_button_uses_its_declared_size() {
+    content_reader_script::test_game::enter();
+    let sized = laid(
+        "buttonType = { name = \"preview\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 5 y = 7 } size = { x = 111 y = 58 } }",
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let PartKind::Tiles { ref quads, .. } = sized.parts[0].kind else {
+        panic!("not a tile");
+    };
+    let right = quads
+        .iter()
+        .map(|(rect, _)| rect[0] + rect[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = quads
+        .iter()
+        .map(|(rect, _)| rect[1] + rect[3])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert_eq!(right, 5.0 + 111.0);
+    assert_eq!(bottom, 7.0 + 58.0);
+    let default_sized = laid(
+        "buttonType = { name = \"plain\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 5 y = 7 } }",
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let PartKind::Tiles { ref quads, .. } = default_sized.parts[0].kind else {
+        panic!("not a tile");
+    };
+    let right = quads
+        .iter()
+        .map(|(rect, _)| rect[0] + rect[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = quads
+        .iter()
+        .map(|(rect, _)| rect[1] + rect[3])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert_eq!(right, 5.0 + 30.0);
+    assert_eq!(bottom, 7.0 + 20.0);
+}
+
+#[test]
 fn tiles_repeat_and_resizeables_draw_nothing() {
     content_reader_script::test_game::enter();
     let parts = parts(
