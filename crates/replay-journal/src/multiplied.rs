@@ -1014,16 +1014,13 @@ impl Upstream {
             return Ok(Some(Item::Synthetic(synthetic.clone())));
         }
         if self.skip_hour {
-            loop {
-                match self.journal.record()? {
-                    None => return Ok(None),
-                    Some(Record::Hour { .. }) => {
-                        self.journal.advance();
-                        self.skip_hour = false;
-                        break;
-                    }
-                    Some(_) => break,
+            match self.journal.record()? {
+                None => return Ok(None),
+                Some(Record::Hour { .. }) => {
+                    self.journal.advance();
+                    self.skip_hour = false;
                 }
+                Some(_) => {}
             }
         }
         Ok(self.journal.record()?.map(Item::Record))

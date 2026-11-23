@@ -3,7 +3,7 @@
 usage: python tools/check-clippy.py --against REF [--head REV] [--input FILE]
        python tools/check-clippy.py --against REF [--head REV] -- COMMAND...
 
-The workspace lints in Cargo.toml are warnings, so the tree's existing findings never stop a
+The warning lints in Cargo.toml do not stop a build on their own, while denied lints fail the
 build. This reads Cargo's human-readable Clippy output from FILE, from stdin, or from COMMAND
 (run here, its output passed through, as in `-- python tools/boat.py clippy --all-targets -p
 <crate>`), and fails on each finding whose primary line REV (default: the working tree,

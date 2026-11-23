@@ -1,5 +1,5 @@
 
-use super::{Edits, Given, SLOTS, Store, TableState, label};
+use super::{Edits, Given, SLOTS, Store, TableState, label, valid_slot};
 use crate::{
     invalid,
     leaf::Reader,
@@ -712,7 +712,7 @@ impl Journal {
 impl Journal {
     fn passes_slots(&self, store: &Store, table: usize) -> bool {
         if self.maps[table].is_none() {
-            return self.inserted.iter().any(|&slot| slot >= SLOTS);
+            return self.inserted.iter().any(|&slot| !valid_slot(slot));
         }
         let (inserted, slots) = (self.inserted.len() as u64, u64::from(store.table_state(table).map_or(0, TableState::slots)));
         slots + inserted > u64::from(SLOTS) && {
