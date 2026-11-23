@@ -53,8 +53,9 @@ jobs:
             exit 0
           fi
           green=
+          head=$(git rev-parse HEAD)
           any=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=100" \
-            --jq '[.workflow_runs[] | select(.event == "push" or .event == "schedule")] | length') \
+            --jq "[.workflow_runs[] | select((.event == \"push\" or .event == \"schedule\") and .head_sha != \"$head\")] | length") \
             || { echo "::error::Main's CI runs could not be listed, so its last green commit is unknown"; exit 1; }
           [ "$any" -gt 0 ] || echo "main has no green run yet"
           for sha in $([ "$any" -gt 0 ] && git rev-list --first-parent HEAD^ 2>/dev/null); do

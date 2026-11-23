@@ -299,6 +299,9 @@ class Resolve(unittest.TestCase):
         self.assertEqual(self.resolve(read_feed=stamped_yesterday, feed_uploaded=uploaded, scheduled=False)["due"], "true")
         self.assertEqual(self.resolve(feed_uploaded=mock.Mock(return_value="2000-01-01T00:01:00Z"))["due"], "true")
         self.assertEqual(self.resolve(read_feed=mock.Mock(return_value=None), feed_uploaded=mock.Mock(side_effect=AssertionError))["due"], "true")
+        with mock.patch.object(release, "run", answers("\n")):
+            with self.assertRaisesRegex(release.Refused, "no upload time"):
+                release.feed_uploaded("owner/repo", "nightly")
         self.assertTrue(release.published_today("2026-11-22T00:01:00Z", datetime.datetime(2026, 11, 22, 0, 41)))
         self.assertFalse(release.published_today("2026-11-22T00:01:00Z", datetime.datetime(2026, 11, 23)))
 

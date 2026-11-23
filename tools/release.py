@@ -657,8 +657,11 @@ def whole_run_state(repo):
 def feed_uploaded(repo, channel):
     """When GitHub took the published channel feed's latest.json, which can be minutes after the
     date it carries."""
-    return run(["gh", "api", f"repos/{repo}/releases/tags/{channel}", "--jq",
-                '.assets[] | select(.name == "latest.json") | .updated_at']).stdout.strip()
+    uploaded = run(["gh", "api", f"repos/{repo}/releases/tags/{channel}", "--jq",
+                    '.assets[] | select(.name == "latest.json") | .updated_at']).stdout.strip()
+    if not uploaded:
+        raise Refused(f"The {channel} feed's latest.json has no upload time on its release, as while it is replaced.")
+    return uploaded
 
 
 def published_today(uploaded, today):
