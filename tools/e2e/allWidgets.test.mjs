@@ -1,6 +1,6 @@
 ﻿import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allWidgetPages, costPages, FIXTURE, HEAVIEST, heaviestKinds, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
+import { allWidgetPages, costPages, FIXTURE, HEAVIEST, heaviestKinds, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, selectHeaviestKinds, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
 
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const resting = (item, all) => item.y === 0 || all.some(other => other !== item && other.y + other.h === item.y && other.x < item.x + item.w && item.x < other.x + other.w);
@@ -139,6 +139,18 @@ test('costPages builds an empty page and one default-size page per requested kin
   ] };
   assert.deepEqual(heaviestKinds(costs, 2), ['scoreboard', 'occupied-states']);
   assert.throws(() => heaviestKinds(costs, 4), /requested 4 kinds.*only 3 measured kinds/);
+  assert.throws(() => heaviestKinds({ widgets: [] }, 5), /requested 5 kinds.*only 0 measured kinds/);
+  const noiseExcluded = { widgets: [
+    { kind: 'scoreboard', costScoreMs: 12, mainDelta: { p50: 4, p95: 10 }, worker: { p95: 2, mean: 1 }, belowBaselineNoise: false },
+    { kind: 'research', costScoreMs: 1.5, mainDelta: { p50: 1, p95: 1.5 }, worker: { p95: 0, mean: 0 }, belowBaselineNoise: false },
+    { kind: 'occupied-states', costScoreMs: 0.5, mainDelta: { p50: 0, p95: -2.0 }, worker: { p95: 2.5, mean: 1 }, belowBaselineNoise: true },
+  ] };
+  assert.throws(() => heaviestKinds(noiseExcluded, 2), /below baseline noise.*occupied-states/);
+  const acknowledged = selectHeaviestKinds(noiseExcluded, 2);
+  assert.deepEqual(acknowledged.kinds, ['scoreboard', 'research']);
+  assert.equal(acknowledged.excludedByNoise.length, 1);
+  assert.match(acknowledged.warning, /occupied-states/);
+  assert.deepEqual(heaviestKinds(noiseExcluded, 2, { allowBelowNoiseCutoff: true }), ['scoreboard', 'research']);
   const tied = { widgets: [
     { kind: 'alpha', costScoreMs: 10, mainDelta: { p50: 1 }, worker: { mean: 0 }, requestsPerSec: 0, commitsPerSec: 0 },
     { kind: 'beta', costScoreMs: 10, mainDelta: { p50: 5 }, worker: { mean: 1 }, requestsPerSec: 0, commitsPerSec: 0 },

@@ -44,7 +44,7 @@ export function machineLine(run) {
 
 export const REFUSAL_TEXT = /\brefused\b|No table \d+ in the schema|layout or meaning changed at format|this recording is format|not in this recording|not recorded|not in this playhead|not followed at the head/i;
 
-export function classifyWidgetSnapshot({ placeholderText = null, unavailableText = null, errorDetail = null, emptyText = null, probeState = null, probeDrawing = false } = {}) {
+export function classifyWidgetSnapshot({ placeholderText = null, unavailableText = null, errorDetail = null, emptyText = null, probeState = null, probeDrawing = false } = {}, refusalPattern = REFUSAL_TEXT) {
   const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
   const ph = clean(placeholderText);
   if (ph && /isn't playing back yet$/i.test(ph)) {
@@ -56,7 +56,7 @@ export function classifyWidgetSnapshot({ placeholderText = null, unavailableText
   }
   const err = clean(errorDetail);
   if (err) {
-    const isRefusal = REFUSAL_TEXT.test(err);
+    const isRefusal = refusalPattern.test(err);
     return { outcome: isRefusal ? 'refusal' : 'error', detail: err, notMigrated: false };
   }
   if (probeState === 'loading' && !probeDrawing) {
@@ -66,11 +66,32 @@ export function classifyWidgetSnapshot({ placeholderText = null, unavailableText
     return { outcome: 'error', detail: 'blank widget body', notMigrated: false };
   }
   if (ph) {
-    return { outcome: REFUSAL_TEXT.test(ph) ? 'refusal' : 'error', detail: ph, notMigrated: false };
+    return { outcome: refusalPattern.test(ph) ? 'refusal' : 'error', detail: ph, notMigrated: false };
   }
   const empty = clean(emptyText);
   if (empty) return { outcome: 'content', detail: empty, notMigrated: false };
   return { outcome: 'content', detail: null, notMigrated: false };
+}
+
+export function classifyPerfFile(name) {
+  const viewer = /^perf-(.+)\.jsonl\.map\.\d+\.jsonl$/.exec(name);
+  if (viewer) return { kind: 'viewer', session: viewer[1] };
+  const page = /^perf-(.+)\.jsonl$/.exec(name);
+  if (page) return { kind: 'page', session: page[1] };
+  return null;
+}
+
+export function costSessionConfinement(run, sweep, costSessionSlug) {
+  if (!costSessionSlug) return { job: null, page: null };
+  const runSessions = Array.isArray(run?.sessions) ? run.sessions : null;
+  const job = runSessions
+    ? (runSessions.find(entry => entry.name.replace(/ /g, '-') === costSessionSlug)?.confinement ?? null)
+    : null;
+  const sweepSessions = Array.isArray(sweep?.meta?.sessions) ? sweep.meta.sessions : null;
+  const page = sweepSessions
+    ? (sweepSessions.find(meta => meta.session === costSessionSlug)?.confinement ?? null)
+    : (sweep?.meta?.session === costSessionSlug ? (sweep.meta.confinement ?? null) : null);
+  return { job, page };
 }
 
 export function sessionConfinement(run, sessionEntry, sweepMeta = null) {
@@ -146,7 +167,7 @@ export function profileLines(run, sweep, records = null) {
   const ungated = Boolean(run?.ungated || fallbackPage?.ungated || sweepSessions.some(meta => meta.confinement?.ungated)
     || (records ?? []).some(record => record.t === 'page' && record.ungated));
   if (ungated) {
-    lines.unshift('> **MEASUREMENT BUILD (UNGATED):** Built with `suite.py build-ui --ungated` (`--mode measure-ungated`); the `playsBackDated` placeholder gate was bypassed at build time so unmigrated widgets ran while playing. Never ship this bundle.');
+    lines.unshift('> **MEASUREMENT BUILD (UNGATED):** Built with `suite.py build-ui --ungated` (`ui/vite.ungated.config.ts`); the `playsBackDated` placeholder gate was bypassed at build time so unmigrated widgets ran while playing. Never ship this bundle.');
   }
   return lines;
 }

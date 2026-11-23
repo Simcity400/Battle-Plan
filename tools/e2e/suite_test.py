@@ -1,7 +1,10 @@
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import suite
@@ -53,16 +56,16 @@ class CoresAndProfileTests(unittest.TestCase):
         ungated = suite.parse(["build-ui", "--out", "C:/nonexistent/ui", "--ungated"])
         self.assertTrue(ungated.ungated)
 
-    def test_build_ui_command_uses_dedicated_mode_only_when_ungated(self):
+    def test_build_ui_command_uses_dedicated_config_only_when_ungated(self):
         out = Path("C:/nonexistent/ui")
         stock_cmd = suite.build_ui_command(out, ungated=False)
-        self.assertNotIn("--mode", stock_cmd)
-        self.assertNotIn(suite.UNGATED_VITE_MODE, stock_cmd)
+        self.assertEqual(stock_cmd[stock_cmd.index("--config") + 1], str(suite.STOCK_VITE_CONFIG))
+        self.assertEqual(stock_cmd[stock_cmd.index("--emptyOutDir") + 1], "false")
         ungated_cmd = suite.build_ui_command(out, ungated=True)
-        mode_index = ungated_cmd.index("--mode")
-        self.assertEqual(ungated_cmd[mode_index + 1], suite.UNGATED_VITE_MODE)
+        self.assertEqual(ungated_cmd[ungated_cmd.index("--config") + 1], str(suite.UNGATED_VITE_CONFIG))
+        self.assertEqual(ungated_cmd[ungated_cmd.index("--emptyOutDir") + 1], "false")
 
-    def test_prepare_ui_output_refuses_unmarked_non_empty_directory(self):
+    def test_run_build_ui_guards_ownership_links_and_failed_builds(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             unmarked = root / "user-data"
@@ -70,20 +73,46 @@ class CoresAndProfileTests(unittest.TestCase):
             precious = unmarked / "campaign.battleplan"
             precious.write_text("keep", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "battleplan-ui-bundle"):
-                suite.prepare_ui_output(unmarked)
+                suite.run_build_ui(unmarked, runner=lambda *a, **k: SimpleNamespace(returncode=0))
             self.assertEqual(precious.read_text(encoding="utf-8"), "keep")
+
+            if os.name == "nt":
+                junction = root / "link-to-user-data"
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(unmarked)], check=True, capture_output=True)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "symlink or junction"):
+                        suite.validate_ui_output(junction)
+                    with self.assertRaisesRegex(RuntimeError, "symlink or junction"):
+                        suite.validate_ui_output(junction / "nested")
+                finally:
+                    subprocess.run(["cmd", "/c", "rmdir", str(junction)], check=False, capture_output=True)
 
             empty_dir = root / "empty-out"
             empty_dir.mkdir()
-            suite.prepare_ui_output(empty_dir)
-            self.assertTrue(empty_dir.is_dir())
+            self.assertEqual(suite.run_build_ui(empty_dir, runner=lambda *a, **k: SimpleNamespace(returncode=1)), 1)
+            self.assertFalse((empty_dir / suite.UI_BUNDLE_MARKER).exists(), "failed first build must not mark an empty folder")
 
-            marked = root / "marked-out"
-            marked.mkdir()
-            (marked / suite.UI_BUNDLE_MARKER).write_text("ui-bundle\n", encoding="utf-8")
-            (marked / "stale.js").write_text("old", encoding="utf-8")
-            suite.prepare_ui_output(marked)
-            self.assertTrue((marked / suite.UI_BUNDLE_MARKER).is_file())
+            def fake_ok(cmd, cwd=None, env=None):
+                out_dir = Path(cmd[cmd.index("--outDir") + 1])
+                (out_dir / "index.html").write_text("v1", encoding="utf-8")
+                return SimpleNamespace(returncode=0)
+
+            self.assertEqual(suite.run_build_ui(empty_dir, runner=fake_ok), 0)
+            self.assertTrue((empty_dir / suite.UI_BUNDLE_MARKER).is_file())
+            self.assertEqual((empty_dir / "index.html").read_text(encoding="utf-8"), "v1")
+
+            self.assertEqual(suite.run_build_ui(empty_dir, runner=lambda *a, **k: SimpleNamespace(returncode=1)), 1)
+            self.assertTrue((empty_dir / suite.UI_BUNDLE_MARKER).is_file(), "failed rebuild must keep marker and ownership")
+            self.assertEqual((empty_dir / "index.html").read_text(encoding="utf-8"), "v1")
+
+            def fake_v2(cmd, cwd=None, env=None):
+                out_dir = Path(cmd[cmd.index("--outDir") + 1])
+                (out_dir / "index.html").write_text("v2", encoding="utf-8")
+                return SimpleNamespace(returncode=0)
+
+            self.assertEqual(suite.run_build_ui(empty_dir, runner=fake_v2), 0)
+            self.assertTrue((empty_dir / suite.UI_BUNDLE_MARKER).is_file())
+            self.assertEqual((empty_dir / "index.html").read_text(encoding="utf-8"), "v2")
 
 
 if __name__ == "__main__":

@@ -143,15 +143,42 @@ export function preloadWidgetRenderers(kinds: Iterable<string>): void {
 }
 
 let idlePreload = false;
+let preloadDone = false;
+let preloadTotal = 0;
+let preloadRemaining = 0;
+const preloadWaiters = new Set<() => void>();
+
+export function preloadStatus(): { started: boolean; done: boolean; remaining: number; total: number } {
+  return { started: idlePreload, done: preloadDone, remaining: preloadRemaining, total: preloadTotal };
+}
+
+export function whenPreloadComplete(): Promise<void> {
+  if (preloadDone) return Promise.resolve();
+  return new Promise(resolve => { preloadWaiters.add(resolve); });
+}
+
 export function preloadAllWidgetRenderers(): void {
   if (idlePreload || typeof window === 'undefined') return;
   idlePreload = true;
   const kinds = Object.keys(rendererLoaders).filter(kind => !ready.has(kind));
+  preloadTotal = kinds.length;
+  preloadRemaining = kinds.length;
+  const finish = () => {
+    preloadDone = true;
+    preloadRemaining = 0;
+    for (const resolve of preloadWaiters) resolve();
+    preloadWaiters.clear();
+  };
+  if (kinds.length === 0) { finish(); return; }
   const idle = (next: () => void) => typeof requestIdleCallback === 'function' ? requestIdleCallback(next, { timeout: 2000 }) : setTimeout(next, 50);
   const step = () => {
     const kind = kinds.shift();
-    if (kind === undefined) return;
-    void loadWidgetRenderer(kind).catch(() => {}).finally(() => idle(step));
+    if (kind === undefined) { finish(); return; }
+    void loadWidgetRenderer(kind).catch(() => {}).finally(() => {
+      preloadRemaining = kinds.length;
+      if (kinds.length === 0) finish();
+      else idle(step);
+    });
   };
   idle(step);
 }

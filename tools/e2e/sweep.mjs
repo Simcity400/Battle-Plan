@@ -9,7 +9,8 @@ import { CASES } from './controls.mjs';
 import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
 import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPicture } from './map.mjs';
-import { REFUSAL_TEXT, pageShown } from './verdicts.mjs';
+import { REFUSAL_TEXT, classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
+import { buildWidgetClassifierExpr, measureIdleCost, mergeWidgetOutcomes, runThrottled } from './sweepHelpers.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
 import { allWidgetPages, costPages, HEAVIEST, HEAVIEST_COUNT, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
@@ -166,8 +167,8 @@ for (let waited = 0; !await app.evaluate(`document.querySelectorAll(${JSON.strin
 const rows = await app.evaluate(`[...document.querySelectorAll(${JSON.stringify(loadRow)})].map(b => b.getAttribute('aria-label'))`);
 if (rows.length !== 1) throw new Error(`the fresh profile's library lists ${rows.length} recordings, not the fixture alone: ${rows.join(', ')}`);
 await s.frames(2);
-await s.step('startup', 'open campaign', rows[0], () => s.click(loadRow),
-  { done: `document.querySelector('input.header-timeline:not([disabled])') && document.querySelectorAll('.sidebar-page-list button.sidebar-subrow').length > 0`, timeout: 120_000, quiet: 500 });
+await runThrottled(throttle, rate, () => s.step('startup', 'open campaign', rows[0], () => s.click(loadRow),
+  { done: `document.querySelector('input.header-timeline:not([disabled])') && document.querySelectorAll('.sidebar-page-list button.sidebar-subrow').length > 0`, timeout: 120_000, quiet: 500, extra: { cpuThrottle: rate } }));
 if (!await s.holds(`document.querySelector('input.header-timeline:not([disabled])')`)) {
   await save().catch(() => {});
   throw new Error(`the campaign never opened (console: ${JSON.stringify(app.messages.slice(-10))}): ${(await app.evaluate('document.body.innerText').catch(() => '')).slice(0, 400)}`);
@@ -187,14 +188,11 @@ async function phase(name, run) {
   if (!phases.includes(name)) return;
   log('phase', name);
   const began = Date.now();
-  const throttled = THROTTLED_PHASES.has(name);
   try {
-    if (throttled) await throttle(rate);
-    await run();
+    if (THROTTLED_PHASES.has(name)) await runThrottled(throttle, rate, run);
+    else await run();
   } catch (error) {
     await s.fail(name, 'phase', null, `stopped: ${error.stack ?? error.message}`);
-  } finally {
-    if (throttled) await throttle(1).catch(() => {});
   }
   meta[`${name}Seconds`] = (Date.now() - began) / 1000;
   await s.escape().catch(() => {});
@@ -378,19 +376,20 @@ const traceWindow = async page => {
   try {
     await setSpeed(TRACE_SPEED);
     await seekTo(0.3);
-    await throttle(rate);
-    await app.evaluate('window.__perf.start()');
-    stop = await startTrace(app);
-    const from = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.from)}), performance.now())`);
-    await replies?.mark('play', { page, speed: TRACE_SPEED, trace: true });
-    await s.click('button.header-play[aria-label="Play"]');
-    await sleep(TRACE_SECONDS * 1000);
-    await pausePlayback();
-    await replies?.mark('pause', { page, speed: TRACE_SPEED, trace: true });
-    const to = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.to)}), performance.now())`);
-    const events = await stop();
-    stop = null;
-    await throttle(1);
+    const { from, to, events } = await runThrottled(throttle, rate, async () => {
+      await app.evaluate('window.__perf.start()');
+      stop = await startTrace(app);
+      const from = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.from)}), performance.now())`);
+      await replies?.mark('play', { page, speed: TRACE_SPEED, trace: true });
+      await s.click('button.header-play[aria-label="Play"]');
+      await sleep(TRACE_SECONDS * 1000);
+      await pausePlayback();
+      await replies?.mark('pause', { page, speed: TRACE_SPEED, trace: true });
+      const to = s.epoch + await app.evaluate(`(performance.mark(${JSON.stringify(TRACE_MARKS.to)}), performance.now())`);
+      const events = await stop();
+      stop = null;
+      return { from, to, events };
+    });
     await app.evaluate('window.__perf.stop()', 120_000);
     const summary = summariseTrace(events);
     summary.described = await describeNodes(app, summaryNodes(summary));
@@ -405,62 +404,21 @@ const traceWindow = async page => {
     if (await app.evaluate(`!!document.querySelector(${JSON.stringify(pause)})`).catch(() => false)) await s.click(pause).catch(() => {});
     await app.evaluate('window.__perf.stop()', 120_000).catch(() => {});
     await s.record({ area: 'trace', item: page, label: null, pass: false, reasons: [`the browser trace could not be taken: ${error.message}`], page, speed: TRACE_SPEED, cpuThrottle: rate, screenshot: false });
-  } finally {
-    await throttle(1).catch(() => {});
   }
 };
 
-const CLASSIFY_WIDGET = `(a => {
-  const refusalPattern = new RegExp(${JSON.stringify(REFUSAL_TEXT.source)}, 'i');
-  const placeholder = a.querySelector('.dash-empty[role="status"]');
-  if (placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim())) {
-    return { outcome: 'placeholder', detail: placeholder.textContent.trim(), notMigrated: true };
-  }
-  const unavailable = a.querySelector('[data-state="unavailable"]');
-  if (unavailable) {
-    const tip = unavailable.getAttribute('data-tooltip')?.trim();
-    const text = unavailable.textContent.trim();
-    return { outcome: 'refusal', detail: tip || text || 'unavailable', notMigrated: false };
-  }
-  const error = a.querySelector('[data-state="error"], [role="alert"]');
-  if (error) {
-    const detail = error.getAttribute('data-detail')?.trim() || error.textContent.trim();
-    const isRefusal = refusalPattern.test(detail);
-    return { outcome: isRefusal ? 'refusal' : 'error', detail: detail || 'error', notMigrated: false };
-  }
-  const probe = window.__e2e?.stateOf?.(a) ?? null;
-  if (probe?.state === 'loading' && !probe.drawing) {
-    return { outcome: 'error', detail: 'still loading', notMigrated: false };
-  }
-  if (probe?.state === 'blank') {
-    return { outcome: 'error', detail: 'blank widget body', notMigrated: false };
-  }
-  if (placeholder) {
-    const text = placeholder.textContent.trim();
-    return { outcome: refusalPattern.test(text) ? 'refusal' : 'error', detail: text, notMigrated: false };
-  }
-  const empty = a.querySelector('[data-state="empty"]');
-  if (empty) return { outcome: 'content', detail: empty.textContent.trim(), notMigrated: false };
-  return { outcome: 'content', detail: null, notMigrated: false };
-})`;
+const CLASSIFY_WIDGET = buildWidgetClassifierExpr(classifyWidgetSnapshot, REFUSAL_TEXT);
 
-const OUTCOME_RANK = { content: 0, placeholder: 1, refusal: 2, error: 3 };
-const mergeWidgetOutcomes = (widgets, observed) => widgets.map(widget => {
-  const seen = observed?.[widget.id];
-  if (!seen) return widget;
-  if ((OUTCOME_RANK[seen.outcome] ?? 0) > (OUTCOME_RANK[widget.outcome ?? 'content'] ?? 0)) {
-    return { ...widget, outcome: seen.outcome, detail: seen.detail, notMigrated: seen.notMigrated };
-  }
-  return widget;
-});
-
-async function watchWidgetOutcomes() {
+async function watchWidgetOutcomes({ waitForPlaying = false } = {}) {
   await app.evaluate(`(() => {
     const classify = ${CLASSIFY_WIDGET};
     const rank = { content: 0, placeholder: 1, refusal: 2, error: 3 };
     const grid = document.querySelector('.dash-grid-scroll'), worst = new Map();
+    const isPlaying = () => !!document.querySelector('button.header-play[aria-label="Pause"]');
+    let active = ${!waitForPlaying} || isPlaying();
+    let stopped = false, rafId = 0;
     const scan = () => {
-      if (!grid) return;
+      if (!active || !grid) return;
       for (const a of grid.querySelectorAll('article.dash-widget')) {
         const id = a.dataset.widget;
         if (!id) continue;
@@ -469,12 +427,28 @@ async function watchWidgetOutcomes() {
         if (!prev || (rank[next.outcome] ?? 0) > (rank[prev.outcome] ?? 0)) worst.set(id, next);
       }
     };
-    const observer = grid ? new MutationObserver(scan) : null;
-    if (observer && grid) observer.observe(grid, { subtree: true, childList: true, attributes: true, characterData: true });
-    scan();
+    const activateIfPlaying = () => {
+      if (!active && isPlaying()) { active = true; scan(); }
+      else if (active) scan();
+    };
+    const gridObserver = grid ? new MutationObserver(activateIfPlaying) : null;
+    if (gridObserver && grid) gridObserver.observe(grid, { subtree: true, childList: true, attributes: true, characterData: true });
+    const playHost = document.querySelector('button.header-play')?.parentElement ?? document.body;
+    const playObserver = playHost ? new MutationObserver(activateIfPlaying) : null;
+    if (playObserver && playHost) playObserver.observe(playHost, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-label'] });
+    const tick = () => {
+      if (stopped) return;
+      activateIfPlaying();
+      rafId = requestAnimationFrame(tick);
+    };
+    activateIfPlaying();
+    rafId = requestAnimationFrame(tick);
     __e2e.endWidgetOutcomes = () => {
-      scan();
-      observer?.disconnect();
+      stopped = true;
+      cancelAnimationFrame(rafId);
+      if (active || isPlaying()) { active = true; scan(); }
+      gridObserver?.disconnect();
+      playObserver?.disconnect();
       return Object.fromEntries(worst);
     };
   })()`);
@@ -840,9 +814,9 @@ await phase('playback', async () => {
           if (dated) { await playbackVisibility(); await s.frames(2); }
           await settledForReplies();
           await replies?.mark('play', { page, speed });
+          await watchWidgetOutcomes({ waitForPlaying: true });
           await s.click('button.header-play[aria-label="Play"]');
           await s.frames(2);
-          await watchWidgetOutcomes();
           let widgets = await app.evaluate(DASHBOARD_INVENTORY);
           const expectedWidgets = fixture?.pages[page]?.widgets
             ?.filter(expected => requestedPage === HEAVIEST || !widgets.some(widget => widget.id === expected.id) || widgets.some(widget => widget.id === expected.id && widget.visible))
@@ -882,19 +856,15 @@ await phase('playback', async () => {
             inputs.presented = presented.filter(at => at >= firstInput && at <= inputs.to);
             await writeFile(path.join(out, `dated-playback-compositor-${page.replace(/[^\w.-]+/g, '_')}-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
             pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
-            try {
-              await pausePlayback();
-              await s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 3_000);
-              await setSpeed(1);
-              await s.click('button.header-play[aria-label="Play"]');
-              const start = await app.evaluate('performance.timeOrigin + performance.now()');
-              await s.frames(120);
-              idleCost = { from: start, to: await app.evaluate('performance.timeOrigin + performance.now()') };
-              await pausePlayback();
-            } catch (idleError) {
-              windowReasons.push(`idle cost measurement failed: ${idleError.message}`);
-              await pausePlayback().catch(() => {});
-            }
+            idleCost = await measureIdleCost({
+              pausePlayback,
+              waitPlayButton: () => s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 3_000),
+              setSpeed,
+              clickPlay: () => s.click('button.header-play[aria-label="Play"]'),
+              now: () => app.evaluate('performance.timeOrigin + performance.now()'),
+              frames: count => s.frames(count),
+              onFailure: idleError => windowReasons.push(`idle cost measurement failed: ${idleError.message}`),
+            });
             await throttle(1);
             audit = [];
             let auditDone = false;
@@ -933,40 +903,36 @@ await phase('widget-costs', async () => {
   if (!await s.holds('window.__perf')) throw new Error('the app was not started with BATTLEPLAN_PERF_LOG: widget-costs cannot be measured');
   if (!costFixture) throw new Error('widget-costs fixture was not prepared');
   const warmEmptyBaseline = async () => {
+    const warmupReasons = [];
     await s.openPage(costFixture.empty.label);
     if (!await s.holds(pageShown(costFixture.empty.label))) await s.openPage(costFixture.empty.label, { force: true });
     await throttle(1);
-    const preloaded = await app.evaluate(`new Promise(resolve => {
-      const count = () => performance.getEntriesByType('resource').filter(e => e.name.includes('/assets/widget-')).length;
-      const start = performance.now(), limit = start + 15_000;
-      let lastCount = count(), quietSince = performance.now();
-      const poll = () => {
-        const now = performance.now(), current = count();
-        if (current !== lastCount) { lastCount = current; quietSince = now; }
-        if ((now - quietSince >= 750 && now - start >= 750) || now >= limit) resolve(current);
-        else setTimeout(poll, 100);
-      };
-      setTimeout(poll, 100);
-    })`, 20_000);
+    const preload = await app.evaluate(`(async () => {
+      if (typeof window.__perf?.waitPreloadComplete !== 'function') return { supported: false, done: false, remaining: null, total: null };
+      const timeout = new Promise(resolve => setTimeout(() => resolve('timeout'), 30_000));
+      const outcome = await Promise.race([window.__perf.waitPreloadComplete().then(() => 'done'), timeout]);
+      const status = await window.__perf.preloadStatus();
+      return { supported: true, outcome, ...status };
+    })()`, 35_000);
+    if (!preload.supported) warmupReasons.push('widget renderer preload completion hook is unavailable');
+    else if (!preload.done) warmupReasons.push(`widget renderer preload did not finish within 30 s (${preload.remaining}/${preload.total} remaining)`);
     await s.frames(4);
-    log('widget-cost', `warm-up settled after ${preloaded} preloaded widget chunks`);
+    log('widget-cost', `warm-up preload status: ${JSON.stringify(preload)}`);
     if (!await s.holds(speedTaken(1440))) await setSpeed(1440);
     await seekTo(0.3);
-    await throttle(rate);
-    try {
+    await runThrottled(throttle, rate, async () => {
       await app.evaluate('window.__perf.start()');
       await s.click('button.header-play[aria-label="Play"]');
       await sleep(2000);
       await pausePlayback();
       await s.until("document.querySelector('button.header-play[aria-label=\"Play\"]')", 10_000);
-    } finally {
-      await throttle(1);
-      await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
-    }
+    });
+    await app.evaluate('window.__perf.flush()', 60_000).catch(() => {});
+    return warmupReasons;
   };
-  const measureOne = async ({ kind, title, label, widget, isEmpty, sampleLabel = null }) => {
+  const measureOne = async ({ kind, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
     let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, surfaces = [], playingAtSnap = null;
-    const reasons = [];
+    const reasons = [...extraReasons];
     try {
       await s.openPage(label);
       if (!await s.holds(pageShown(label))) await s.openPage(label, { force: true });
@@ -977,9 +943,9 @@ await phase('widget-costs', async () => {
       await throttle(rate);
       await app.evaluate('window.__perf.beginAudit()');
       await app.evaluate('window.__perf.start()');
+      if (!isEmpty) await watchWidgetOutcomes({ waitForPlaying: true });
       await s.click('button.header-play[aria-label="Play"]');
       await s.frames(2);
-      if (!isEmpty) await watchWidgetOutcomes();
       from = s.epoch + await app.evaluate('performance.now()');
       await sleep(COST_SECONDS * 1000);
       playingAtSnap = await app.evaluate(`!!document.querySelector('button.header-play[aria-label="Pause"]')`);
@@ -1019,8 +985,8 @@ await phase('widget-costs', async () => {
     await s.record({ area: 'widget-costs', item: sampleLabel ? `${kind}/${sampleLabel}` : kind, label, kind, title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
       playingAtSnap, outcome, detail, surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
   };
-  await warmEmptyBaseline();
-  await measureOne({ kind: '__empty__', title: 'Empty page (start)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'start' });
+  const warmupReasons = await warmEmptyBaseline();
+  await measureOne({ kind: '__empty__', title: 'Empty page (start)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'start', extraReasons: warmupReasons });
   for (let index = 0; index < costFixture.kinds.length; index++) {
     const entry = costFixture.kinds[index];
     log('widget-cost', `${index + 1}/${costFixture.kinds.length}`, entry.kind);

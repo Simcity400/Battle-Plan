@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { buildWidgetClassifierExpr, measureIdleCost, runThrottled } from './sweepHelpers.mjs';
+import { REFUSAL_TEXT, classifyWidgetSnapshot } from './verdicts.mjs';
 
 const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
 
@@ -63,18 +65,80 @@ test('picture audits are consumed through bounded evaluate chunks', () => {
   assert.match(source.slice(start, end), /auditPicturesBatch\([^)]*\d+/, 'each audit evaluate has a bounded picture count');
 });
 
-test('browser traces and non-map measured phases apply CPU throttling and restore it cleanly', () => {
-  const trace = source.indexOf('const traceWindow = async page =>');
-  const traceEnd = source.indexOf('const CLASSIFY_WIDGET =', trace);
-  const traceBody = source.slice(trace, traceEnd);
-  assert.ok(traceBody.indexOf('await throttle(rate);') > 0 && traceBody.indexOf('await throttle(rate);') < traceBody.indexOf('button.header-play[aria-label="Play"]'));
-  assert.match(traceBody, /finally\s*\{[\s\S]*await throttle\(1\)/);
-  assert.match(source, /THROTTLED_PHASES\s*=\s*new Set\(\['pages', 'pages-at', 'glance', 'seeks', 'catalogue', 'controls'\]\)/);
+test('runThrottled keeps the requested rate active during the measurement and restores rate 1 on return or throw', async () => {
+  const calls = [];
+  let activeRate = 1;
+  const throttle = async value => { calls.push(value); activeRate = value; };
+
+  let seenDuringOk = null;
+  const result = await runThrottled(throttle, 4, async () => { seenDuringOk = activeRate; return 'ok'; });
+  assert.equal(result, 'ok');
+  assert.equal(seenDuringOk, 4);
+  assert.equal(activeRate, 1);
+  assert.deepEqual(calls, [4, 1]);
+
+  calls.length = 0;
+  let seenDuringFail = null;
+  await assert.rejects(() => runThrottled(throttle, 8, async () => { seenDuringFail = activeRate; throw new Error('boom'); }), /boom/);
+  assert.equal(seenDuringFail, 8);
+  assert.equal(activeRate, 1);
+  assert.deepEqual(calls, [8, 1]);
 });
 
-test('idleCost sampling is isolated in its own try/catch after pausePlayback so a failed pause cannot discard completed playback results', () => {
-  const inputsCall = source.indexOf('inputs = await playbackInputs();');
-  const idleStart = source.indexOf('idleCost = { from: start', inputsCall);
-  const block = source.slice(inputsCall, idleStart + 400);
-  assert.match(block, /try\s*\{[\s\S]*await pausePlayback\(\);[\s\S]*idleCost = \{ from: start[\s\S]*\}\s*catch\s*\(idleError\)/);
+test('measureIdleCost returns bounds on success and records a failure without throwing when pause or speed fails', async () => {
+  const events = [];
+  let clock = 1000;
+  const ok = await measureIdleCost({
+    pausePlayback: async () => { events.push('pause'); },
+    waitPlayButton: async () => { events.push('waitPlay'); },
+    setSpeed: async speed => { events.push(`speed:${speed}`); },
+    clickPlay: async () => { events.push('play'); },
+    now: async () => (clock += 500),
+    frames: async n => { events.push(`frames:${n}`); },
+    onFailure: err => events.push(`fail:${err.message}`),
+  });
+  assert.deepEqual(ok, { from: 1500, to: 2000 });
+  assert.deepEqual(events, ['pause', 'waitPlay', 'speed:1', 'play', 'frames:120', 'pause']);
+
+  const failures = [];
+  let cleanupPauses = 0;
+  const failed = await measureIdleCost({
+    pausePlayback: async () => { cleanupPauses++; },
+    waitPlayButton: async () => {},
+    setSpeed: async () => { throw new Error('clock refused 1 h/s'); },
+    clickPlay: async () => {},
+    now: async () => 0,
+    frames: async () => {},
+    onFailure: err => failures.push(err.message),
+  });
+  assert.equal(failed, undefined);
+  assert.deepEqual(failures, ['clock refused 1 h/s']);
+  assert.equal(cleanupPauses, 2, 'cleanup pause runs after idle failure');
+});
+
+test('browser widget classifier expression delegates directly to classifyWidgetSnapshot', () => {
+  const expr = buildWidgetClassifierExpr(classifyWidgetSnapshot, REFUSAL_TEXT);
+  const runInPage = new Function('window', `return (${expr});`);
+  const makeNode = (map, probeState = null) => ({
+    querySelector: sel => map[sel] ?? null,
+    __probe: probeState,
+  });
+  const win = { __e2e: { stateOf: a => a.__probe } };
+  const classify = runInPage(win);
+  assert.deepEqual(
+    classify(makeNode({ '[data-state="error"], [role="alert"]': { getAttribute: () => null, textContent: 'Changed rows arrived without the table they change.' } })),
+    { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false },
+  );
+  assert.deepEqual(
+    classify(makeNode({ '[data-state="error"], [role="alert"]': { getAttribute: () => null, textContent: 'No table 44 in the schema' } })),
+    { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false },
+  );
+  assert.deepEqual(
+    classify(makeNode({}, { state: 'loading', drawing: true })),
+    { outcome: 'content', detail: null, notMigrated: false },
+  );
+  assert.deepEqual(
+    classify(makeNode({}, { state: 'loading', drawing: false })),
+    { outcome: 'error', detail: 'still loading', notMigrated: false },
+  );
 });

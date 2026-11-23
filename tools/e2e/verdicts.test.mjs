@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, classifyWidgetSnapshot, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
+import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, REFUSAL_TEXT, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -301,16 +301,49 @@ test('windowLosses counts only perf log losses overlapping a window, and losses 
   assert.deepEqual(summary[0].windows, ['Overview 1440 h/s']);
 });
 
-test('classifyWidgetSnapshot requires positive refusal text and flags loading or blank states as errors', () => {
-  const errWithoutRetry = classifyWidgetSnapshot({ errorDetail: 'Changed rows arrived without the table they change.' });
-  assert.deepEqual(errWithoutRetry, { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
-  const refused = classifyWidgetSnapshot({ errorDetail: 'No table 44 in the schema' });
-  assert.deepEqual(refused, { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
-  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
-  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
-  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });
-  assert.deepEqual(classifyWidgetSnapshot({ placeholderText: "Scoreboard isn't playing back yet" }),
-    { outcome: 'placeholder', detail: "Scoreboard isn't playing back yet", notMigrated: true });
+test('classifyWidgetSnapshot requires positive refusal text and flags loading or blank states as errors (both direct and serialized)', () => {
+  const serialized = new Function(`return (${classifyWidgetSnapshot.toString()});`)();
+  for (const fn of [snap => classifyWidgetSnapshot(snap), snap => serialized(snap, REFUSAL_TEXT)]) {
+    const errWithoutRetry = fn({ errorDetail: 'Changed rows arrived without the table they change.' });
+    assert.deepEqual(errWithoutRetry, { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
+    const refused = fn({ errorDetail: 'No table 44 in the schema' });
+    assert.deepEqual(refused, { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
+    assert.deepEqual(fn({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
+    assert.deepEqual(fn({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
+    assert.deepEqual(fn({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });
+    assert.deepEqual(fn({ placeholderText: "Scoreboard isn't playing back yet" }),
+      { outcome: 'placeholder', detail: "Scoreboard isn't playing back yet", notMigrated: true });
+  }
+});
+
+test('classifyPerfFile classifies viewer map logs once with their owning session and never as page logs', () => {
+  assert.deepEqual(classifyPerfFile('perf-playback.jsonl'), { kind: 'page', session: 'playback' });
+  assert.deepEqual(classifyPerfFile('perf-playback.jsonl.map.1.jsonl'), { kind: 'viewer', session: 'playback' });
+  assert.deepEqual(classifyPerfFile('perf-widget-costs.jsonl.map.42.jsonl'), { kind: 'viewer', session: 'widget-costs' });
+  assert.equal(classifyPerfFile('other.jsonl'), null);
+});
+
+test('costSessionConfinement exports missing observations as null without borrowing from another session', () => {
+  const run = {
+    confinement: { jobProcesses: 4, confinedProcesses: 4, allConfined: true },
+    sessions: [
+      { name: 'playback', confinement: { jobProcesses: 4, confinedProcesses: 4, allConfined: true } },
+      { name: 'widget costs' },
+    ],
+  };
+  const sweep = {
+    meta: {
+      sessions: [
+        { session: 'playback', confinement: { hardwareConcurrency: 4, lanes: 2 } },
+        { session: 'widget-costs' },
+      ],
+    },
+  };
+  assert.deepEqual(costSessionConfinement(run, sweep, 'widget-costs'), { job: null, page: null });
+  assert.deepEqual(costSessionConfinement(run, sweep, 'playback'), {
+    job: { jobProcesses: 4, confinedProcesses: 4, allConfined: true },
+    page: { hardwareConcurrency: 4, lanes: 2 },
+  });
 });
 
 test('sessionConfinement checks each session Job affinity, hardwareConcurrency, and lane count without cross-pairing', () => {

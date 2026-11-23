@@ -91,6 +91,12 @@ export function inputPictures(frames, visibility, records, pinWidget) {
 }
 
 const forSession = (records, session) => (session ? records.filter(r => !r.session || r.session === session) : records);
+const hasSummaryLosses = losses => {
+  if (!losses) return false;
+  if (Array.isArray(losses)) return losses.length > 0;
+  if (typeof losses === 'object') return Object.values(losses).some(entry => entry && (entry.count ?? 0) > 0);
+  return false;
+};
 
 export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) {
   const reasons = [], metrics = [], placements = [];
@@ -116,7 +122,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     if (inputLost.count > 0) reasons.push(`perf log lost ${inputLost.count} records during ${w.page ?? 'playback'} input sequence (${inputLost.sources.join(', ')})`);
     if (idleLost.count > 0) reasons.push(`perf log lost ${idleLost.count} records during ${w.page ?? 'playback'} idle cost window (${idleLost.sources.join(', ')})`);
     const hasScopedLoss = playLost.count > 0 || inputLost.count > 0 || idleLost.count > 0;
-    if (end < 0 || !w.seconds || (w.complete === false && !hasScopedLoss && !w.losses?.length)) reasons.push('incomplete presented playing window');
+    if (end < 0 || !w.seconds || (w.complete === false && !hasScopedLoss && !hasSummaryLosses(w.losses))) reasons.push('incomplete presented playing window');
     const timed = r => r.at >= frames[0] && r.at <= frames.at(-1);
     const seconds = (frames.at(-1) - frames[0]) / 1000;
     const page = winRecords.filter(r => r.t === 'frame' && r.playing && timed(r));
@@ -393,10 +399,15 @@ function checkCostClock(w, winRecords) {
   }
   const first = ticks[0], last = ticks.at(-1);
   const elapsedSec = (last.at - first.at) / 1000;
-  const expectedSec = w.seconds ?? ((w.to - w.from) / 1000);
+  const recordedSec = (w.to - w.from) / 1000;
+  const requestedSec = Number.isFinite(w.seconds) ? w.seconds : recordedSec;
+  const requiredSec = Math.max(requestedSec, recordedSec);
   const pace = playbackPace(first, last, 1440);
-  if (elapsedSec < Math.max(0.5, expectedSec * 0.75)) {
-    return { ok: false, hps: pace.hps, elapsedSec, reason: `clock ticked over only ${elapsedSec.toFixed(2)} s of ${expectedSec.toFixed(1)} s window` };
+  if (recordedSec < requestedSec * 0.75) {
+    return { ok: false, hps: pace.hps, elapsedSec, reason: `recorded window was only ${recordedSec.toFixed(2)} s of ${requestedSec.toFixed(1)} s requested` };
+  }
+  if (elapsedSec < Math.max(0.5, requiredSec * 0.75)) {
+    return { ok: false, hps: pace.hps, elapsedSec, reason: `clock ticked over only ${elapsedSec.toFixed(2)} s of ${requiredSec.toFixed(1)} s window` };
   }
   if (!pace.pass) {
     return { ok: false, hps: pace.hps, elapsedSec, reason: `measured clock speed ${pace.hps?.toFixed(1) ?? 'unknown'} h/s, expected 1,440 h/s` };
@@ -451,6 +462,10 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       reasons: sampleReasons,
     });
   }
+  const hasStart = baselineSamples.some(sample => sample.label === 'start');
+  const hasEnd = baselineSamples.some(sample => sample.label === 'end');
+  if (!hasStart) baselineReasons.push('missing start empty-page baseline sample');
+  if (!hasEnd) baselineReasons.push('missing end empty-page baseline sample');
   const pooledMain = quantiles(pooledFrames.map(r => r.main));
   const pooledInterval = quantiles(pooledFrames.map(r => r.dt));
   const p50Values = baselineSamples.map(s => s.main.p50).filter(Number.isFinite);
@@ -570,7 +585,11 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     if (main.n === 0) incompleteReasons.push('no timed playing frames');
     if (!clock.ok) incompleteReasons.push(clock.reason);
     if (!baselineUsable) incompleteReasons.push('empty-page baseline is unusable');
+    const correctnessErrors = [];
+    if (exact === 'fail') correctnessErrors.push(exactError ? `audit: ${exactError}` : 'exact-read audit failed');
+    if (futureFrames > 0) correctnessErrors.push(`${futureFrames} future frame${futureFrames === 1 ? '' : 's'}`);
     const complete = Boolean(w.complete ?? true) && lost === 0 && main.n > 0 && clock.ok && baselineUsable;
+    const pass = outcome !== 'error' && outcome !== 'placeholder' && complete && correctnessErrors.length === 0;
     const belowBaselineNoise = Number.isFinite(mainDelta.p95) && mainDelta.p95 < 0;
     const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
     const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
@@ -581,7 +600,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
       lagP95Hours, futureFrames,
       exact, exactError, auditSamples: inWindowAudit.length,
-      lostRecords: lost, complete, incompleteReasons: [...new Set(incompleteReasons)],
+      lostRecords: lost, complete, pass, correctnessErrors, incompleteReasons: [...new Set(incompleteReasons)],
       belowBaselineNoise, lowFrameCount,
       costScoreMs,
     };

@@ -35,6 +35,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -785,44 +786,92 @@ def build(args):
 
 
 UI_BUNDLE_MARKER = ".battleplan-ui-bundle"
-UNGATED_VITE_MODE = "measure-ungated"
+STOCK_VITE_CONFIG = ROOT / "ui" / "vite.config.ts"
+UNGATED_VITE_CONFIG = ROOT / "ui" / "vite.ungated.config.ts"
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
-def prepare_ui_output(out):
-    """Refuses to overwrite a non-empty folder unless a previous `suite.py build-ui` created it."""
-    out = Path(out).resolve()
-    if out == ROOT or ROOT in out.parents:
-        raise RuntimeError("--out for build-ui must be outside the repository")
-    if out.exists():
-        if not out.is_dir():
-            raise RuntimeError(f"refusing to overwrite {out}: path exists and is not a directory")
-        marker = out / UI_BUNDLE_MARKER
-        if any(out.iterdir()) and not marker.is_file():
+def _is_link_or_reparse(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    if getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+def validate_ui_output(out):
+    """Refuses repo paths, links/junctions, and non-empty directories without the build-ui marker."""
+    raw = Path(os.path.abspath(str(out)))
+    for candidate in (raw, *raw.parents):
+        if os.path.lexists(candidate) and _is_link_or_reparse(candidate):
+            raise RuntimeError(f"refusing {raw}: {candidate} is a symlink or junction")
+    resolved_root = Path(os.path.realpath(str(ROOT)))
+    resolved_raw = Path(os.path.realpath(str(raw)))
+    for target, root in ((raw, ROOT), (resolved_raw, resolved_root)):
+        if target == root or root in target.parents:
+            raise RuntimeError("--out for build-ui must be outside the repository")
+    if os.path.lexists(raw):
+        st = os.lstat(raw)
+        if not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError(f"refusing to overwrite {raw}: path exists and is not a directory")
+        marker = raw / UI_BUNDLE_MARKER
+        if os.path.lexists(marker):
+            if _is_link_or_reparse(marker) or not stat.S_ISREG(os.lstat(marker).st_mode):
+                raise RuntimeError(f"refusing to overwrite {raw}: {UI_BUNDLE_MARKER} is not a regular file")
+        elif any(raw.iterdir()):
             raise RuntimeError(
-                f"refusing to overwrite {out}: directory is not empty and does not hold {UI_BUNDLE_MARKER} "
+                f"refusing to overwrite {raw}: directory is not empty and does not hold {UI_BUNDLE_MARKER} "
                 "(pass a new or empty folder, or one previously created by `suite.py build-ui`)"
             )
-    return out
+    return raw
 
 
 def build_ui_command(out, ungated=False):
-    command = ["npx.cmd", "vite", "build", "--config", str(ROOT / "ui" / "vite.config.ts"),
-               "--outDir", str(out), "--emptyOutDir"]
-    if ungated:
-        command.extend(["--mode", UNGATED_VITE_MODE])
-    return command
+    config = UNGATED_VITE_CONFIG if ungated else STOCK_VITE_CONFIG
+    return ["npx.cmd", "vite", "build", "--config", str(config), "--outDir", str(out), "--emptyOutDir", "false"]
+
+
+def run_build_ui(out, ungated=False, runner=subprocess.run):
+    """Builds into a fresh staging folder beside `--out`, then installs and marks `--out` only on success."""
+    target = validate_ui_output(out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=str(target.parent)))
+    env = dict(os.environ)
+    env.pop("BATTLEPLAN_MEASURE_UNGATED", None)
+    try:
+        code = runner(build_ui_command(staging, ungated=ungated), cwd=ROOT, env=env).returncode
+        if code != 0:
+            shutil.rmtree(staging, ignore_errors=True)
+            return code
+        (staging / UI_BUNDLE_MARKER).write_text("built by tools/e2e/suite.py build-ui\n", encoding="utf-8")
+        validate_ui_output(target)
+        backup = None
+        if os.path.lexists(target):
+            backup = target.parent / f".{target.name}.old-{os.getpid()}-{time.time_ns()}"
+            target.rename(backup)
+        try:
+            staging.rename(target)
+        except OSError:
+            if backup is not None and os.path.lexists(backup) and not os.path.lexists(target):
+                backup.rename(target)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+        return 0
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def build_ui(args):
-    """Builds a production UI bundle into `--out`; `--ungated` selects the dedicated measurement Vite mode."""
-    out = prepare_ui_output(args.out)
-    env = dict(os.environ)
-    env.pop("BATTLEPLAN_MEASURE_UNGATED", None)
-    code = subprocess.run(build_ui_command(out, ungated=args.ungated), cwd=ROOT, env=env).returncode
-    if code == 0 or (out.is_dir() and not any(out.iterdir())):
-        out.mkdir(parents=True, exist_ok=True)
-        (out / UI_BUNDLE_MARKER).write_text("built by tools/e2e/suite.py build-ui\n", encoding="utf-8")
-    return code
+    """Builds a production UI bundle into `--out`; `--ungated` selects the dedicated ungated Vite config."""
+    return run_build_ui(args.out, ungated=args.ungated)
 
 
 def parse(argv):

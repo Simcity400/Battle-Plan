@@ -121,7 +121,8 @@ export class PerfRecorder {
   private commitSequence = 0;
   private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
   private rowChanges: RowChange[] = [];
-  private pictureAudit?: { readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
+  private auditGen = 0;
+  private pictureAudit?: { gen: number; readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
 
   structure(widget: string, source: string, previous: StructureRead, current: StructureRead, placement?: number) {
     if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
@@ -154,17 +155,22 @@ export class PerfRecorder {
   }
 
   async beginAudit() {
+    const gen = ++this.auditGen;
     this.pictureAudit = undefined;
     this.exactReads.clear();
     this.rowChanges = [];
     this.commitAudit = [];
     this.auditReaders = new Map(this.readers);
-    await (await import('../dashboard/pulled.ts')).capturePictures(true);
+    const { capturePictures } = await import('../dashboard/pulled.ts');
+    if (this.auditGen !== gen) return;
+    await capturePictures(true);
   }
 
   async auditPicturesBatch(limit: number): Promise<{ done: boolean; results: PictureAuditResult[] }> {
+    const gen = this.auditGen;
     if (!this.pictureAudit) {
       const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
+      if (this.auditGen !== gen) return { done: true, results: [] };
       const readers = this.auditReaders;
       this.auditReaders = undefined;
       const commits = this.commitAudit ?? [];
@@ -184,10 +190,14 @@ export class PerfRecorder {
       for (const { changes, ...commit } of commits) {
         const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => ({ widget: c.widget, source: c.source, ...c.placement !== undefined ? { placement: c.placement } : {}, hour: c.current.hour, previousHour: c.previous.hour,
           before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) }));
+        if (this.auditGen !== gen) return { done: true, results: [] };
         this.push({ t: 'commit', ...commit, changes: verified });
         if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
+        if (this.auditGen !== gen) return { done: true, results: [] };
       }
+      if (this.auditGen !== gen) return { done: true, results: [] };
       const first = await capturePicturesBatch(256);
+      if (this.auditGen !== gen) return { done: true, results: [] };
       const pictures: AuditedPicture[] = [];
       for (const record of first.records) {
         const logged: PerfRecord = { ...record };
@@ -196,13 +206,17 @@ export class PerfRecorder {
         if (record.t === 'picture' && record.rows && record.hour !== null) pictures.push(record as AuditedPicture);
       }
       if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
-      this.pictureAudit = { readers, pictures, done: first.done };
+      if (this.auditGen !== gen) return { done: true, results: [] };
+      this.pictureAudit = { gen, readers, pictures, done: first.done };
     }
     const work = this.pictureAudit;
+    if (!work || work.gen !== gen || this.auditGen !== gen) return { done: true, results: [] };
     const count = Math.max(1, Math.floor(limit));
     while (!work.done && work.pictures.length < count) {
       const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
+      if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
       const next = await capturePicturesBatch(256);
+      if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
       for (const record of next.records) {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
@@ -210,6 +224,7 @@ export class PerfRecorder {
         if (record.t === 'picture' && record.rows && record.hour !== null) work.pictures.push(record as AuditedPicture);
       }
       if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
+      if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
       work.done = next.done;
     }
     const batch = work.pictures.splice(0, count);
@@ -221,6 +236,7 @@ export class PerfRecorder {
       catch (cause) { error = String(cause); }
       return { widget, surface, placement, owner, at: record.at, hour, error };
     });
+    if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
     const done = work.done && work.pictures.length === 0;
     if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }
     return { done, results };
@@ -525,5 +541,7 @@ export async function startPerf(): Promise<void> {
   });
   Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
     beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), auditPicturesBatch: (limit: number) => recorder.auditPicturesBatch(limit),
-    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour, lanes: () => recorder.laneCount, ungated: MEASURE_UNGATED } });
+    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour, lanes: () => recorder.laneCount, ungated: MEASURE_UNGATED,
+    preloadStatus: async () => (await import('../widgets/rendererLoaders.ts')).preloadStatus(),
+    waitPreloadComplete: async () => (await import('../widgets/rendererLoaders.ts')).whenPreloadComplete() } });
 }

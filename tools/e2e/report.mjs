@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
 import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
-import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
+import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, classifyPerfFile, costSessionConfinement, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
 import { BUDGET_MS, FRAME_BUDGET_MS, MAX_PLAYBACK_AGE_HOURS, SUSTAINED_DROPS, consoleFailures, failedReplies, firstContent, frameTimes, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
 import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
 import { perFrame } from './trace.mjs';
@@ -28,7 +28,9 @@ const sweep = await sweeps(files.sweeps);
 
 async function perfRecords(folder, { keepQueries = false } = {}) {
   const names = folder ? await readdir(folder).catch(() => []) : [];
-  const pages = names.filter(name => /^perf-.+\.jsonl$/.test(name)), viewers = names.filter(name => /^perf-.+\.jsonl\.map\.\d+\.jsonl$/.test(name));
+  const classified = names.map(name => ({ name, info: classifyPerfFile(name) })).filter(entry => entry.info !== null);
+  const pages = classified.filter(entry => entry.info.kind === 'page');
+  const viewers = classified.filter(entry => entry.info.kind === 'viewer');
   if (!pages.length) return { records: null, mapRecords: [] };
   const read = async (name, keep) => {
     for await (const line of readline.createInterface({ input: createReadStream(path.join(folder, name), 'utf8'), crlfDelay: Infinity })) keep(line);
@@ -36,8 +38,7 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
   const records = [], mapRecords = [];
   const wanted = /^\{"t":"(map_state|tick|workerFrame|picture|ink|commit|shown|widget|widget_error|q|frame|lost|page)"/;
   const lost = line => line.includes('"t":"lost"') && JSON.parse(line).t === 'lost';
-  for (const name of pages) {
-    const session = name.slice('perf-'.length, -'.jsonl'.length);
+  for (const { name, info: { session } } of pages) {
     await read(name, line => {
       if (!wanted.test(line) && !lost(line)) return;
       const record = JSON.parse(line);
@@ -51,10 +52,12 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
       records.push({ ...record, session });
     });
   }
-  for (const name of viewers) await read(name, line => {
-    if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push(JSON.parse(line));
-    else if (lost(line)) records.push(JSON.parse(line));
-  });
+  for (const { name, info: { session } } of viewers) {
+    await read(name, line => {
+      if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push({ ...JSON.parse(line), session });
+      else if (lost(line)) records.push({ ...JSON.parse(line), session });
+    });
+  }
   return { records, mapRecords };
 }
 const hasWidgetCosts = Boolean(sweep?.results?.some(result => result.area === 'widget-costs'));
@@ -151,7 +154,8 @@ if (sweep) {
         fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', conf.summary, pass ? 'pass' : `**FAIL**: ${why(failures)}`] };
     }), 'Before each session the suite deletes the content cache (BattlePlan\\viewer under the profile\'s local app data), the shader cache, the WebView2 profile with its HTTP and code caches, and the app\'s settings, and checks they are gone. Kept: the recording. Reply and answer caches live in the app\'s memory and start empty with each session. The user\'s own BattlePlan folder is never used: the profile has its own local app data.');
 
-  section('Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session)', ['Session', 'Step', 'ms', 'Result', 'Why'],
+  const runThrottle = run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1;
+  section(`Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session${runThrottle > 1 ? `, CPU throttled ×${runThrottle}` : ''})`, ['Session', 'Step', 'ms', 'Result', 'Why'],
     area('startup').map(result => ({ pass: result.pass, cells: [result.session, result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));
 
   under('pages');
@@ -436,14 +440,12 @@ if (sweep) {
     const emptyWindows = costResults.filter(r => r.isEmpty);
     const widgetWindows = costResults.filter(r => !r.isEmpty);
     const costSessionSlug = costResults[0]?.session ?? null;
-    const pageConf = (costSessionSlug ? sessionMetaBySlug.get(costSessionSlug)?.confinement : null)
-      ?? (sweep.meta.sessions ?? []).map(meta => meta.confinement).find(Boolean) ?? sweep.meta.confinement ?? null;
-    const jobConf = (run.sessions ?? []).find(entry => entry.name.replace(/ /g, '-') === costSessionSlug)?.confinement ?? run.confinement ?? null;
-    const ungated = Boolean(pageConf?.ungated || (records ?? []).some(r => r.t === 'page' && r.ungated));
+    const costConf = costSessionConfinement(run, sweep, costSessionSlug);
+    const ungated = Boolean(costConf.page?.ungated || (records ?? []).some(r => r.t === 'page' && (!costSessionSlug || !r.session || r.session === costSessionSlug) && r.ungated));
     const costReport = summarizeWidgetCosts(widgetWindows, records ?? [], {
       baselines: emptyWindows,
       profile: { name: run.profile ?? null, cpuThrottle: run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1, cores: run.cores ?? null },
-      confinement: { job: jobConf, page: pageConf },
+      confinement: costConf,
       ungated,
     });
     await writeFile(path.join(files.out, 'widget-costs.json'), JSON.stringify(costReport, null, 2));
@@ -463,7 +465,7 @@ if (sweep) {
       costRows.push({
         pass: false,
         cells: [
-          '–', '__empty__ (baseline)', '**FAIL**', '–',
+          '–', '__empty__ (baseline)', 'empty', '**FAIL**', '–',
           ms1(baseMain.p50), '–', ms1(baseMain.p95), '–',
           `${baseMain.n} (${ms1(costReport.baseline.seconds)} s)`, '–', '–', '–', '–', 'n/a',
           why(costReport.baseline.reasons),
@@ -479,13 +481,12 @@ if (sweep) {
       if (w.detail) notes.push(w.detail);
       if (w.belowBaselineNoise) notes.push('below baseline noise');
       if (w.lowFrameCount) notes.push(`low sample: ${w.main.n} frames in ${ms1(w.seconds)} s`);
-      if (w.futureFrames > 0) notes.push(`${w.futureFrames} future frames`);
-      if (w.exactError) notes.push(`audit: ${w.exactError}`);
+      if (w.correctnessErrors?.length) notes.push(...w.correctnessErrors);
       if (w.incompleteReasons?.length) notes.push(...w.incompleteReasons);
       costRows.push({
-        pass: w.outcome !== 'error' && w.outcome !== 'placeholder' && w.complete,
+        pass: w.pass,
         cells: [
-          index + 1, w.kind, w.outcome, ms1(w.costScoreMs),
+          index + 1, w.kind, w.outcome, verdict(w.pass), ms1(w.costScoreMs),
           ms1(w.main.p50), signed(w.mainDelta.p50), ms1(w.main.p95), signed(w.mainDelta.p95),
           framesCell, workerCell, w.commitsPerSec == null ? '–' : w.commitsPerSec.toFixed(1), reqCell,
           w.lagP95Hours == null ? '–' : Math.round(w.lagP95Hours), w.exact, why([...new Set(notes)]),
@@ -493,7 +494,7 @@ if (sweep) {
       });
     }
     section('Per-widget playback cost at 1,440 h/s (sorted most expensive first)',
-      ['Rank', 'Kind', 'Outcome', 'Score (ms)', 'Main p50', 'Δp50', 'Main p95', 'Δp95', 'Frames (s)', 'Worker p95 / mean', 'Commits/s', 'Req/s (by product)', 'Lag p95 (h)', 'Exact', 'Note'],
+      ['Rank', 'Kind', 'Outcome', 'Result', 'Score (ms)', 'Main p50', 'Δp50', 'Main p95', 'Δp95', 'Frames (s)', 'Worker p95 / mean', 'Commits/s', 'Req/s (by product)', 'Lag p95 (h)', 'Exact', 'Note'],
       costRows, costNote);
   }
 

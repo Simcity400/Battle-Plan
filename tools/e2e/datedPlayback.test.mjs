@@ -738,6 +738,41 @@ test('cost summary rejects unstable, missing, or stopped-clock windows and prese
   assert.ok(spiky.baseline.reasons.some(r => r.includes('unstable tail')));
   assert.equal(spiky.widgets[0].costScoreMs, null);
   assert.equal(spiky.widgets[0].complete, false);
+
+  const partialStartOnly = summarizeWidgetCosts([windows[0]], stableRecords, { baselines: [baseStart] });
+  assert.equal(partialStartOnly.baseline.usable, false, 'start-only checkpoint cannot produce scores without end baseline');
+  assert.ok(partialStartOnly.baseline.reasons.some(r => r.includes('missing end')));
+  assert.equal(partialStartOnly.widgets[0].costScoreMs, null);
+
+  const longWindowShortTicks = [
+    ...ticksOf(0, 4000), ...framesOf(0, 4000, 4, 40),
+    ...ticksOf(5000, 8500), ...framesOf(5000, 13000, 8, 40),
+    ...ticksOf(20000, 24000), ...framesOf(20000, 24000, 4, 40),
+  ];
+  const underCovered = summarizeWidgetCosts(
+    [{ kind: 'long-window', from: 5000, to: 13000, seconds: 4, outcome: 'content', complete: true }],
+    longWindowShortTicks,
+    { baselines: [baseStart, baseEnd] },
+  );
+  assert.equal(underCovered.widgets[0].complete, false, '3.5 s of ticks cannot qualify an 8 s recorded window requested as 4 s');
+  assert.equal(underCovered.widgets[0].costScoreMs, null);
+
+  const failedAuditRecords = [
+    ...ticksOf(0, 4000), ...framesOf(0, 4000, 5, 40),
+    ...ticksOf(5000, 9000), ...framesOf(5000, 9000, 4, 40),
+    { t: 'picture', at: 6000, widget: 'w-fail', surface: 'table', placement: 1, renderer: 'page', hour: 2000, head: 1500, eligibleHour: 1500, drawMs: 1 },
+    ...ticksOf(20000, 24000), ...framesOf(20000, 24000, 5, 40),
+  ];
+  const badContent = summarizeWidgetCosts(
+    [{ kind: 'bad-content', widget: 'w-fail', from: 5000, to: 9000, seconds: 4, outcome: 'content', complete: true,
+      audit: [{ widget: 'w-fail', surface: 'table', placement: 1, owner: -1, at: 6000, error: 'Wrong value' }] }],
+    failedAuditRecords,
+    { baselines: [baseStart, baseEnd] },
+  );
+  assert.equal(badContent.widgets[0].pass, false, 'content row with audit failure or future picture must fail');
+  assert.equal(badContent.widgets[0].costScoreMs, -1, 'signed timing score is preserved on failed content row');
+  assert.ok(badContent.widgets[0].correctnessErrors.some(r => r.includes('Wrong value')));
+  assert.ok(badContent.widgets[0].correctnessErrors.some(r => r.includes('future frame')));
 });
 
 test('dated playback fails on playbackReasons, fails every placement on playing-window loss, and isolates overlapping sessions', () => {
@@ -766,9 +801,17 @@ test('dated playback fails on playbackReasons, fails every placement on playing-
   assert.equal(withPlayLoss.pass, false);
   assert.equal(withPlayLoss.placements[0].pass, false, 'a playing-window loss fails every placement in that window');
 
-  const withInputOnlyLoss = datedPlaybackVerdict([{ ...baseWindow('s1'), complete: false, losses: [{ source: 'ui', count: 3 }] }],
+  const withInputOnlyLoss = datedPlaybackVerdict([{ ...baseWindow('s1'), complete: false, losses: { ui: { count: 3, bytes: 600, from: 1150, to: 1250 } } }],
     [...makeRecords('s1'), { t: 'lost', at: 1200, from: 1150, to: 1250, source: 'ui', count: 3, session: 's1' }]);
   assert.equal(withInputOnlyLoss.pass, false);
   assert.ok(withInputOnlyLoss.reasons.some(r => r.includes('input sequence')));
   assert.equal(withInputOnlyLoss.placements[0].pass, true, 'an input-only loss fails the verdict without falsely failing playing placements');
+
+  const withAuditDrainLoss = datedPlaybackVerdict([{ ...baseWindow('s1'), complete: false, losses: { ui: { count: 4, bytes: 800, from: 2500, to: 2600 } } }],
+    [...makeRecords('s1'), { t: 'lost', at: 2550, from: 2500, to: 2600, source: 'ui', count: 4, session: 's1' }]);
+  assert.equal(withAuditDrainLoss.pass, true, 'production source-keyed losses outside play/input/idle do not mark a complete playing window incomplete');
+
+  const withEmptyLossesIncomplete = datedPlaybackVerdict([{ ...baseWindow('s1'), complete: false, losses: {} }], makeRecords('s1'));
+  assert.equal(withEmptyLossesIncomplete.pass, false);
+  assert.ok(withEmptyLossesIncomplete.reasons.includes('incomplete presented playing window'));
 });
