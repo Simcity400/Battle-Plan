@@ -97,18 +97,26 @@ use replay_columnar::{
 use replay_data::rows::{Field, List, Opaque, RowCodec, TABLE_COUNT, TableId};
 use std::io;
 
-pub fn logging<'a>(input: &'a Store, outputs: &[Output]) -> Rows<'a> {
+pub fn logging<T>(
+    input: &Store,
+    outputs: &[Output],
+    write: impl FnOnce(&mut Rows<'_>) -> io::Result<T>,
+) -> io::Result<T> {
     let mut scratch = store();
+    scratch.resume(input.tables().to_vec(), input.strings().next())?;
     let lent = outputs.iter()
         .filter_map(|output| match *output {
             Output::State(table) => {
                 scratch.index(table.index());
-                Some(scratch.lend(table.index()).expect("scratch state table"))
+                Some(scratch.lend(table.index()))
             }
             Output::Log(..) => None,
         })
-        .collect();
-    Rows::lending(input, lent)
+        .collect::<io::Result<_>>()?;
+    let mut rows = Rows::lending(input, lent);
+    let result = write(&mut rows)?;
+    rows.check_writes()?;
+    Ok(result)
 }
 
 pub fn column_kinds(table: TableId) -> Vec<Kind> {

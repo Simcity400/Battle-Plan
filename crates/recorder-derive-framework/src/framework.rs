@@ -706,6 +706,14 @@ impl<'a> Rows<'a> {
         Self::new(store, lent, Vec::new(), Names::default(), Owner::RUN)
     }
 
+    pub(crate) fn check_writes(self) -> io::Result<()> {
+        match (self.fault, self.refused) {
+            (Some(error), _) => Err(error),
+            (None, Some(reason)) => Err(invalid(reason)),
+            (None, None) => Ok(()),
+        }
+    }
+
     pub fn keys(&self, table: TableId) -> (Vec<u128>, Vec<u128>) {
         self.lent.iter()
             .find(|lent| lent.table() == table.index())
