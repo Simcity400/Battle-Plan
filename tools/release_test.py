@@ -3,6 +3,7 @@ import base64
 import datetime
 import hashlib
 import http.client
+import io
 import json
 import os
 import sys
@@ -423,16 +424,21 @@ class Notes(unittest.TestCase):
         for reply, reason in ((model_reply(cited, "length"), "ended length"), (model_reply("{\"highlights\": ["), "not JSON"),
                               (model_reply(cited), "lacks"), (model_reply({"highlights": [], "others": [99]}), "not this release's"),
                               (model_reply({"highlights": [{"label": "", "detail": "Works.", "pulls": [1]}]}), "lacks"),
-                              ([], "not a chat completion"), ({"choices": [None]}, "not a chat completion")):
+                              ([], "not a chat completion"), ({"choices": [None]}, "not a chat completion"),
+                              ({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"highlights": [], "others": []}),
+                                                                                  "refusal": "I can't help with that."}}]}, "refused")):
             with self.assertRaisesRegex(release.Refused, reason):
                 release.read_highlights(reply, [1, 2])
         with mock.patch.object(release, "urllib") as network, mock.patch.dict(os.environ, {"GROQ_API_KEY": ""}):
             self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
             network.request.urlopen.assert_not_called()
-        for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{")):
-            failed = mock.Mock(side_effect=failure)
+        nested = mock.MagicMock()
+        nested.__enter__.return_value = io.BytesIO(json.dumps(model_reply("[" * 100_000)).encode())
+        for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{"), None):
+            failed = mock.Mock(side_effect=failure, return_value=nested)
             with mock.patch.object(release.urllib.request, "urlopen", failed), mock.patch.dict(os.environ, {"GROQ_API_KEY": "key"}):
                 self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
+        self.assertEqual(json.loads(failed.call_args.args[0].data)["reasoning_effort"], "high")
 
     def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
         notes = {"version": "1.4.3", "since": "1.4.2", "date": None, "changes": 3, "more": 1,

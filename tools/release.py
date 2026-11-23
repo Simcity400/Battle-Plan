@@ -261,9 +261,11 @@ def read_highlights(reply, numbers):
     Refused unless the reply is complete and every pull request it cites is one of `numbers`."""
     try:
         choice = reply["choices"][0]
-        finished, text = choice.get("finish_reason"), choice["message"]["content"]
+        finished, text, refused = choice.get("finish_reason"), choice["message"]["content"], choice["message"].get("refusal")
     except (KeyError, IndexError, TypeError, AttributeError):
         raise Refused("the model's reply is not a chat completion")
+    if refused:
+        raise Refused("the model refused to choose highlights")
     if finished != "stop" or not isinstance(text, str):
         raise Refused(f"the model's reply ended {finished}, not complete")
     try:
@@ -308,7 +310,7 @@ def summarize(pulls):
                          for pull in pulls)
     request = urllib.request.Request(SUMMARY_URL, method="POST", headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "battleplan-release"}, data=json.dumps({
-            "model": SUMMARY_MODEL, "reasoning_effort": "low", "reasoning_format": "hidden",
+            "model": SUMMARY_MODEL, "reasoning_effort": "high", "reasoning_format": "hidden",
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": SUMMARY_INSTRUCTIONS},
                          {"role": "user", "content": f"Choose highlights as JSON from these pull requests:\n{source}"}],
@@ -316,7 +318,7 @@ def summarize(pulls):
     try:
         with urllib.request.urlopen(request, timeout=SUMMARY_TIMEOUT) as answer:
             return read_highlights(json.load(answer), [pull["number"] for pull in pulls])
-    except (OSError, ValueError, http.client.HTTPException, Refused) as error:
+    except (OSError, ValueError, RecursionError, http.client.HTTPException, Refused) as error:
         say(f"No summary was written, so the notes list pull requests without one: {error}.")
         return None
 
