@@ -3,9 +3,9 @@ import { panelStructure, panelValues } from '../../draw/panels/views.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
-import type { CountryGroupReply, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedLabel, completedWhenFirstRecorded, completionDate, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -18,16 +18,18 @@ test('project effects render again when their game text changes, never only beca
   assert.notEqual(effectsStructure(record(24, 3)), effectsStructure(record(24, 8)));
 });
 
+const marker = (date: number, readHour: number, counted = true): ProjectEntry => ({ ordinal: 3, date, completion: true, readHour, counted, presentation: counted ? 0 : null });
+
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
   available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], partial: [], unresolved: [],
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},
   people:[{assigned:true,id:77,name:'Mod scientist',portrait:null,missing:'Portrait not recorded.'}],
-  presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,scientistAsOf:null}],
-  projects:[{id:'episode',owner:9,local:3,start:{hour:100,exact:false},runs:[
-    {firstHour:100,lastHour:147,presentation:0,progress:17,state:'running',cancellation:null,completion:null,iterations:2,iterationsRead:140},
-    {firstHour:148,lastHour:199,presentation:0,progress:100,state:'completed',cancellation:null,completion:{hour:140,exact:true},iterations:3,iterationsRead:null},
-  ]}],
+  presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,scientistRead:100,lastScientist:null,lastScientistRead:null}],
+  projects:[{id:'episode',owner:9,local:3,firstRead:100,firstState:'running',statuses:[
+    {firstHour:100,lastHour:147,readHour:100,presentation:0,progress:17,state:'running',iterations:2},
+    {firstHour:148,lastHour:199,readHour:148,presentation:0,progress:100,state:'completed',iterations:3},
+  ],entries:[marker(140,148)],attempts:[]}],
 });
 
 test('a dated project packet reveals its own rows and warnings', () => {
@@ -48,13 +50,18 @@ test('an exact project read derives its structure from the sampled hour', () => 
   assert.equal(values?.get('episode'), 'Mod project name');
 });
 
-test('daily reads step without interpolation and future completion stays hidden', () => {
+test('statuses step without interpolation, and a completion takes its date from the history marker', () => {
   const data = fixture();
   assert.equal(currentProjects(data,147).running[0].run.progress,17);
-  assert.equal(currentProjects(data,147).running[0].run.completion,null);
-  assert.equal(currentProjects(data,148).completed[0].run.completion?.hour,140);
-  assert.equal(projectHistory(data,147).lanes[0].spans[0].positive,false);
-  assert.equal(projectHistory(data,148).lanes[0].spans[0].positive,true);
+  assert.equal(currentProjects(data,148).completed[0].run.state,'completed');
+  assert.equal(completionDate(data.projects[0]),140);
+  assert.equal(completedLabel(data.projects[0]),dayLabel(140));
+  data.projects[0].entries=[];
+  assert.equal(completedLabel(data.projects[0]),'date not recorded', 'a completed status with no counted marker has no date');
+  data.projects[0].entries=[marker(90,148,false)];
+  assert.equal(completionDate(data.projects[0]),null, 'an uncounted marker dates nothing');
+  assert.equal(projectHistory(fixture(),147).lanes[0].spans[0].positive,false);
+  assert.equal(projectHistory(fixture(),148).lanes[0].spans.at(-1)?.positive,true);
 });
 test('missing hours are unavailable and completed projects stay listed without a retention period', () => {
   const data = fixture();
@@ -63,26 +70,22 @@ test('missing hours are unavailable and completed projects stay listed without a
   assert.equal(currentProjects(data,148).completed.length,1);
   assert.equal(currentProjects(data,199).completed.length,1, 'a completion long past still lists');
 });
-test('history caps at the completion event, splits at progress steps and leaves unrecorded intervals empty', () => {
+test('history lanes split at progress steps and leave unrecorded intervals empty', () => {
   const data = fixture();
   const lane = projectHistory(data,199).lanes[0];
   assert.equal(lane.identity?.tile,'blueprint');
   assert.equal(lane.label,'Mod scientist');
   assert.equal(lane.names,true);
-  assert.equal(lane.spans[0].lastHour,139);
-  assert.equal(lane.spans[0].label,'17%');
-  assert.equal(lane.spans[0].endLabel,'✓');
-  assert.equal(lane.spans[0].shade,undefined, 'a completed bar keeps the positive fill');
-  data.projects[0].runs[1].state='running'; data.projects[0].runs[1].completion=null;
-  data.projects[0].runs.push({...data.projects[0].runs[0],firstHour:220,lastHour:230});
-  const running = projectHistory(data,300).lanes[0].spans;
-  assert.deepEqual(running.map(span=>[span.firstHour,span.lastHour,span.label,span.shade]),[[100,147,'17%',0.17],[148,199,'100%',1],[220,230,'17%',0.17]]);
+  assert.deepEqual(lane.spans.map(span=>[span.firstHour,span.lastHour,span.label,span.positive]),[[100,147,'17%',false],[148,199,'100%',true]]);
+  assert.equal(lane.spans[1].shade,undefined, 'a completed bar keeps the positive fill');
+  data.projects[0].statuses.push({...data.projects[0].statuses[0],firstHour:220,lastHour:230});
+  const later = projectHistory(data,300).lanes[0].spans;
+  assert.deepEqual(later.map(span=>[span.firstHour,span.lastHour,span.label,span.shade]),[[100,147,'17%',0.17],[148,199,'100%',undefined],[220,230,'17%',0.17]]);
 });
-test('tooltips keep bounded starts and progress without artwork or table diagnostics', () => {
-  const data=fixture(); data.projects[0].runs[0].iterations=null; data.iterationTexts['2']=null;
+test('tooltips keep the first read and progress without artwork or table diagnostics', () => {
+  const data=fixture(); data.projects[0].statuses[0].iterations=null; data.iterationTexts['2']=null;
   const tip=projectTooltip(data,currentProjects(data,120).running[0]);
-  assert.match(tip.rows.find(row=>row.label==='Started')!.value!,/^by /);
-  assert.doesNotMatch(tip.note ?? '',/read once a day/);
+  assert.equal(tip.rows.find(row=>row.label==='First recorded')!.value, dayLabel(100));
   assert.equal(tip.note, undefined);
   assert.equal(tip.description, undefined);
   assert.equal(tip.subtitle, 'Mod science');
@@ -92,29 +95,31 @@ test('validator rejects bad references, overlaps, missing and invented percentag
   assert.equal(validateSpecialProjectsReply(fixture()).tag,'tag with spaces');
   for(const mutate of [
     (data:SpecialProjectsReply)=>{data.presentations[0].scientist=1;},
-    (data:SpecialProjectsReply)=>{data.projects[0].runs[1].firstHour=100;},
-    (data:SpecialProjectsReply)=>{data.projects[0].runs[0].progress=101;},
+    (data:SpecialProjectsReply)=>{data.presentations[0].lastScientist=0;},
+    (data:SpecialProjectsReply)=>{data.projects[0].statuses[1].firstHour=100;},
+    (data:SpecialProjectsReply)=>{data.projects[0].statuses[0].progress=101;},
     (data:SpecialProjectsReply)=>{data.available[1].firstHour=150;},
-    (data:SpecialProjectsReply)=>{data.projects[0].runs[1].completion!.hour=200;},
-    (data:SpecialProjectsReply)=>{data.projects[0].runs[1].state='running';},
+    (data:SpecialProjectsReply)=>{data.projects[0].statuses[1].progress=90;},
+    (data:SpecialProjectsReply)=>{data.projects[0].statuses[1].readHour=150;},
+    (data:SpecialProjectsReply)=>{data.projects[0].firstRead=120;},
+    (data:SpecialProjectsReply)=>{data.projects[0].entries[0].date=200;},
+    (data:SpecialProjectsReply)=>{data.projects[0].entries[0].completion=false;},
     (data:SpecialProjectsReply)=>{data.identities[1].firstHour=190;},
   ]) {const data=fixture();mutate(data);assert.throws(()=>validateSpecialProjectsReply(data));}
 });
-test('last assignment keeps its date in its own tooltip row and the game text closes the tooltip', () => {
-  const data=fixture(); data.presentations[0].scientistAsOf=99;
+test('the scientist shows its own program read, and the last observed one apart from no one or unknown', () => {
+  const data=fixture();
+  data.people.push({assigned:null,id:null,name:null,portrait:null,missing:'Program 7 was not read in the day up to this hour.'});
+  data.presentations[0]={...data.presentations[0],scientist:1,scientistRead:null,lastScientist:0,lastScientistRead:99};
   const card=currentProjects(data,120).running[0];
   const tip=projectTooltip(data,card);
-  assert.equal(tip.rows.find(row=>row.label==='Scientist')!.value, 'Mod scientist');
-  assert.equal(tip.rows.find(row=>row.label==='Last assigned')!.value, dayLabel(99));
+  assert.equal(tip.rows.find(row=>row.label==='Scientist')!.value, 'Scientist not recorded');
+  assert.equal(tip.rows.find(row=>row.label==='Last observed')!.value, `Mod scientist (read ${dayLabel(99)})`);
   assert.equal(tip.description, 'Mod iterations: 2');
-  assert.equal(tip.note, undefined);
   assert.equal(iterationCount(card.run.iterations), '2 iterations');
   assert.equal(iterationCount(1), '1 iteration');
-  assert.equal(iterationCount(null), 'Iterations unknown');
-  const done=currentProjects(data,160).completed[0];
-  data.presentations[0].scientistAsOf=done.run.completion!.hour;
-  assert.ok(!projectTooltip(data,done).rows.some(row=>row.label==='Last assigned'), 'an assignment dated to the completion adds no row');
-  assert.equal(projectTooltip(data,done).rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
+  assert.equal(iterationCount(null), 'Iterations not recorded');
+  assert.equal(projectTooltip(data,currentProjects(data,160).completed[0]).rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
 });
 test('presentation has no content count cap at 5000 projects and defaults are saved options', () => {
   const data=fixture(); data.projects=Array.from({length:5000},(_,id)=>({...data.projects[0],id:`mod-${id}`}));
@@ -126,31 +131,28 @@ test('presentation has no content count cap at 5000 projects and defaults are sa
   assert.equal(definition.defaultTime, 'follow');
 });
 
-test('paused cards are named, and cancelled episodes leave Current and end by observation without a completion tick', () => {
+test('paused cards are named, and cancelled projects leave Current, undated', () => {
   const data = fixture();
-  data.projects[0].runs = [{...data.projects[0].runs[0],state:'paused',lastHour:139}, {...data.projects[0].runs[0],firstHour:140,lastHour:199,state:'cancelled',cancellation:{hour:140,exact:false}}];
+  data.projects[0].statuses = [{...data.projects[0].statuses[0],state:'paused',lastHour:139}, {...data.projects[0].statuses[0],firstHour:140,lastHour:199,readHour:140,state:'cancelled'}];
+  data.projects[0].entries = [];
   assert.equal(currentProjects(data,139).running.length,1);
   assert.equal(projectTooltip(data,currentProjects(data,139).running[0]).rows.find(row=>row.label==='State')?.value,'Paused');
-  assert.equal(currentProjects(data,140).running.length,0);
   const cancelled = currentProjects(data,140);
   assert.equal(cancelled.running.length + cancelled.completed.length + cancelled.earlier.length, 0, 'a cancelled project is not listed in Current');
   const lane=projectHistory(data,199).lanes[0];
   assert.equal(lane.muted,true);
-  assert.equal(lane.spans.at(-1)?.lastHour,139);
   assert.equal(lane.spans.at(-1)?.positive,false);
-  assert.equal(lane.spans.at(-1)?.endLabel,undefined);
-  assert.equal(lane.spans.at(-1)?.shade,undefined, 'a paused stretch keeps the neutral fill');
+  assert.equal(lane.spans[0].shade,undefined, 'a paused stretch keeps the neutral fill');
+  const tip=historyTooltip(data,'episode',lane.spans.at(-1)!,150,199);
+  assert.equal(tip?.rows.find(row=>row.label==='Cancelled')?.value, `read ${dayLabel(140)}`, 'a cancellation is the state read, never dated');
 });
-test('history tooltip resolves hovered observation and span, bounded by playhead; gaps stay unknown', () => {
+test('history tooltip resolves the hovered status bounded by the playhead; gaps stay unknown', () => {
   const data=fixture();
   const span=projectHistory(data,199).lanes[0].spans[0];
   assert.equal(historyTooltip(data,'episode',span,120,199)?.rows.find(row=>row.label==='Progress')?.value,'17%');
-  assert.ok(historyTooltip(data,'episode',span,120,199)?.rows.some(row=>row.label==='Completed'));
   assert.equal(historyTooltip(data,'episode',{...span,lastHour:199},170,130)?.rows.find(row=>row.label==='Progress')?.value,'17%');
   assert.match(historyTooltip(data,'episode',null,205,300)?.note ?? '',/not recorded at this hour/);
-  const after=historyTooltip(data,'episode',null,170,199);
-  assert.equal(after?.note, undefined, 'past its bar a completed project is recorded as completed, not missing');
-  assert.equal(after?.rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
+  assert.equal(historyTooltip(data,'episode',null,170,199)?.rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
 });
 test('group membership clips timeline bars and unassigned is an explicit flag', () => {
   const data=fixture();
@@ -158,7 +160,7 @@ test('group membership clips timeline bars and unassigned is an explicit flag', 
   data.people[0]={assigned:false,id:null,name:null,portrait:null,missing:'A translated message'};
   assert.equal(projectHistory(data,120).lanes[0].label,'No scientist assigned');
   data.people[0]={...data.people[0],assigned:null};
-  assert.equal(projectHistory(data,120).lanes[0].label,'Scientist unknown');
+  assert.equal(projectHistory(data,120).lanes[0].label,'Scientist not recorded');
 });
 
 const countryGroupReply = (overrides: Partial<CountryGroupReply>): CountryGroupReply => ({ branchId: '1', warnings: [], warStarts: [], capitulations: [],
@@ -229,10 +231,10 @@ test('a comparison heading carries complete flag status at the selected holder d
   }
 });
 
-test('membership cannot borrow a later project presentation or completion', () => {
+test('membership cannot borrow a later project presentation or status', () => {
   const data = fixture(), membership = [{ firstHour: 110, lastHour: 115 }];
   data.presentations.push({ ...data.presentations[0], name: 'Unselected later presentation' });
-  data.projects[0].runs[1].presentation = 1;
+  data.projects[0].statuses[1].presentation = 1;
   const lane = projectHistory(data, 199, membership).lanes[0];
   assert.equal(lane.identity?.label, 'Mod project name');
   assert.equal(lane.spans[0].positive, false);
@@ -241,9 +243,9 @@ test('membership cannot borrow a later project presentation or completion', () =
   assert.equal(projectHistory(data, 199, []).lanes[0], undefined);
 });
 
-test('clipping a run into future membership cannot reveal its blueprint or menu before the playhead', () => {
+test('clipping a status into future membership cannot reveal its blueprint or menu before the playhead', () => {
   const data = fixture(), membership = [{ firstHour: 100, lastHour: 110 }, { firstHour: 180, lastHour: 190 }];
-  data.projects = [{ ...data.projects[0], start: { hour: 140, exact: false }, runs: [{ ...data.projects[0].runs[0], firstHour: 140, lastHour: 200 }] }];
+  data.projects = [{ ...data.projects[0], firstRead: 140, statuses: [{ ...data.projects[0].statuses[0], firstHour: 140, lastHour: 200, readHour: 140 }] }];
   assert.deepEqual(projectHistory(data, 150, membership).lanes, []);
   assert.equal(historyCard(data, 'episode', 150, membership), null);
   const later = projectHistory(data, 185, membership).lanes[0];
@@ -266,7 +268,7 @@ test('hourly group uncertainty cuts every History consumer without changing end 
   const lane = projectHistory(data, 120, membership).lanes[0];
   assert.deepEqual(lane.spans.map(span => [span.firstHour, span.lastHour]), [[100, 111], [114, 120]]);
   assert.match(historyTooltip(data, 'episode', null, 112, 120, membership)?.note ?? '', /not recorded at this hour/);
-  data.projects = [{ ...data.projects[0], start: { hour: 112, exact: false }, runs: [{ ...data.projects[0].runs[0], firstHour: 112 }] }];
+  data.projects = [{ ...data.projects[0], firstRead: 112, statuses: [{ ...data.projects[0].statuses[0], firstHour: 112, readHour: 112 }] }];
   assert.equal(historyCard(data, 'episode', 113, membership), null);
   assert.deepEqual(projectHistory(data, 113, membership).lanes, []);
 });
@@ -313,14 +315,16 @@ function projects(): SpecialProjectsReply {
   const data = fixture();
   data.iterationTexts = { 0: 'Mod iterations: 0', 1: 'Mod iterations: 1', 2: 'Mod iterations: 2', 3: 'Mod iterations: 3' };
   data.presentations.push(...['Alpha early', 'Beta running', 'Gamma running', 'Delta cancelled'].map(name => ({ ...data.presentations[0], name })));
-  const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: SpecialProjectRun['state'], extra: Partial<SpecialProjectRun> = {}): SpecialProjectRun =>
-    ({ firstHour, lastHour, presentation, progress, state, completion: null, cancellation: null, iterations: 0, iterationsRead: null, ...extra });
+  const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: ProjectStatus['state'], iterations = 0): ProjectStatus =>
+    ({ firstHour, lastHour, readHour: firstHour, presentation, progress, state, iterations });
+  const project = (id: string, local: number, firstRead: number, firstState: ProjectStatus['state'], statuses: ProjectStatus[], entries: ProjectEntry[] = []) =>
+    ({ id, owner: 9, local, firstRead, firstState, statuses, entries, attempts: [] });
   data.projects = [
-    { id: 'done', owner: 9, local: 1, start: { hour: 100, exact: false }, runs: [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed', { completion: { hour: 160, exact: true } })] },
-    { id: 'early', owner: 9, local: 2, start: { hour: 100, exact: false }, runs: [run(100, 199, 1, 100, 'completed', { completion: { hour: 100, exact: false } })] },
-    { id: 'beta', owner: 9, local: 3, start: { hour: 120, exact: false }, runs: [run(120, 149, 2, 0, 'running'), run(150, 172, 2, 30, 'running'), run(173, 199, 2, 30, 'running', { iterations: 1 })] },
-    { id: 'gamma', owner: 9, local: 4, start: { hour: 110, exact: false }, runs: [run(110, 199, 3, 55, 'running')] },
-    { id: 'delta', owner: 9, local: 5, start: { hour: 100, exact: false }, runs: [run(100, 199, 4, 65, 'cancelled', { cancellation: { hour: 100, exact: false } })] },
+    project('done', 1, 100, 'running', [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed')], [marker(160, 160)]),
+    project('early', 2, 100, 'completed', [run(100, 199, 1, 100, 'completed')]),
+    project('beta', 3, 120, 'running', [run(120, 149, 2, 0, 'running'), run(150, 172, 2, 30, 'running'), run(173, 199, 2, 30, 'running', 1)]),
+    project('gamma', 4, 110, 'running', [run(110, 199, 3, 55, 'running')]),
+    project('delta', 5, 100, 'cancelled', [run(100, 199, 4, 65, 'cancelled')]),
   ];
   return validateSpecialProjectsReply(data);
 }
@@ -337,30 +341,24 @@ test('Current lists running projects closest to completion first, then completed
   assert.deepEqual(ids(before.running), ['gamma', 'done', 'beta'], 'progress orders running projects, not their ids');
   assert.deepEqual(ids(before.completed), []);
   const data = projects();
-  assert.equal(completedWhenFirstRecorded(data.projects[0], data.projects[0].runs[1]), false, 'an exact completion inside the recording lists on its own row');
-  assert.equal(completedWhenFirstRecorded(data.projects[1], data.projects[1].runs[0]), true);
-  data.projects[0].runs[1].completion = { hour: 160, exact: false };
-  assert.equal(completedWhenFirstRecorded(data.projects[0], data.projects[0].runs[1]), false, 'a completion bounded by a later read is still its own row');
+  assert.equal(completedWhenFirstRecorded(data.projects[0]), false, 'a completion seen after it ran lists on its own row');
+  assert.equal(completedWhenFirstRecorded(data.projects[1]), true, 'already complete at its first state read');
   const tie = projects();
-  tie.projects[2].runs = tie.projects[2].runs.map(run => ({ ...run, progress: 55 }));
-  assert.deepEqual(ids(currentProjects(tie, 199).running), ['gamma', 'beta'], 'equal progress keeps the earlier start first');
+  tie.projects[2].statuses = tie.projects[2].statuses.map(run => ({ ...run, progress: 55 }));
+  assert.deepEqual(ids(currentProjects(tie, 199).running), ['gamma', 'beta'], 'equal progress keeps the earlier first read first');
 });
 
-test('History lanes run in start order, split at each progress step and fold projects that ended before the range into one line', () => {
+test('History lanes run in first-read order, split at each progress step and fold projects that ended before the range into one line', () => {
   const history = projectHistory(projects(), 199);
-  assert.deepEqual(history.lanes.map(lane => lane.id), ['done', 'gamma', 'beta']);
-  const [done, gamma, beta] = history.lanes;
+  assert.deepEqual(history.lanes.map(lane => lane.id), ['early', 'delta', 'done', 'gamma', 'beta'], 'first-read order, then name');
+  const beta = history.lanes.find(lane => lane.id === 'beta')!;
   assert.deepEqual(beta.spans.map(span => [span.firstHour, span.lastHour, span.label, span.shade]), [[120, 149, '0%', 0], [150, 199, '30%', 0.3]],
     'an iteration count change at equal progress keeps one segment');
-  assert.deepEqual(gamma.spans.map(span => span.shade), [0.55]);
-  assert.deepEqual(done.spans.map(span => [span.lastHour, span.positive, span.endLabel]), [[159, true, '✓']]);
-  assert.deepEqual([history.completed, history.cancelled, history.by], [1, 1, 100]);
-  assert.equal(closedLane('closed', history)?.label, `1 completed, 1 cancelled by ${dayLabel(100)}`);
-  assert.equal(closedLane('closed', history)?.compact, true);
-  const ranged = projectHistory(projects(), 199, undefined, 165);
-  assert.deepEqual(ranged.lanes.map(lane => lane.id), ['gamma', 'beta'], 'a project that finished before the range gets no empty lane');
-  assert.deepEqual([ranged.completed, ranged.cancelled, ranged.by], [2, 1, 160]);
-  assert.equal(closedLane('closed', ranged)?.label, `2 completed, 1 cancelled by ${dayLabel(160)}`);
+  const ranged = projectHistory(projects(), 150, undefined, 165);
+  assert.deepEqual(ranged.lanes.map(lane => lane.id).sort(), ['beta', 'done', 'gamma'], 'ended projects whose last status lies before the range fold');
+  assert.deepEqual([ranged.completed, ranged.cancelled, ranged.by], [1, 1, 150]);
+  assert.equal(closedLane('closed', ranged)?.label, `1 completed, 1 cancelled by ${dayLabel(150)}`);
+  assert.equal(closedLane('closed', ranged)?.compact, true);
   assert.equal(closedLane('closed', projectHistory(fixture(), 199)), null);
 });
 
@@ -370,17 +368,15 @@ test('Current renders again only when a section, order, name, scientist, state o
   assert.equal(currentKey(data, 172), currentKey(data, 173));
   assert.notEqual(currentKey(data, 159), currentKey(data, 160));
   const overtaking = projects();
-  overtaking.projects[2].runs[2] = { ...overtaking.projects[2].runs[2], progress: 60 };
+  overtaking.projects[2].statuses[2] = { ...overtaking.projects[2].statuses[2], progress: 60 };
   assert.notEqual(currentKey(overtaking, 172), currentKey(overtaking, 173));
   assert.equal(currentProjects(data, 200).running.length, 0, 'an hour not recorded shows no cards');
   const inPart = { ...projects(), partial: [{ firstHour: 200, lastHour: 200 }] };
   assert.notEqual(currentKey(inPart, 200), currentKey(inPart, 201), 'an hour read in part and a following unrecorded hour name different reasons');
-  const bounded = projects();
-  bounded.projects[0].runs[1] = { ...bounded.projects[0].runs[1], completion: { hour: 160, exact: false } };
-  assert.notEqual(currentKey(bounded, 170), currentKey(data, 170), 'an exact completion date replaces its bound');
-  const refined = projects();
-  refined.projects[0].runs[1] = { ...refined.projects[0].runs[1], completion: { hour: 155, exact: true } };
-  assert.notEqual(historyKey(refined, 170), historyKey(data, 170), 'History renders again when a completion date moves');
+  const dated = projects();
+  dated.projects[0].entries = [marker(155, 170)];
+  assert.notEqual(currentKey(dated, 170), currentKey(data, 170), 'another completion date renders');
+  assert.notEqual(historyKey(dated, 170), historyKey(data, 170), 'History renders again when a completion date changes');
 });
 
 test('History names an interval read only in part or not at all, never as no projects, though a later read is complete or only part was read', () => {
@@ -403,43 +399,31 @@ test('History names an interval read only in part or not at all, never as no pro
   assert.equal(historyKey(empty, 160, undefined, 100), historyKey(empty, 170, undefined, 100));
 });
 
-test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no run', () => {
+test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no status', () => {
   const data = projects();
   const beta = data.projects[2];
   assert.deepEqual(runningValues(beta, 149), { progress: '0%', fill: 0, iterations: '×0' });
   assert.deepEqual(runningValues(beta, 180), { progress: '30%', fill: 0.3, iterations: '×1' });
   assert.equal(runningValues(beta, 100), null);
-  const backwards = { ...beta, runs: [{ ...beta.runs[0], progress: -20 }] };
+  const backwards = { ...beta, statuses: [{ ...beta.statuses[0], progress: -20 }] };
   assert.equal(runningValues(backwards, 130)?.fill, 0, 'a negative prototype progress draws an empty bar, its percent as recorded');
   assert.equal(runningValues(backwards, 130)?.progress, '-20%');
 });
 
-test('History following the head keeps bars past the shown hour for the chart to cut, and renders again only at a start, an end or a new scientist', () => {
+test('History bounded by the playhead shows no status past it, and renders again only at a start, an end or a new scientist', () => {
   const data = projects();
-  const live = projectHistory(data, 159, undefined, -Infinity, true);
-  const done = live.lanes.find(lane => lane.id === 'done')!;
-  assert.deepEqual(done.spans.map(span => [span.firstHour, span.lastHour, span.positive]), [[100, 159, false]], 'a completion after the hour is not shown yet');
-  const beta = live.lanes.find(lane => lane.id === 'beta')!;
-  assert.deepEqual(beta.spans.map(span => [span.firstHour, span.lastHour]), [[120, 149], [150, 199]], 'the running bar reaches past the hour');
+  assert.deepEqual(projectHistory(data, 159).lanes.find(lane => lane.id === 'done')!.spans.map(span => [span.firstHour, span.lastHour, span.positive]), [[100, 159, false]],
+    'a completion after the hour is not shown yet');
   assert.deepEqual(projectHistory(data, 159).lanes.find(lane => lane.id === 'beta')!.spans.map(span => span.lastHour), [149, 159]);
   assert.equal(historyKey(data, 150), historyKey(data, 159), 'a progress step renders nothing');
   assert.notEqual(historyKey(data, 159), historyKey(data, 160), 'a completion renders');
-  assert.notEqual(historyKey(data, 119), historyKey(data, 120), 'a project starting renders');
-  assert.deepEqual(projectHistory(data, 160, undefined, -Infinity, true).lanes.find(lane => lane.id === 'done')!.spans.map(span => [span.lastHour, span.positive, span.endLabel]),
-    [[159, true, '✓']]);
+  assert.notEqual(historyKey(data, 119), historyKey(data, 120), 'a project first recorded renders');
 });
 
-test('an ended project shows its count as of the read it comes from unless that read listed the completion', () => {
+test('a count is shown only from the history read current at the hour', () => {
   const data = fixture();
-  const done = data.projects[0].runs[1];
-  assert.equal(endedCount(done), '3 iterations', 'the read that listed the completion holds the final count');
-  const older = { ...done, iterationsRead: 140 };
-  assert.equal(endedCount(older), `3 iterations as of ${dayLabel(140)}`);
-  assert.equal(endedCount(data.projects[0].runs[0]), '2 iterations', 'a running count is the current one');
-  const card = { project: data.projects[0], run: older, info: data.presentations[0] };
-  const tip = projectTooltip(data, card);
-  assert.equal(tip.rows.find(row => row.label === 'Iterations')?.value, `3 iterations as of ${dayLabel(140)}`);
-  assert.equal(tip.description, undefined, "the game's count text is not shown as final");
+  assert.equal(endedCount(data.projects[0].statuses[1]), '3 iterations');
+  assert.equal(endedCount({ ...data.projects[0].statuses[1], iterations: null }), 'Iterations not recorded');
 });
 
 test('the iteration mark names its count only, and its tooltip says what the count is', () => {
@@ -454,7 +438,7 @@ test('the iteration mark names its count only, and its tooltip says what the cou
   assert.equal(iterationTooltip(data,{...card,run:{...card.run,iterations:null}}).rows[0].value, 'Not recorded');
 });
 
-test('a project window joins its runtime project on the episode owner and local id, read within the episode and not after the hour', () => {
+test('a project window joins its runtime project on the owner and local id, read within its statuses and not after the hour', () => {
   const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
   const card=shownCard(data,120,data.projects[0].id)!;
   const runtime=(owner:number,id:number,name:string|null,readHour=120):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour,pendingKnown:true,pending:null,seed:null,variables:null,choices:null,historyReadHour:null});
@@ -462,52 +446,51 @@ test('a project window joins its runtime project on the episode owner and local 
   const joined=(project:ProjectRuntimeDetails)=>({project,choices:project.choices});
   assert.deepEqual(runtimeProject(details([runtime(9,4,'Mod project name'),runtime(9,3,'Other')]),card,120), joined(runtime(9,3,'Other')), 'the name is not the join');
   assert.match(runtimeProject(details([runtime(10,3,'Mod project name')]),card,120) as string, /not recorded/, 'another owner with the same local id is not this project');
-  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',99)],106),card,120) as string, /before this project/, 'a reply dated within the project whose row was read before it began is not this project');
-  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',100)],106),card,120), joined(runtime(9,3,'Mod project name',100)), 'a row read at the start of the project is its own');
-  const ended={...card,project:{...card.project,runs:[card.project.runs[0]]}};
-  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',148)],148),ended,150) as string, /after this project ended/);
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',99)],106),card,120) as string, /before this project was first recorded/);
+  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',100)],106),card,120), joined(runtime(9,3,'Mod project name',100)), 'a row read at the first read is its own');
+  const ended={...card,project:{...card.project,statuses:[card.project.statuses[0]]}};
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',148)],148),ended,150) as string, /after this project was last recorded/);
   assert.equal(runtimeProject(details([runtime(9,3,'Mod project name')],121),card,120), null, 'a reply from after the displayed hour waits');
   assert.match(runtimeProject(details([]),card,120) as string, /not recorded/);
   assert.match(runtimeProject(details(null),card,120) as string, /not read/);
-  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],runs:[data.projects[0].runs[0]]}]};
+  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],statuses:[data.projects[0].statuses[0]],entries:[]}]};
   const running=shownCard(open,147,open.projects[0].id)!;
   for (const through of [null, 147]) {
     const shown = runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,through));
     assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
-      'a running project read after the list stands is not yet joined, and never said to have ended');
+      'a running project read after the list stands is not yet joined');
   }
   assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), joined(runtime(9,3,'Mod project name',160)),
     'a running project the list still covers takes its later read');
-  assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'an ended episode keeps its end');
+  assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'a project no longer listed keeps its last status');
 });
 
 test('the live pop-up names a read past the list it was joined on, and wakes when the list reaches it', () => {
   const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
-  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],runs:[data.projects[0].runs[0]]}]};
+  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],statuses:[data.projects[0].statuses[0]],entries:[]}]};
   const running=shownCard(open,147,open.projects[0].id)!;
   const read:ProjectRuntimeDetails={owner:9,id:3,label:{token:'mod_project',name:null},readHour:160,pendingKnown:true,pending:null,seed:null,variables:null,choices:null,historyReadHour:null};
   const details:SpecialProjectDetails={hour:160,scientists:null,programs:null,breakthroughs:null,projects:[read],unavailable:[],warnings:[]};
   const listed=147, shown=Math.max(147, listed), bound=episodeBound(open,running.project,listed);
-  assert.equal(runtimeProject(details,running,shown,bound), `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
-    "the pop-up at the list's own hour says why it does not join, never waits on a clock the list holds back");
+  assert.equal(runtimeProject(details,running,shown,bound), `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`);
   assert.deepEqual(joinDue(details,running,shown,bound), { hour: 160, list: true }, 'it wakes on the list reaching the read, not on the frozen hour');
   assert.deepEqual(joinDue({...details,projects:[{...read,readHour:140}]},running,shown,bound), { hour: 160, list: false }, 'a reply ahead of the shown hour waits on the clock');
   assert.equal(joinDue({...details,hour:147,projects:[{...read,readHour:140}]},running,shown,bound), null);
 });
 
-test("a pop-up joins only reads and choices of its own episode, never a predecessor's or one read in a gap", () => {
+test('a pop-up joins only reads and choices made while the project was recorded', () => {
   const data=fixture();
-  const gapped={...data,projects:[{...data.projects[0],owner:9,local:3,start:{hour:110,exact:false},runs:[{...data.projects[0].runs[0],firstHour:110,lastHour:123},{...data.projects[0].runs[0],firstHour:140,lastHour:145}]}]};
-  const card={project:gapped.projects[0],run:gapped.projects[0].runs[1],info:gapped.presentations[0]};
+  const gapped={...data,projects:[{...data.projects[0],owner:9,local:3,firstRead:110,entries:[],statuses:[{...data.projects[0].statuses[0],firstHour:110,lastHour:123,readHour:110},{...data.projects[0].statuses[0],firstHour:140,lastHour:145,readHour:140}]}]};
+  const card={project:gapped.projects[0],run:gapped.projects[0].statuses[1],info:gapped.presentations[0]};
   const choice={ordinal:0,date:100,reward:{token:'mod_reward',name:null},option:{token:'mod_option',name:null},province:0,progress:0,characterReference:'0',country:null,scientist:null,state:null};
   const read=(readHour:number,historyReadHour:number|null):ProjectRuntimeDetails=>({owner:9,id:3,label:{token:'mod_project',name:null},readHour,pendingKnown:true,pending:null,seed:null,variables:null,
     choices:historyReadHour===null?null:[choice],historyReadHour});
   const details=(project:ProjectRuntimeDetails):SpecialProjectDetails=>({hour:145,scientists:null,programs:null,breakthroughs:null,projects:[project],unavailable:[],warnings:[]});
-  assert.equal(runtimeProject(details(read(130,130)),card,145), 'Project rewards and output were read while this project was not recorded.', 'a read inside a gap of the episode is not proven its own');
-  const replaced=runtimeProject(details(read(141,100)),card,145);
-  assert.ok(replaced && typeof replaced==='object');
-  assert.equal(replaced.choices, 'Iterations were last read before this project began.', 'a predecessor with the same owner and id lends its choices to no replacement');
+  assert.equal(runtimeProject(details(read(130,130)),card,145), 'Project rewards and output were read while this project was not recorded.');
+  const before=runtimeProject(details(read(141,100)),card,145);
+  assert.ok(before && typeof before==='object');
+  assert.equal(before.choices, 'Iterations were last read before this project was first recorded.');
   assert.equal((runtimeProject(details(read(141,130)),card,145) as {choices:unknown}).choices, 'Iterations were read while this project was not recorded.');
-  assert.deepEqual((runtimeProject(details(read(141,142)),card,145) as {choices:unknown}).choices, [choice], 'choices read within the episode are its own, whatever date they carry');
+  assert.deepEqual((runtimeProject(details(read(141,142)),card,145) as {choices:unknown}).choices, [choice]);
   assert.equal((runtimeProject(details(read(141,null)),card,145) as {choices:unknown}).choices, null);
 });

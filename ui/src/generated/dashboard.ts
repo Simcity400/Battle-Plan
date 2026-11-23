@@ -3333,11 +3333,6 @@ export type WarLossesReply = { branchId: string, hour: number,
  */
 wars: Array<WarCasualties>, warnings: Array<string>, };
 export type SpecialProjectsParams = { hour?: number, branchId: string, country: CountryRef, };
-export type ProjectDate = { hour: number,
-/**
- * False: it happened by this hour, not at it.
- */
-exact: boolean, };
 export type ProjectPerson = {
 /**
  * None where the recorded reference cannot say whether a scientist is assigned.
@@ -3345,15 +3340,27 @@ export type ProjectPerson = {
 assigned: boolean | null, id: number | null, name: string | null, portrait: string | null, missing: string | null, };
 export type ProjectPresentation = { name: string, specialization: string | null, specializationName: string | null, icon: string | null, iconMissing: string | null,
 /**
- * Its index in `people`.
+ * Its index in `people`: the scientist the program read names, no one, or why it is unknown.
  */
 scientist: number,
 /**
- * A completed project loses its program: the last hour its scientist was seen assigned.
+ * The program read the scientist comes from.
  */
-scientistAsOf: number | null, };
+scientistRead: number | null,
+/**
+ * Where the program is not read now or names no one: the last scientist observed, its index in `people`, and the program read that named it.
+ */
+lastScientist: number | null, lastScientistRead: number | null, };
 export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
-export type SpecialProjectRun = { firstHour: number, lastHour: number,
+export type ProjectStatus = {
+/**
+ * Hours the list was published with this status.
+ */
+firstHour: number, lastHour: number,
+/**
+ * The first Projects read that showed this status.
+ */
+readHour: number,
 /**
  * Its index in `presentations`.
  */
@@ -3361,20 +3368,42 @@ presentation: number,
 /**
  * Prototype progress, percent, clamped to -100..=100.
  */
-progress: number, state: ProjectState, completion: ProjectDate | null, cancellation: ProjectDate | null,
+progress: number, state: ProjectState,
 /**
- * The history's choices, its completion marker apart; none where the history was not recorded.
+ * Choices after the last completion in the history read current at these hours; none where that read is not usable, or lists fewer entries than an earlier one.
  */
-iterations: number | null,
+iterations: number | null, };
+export type ProjectEntry = { ordinal: number,
 /**
- * The history read the count comes from; null where that read lists the completion, so the count is final, or where there is no count.
+ * The game's date of the choice or completion.
  */
-iterationsRead: number | null, };
-export type ProjectEpisode = { id: string,
+date: number, completion: boolean,
+/**
+ * The history read that first listed it.
+ */
+readHour: number,
+/**
+ * A completion dated within the campaign, the country's custody and its read.
+ */
+counted: boolean,
+/**
+ * A counted completion's name: its index in `presentations`, from the nearest status at or after its date; none where no status names it.
+ */
+presentation: number | null, };
+export type ProjectAttempt = {
+/**
+ * A new attempt history proves: its first entry, the read proving it and, where it is proven by a changed entry, the earlier read it changed.
+ */
+ordinal: number, date: number, readHour: number, sinceRead: number | null, };
+export type ProjectRecord = { id: string,
 /**
  * The project's raw owner id and its id within it, as the project detail products key it.
  */
-owner: number, local: number, start: ProjectDate, runs: Array<SpecialProjectRun>, };
+owner: number, local: number,
+/**
+ * The first usable Projects read of the project, published or not, and its state.
+ */
+firstRead: number, firstState: ProjectState, statuses: Array<ProjectStatus>, entries: Array<ProjectEntry>, attempts: Array<ProjectAttempt>, };
 export type SpecialProjectsReply = { branchId: string, tag: string,
 /**
  * The tag's holders over the branch.
@@ -3391,7 +3420,7 @@ available: Array<HourSpan>,
 /**
  * The hours the holders' projects were read only in part: no list is shown for them.
  */
-partial: Array<HourSpan>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
+partial: Array<HourSpan>, projects: Array<ProjectRecord>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
 /**
  * The game's text for each iteration count shown, none where it cannot be made.
  */

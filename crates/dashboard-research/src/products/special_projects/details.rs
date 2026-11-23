@@ -27,7 +27,7 @@ mod visibility;
 pub use facility::{FacilityDetails, FacilitySource};
 pub use iteration::SpecialProjectIterationAt;
 
-const COMPLETION_MARKER: u32 = super::fold::COMPLETION_MARKER;
+const COMPLETION_MARKER: u32 = super::facts::COMPLETION_MARKER;
 
 pub struct SpecialProjectDetailsAt;
 pub struct SpecialProjectEffectsAt;

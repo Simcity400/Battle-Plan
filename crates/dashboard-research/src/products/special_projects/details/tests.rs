@@ -529,43 +529,56 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     std::fs::remove_dir_all(&root).ok();
 }
 
+fn operands(history: impl Fn(i32) -> Vec<(u32, u32, i32)>, stamp: impl Fn(i32) -> i32, choice: i32, ordinal: u32, listed_at: i32) -> Result<(), String> {
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: 77, program_reference: 1, started: 1, ..Default::default() };
+        project.state.current_offset = 0x18;
+        project.state.not_completed = 1;
+        set(&mut frame, TableId::Projects, TableRows::Projects(vec![project]));
+        let rows = history(hour).into_iter().map(|(ordinal, reward, date)| {
+            let marker = reward == COMPLETION_MARKER;
+            ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: reward, option_handle: if marker { COMPLETION_MARKER } else { 42 }, date, ..Default::default() }
+        });
+        set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(rows.collect()));
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens([(41, "mod_reward"), (42, "mod_option"), (43, "mod_other"), (77, "project")].map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).into()));
+        let read = stamp(hour);
+        let mut slices: Vec<SliceReadRow> =
+            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: read })).collect();
+        slices.sort_by_key(|row| (row.table, row.owner));
+        set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+        frame
+    };
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-operands".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let context = SpecialProjectIterationAt::context(&source, &load()).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let params: iteration::SpecialProjectIterationParams = serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "read": listed_at })).unwrap();
+    let Some(Holder::Found { slot, id }) = query.holders.at(&params.country, choice).map(|run| run.holder) else { panic!("GER is held at the choice") };
+    let holder = Owner { slot, id };
+    let (cells, cancelled) = (dashboard_follow::live::Cells::default(), AtomicBool::new(false));
+    let at = At { owner: Some(holder), holders: &query.holders, hour: choice, context: &context, cancelled: &cancelled, live: &cells };
+    let listing = iteration::listed(&query, &at, &params, holder).unwrap().unwrap();
+    let reads = [Read::all(TableId::Projects), Read::all(TableId::ProjectHistory), Read::all(TableId::SliceReads)];
+    let frame = dashboard_base::products::at_hour::frame(&query, choice, &reads, SpecialProjectIterationAt::TITLE).unwrap();
+    let run = query.timeline.at(choice).unwrap().run;
+    let reads = Reads { query: &query, coverage: &context.coverage, links: &context.links, tag: &params.country, holder, run, hour: choice };
+    iteration::same_project(&frame, &reads, &listing)
+}
+
 #[test]
 fn an_iterations_project_values_need_a_read_of_the_project_at_the_choice_hour() {
-    const STALE: i32 = 24;
-    const CHOICE: i32 = 25;
-    const LISTED: i32 = 26;
-    for lagging in [true, false] {
-        let frame = |hour: i32| {
-            let mut frame = source(1, hour, None);
-            let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: 77, program_reference: 1, started: 1, ..Default::default() };
-            project.state.current_offset = 0x18;
-            project.state.not_completed = 1;
-            set(&mut frame, TableId::Projects, TableRows::Projects(vec![project]));
-            let listed = (hour >= LISTED).then(|| ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: CHOICE, ..Default::default() });
-            set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(listed.into_iter().collect()));
-            set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens([(41, "mod_reward"), (42, "mod_option"), (77, "project")].map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).into()));
-            let read = if lagging && hour == CHOICE { STALE } else { hour };
-            let mut slices: Vec<SliceReadRow> =
-                [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: read })).collect();
-            slices.sort_by_key(|row| (row.table, row.owner));
-            set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
-            frame
-        };
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
-        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-operands".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-        let context = SpecialProjectIterationAt::context(&source, &load()).unwrap();
-        let query = dashboard_base::queries::query(&source, 1).unwrap();
-        let params: iteration::SpecialProjectIterationParams = serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "read": LISTED })).unwrap();
-        let Some(Holder::Found { slot, id }) = query.holders.at(&params.country, CHOICE).map(|run| run.holder) else { panic!("GER is held at the choice") };
-        let holder = Owner { slot, id };
-        let (cells, cancelled) = (dashboard_follow::live::Cells::default(), AtomicBool::new(false));
-        let at = At { owner: Some(holder), holders: &query.holders, hour: CHOICE, context: &context, cancelled: &cancelled, live: &cells };
-        let listing = iteration::listed(&query, &at, &params, holder).unwrap().unwrap();
-        let reads = [Read::all(TableId::Projects), Read::all(TableId::ProjectHistory), Read::all(TableId::SliceReads)];
-        let frame = dashboard_base::products::at_hour::frame(&query, CHOICE, &reads, SpecialProjectIterationAt::TITLE).unwrap();
-        let run = query.timeline.at(CHOICE).unwrap().run;
-        let reads = Reads { query: &query, coverage: &context.coverage, links: &context.links, tag: &params.country, holder, run, hour: CHOICE };
-        let operands = iteration::same_project(&frame, &reads, &listing, LISTED).unwrap();
-        assert_eq!(operands.is_err(), lagging, "a project last read the hour before its choice is not proven to hold its values then, though its history and episode agree: {operands:?}");
-    }
+    let listed = |hour: i32| if hour >= 26 { vec![(0, 41, 25)] } else { Vec::new() };
+    assert!(operands(listed, |hour| if hour == 25 { 24 } else { hour }, 25, 0, 26).is_err(), "a project last read the hour before its choice is not proven to hold its values then");
+    assert_eq!(operands(listed, |hour| hour, 25, 0, 26), Ok(()));
+}
+
+#[test]
+fn an_iterations_project_values_open_from_compatible_reads_and_are_withheld_where_history_proves_another_attempt() {
+    let compatible = |hour: i32| if hour >= 22 { vec![(0, 41, 21), (1, COMPLETION_MARKER, 21)] } else { Vec::new() };
+    assert_eq!(operands(compatible, |hour| hour, 21, 0, 22), Ok(()), "T15: an empty choice-hour history is a prefix of the listing, so the choice-hour read is that choice's project");
+    let changed = |hour: i32| if hour >= 22 { vec![(0, 41, 21)] } else { vec![(0, 43, 18)] };
+    assert!(operands(changed, |hour| hour, 21, 0, 22).is_err(), "T15b: another entry at the same ordinal proves another attempt");
+    let restarted = |hour: i32| if hour >= 22 { vec![(0, 41, 20), (1, COMPLETION_MARKER, 21), (2, 41, 21)] } else { vec![(0, 41, 20)] };
+    assert!(operands(restarted, |hour| hour, 21, 2, 22).is_err(), "a completion between the choice-hour history and the choice proves the choice another attempt's");
 }

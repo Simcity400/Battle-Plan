@@ -9,7 +9,7 @@ import { MeasuredWidget } from '../../dashboard/widgetPerf.ts';
 import { measureWith } from '../../shell/perf.ts';
 import type { PerfRecorder } from '../../shell/perf.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
-import type { SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<void>(resolve => native(() => resolve()));
@@ -35,28 +35,28 @@ const identities = [{ firstHour: 0, lastHour: HOURS - 1, slot: 1, countryId: 1 }
 const GROUPS = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], identityChanges: [], warnings: [], capitulations: [],
   countryIdentities: [{ tag: 'GER', identities }], unobserved: { humans: [], factions: [], wars: [] } };
 
-const daily = (from: number, start: number, perDay: number): SpecialProjectRun[] => {
-  const runs: SpecialProjectRun[] = [];
+const daily = (from: number, start: number, perDay: number): ProjectStatus[] => {
+  const runs: ProjectStatus[] = [];
   for (let day = 0; from + day * 24 < HOURS; day++) {
     const progress = Math.min(100, start + Math.floor(day * perDay));
-    runs.push({ firstHour: from + day * 24, lastHour: Math.min(HOURS - 1, from + day * 24 + 23), presentation: 0, progress, state: 'running',
-      completion: null, cancellation: null, iterations: Math.floor(progress / 25), iterationsRead: null });
+    runs.push({ firstHour: from + day * 24, lastHour: Math.min(HOURS - 1, from + day * 24 + 23), readHour: from + day * 24, presentation: 0, progress, state: 'running',
+      iterations: Math.floor(progress / 25) });
   }
   return runs;
 };
-const merge = (runs: SpecialProjectRun[]) => runs.reduce<SpecialProjectRun[]>((out, run) => {
+const merge = (runs: ProjectStatus[]) => runs.reduce<ProjectStatus[]>((out, run) => {
   const last = out.at(-1);
   if (last && last.progress === run.progress && last.iterations === run.iterations) last.lastHour = run.lastHour; else out.push({ ...run });
   return out;
 }, []);
 export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identities, available: [{ firstHour: 0, lastHour: HOURS - 1 }], partial: [], unresolved: [],
-  presentations: [{ name: 'Rocket engines', specialization: null, specializationName: null, icon: null, iconMissing: 'none', scientist: 0, scientistAsOf: null }],
+  presentations: [{ name: 'Rocket engines', specialization: null, specializationName: null, icon: null, iconMissing: 'none', scientist: 0, scientistRead: null, lastScientist: null, lastScientistRead: null }],
   people: [{ assigned: false, id: null, name: null, portrait: null, missing: 'No scientist assigned.' }],
   iterationTexts: { 0: '0', 1: '1', 2: '2', 3: '3', 4: '4' }, unavailable: null, warnings: [],
   projects: [
-    { id: 'fast', owner: 9, local: 1, start: { hour: 0, exact: false }, runs: merge(daily(0, 10, 1 / 50)) },
-    { id: 'slow', owner: 9, local: 2, start: { hour: 0, exact: false }, runs: merge(daily(0, 0, 1 / 60)) },
-    { id: 'late', owner: 9, local: 3, start: { hour: LATE, exact: false }, runs: merge(daily(LATE, 0, 0)) },
+    { id: 'fast', owner: 9, local: 1, firstRead: 0, firstState: 'running', statuses: merge(daily(0, 10, 1 / 50)), entries: [], attempts: [] },
+    { id: 'slow', owner: 9, local: 2, firstRead: 0, firstState: 'running', statuses: merge(daily(0, 0, 1 / 60)), entries: [], attempts: [] },
+    { id: 'late', owner: 9, local: 3, firstRead: LATE, firstState: 'running', statuses: merge(daily(LATE, 0, 0)), entries: [], attempts: [] },
   ] };
 
 export const details = (read: number): SpecialProjectDetails => ({ hour: read, unavailable: [], warnings: [], projects: [],
@@ -165,7 +165,7 @@ export const fixture = {
     .map(element => [element.dataset.paint, element.textContent])),
   shown: () => Object.fromEntries([...shown].map(([id, hours]) => [id, hours.at(-1) ?? null])),
   progressAt: (id: string, hour: number) => {
-    const run = reply.projects.find(project => project.id === id)!.runs.find(run => run.firstHour <= hour && hour <= run.lastHour);
+    const run = reply.projects.find(project => project.id === id)!.statuses.find(run => run.firstHour <= hour && hour <= run.lastHour);
     return run ? `${run.progress}%` : null;
   },
 };

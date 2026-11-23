@@ -36,7 +36,7 @@ import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
-  observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
+  observedAt, completedLabel, completionDate, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
@@ -95,7 +95,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
           <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} />
           <strong className="special-project-name is-open" data-panel-label={card.project.id} onClick={event => open(card, event)}>{card.info.name}</strong>
           <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
-          <span className="special-project-when">{projectDate(card.run.completion!)}</span>
+          <span className="special-project-when">{completedLabel(card.project)}</span>
         </div>)}
         {earlier.length > 0 && <details className="special-project-earlier">
           <summary className="special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>
@@ -191,17 +191,17 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   useEffect(() => () => onDiagnostics([]), [onDiagnostics]);
   useEffect(() => () => hideTooltip(owner), [owner, view, at]);
   const from = extent[0];
-  const lanes = useMemo(() => view !== 'history' ? [] : data?.flatMap((reply, country) => {
+  const lanes = useMemo(() => view !== 'history' ? [] : notes?.flatMap((reply, country) => {
     const membership = resolved.memberships.get(reply.tag) ?? [];
-    const history = projectHistory(reply, at, membership, from, following);
+    const history = projectHistory(reply, at, membership, from);
     const closing = closedLane(JSON.stringify([country, null, 'closed']), history);
     const projects = [...history.lanes.map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) })), ...(closing ? [closing] : [])];
     const hour = projectCountryHour(reply, labelHour, membership);
     if (projectCountryHour(reply, at, membership) === null || hour === null) return [];
-    if (data.length === 1) return projects;
+    if (notes.length === 1) return projects;
     const empty = () => historyUnrecorded([reply], from, at, () => membership) ?? 'No special projects yet.';
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : empty())), ...projects];
-  }) ?? [], [data, at, from, following, labelAt, labelHour, resolved.memberships, view]);
+  }) ?? [], [notes, at, from, labelAt, labelHour, resolved.memberships, view]);
   useLayoutEffect(() => {
     if (view !== 'history' || !data) return;
     const report = () => shown(now());
@@ -210,14 +210,14 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   }, [view, data, now, subscribe, shown]);
   const openMenu = (card: ProjectCard, x: number, y: number) => {
     if (!track) return;
-    const start = jumpItem(runtime, track.id, card.project.start.hour);
-    const completion = card.run.completion;
-    menu.open(x, y, [{ ...start, label: `Jump to start · ${projectDate(card.project.start)}` },
-      ...(completion ? [{ ...jumpItem(runtime, track.id, completion.hour), label: `Jump to completion · ${projectDate(completion)}` }] : [])]);
+    const start = jumpItem(runtime, track.id, card.project.firstRead);
+    const completion = completionDate(card.project);
+    menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(card.project.firstRead)}` },
+      ...(completion !== null ? [{ ...jumpItem(runtime, track.id, completion), label: `Jump to completion · ${dayLabel(completion)}` }] : [])]);
   };
   const item = (reply: SpecialProjectsReply): ItemProps => card => {
     const atNow = () => {
-      const run = runAt(card.project.runs, now());
+      const run = runAt(card.project.statuses, now());
       return run ? { ...card, run, info: reply.presentations[run.presentation] } : card;
     };
     const show = (x: number, y: number, target: EventTarget | null) => showTooltip(owner, fitTooltip([target instanceof Element && target.closest('.special-project-iterations')

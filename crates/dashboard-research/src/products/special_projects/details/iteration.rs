@@ -122,24 +122,20 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
     Ok((|| Ok(Listing { project, row, history, definition: definition?, reward: reward?, option: option? }))())
 }
 
-pub(super) fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing, listed: i32) -> io::Result<Result<(), String>> {
+pub(super) fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing) -> Result<(), String> {
     let (owner, id, definition) = (listing.project.owner, listing.project.local_id, listing.project.definition_id);
-    let found = (|| {
-        let (row, read) = supplied_project(frame, reads, owner, id)?;
-        if read != reads.hour {
-            return Err(UNREAD_AT_CHOICE.to_owned());
-        }
-        if row.definition_id != definition || owner_read(frame, TableId::ProjectHistory, owner)? != read {
-            return Err(UNPROVEN_PROJECT.to_owned());
-        }
-        let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
-        if listing.history.starts_with(project_history(rows, owner, id)) { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
-    })();
-    if found.is_err() {
-        return Ok(found);
+    let (row, read) = supplied_project(frame, reads, owner, id)?;
+    if read != reads.hour {
+        return Err(UNREAD_AT_CHOICE.to_owned());
     }
-    let episode = super::super::one_episode(reads.query, reads.tag, (owner, id, definition), reads.hour, listed)?;
-    Ok(if episode { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) })
+    if row.definition_id != definition || owner_read(frame, TableId::ProjectHistory, owner)? != read {
+        return Err(UNPROVEN_PROJECT.to_owned());
+    }
+    let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
+    let then = project_history(rows, owner, id);
+    let after = listing.history.get(then.len()..).unwrap_or_default();
+    let restarted = after.iter().take_while(|row| row.ordinal < listing.row.ordinal).any(|row| row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER);
+    if listing.history.starts_with(then) && !restarted { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
 }
 
 fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
@@ -231,7 +227,7 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     if definition(content, &listing.definition).is_none() {
         return Ok(Err(format!("Definition {} is absent from content", listing.definition)));
     }
-    let operands = same_project(frame, &reads, &listing, params.read)?;
+    let operands = same_project(frame, &reads, &listing);
     Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, operands, out)))
 }
 

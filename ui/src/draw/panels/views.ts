@@ -160,7 +160,7 @@ export function projectChangeAfter(reply: SpecialProjectsReply, hour: number) {
   let edges = boundaries.get(reply);
   if (!edges) {
     const all = new Set<number>();
-    for (const spans of [reply.available, ...reply.projects.map(p => p.runs)]) {
+    for (const spans of [reply.available, ...reply.projects.map(p => p.statuses)]) {
       for (const span of spans) { all.add(span.firstHour); all.add(span.lastHour + 1); }
     }
     edges = Array.from(all).sort((a, b) => a - b);

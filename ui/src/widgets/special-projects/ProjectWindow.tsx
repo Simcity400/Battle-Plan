@@ -19,9 +19,9 @@ import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { REWARDS_PANEL, detailTexts, effectsRead, effectsStructure, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
-import { episodeBound, iterationsAsOf, joinDue, projectDate, runtimeProject, scientistName } from './specialProjectsData';
+import { completedLabel, episodeBound, joinDue, lastScientist, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard, RuntimeMatch } from './specialProjectsData';
-import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
 
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
@@ -44,7 +44,7 @@ function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsR
   const done = run.state === 'completed';
   useDrawnPanel(facts, clock, done ? null : feed, active);
   const person = reply.people[info.scientist];
-  const assigned = info.scientistAsOf !== null && done ? `last assigned ${dayLabel(info.scientistAsOf)}` : null;
+  const assigned = lastScientist(reply, info);
   return <>
     <header className="dossier-hero">
       <span className="dossier-art is-blueprint">{info.icon ? <img src={info.icon} alt="" /> : <ArtFallback icon="flask" />}</span>
@@ -59,7 +59,7 @@ function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsR
     </header>
     <div className={`dossier-progress${done ? ' is-done' : ''}`} ref={facts} data-project={done ? undefined : project.id}
       style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties}>
-      {done ? <strong className="dossier-progress-value">{run.completion ? `Completed ${projectDate(run.completion)}` : 'Completed'}</strong> : <>
+      {done ? <strong className="dossier-progress-value">{`Completed ${completedLabel(project)}`}</strong> : <>
         <strong className="dossier-progress-value" data-paint="progress">{run.progress}%</strong>
         <span className="special-project-progress" aria-hidden="true"><span /></span>
       </>}
@@ -103,7 +103,7 @@ function Output({ value, state, onOpen }: { value: ProjectEffects | null | undef
   </>;
 }
 
-function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { hour: number; match: RuntimeMatch; run: SpecialProjectRun }) {
+function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { hour: number; match: RuntimeMatch; run: ProjectStatus }) {
   const { project } = match;
   const done = run.state === 'completed';
   const box = useRef<HTMLDivElement>(null);
@@ -141,11 +141,11 @@ function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { h
   </div>;
 }
 
-function Iterations({ runtime, widget, tag, active, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: SpecialProjectRun;
+function Iterations({ runtime, widget, tag, active, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: ProjectStatus;
   onOpen: (link: EntityLink) => void }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const ended = run.state !== 'running' && run.state !== 'paused';
-  const final = Array.isArray(choices) && iterationsAsOf(run) === null && run.iterations === choices.length;
+  const final = Array.isArray(choices) && run.iterations === choices.length;
   const asOf = ended && !final && project.historyReadHour !== null ? ` as of ${dayLabel(project.historyReadHour)}` : '';
   return <section className="dossier-section">
     <h4>Iterations{Array.isArray(choices) && choices.length > 0 && <span className="project-window-count">{choices.length}{asOf}</span>}</h4>
