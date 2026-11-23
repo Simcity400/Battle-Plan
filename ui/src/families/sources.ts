@@ -34,24 +34,30 @@ export function resolveRetainedHeadSpan(
   return fallback;
 }
 
-export interface DisplayedStaticSnapshot {
+export interface DisplayedStaticSnapshot<TContext = unknown> {
   readonly data: unknown;
   readonly moment: string | undefined;
   readonly span: readonly [number, number] | null;
+  readonly context: TContext;
+  readonly gate: FrozenGate;
 }
 
-export function resolveDisplayedStaticSnapshot(
-  previous: DisplayedStaticSnapshot | null,
+export function resolveDisplayedStaticSnapshot<TContext>(
+  previous: DisplayedStaticSnapshot<TContext> | null,
   data: unknown,
   moment: string | undefined,
   requestedSpan: readonly [number, number] | null,
-): DisplayedStaticSnapshot | null {
+  context: TContext,
+  gate: FrozenGate,
+): DisplayedStaticSnapshot<TContext> | null {
   if (data === undefined) return null;
   if (previous && previous.data === data && previous.moment === moment) return previous;
   return {
     data,
     moment,
     span: resolveRetainedHeadSpan(moment, requestedSpan),
+    context,
+    gate,
   };
 }
 

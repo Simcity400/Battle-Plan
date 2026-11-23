@@ -110,7 +110,7 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
 interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead; placement?: number }
 type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows?: PictureSample['rows'] };
-type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; at: number; hour: number; error: string | null };
+type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; generation?: number; at: number; hour: number; error: string | null };
 
 const readerKey = (generation: number | undefined, id: number, owner: number) => (generation ?? 0) + '/' + id + '/' + owner;
 
@@ -132,6 +132,22 @@ export class PerfRecorder {
   private rowChanges: RowChange[] = [];
   private auditGen = 0;
   private pictureAudit?: { gen: number; readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
+  private auditCleanups?: (() => void)[];
+
+  private runAuditCleanups() {
+    const pending = this.auditCleanups;
+    if (!pending?.length) return;
+    this.auditCleanups = [];
+    for (const cleanup of pending) cleanup();
+  }
+
+  deferUntilAuditDone(cleanup: () => void) {
+    if (!this.auditReaders && !this.pictureAudit) {
+      cleanup();
+      return;
+    }
+    (this.auditCleanups ??= []).push(cleanup);
+  }
 
   structure(widget: string, source: string, previous: StructureRead, current: StructureRead, placement?: number) {
     if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
@@ -172,6 +188,8 @@ export class PerfRecorder {
   async beginAudit() {
     const gen = ++this.auditGen;
     this.pictureAudit = undefined;
+    this.auditReaders = undefined;
+    this.runAuditCleanups();
     this.exactReads.clear();
     this.rowChanges = [];
     this.commitAudit = [];
@@ -263,11 +281,11 @@ export class PerfRecorder {
           : 'Painted picture emitted without audit rows';
       }
       catch (cause) { error = String(cause); }
-      return { widget, surface, placement, owner, at: record.at, hour, error };
+      return { widget, surface, placement, owner, ...(record.generation !== undefined ? { generation: record.generation } : {}), at: record.at, hour, error };
     });
     if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
     const done = work.done && work.pictures.length === 0;
-    if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }
+    if (done) { this.pictureAudit = undefined; this.exactReads.clear(); this.runAuditCleanups(); }
     return { done, results: results.filter(entry => entry !== null) };
   }
   async auditPictures(): Promise<PictureAuditResult[]> {
@@ -537,6 +555,9 @@ export class PerfRecorder {
   async finish(): Promise<boolean> {
     await this.settleFrames();
     this.stopped = true;
+    this.auditReaders = undefined;
+    this.pictureAudit = undefined;
+    this.runAuditCleanups();
     clearInterval(this.timer);
     attributeCommits(null);
     cancelAnimationFrame(this.frameRequest);

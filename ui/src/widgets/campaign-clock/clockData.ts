@@ -24,6 +24,8 @@ export const CLOCK_NOTE = 'Real recorded time for the selected branch. Playing t
 export interface ClockTotals { recorded: number | null; playing: number | null; paused: number | null; complete: boolean }
 export interface ClockRow { id: string; name: string; seconds: number | null; text?: string; note: string }
 export const UNCLASSIFIED = 'Some recorded intervals have unknown pause state; playing and paused totals are unavailable.';
+export const OVERLAP_REASON = 'Overlapping recordings prevent a unique campaign clock total.';
+export const OVERLAP_WARNING = 'Recording intervals overlap; a unique campaign duration cannot be established.';
 const GAPS = 'Only recorded intervals are included. Recording gaps are not counted as paused or playing time.';
 
 export const clockWarnings = (totals: Pick<ClockTotals, 'playing' | 'complete'>): string[] =>

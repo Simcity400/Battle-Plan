@@ -20,6 +20,7 @@ import {
   wireWhole,
   zeroValue,
 } from './value.ts';
+import { canonicalAuditData } from './audit.ts';
 import { auditValue, formatValueState, spokenValue } from './valueFormat.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -163,4 +164,32 @@ test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, d
   assert.equal(spokenValue(knownValue(big), { decimals: 0, maxDecimals: 2 }), '1,152,921,504,606,846,983');
   const bigSeconds = 3600n * 100000000000000000n + 61n;
   assert.equal(spokenValue(knownValue(bigSeconds), 'clockSeconds'), '100000000000000000:01:01');
+
+  assert.equal(spokenValue(knownValue(1e21), 'integer'), spokenValue(knownValue(10n ** 21n), 'integer'));
+  assert.equal(spokenValue(knownValue(1e21), 'integer'), '1,000,000,000,000,000,000,000');
+  assert.equal(spokenValue(knownValue(1e21), 'decimal1'), spokenValue(knownValue(10n ** 21n), 'decimal1'));
+  assert.equal(spokenValue(knownValue(1e21), 'percent2'), spokenValue(knownValue(10n ** 21n), 'percent2'));
+});
+
+test('canonicalAuditData encodes Map and Set deterministically with tags and throws on unsupported container types', () => {
+  const m1 = new Map<string, number>([['b', 2], ['a', 1]]);
+  const m2 = new Map<string, number>([['a', 1], ['b', 2]]);
+  const m3 = new Map<string, number>([['a', 1], ['b', 3]]);
+  assert.equal(canonicalAuditData(m1), canonicalAuditData(m2));
+  assert.notEqual(canonicalAuditData(m1), canonicalAuditData(m3));
+  assert.notEqual(canonicalAuditData(m1), canonicalAuditData({}));
+
+  const s1 = new Set(['z', 'a']);
+  const s2 = new Set(['a', 'z']);
+  const s3 = new Set(['a', 'b']);
+  assert.equal(canonicalAuditData(s1), canonicalAuditData(s2));
+  assert.notEqual(canonicalAuditData(s1), canonicalAuditData(s3));
+  assert.notEqual(canonicalAuditData(s1), canonicalAuditData({}));
+
+  class CustomBox { x: number; constructor(x: number) { this.x = x; } }
+  assert.throws(() => canonicalAuditData(new Date(0)), /Unsupported audit value type: Date/);
+  assert.throws(() => canonicalAuditData(/abc/), /Unsupported audit value type: RegExp/);
+  assert.throws(() => canonicalAuditData(new CustomBox(1)), /Unsupported audit value type: CustomBox/);
+  assert.throws(() => canonicalAuditData(Symbol('s')), /Unsupported audit value type: symbol/);
+  assert.throws(() => canonicalAuditData(() => 1), /Unsupported audit value type: function/);
 });

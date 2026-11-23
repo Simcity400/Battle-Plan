@@ -3,7 +3,8 @@ import type { LiveValues } from '../../charts/live';
 import type { SortValue } from '../../charts/table/logic';
 import { CELL, cellState, cellValue, rowName, textAt } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
-import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';
+import type { ApmGroup, ApmMembership, ApmPlayer, ApmSeries, ApmValue } from '../../generated/dashboard';
+import { playerNames } from './apmData.ts';
 
 const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
@@ -102,4 +103,21 @@ export function apmPausedView(head: number | null, first: number, last: number, 
 
 export function apmHolders(rows: readonly Pick<ApmSeries, 'id' | 'tag' | 'hour'>[], shown: number | null): { key: string; tag: string; hour: number }[] {
   return rows.flatMap(row => row.tag ? [{ key: row.id, tag: row.tag, hour: shown === null ? row.hour : Math.min(row.hour, shown) }] : []);
+}
+
+export function apmHeadNamesKey(answer: FollowedAnswer | undefined): string {
+  const rows = apmHeadRows(answer);
+  if (!rows.length) return '';
+  return JSON.stringify(rows.map(row => [row.id, row.name]));
+}
+
+export function datedPlayerNames(
+  rows: readonly Pick<ApmSeries, 'id' | 'name'>[],
+  headAnswer: FollowedAnswer | undefined,
+  registry?: readonly Pick<ApmPlayer, 'id' | 'name'>[],
+): Map<string, string> {
+  if (!headAnswer) return playerNames(rows, registry);
+  const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row.name]));
+  const datedRows = rows.map(row => (headById.has(row.id) ? { id: row.id, name: headById.get(row.id) ?? null } : { id: row.id, name: row.name }));
+  return playerNames(datedRows, registry);
 }

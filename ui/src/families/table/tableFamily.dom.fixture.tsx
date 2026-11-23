@@ -5,12 +5,16 @@ import { tooltipStore } from '../../charts/tooltip.ts';
 import TooltipLayer from '../../charts/TooltipLayer.tsx';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { pipelineFor, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
+import { pipelineFor, type LaneWorker, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
 import { FollowedWidgetKey } from '../../dashboard/follow/store.ts';
 import { answerBody } from '../../dashboard/follow/messages.fixture.ts';
 import { packet, resetStamps, splitForLanes } from '../../dashboard/follow/split.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback.ts';
+import type { FromLane, ToLane } from '../../draw/laneMessages';
+import { laneDispatch } from '../../draw/laneDispatch.ts';
+import type { CadenceTimers } from '../cadence.ts';
+import { familyTableLaneView } from './laneView.ts';
 import { tableSettingsOf } from './settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDomShared.ts';
 import FamilyTableHost from './FamilyTableHost.tsx';
@@ -68,7 +72,50 @@ const client = {
 
 const clock = new PlaybackController();
 clock.setBounds({ firstHour: 0, lastHour: 2000 });
-const workers = [0, 1].map(() => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }));
+
+let cadenceHold = false;
+let frozenNow = 0;
+let timerIdSeq = 1;
+let timerFiredCount = 0;
+const heldTimers = new Map<number, () => void>();
+const controlledClock = () => (cadenceHold ? frozenNow : performance.now());
+const controlledTimers: CadenceTimers = {
+  set(fn, ms) {
+    if (cadenceHold) {
+      const id = timerIdSeq++;
+      heldTimers.set(id, fn);
+      return id as unknown as ReturnType<typeof setTimeout>;
+    }
+    return setTimeout(() => { timerFiredCount++; fn(); }, ms);
+  },
+  clear(id) {
+    const num = id as unknown as number;
+    if (heldTimers.delete(num)) return;
+    clearTimeout(id);
+  },
+};
+
+function createControlledLane(): LaneWorker {
+  const worker: LaneWorker = {
+    onmessage: null,
+    postMessage(message: ToLane) {
+      queueMicrotask(() => dispatch(message));
+    },
+  };
+  const dispatch = laneDispatch(
+    (message: FromLane) => {
+      queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
+    },
+    {
+      views: (_kind, wake) => familyTableLaneView(wake, { cadenceTimers: controlledTimers, clock: controlledClock }),
+      crop: sources => Promise.all(sources.map(source => createImageBitmap(source as OffscreenCanvas))),
+      later: run => requestAnimationFrame(() => run()),
+    },
+  );
+  return worker;
+}
+
+const workers = [0, 1].map(() => createControlledLane());
 const host: PipelineHost = {
   lanes: workers,
   open: list => client.openFollow!(list),
@@ -302,11 +349,17 @@ window.tableFamilyDom = {
 
       const wantTop = 'FRA';
       const pauseHour = sentThrough + 1;
+      frozenNow = performance.now() + 50;
+      cadenceHold = true;
+      timerFiredCount = 0;
+      heldTimers.clear();
       flipFromHour = pauseHour;
       feed(pauseHour);
       const reachedFlip = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
       if (!reachedFlip) throw new Error(`Live playback did not reach flipped hour ${pauseHour} (at ${pipeline.view(pipeId)?.h})`);
       const beforePauseTop = hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') ?? null;
+      const pendingTimersBeforePause = heldTimers.size;
+      const timerFiredBeforePause = timerFiredCount;
 
       clock.setPlaying(false);
       const flushedOnPause = await until(
@@ -316,6 +369,8 @@ window.tableFamilyDom = {
       if (!flushedOnPause) {
         throw new Error(`Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key')})`);
       }
+      const timerFiredAfterPause = timerFiredCount;
+      const pendingTimersAfterPause = heldTimers.size;
 
       const view = pipeline.view(pipeId);
       const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({
@@ -326,6 +381,10 @@ window.tableFamilyDom = {
         playingDuringAdvance,
         playingBeforePause,
         beforePauseTop,
+        pendingTimersBeforePause,
+        pendingTimersAfterPause,
+        timerFiredBeforePause,
+        timerFiredAfterPause,
         commits: playCommits,
         totalInstallReads: playReads,
         pauseInstallReads: totalInstallReads,
@@ -336,6 +395,8 @@ window.tableFamilyDom = {
         mirrorRows,
       };
     } finally {
+      cadenceHold = false;
+      heldTimers.clear();
       stopFeed();
       clock.setPlaying(false);
     }

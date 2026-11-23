@@ -15,19 +15,38 @@ export function noteFrame(at: number) {
 let audit: DrawSample[] | null = null;
 let draining: DrawSample[] | null = null;
 let auditOffset = 0;
+const auditListeners = new Set<(active: boolean) => void>();
+
+function notifyAuditing(active: boolean) {
+  for (const listener of [...auditListeners]) listener(active);
+}
 
 export const auditing = () => audit !== null;
+export function onAuditingChange(listener: (active: boolean) => void): () => void {
+  auditListeners.add(listener);
+  return () => { auditListeners.delete(listener); };
+}
 export function recordPicture(sample: DrawSample) { audit?.push(sample); }
 
 export function capturePictures(start: boolean): Promise<DrawSample[]> {
-  if (start) { audit = []; draining = null; auditOffset = 0; return Promise.resolve([]); }
+  const was = audit !== null;
+  if (start) {
+    audit = []; draining = null; auditOffset = 0;
+    if (!was) notifyAuditing(true);
+    return Promise.resolve([]);
+  }
   const records = audit ?? draining ?? [];
   audit = null; draining = null; auditOffset = 0;
+  if (was) notifyAuditing(false);
   return Promise.resolve(records);
 }
 
 export function capturePicturesBatch(limit: number): Promise<{ records: DrawSample[]; done: boolean }> {
-  if (!draining) { draining = audit ?? []; audit = null; auditOffset = 0; }
+  if (!draining) {
+    const was = audit !== null;
+    draining = audit ?? []; audit = null; auditOffset = 0;
+    if (was) notifyAuditing(false);
+  }
   const count = Math.max(1, Math.floor(limit));
   const chunk = draining.slice(auditOffset, auditOffset + count);
   auditOffset += chunk.length;

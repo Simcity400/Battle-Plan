@@ -24,7 +24,6 @@ import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
-import { lookAt } from '../looks.ts';
 import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow } from './model.ts';
 
 export { computeColumnMaxima };
@@ -106,12 +105,10 @@ export interface DrawFamilyTableInput {
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
 
-function colorOf(theme: TableTheme, tone: string | undefined, country: string | undefined, fraction: number | null, hour: number): string {
+function colorOf(theme: TableTheme, tone: string | undefined, countryColor: string | null, fraction: number | null): string {
   if (!tone) return theme.text;
   if (tone === 'country') {
-    if (!country) return theme.text;
-    const dated = lookAt(theme.countryLooks?.[country], hour)?.color;
-    return dated ?? theme.country?.[country] ?? theme.text;
+    return countryColor ?? theme.text;
   }
   if (tone === 'value-good' || tone === 'value-bad') {
     if (fraction === null) return theme.muted;
@@ -484,12 +481,12 @@ export function drawFamilyTable(
 
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout, slotWidth: number) => {
     const cell = item.row.cells[column.key];
-    const paintModel = resolveCellPaintModel(cell, column, hour, maxima);
+    const paintModel = resolveCellPaintModel(cell, column, hour, maxima, theme);
     const formatted = formatValueState(paintModel.value, paintModel.format);
     const span = Math.max(1, barSpanOf(column, slotWidth) * dpr);
     const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
-    const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.country ?? undefined, fraction, hour);
+    const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
     const icon = paintModel.icon ?? undefined;
     const art = icon === undefined ? '' : `${icon}\u0003${icons?.get(icon) ? 1 : icons?.get(icon) === null ? 2 : 0}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);

@@ -4,6 +4,7 @@ import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { restartPipeline } from '../../dashboard/follow/pipeline.ts';
@@ -18,13 +19,13 @@ import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
 import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import { AuditSnapshotStore, auditIdOf, auditRowsOf } from '../audit.ts';
+import { AuditSnapshotStore, auditIdOf, auditRowsOf, isFamilyAuditing, subscribeFamilyAuditing, useFamilyAuditing } from '../audit.ts';
 import type { FamilySources, FamilySourceSubscription, MirrorModel } from '../contract.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import { readFamilyTheme } from '../theme.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
-import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableProjection } from './model.ts';
+import { deriveTableAudit, resolveTableRows, type CountryColorSource, type TableColumnSpec, type TableProjection } from './model.ts';
 import './tableFamily.css';
 
 export type { FamilySourceSubscription };
@@ -47,6 +48,7 @@ interface AuditSnapshot<TOptions> {
   readonly width: number;
   readonly window: { readonly first: number; readonly count: number };
   readonly measuredWidths: Readonly<Record<string, number>>;
+  readonly countryColors?: CountryColorSource;
 }
 
 export interface FamilyTableHostProps<TOptions> {
@@ -149,6 +151,7 @@ export default function FamilyTableHost<TOptions>({
   const prepared = useContext(PreparingPage);
   const frame = useWidgetFrame();
   useWidgetSkeleton('table');
+  const captureActive = useFamilyAuditing();
   const viewportHeight = useViewportHeight();
   const contextMenu = useContextMenu(`${label} actions`);
   const contextMenuRef = useRef(contextMenu);
@@ -193,11 +196,13 @@ export default function FamilyTableHost<TOptions>({
     width: number;
     windowFirst: number;
     windowCount: number;
+    countryLooks: CountryLooksMap | undefined;
+    countryPalette: Readonly<Record<string, string>> | undefined;
   } | null>(null);
   const measuredWidthsRef = useRef<Readonly<Record<string, number>>>({});
   const hoverTipShownRef = useRef(false);
-  const hoverFittedTipRef = useRef<{ raw: TooltipContent; height: number; fitted: TooltipContent } | null>(null);
-  const focusFittedTipRef = useRef<{ raw: TooltipContent; height: number; fitted: TooltipContent } | null>(null);
+  const hoverFittedTipRef = useRef<{ raw: TooltipContent; subtitle: string; height: number; fitted: TooltipContent } | null>(null);
+  const focusFittedTipRef = useRef<{ raw: TooltipContent; subtitle: string; height: number; fitted: TooltipContent } | null>(null);
   const lastMirrorKeyRef = useRef('');
   const lastExtentRef = useRef({ height: -1, width: -1, count: -1 });
   const navRef = useRef<readonly NavEntry[]>([]);
@@ -241,8 +246,15 @@ export default function FamilyTableHost<TOptions>({
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
     if (frame && lastAnnounceKeyRef.current) frame.clearAnnouncement(lastAnnounceKeyRef.current);
-    auditStoreRef.current?.clear();
   }, [tooltipOwner, frame]);
+
+  useEffect(() => () => {
+    const store = auditStoreRef.current;
+    if (store) {
+      if (perfLog) perfLog.deferUntilAuditDone(() => store.clear());
+      else store.clear();
+    }
+  }, []);
 
   const announce = useCallback((message: string) => {
     if (frame) {
@@ -331,6 +343,7 @@ export default function FamilyTableHost<TOptions>({
     offset,
     bounds,
     allowEmptyFollow,
+    captureActive,
     columns: initialColumns,
   });
   latestRef.current = {
@@ -348,6 +361,7 @@ export default function FamilyTableHost<TOptions>({
     offset,
     bounds,
     allowEmptyFollow,
+    captureActive,
     columns: meta.columns.length ? meta.columns : initialColumns,
   };
 
@@ -365,7 +379,7 @@ export default function FamilyTableHost<TOptions>({
       )
       : undefined;
     let auditId: number | undefined;
-    if (perfLog && cur.exactSources) {
+    if (perfLog && cur.captureActive && cur.exactSources) {
       const prev = lastAuditRef.current;
       const win = viewWindowRef.current;
       if (
@@ -378,6 +392,8 @@ export default function FamilyTableHost<TOptions>({
         && prev.width === w
         && prev.windowFirst === win.first
         && prev.windowCount === win.count
+        && prev.countryLooks === cur.theme?.countryLooks
+        && prev.countryPalette === cur.theme?.country
       ) {
         auditId = prev.id;
       } else {
@@ -390,6 +406,7 @@ export default function FamilyTableHost<TOptions>({
           width: w,
           window: { first: win.first, count: win.count },
           measuredWidths: measuredWidthsRef.current,
+          countryColors: cur.theme ? { countryLooks: cur.theme.countryLooks, country: cur.theme.country } : undefined,
         });
         lastAuditRef.current = {
           id: auditId,
@@ -401,6 +418,8 @@ export default function FamilyTableHost<TOptions>({
           width: w,
           windowFirst: win.first,
           windowCount: win.count,
+          countryLooks: cur.theme?.countryLooks,
+          countryPalette: cur.theme?.country,
         };
       }
     }
@@ -423,7 +442,7 @@ export default function FamilyTableHost<TOptions>({
       reducedMotion: reducedMotionEnabled(),
       window: viewWindowRef.current,
       pauseFlush: pauseFlushRef.current,
-      ...(perfLog && auditId !== undefined ? { audit: true, auditId } : {}),
+      ...(perfLog && cur.captureActive && auditId !== undefined ? { audit: true, auditId } : {}),
     };
     held.canvas.style.width = `${w}px`;
     held.canvas.style.height = `${h}px`;
@@ -594,21 +613,24 @@ export default function FamilyTableHost<TOptions>({
     surfaceRef.current = { canvas: drawn.canvas, extent, surface: drawn.surface };
 
     const fitTooltipCached = (
-      cacheRef: { current: { raw: TooltipContent; height: number; fitted: TooltipContent } | null },
+      cacheRef: { current: { raw: TooltipContent; subtitle: string; height: number; fitted: TooltipContent } | null },
       raw: TooltipContent,
+      hour: number,
       height: number,
     ): TooltipContent => {
+      const subtitle = formatDateTime(Math.floor(hour));
       const cached = cacheRef.current;
-      if (cached && cached.raw === raw && cached.height === height) return cached.fitted;
-      const fitted = fitTooltip([raw], height);
-      cacheRef.current = { raw, height, fitted };
+      if (cached && cached.raw === raw && cached.subtitle === subtitle && cached.height === height) return cached.fitted;
+      const dated = raw.subtitle ? raw : { ...raw, subtitle };
+      const fitted = fitTooltip([dated], height);
+      cacheRef.current = { raw, subtitle, height, fitted };
       return fitted;
     };
 
     const updateTooltip = (
       tip: { hour: number; rowKey: string; content: TooltipContent } | null,
       pos: { x: number; y: number } | null,
-      cacheRef: { current: { raw: TooltipContent; height: number; fitted: TooltipContent } | null },
+      cacheRef: { current: { raw: TooltipContent; subtitle: string; height: number; fitted: TooltipContent } | null },
     ) => {
       if (pinnedTipRef.current) return;
       if (!tip || !pos) {
@@ -617,7 +639,7 @@ export default function FamilyTableHost<TOptions>({
         return;
       }
       hoverTipShownRef.current = true;
-      const fitted = fitTooltipCached(cacheRef, tip.content, latestRef.current.viewportHeight);
+      const fitted = fitTooltipCached(cacheRef, tip.content, tip.hour, latestRef.current.viewportHeight);
       showTooltip(tooltipOwner, fitted, pos.x, pos.y, tip.rowKey);
     };
 
@@ -725,15 +747,14 @@ export default function FamilyTableHost<TOptions>({
           lastExtentRef.current.height = extHeight;
           extent.style.height = `${extHeight}px`;
         }
-        if (focusedKeyRef.current) {
-          const navEntry = navRef.current.find(item => item[0] === focusedKeyRef.current);
-          if (navEntry) {
-            if (focusInsideRef.current) scrollRowIntoView(navEntry[2]);
+        if (focusInsideRef.current && focusedKeyRef.current) {
+          if (tableInfo.focusedIndex >= 0) {
+            scrollRowIntoView(tableInfo.focusedIndex);
           } else {
             const fallbackKey = navRef.current[0]?.[0] ?? null;
             if (fallbackKey !== focusedKeyRef.current) {
               focusedKeyRef.current = fallbackKey;
-              if (focusInsideRef.current) queueMicrotask(() => bindRef.current());
+              queueMicrotask(() => bindRef.current());
             }
           }
         }
@@ -757,7 +778,7 @@ export default function FamilyTableHost<TOptions>({
       const focusTipField = shown.fields.focusTooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
       if (focusInsideRef.current && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
         const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(focusedKeyRef.current)}"]`);
-        if (tr) tr.setAttribute('aria-description', tooltipText(fitTooltipCached(focusFittedTipRef, focusTipField.text.content, latestRef.current.viewportHeight)));
+        if (tr) tr.setAttribute('aria-description', tooltipText(fitTooltipCached(focusFittedTipRef, focusTipField.text.content, lastHourRef.current, latestRef.current.viewportHeight)));
       }
       if (!shown.dim && !heldRef.current) {
         if (inspectedKeyRef.current && lastPointerRef.current && hoverTipField?.text && hoverTipField.text.rowKey === inspectedKeyRef.current) {
@@ -952,9 +973,14 @@ export default function FamilyTableHost<TOptions>({
     node.addEventListener('pointercancel', onPointerCancel);
     node.addEventListener('contextmenu', onContextMenu);
     node.addEventListener('scroll', onScroll, { passive: true });
+    const stopAuditWatch = subscribeFamilyAuditing(() => {
+      latestRef.current.captureActive = isFamilyAuditing();
+      bindRef.current();
+    });
     bindRef.current();
 
     return () => {
+      stopAuditWatch();
       stopInstall();
       resizeObserver.disconnect();
       node.removeEventListener('pointermove', onPointerMove);
@@ -998,6 +1024,7 @@ export default function FamilyTableHost<TOptions>({
         hiddenKeys: new Set(computedLayout.hidden),
         rankShown,
         window: snap.window,
+        countryColors: snap.countryColors,
       });
       return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
     }, pipeline.generation);
@@ -1019,7 +1046,7 @@ export default function FamilyTableHost<TOptions>({
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, settings, theme, staticSources, selectedKey, expanded, subsReady, auditable, exactSources]);
+  }, [pipe, enabled, bind, options, settings, theme, staticSources, selectedKey, expanded, subsReady, auditable, exactSources, captureActive]);
 
   useEffect(() => {
     let wasPlaying = runtime.clock.getSnapshot().playing;
@@ -1129,7 +1156,8 @@ export default function FamilyTableHost<TOptions>({
       if (pipeline && pipe !== null && !heldRef.current && !dimRef.current) {
         const focusTipField = pipeline.view(pipe)?.fields?.focusTooltip as { text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
         if (focusTipField?.text && focusTipField.text.rowKey === currentKey) {
-          const pinnedContent: TooltipContent = { ...focusTipField.text.content, subtitle: `Pinned at ${focusTipField.text.content.subtitle ?? ''}` };
+          const dateText = formatDateTime(Math.floor(lastHourRef.current));
+          const pinnedContent: TooltipContent = { ...focusTipField.text.content, subtitle: `Pinned at ${dateText}` };
           refreshFocusAnchor();
           const pos = focusAnchorRef.current;
           pinnedTipRef.current = { key: focusTipField.text.rowKey, content: pinnedContent, x: pos.x, y: pos.y };

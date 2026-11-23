@@ -646,18 +646,26 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn rank_at_by(&self, hour: i32, n: usize, least: bool) -> io::Result<Vec<String>> {
+        Ok(self.rank_at_by_checked(hour, n, least)?.unwrap_or_default())
+    }
+
+    pub(crate) fn rank_at_by_checked(&self, hour: i32, n: usize, least: bool) -> io::Result<Result<Vec<String>, String>> {
         self.owners_only("a rank at an hour")?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
-            return Ok(Vec::new());
+            return Ok(Err(self.query.timeline.reason(hour)));
         };
-        if self.withheld_at(stretch.run, hour).is_some() {
-            return Ok(Vec::new());
+        if let Some(reason) = self.withheld_at(stretch.run, hour) {
+            return Ok(Err(reason.to_string()));
         }
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
         let snapshot = crate::cost::storage(|| replay_lanes::lanes::at(recording, stretch.run, self.series.table, hour, Some(&columns)))?;
-        if !matches!(snapshot.status, Status::Complete) {
-            return Ok(Vec::new());
+        let status_reason = match snapshot.status {
+            Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
+            _ => None,
+        };
+        if let Some(reason) = board::table_unrecorded(self.series.table, snapshot.status, status_reason) {
+            return Ok(Err(reason));
         }
         let view = snapshot.view();
         let holders = self.by_key();
@@ -676,7 +684,7 @@ impl<'q, 'a> Line<'q, 'a> {
             values.truncate(n);
         }
         values.sort_unstable_by(order);
-        Ok(values.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect())
+        Ok(Ok(values.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
     }
 
     pub fn ranked(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<Vec<RankedLine>> {

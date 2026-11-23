@@ -286,3 +286,53 @@ test('unaudited painted pictures fail audit explicitly and reader(null) unregist
   await capturePictures(false);
   await capturePicturesBatch(100);
 });
+
+test('P4: deferUntilAuditDone retains widget audit snapshots across unmount until active audit drains', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const { AuditSnapshotStore } = await import('../families/audit.ts');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+  const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
+  Object.assign(recorder as unknown as Record<string, unknown>, {
+    readers: new Map(),
+    commitSequence: 0,
+    rowChanges: [],
+    exactReads: new Map(),
+    auditGen: 0,
+    lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0,
+    stopped: false,
+    push: () => {},
+    flush: async () => {},
+  });
+
+  const store = new AuditSnapshotStore<{ expected: string }>(16);
+  const snapId = store.create({ expected: 'ok-before-remount' });
+  const stopReader = recorder.reader(9, -1, async (_hour, auditId) => {
+    const snap = store.require(auditId);
+    return { values: new Map([['R:v', snap.expected]]), ordered: true };
+  }, 1);
+
+  await recorder.beginAudit();
+  recordPicture({
+    t: 'picture', at: 10, shownAt: 10, seek: 0, widget: 'w-remount', surface: 'table', placement: 9, owner: -1, generation: 1,
+    renderer: 'page', head: 10, hour: 10, offset: 0, eligibleHour: 10, drawMs: 0, mode: 'picture', dim: false,
+    reset: 0, binding: 0, inspect: null, tooltip: false, auditId: snapId,
+    rows: [{ row: 'R', key: 'R:v', value: 'ok-before-remount' }],
+  });
+
+  stopReader();
+  recorder.dropGeneration(1);
+  recorder.deferUntilAuditDone(() => store.clear());
+  assert.equal(store.get(snapId)?.expected, 'ok-before-remount', 'snapshot stays alive while audit is still active');
+
+  const drained = await recorder.auditPicturesBatch(10);
+  assert.equal(drained.done, true);
+  assert.equal(drained.results.length, 1);
+  assert.equal(drained.results[0]!.error, null, 'deferred verification succeeds against retained snapshot after unmount');
+  assert.equal(store.get(snapId), undefined, 'deferred cleanup releases snapshots once audit drains');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});

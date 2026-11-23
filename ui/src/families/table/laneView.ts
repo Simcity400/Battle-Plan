@@ -4,7 +4,7 @@ import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
-import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
+import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
 import { nextLookChange, type CountryLooksMap } from '../looks.ts';
@@ -224,11 +224,13 @@ function lazyLiveMap(
 export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): FamilySources {
   let answers: Map<string, FollowedAnswer | undefined> | null = null;
   let panels: Map<string, unknown> | null = null;
+  let refused: Map<string, string> | null = null;
   let live: ReadonlyMap<string, LiveValues<number | bigint | string> | null> | null = null;
   const ensureNonLive = () => {
-    if (answers && panels) return;
+    if (answers && panels && refused) return;
     answers = new Map();
     panels = new Map();
+    refused = new Map();
     if (binding.staticAnswers) {
       for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
     }
@@ -241,12 +243,16 @@ export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): Fam
       const head = picture?.parts[0]?.value;
       if (!head) continue;
       if (head.kind === 'answer') answers.set(name, answerOf(head));
-      else if (head.kind === 'panel' && head.refused === null) panels.set(name, head.data);
+      else if (head.kind === 'panel') {
+        if (head.refused === null) panels.set(name, head.data);
+        else refused.set(name, head.refused);
+      }
     }
   };
   return {
     get answers() { ensureNonLive(); return answers!; },
     get panels() { ensureNonLive(); return panels!; },
+    get refused() { ensureNonLive(); return refused!; },
     get live() { return live ??= lazyLiveMap(scene, binding); },
   };
 }
@@ -324,7 +330,10 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
   ]);
 }
 
-export function familyTableLaneView(wake: (widget: number) => void): LaneView {
+export function familyTableLaneView(
+  wake: (widget: number) => void,
+  laneOptions?: { readonly cadenceTimers?: CadenceTimers; readonly clock?: () => number },
+): LaneView {
   return {
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
@@ -408,7 +417,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           tipField: null,
           focusTipGate,
           focusTipField: null,
-          flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate]),
+          flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate], laneOptions?.cadenceTimers),
           auditId: -1,
           auditWindowKey: '',
           auditField: null,
@@ -473,6 +482,10 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         held.cachedRowIndex = rowIndex;
       }
       const tProj = timed ? performance.now() : 0;
+      if (model.refused !== undefined) {
+        held.flusher.cancel();
+        return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
+      }
 
       const rankShown = model.rank === true;
       const rankMarkersOn = rankShown && model.rankMarkers === true;
@@ -536,7 +549,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         held.widthsField = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
       }
 
-      const now = input.now;
+      const now = laneOptions?.clock ? laneOptions.clock() : input.now;
       const glideMs = glideDurationForSpeed(input.speed, bound.reducedMotion === true);
       const rowHeight = ROW_HEIGHT[bound.settings.density];
       if (modelChanged) {
@@ -673,7 +686,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       if (modelChanged || layoutChanged) held.mirrorGate.invalidate();
       if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
         const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey);
+        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey, focusedIndex);
         const mirrorText = JSON.stringify(mirror);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
         held.mirrorGate.record(now, mirrorKey);
@@ -739,12 +752,16 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
             rankShown,
             maxima: cachedMaxima,
             window: bound.window,
+            countryColors: bound.theme,
           });
           held.auditId = nextAuditId;
           held.auditWindowKey = winKey;
           held.auditField = { value: { id: nextAuditId, rows: auditRows }, content: content() };
         }
         fields.audit = held.auditField;
+      } else {
+        held.auditField = null;
+        held.auditId = -1;
       }
 
       if (timed) {
@@ -768,7 +785,8 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      return { mode: 'picture', surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
+      const handledPicture = model.rows.length > 0 || model.empty !== undefined;
+      return { ...(handledPicture ? { mode: 'picture' as const } : {}), surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
     },
   };
 }

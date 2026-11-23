@@ -327,7 +327,7 @@ impl HeadValue for ClockHead {
             return Err("Playing and paused time were not recorded in this campaign.".into());
         }
         if reply.recorded_seconds.is_none() {
-            return Err("Overlapping recordings prevent a unique campaign clock total.".into());
+            return Err(campaign_clock::OVERLAP_REASON.into());
         }
         rows.row(0, "clock");
         rows.float(reply.recorded_seconds);

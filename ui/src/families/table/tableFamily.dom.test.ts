@@ -13,6 +13,10 @@ test('table family plays live with zero React commits, zero layout reads on inst
       playingDuringAdvance: boolean;
       playingBeforePause: boolean;
       beforePauseTop: string | null;
+      pendingTimersBeforePause: number;
+      pendingTimersAfterPause: number;
+      timerFiredBeforePause: number;
+      timerFiredAfterPause: number;
       commits: number;
       totalInstallReads: number;
       pauseInstallReads: number;
@@ -22,10 +26,14 @@ test('table family plays live with zero React commits, zero layout reads on inst
       finalHour: number | null;
       mirrorRows: { key: string | null; cells: (string | null)[] }[];
     }>('playLive(22)');
-    t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, flushedOnPause=${played.flushedOnPause}`);
+    t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, pendingBefore=${played.pendingTimersBeforePause}, pendingAfter=${played.pendingTimersAfterPause}, timerFired=${played.timerFiredBeforePause}/${played.timerFiredAfterPause}, flushedOnPause=${played.flushedOnPause}`);
     assert.equal(played.playingDuringAdvance, true, 'clock.playing was true during frame advance');
     assert.equal(played.playingBeforePause, true, 'clock.playing stayed true until pause');
-    assert.equal(played.beforePauseTop, 'GER', 'S8: mirror was still throttled on GER before pause, proving pause flushed it to FRA');
+    assert.equal(played.beforePauseTop, 'GER', 'S8: mirror was still throttled on GER before pause with controlled clock');
+    assert.ok(played.pendingTimersBeforePause > 0, 'S8: trailing flush timer was armed and held before pause');
+    assert.equal(played.timerFiredBeforePause, 0, 'S8: trailing timer did not fire before pause');
+    assert.equal(played.timerFiredAfterPause, 0, 'S8: pause flushed the mirror without the trailing timer firing');
+    assert.equal(played.pendingTimersAfterPause, 0, 'S8: pause cancelled the pending trailing timer');
     assert.equal(played.commits, 0, `zero React commits across live playback with unchanged structure: ${played.commits}`);
     assert.equal(played.totalInstallReads, 0, `zero layout/style reads during live playback install: ${played.totalInstallReads}`);
     assert.equal(played.pauseInstallReads, 0, `zero layout/style reads through pause flush: ${played.pauseInstallReads}`);

@@ -195,7 +195,7 @@ export class Pipeline {
       if (!owners.length && answers.length) continue;
       for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
       const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
-      const auditMissing = view.mode === 'picture' && audit !== undefined && rows === undefined;
+      const auditMissing = view.mode === 'picture' && rows === undefined;
       const rawAudit = view.mode === 'picture' && view.fields ? view.fields.audit : undefined;
       const auditId = rawAudit && typeof rawAudit === 'object' && typeof (rawAudit as { id?: unknown }).id === 'number' && (rawAudit as { id: number }).id > 0
         ? (rawAudit as { id: number }).id

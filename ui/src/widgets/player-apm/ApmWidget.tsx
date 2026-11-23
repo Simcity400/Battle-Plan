@@ -28,8 +28,8 @@ import { useTiles } from '../../dashboard/tiles/useTiles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { TRAILING_HOURS } from '../../dashboard/model';
 import type { ApmReply, ApmSeries } from '../../generated/dashboard';
-import { apmRuns, apmText, countText, playerNames, pointAt, valueNote, apmValueText, validateApm, APM_EXPLANATION, GAPS_NOTE } from './apmData';
-import { apmHeadQuery, apmHeadRows, apmHolders, apmPausedView } from './apmHead.ts';
+import { apmRuns, apmText, countText, pointAt, valueNote, apmValueText, validateApm, APM_EXPLANATION, GAPS_NOTE } from './apmData';
+import { apmHeadNamesKey, apmHeadQuery, apmHeadRows, apmHolders, apmPausedView, datedPlayerNames } from './apmHead.ts';
 import { useApm, useApmRegistry } from './useApm';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -65,7 +65,8 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
   const headQuery = useMemo(() => following && active && track && query.head ? gate.follow(apmHeadQuery(query.head, track.branch, TRAILING_HOURS)) : null,
     [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey, gate.follow]);
   const shown = useShownHour();
-  const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => { shown(shownThrough(entry)); }, [shown]));
+  const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => { shown(shownThrough(entry)); }, [shown]),
+    players ? apmHeadNamesKey : undefined);
   const headEntry = followsHead(followed) ? followed.entry : null;
   const refused = followRefusal(followed);
   const followErr = followFailure(followed);
@@ -84,7 +85,11 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
   const registry = useApmRegistry(widget, runtime, active && players);
   const requested = players && !registry.data ? NO_ROWS : data?.series ?? NO_ROWS;
   const rows = headEntry ? (players && !registry.data ? NO_ROWS : branchSeries.data?.series ?? NO_ROWS) : requested;
-  const names = useMemo(() => playerNames(rows, registry.data?.players), [rows, registry.data]);
+  const headNameKey = players && headEntry ? followed.structure : '';
+  const names = useMemo(
+    () => (players ? datedPlayerNames(rows, headEntry?.answer, registry.data?.players) : new Map<string, string>()),
+    [players, headEntry, headNameKey, rows, registry.data],
+  );
   const graphTags = useMemo(() => tiled && !players ? rows.flatMap(row => row.tag ? [row.tag] : []) : NO_TAGS, [tiled, players, rows]);
   const identityHour = useIdentityHour(runtime.client, track, graphTags, runtime.clock, active && tiled && !players,
     hour => track ? branchHour(track.branch, hour + track.axisOffset) : null);

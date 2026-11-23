@@ -6,6 +6,7 @@ import type { BoundTrack } from './model';
 import { useProduct } from './products.ts';
 import type { Failure } from './queryError';
 import { productRequest } from './request.ts';
+import { compareTags } from './tagOrder.ts';
 
 export type { CountryRef } from '../generated/dashboard';
 
@@ -34,7 +35,7 @@ export class SlotTags {
       if (held) held.push(entry); else this.bySlot.set(run.slot, [entry]);
     }
     for (const [slot, held] of this.bySlot) {
-      held.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || a.tag.localeCompare(b.tag));
+      held.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || compareTags(a.tag, b.tag));
       this.resolvedSlotRuns.set(slot, resolveSlotHolderRuns(held));
     }
   }
@@ -47,7 +48,11 @@ export class SlotTags {
     let found: Held | null = null;
     for (const held of this.bySlot.get(slot) ?? []) {
       if (held.firstHour > hour) break;
-      if (held.lastHour >= hour && (!found || held.countryId < found.countryId)) found = held;
+      if (held.lastHour >= hour && (
+        !found
+        || held.countryId < found.countryId
+        || (held.countryId === found.countryId && (held.firstHour < found.firstHour || (held.firstHour === found.firstHour && compareTags(held.tag, found.tag) < 0)))
+      )) found = held;
     }
     return found;
   }

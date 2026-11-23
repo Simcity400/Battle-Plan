@@ -43,12 +43,14 @@ export interface FamilySources {
   readonly answers: ReadonlyMap<string, FollowedAnswer | undefined>;
   readonly panels: ReadonlyMap<string, unknown>;
   readonly live: ReadonlyMap<string, LiveValues<number | bigint | string> | null>;
+  readonly refused?: ReadonlyMap<string, string>;
 }
 
 export const EMPTY_SOURCES: FamilySources = {
   answers: new Map(),
   panels: new Map(),
   live: new Map(),
+  refused: new Map(),
 };
 
 export interface FamilyProjection<TModel, TOptions> {

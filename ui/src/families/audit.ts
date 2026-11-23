@@ -1,5 +1,19 @@
+import { useSyncExternalStore } from 'react';
+import { auditing, onAuditingChange } from '../dashboard/pulled.ts';
 import type { AuditRow } from '../draw/notifications';
 import type { Scalar, Value } from './value.ts';
+
+export function isFamilyAuditing(): boolean {
+  return auditing();
+}
+
+export function subscribeFamilyAuditing(listener: () => void): () => void {
+  return onAuditingChange(() => listener());
+}
+
+export function useFamilyAuditing(): boolean {
+  return useSyncExternalStore(subscribeFamilyAuditing, auditing, auditing);
+}
 
 function isFamilyValue(input: unknown): input is Value {
   if (!input || typeof input !== 'object') return false;
@@ -47,7 +61,29 @@ function canonicalAuditNode(input: unknown): unknown {
   }
   if (Array.isArray(input)) return input.map(canonicalAuditNode);
   if (isFamilyValue(input)) return canonicalValueNode(input);
+  if (input instanceof Map) {
+    const entries = [...input.entries()].map(([k, v]) => {
+      const ck = canonicalAuditNode(k);
+      const cv = canonicalAuditNode(v);
+      return { ck, cv, sortKey: JSON.stringify(ck), sortVal: JSON.stringify(cv) };
+    });
+    entries.sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : a.sortVal < b.sortVal ? -1 : a.sortVal > b.sortVal ? 1 : 0));
+    return ['map', entries.map(entry => [entry.ck, entry.cv])];
+  }
+  if (input instanceof Set) {
+    const items = [...input.values()].map(v => {
+      const cv = canonicalAuditNode(v);
+      return { cv, sortKey: JSON.stringify(cv) };
+    });
+    items.sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
+    return ['set', items.map(item => item.cv)];
+  }
   if (typeof input === 'object') {
+    const proto = Object.getPrototypeOf(input) as unknown;
+    if (proto !== Object.prototype && proto !== null) {
+      const name = (input as { constructor?: { name?: string } }).constructor?.name ?? 'Object';
+      throw new TypeError(`Unsupported audit value type: ${name}`);
+    }
     const keys = Object.keys(input as Record<string, unknown>).sort();
     const out: Record<string, unknown> = {};
     for (let i = 0; i < keys.length; i++) {
@@ -57,7 +93,7 @@ function canonicalAuditNode(input: unknown): unknown {
     }
     return out;
   }
-  return ['str', String(input)];
+  throw new TypeError(`Unsupported audit value type: ${typeof input}`);
 }
 
 export function canonicalAuditData(input: unknown): string {

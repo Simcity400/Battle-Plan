@@ -1,3 +1,5 @@
+import { compareTags } from '../dashboard/tagOrder.ts';
+
 export type HourRanges = readonly (readonly [number, number])[];
 
 export interface HolderRun {
@@ -18,7 +20,7 @@ export interface RawSlotHolderRun {
 function beatsSlotHolder(candidate: { readonly countryId: number; readonly firstHour: number; readonly tag: string }, current: { readonly countryId: number; readonly firstHour: number; readonly tag: string }): boolean {
   if (candidate.countryId !== current.countryId) return candidate.countryId < current.countryId;
   if (candidate.firstHour !== current.firstHour) return candidate.firstHour < current.firstHour;
-  return candidate.tag < current.tag;
+  return compareTags(candidate.tag, current.tag) < 0;
 }
 
 export function resolveSlotHolderRuns(raw: readonly RawSlotHolderRun[]): HolderRun[] {
@@ -150,11 +152,39 @@ const rangesIndexCache = new WeakMap<object, readonly number[]>();
 const windowRangesIndexCache = new WeakMap<object, Map<number, readonly number[]>>();
 const membershipIndexCache = new WeakMap<object, readonly number[]>();
 
+const mergedRangesCache = new WeakMap<object, readonly (readonly [number, number])[]>();
+
 function freezeRanges(ranges: HourRanges): void {
-  if (!Object.isFrozen(ranges)) {
-    for (let i = 0; i < ranges.length; i++) Object.freeze(ranges[i]);
-    Object.freeze(ranges);
+  for (let i = 0; i < ranges.length; i++) {
+    if (!Object.isFrozen(ranges[i])) Object.freeze(ranges[i]);
   }
+  if (!Object.isFrozen(ranges)) Object.freeze(ranges);
+}
+
+function indexedRanges(ranges: HourRanges): readonly (readonly [number, number])[] {
+  let merged = mergedRangesCache.get(ranges);
+  if (merged) return merged;
+  freezeRanges(ranges);
+  const valid: [number, number][] = [];
+  for (let i = 0; i < ranges.length; i++) {
+    const [first, last] = ranges[i]!;
+    if (first <= last) valid.push([first, last]);
+  }
+  valid.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: (readonly [number, number])[] = [];
+  for (let i = 0; i < valid.length; i++) {
+    const [first, last] = valid[i]!;
+    const prev = out[out.length - 1] as [number, number] | undefined;
+    if (prev && prev[1] + 1 >= first) {
+      if (last > prev[1]) prev[1] = last;
+    } else {
+      out.push([first, last]);
+    }
+  }
+  for (let i = 0; i < out.length; i++) Object.freeze(out[i]);
+  merged = Object.freeze(out);
+  mergedRangesCache.set(ranges, merged);
+  return merged;
 }
 
 export function nextHoldersChange(holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined, hour: number): number {
@@ -235,13 +265,22 @@ export function nextMembershipChange(membership: Readonly<Record<string, HourRan
   return nextChangeAfter(bounds, hour);
 }
 
-export function inHourRanges(ranges: HourRanges | null | undefined, hour: number): boolean {
-  if (!ranges || !ranges.length) return false;
-  for (let i = 0; i < ranges.length; i++) {
-    const [first, last] = ranges[i]!;
-    if (first <= hour && hour <= last) return true;
+export function overlapsHourRanges(ranges: HourRanges | null | undefined, firstHour: number, lastHour: number): boolean {
+  if (!ranges || !ranges.length || firstHour > lastHour) return false;
+  const merged = indexedRanges(ranges);
+  if (!merged.length) return false;
+  let low = 0;
+  let high = merged.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (merged[mid]![1] < firstHour) low = mid + 1;
+    else high = mid;
   }
-  return false;
+  return low < merged.length && merged[low]![0] <= lastHour;
+}
+
+export function inHourRanges(ranges: HourRanges | null | undefined, hour: number): boolean {
+  return overlapsHourRanges(ranges, hour, hour);
 }
 
 export interface FamilyFactionRun {

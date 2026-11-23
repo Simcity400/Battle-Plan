@@ -1,6 +1,5 @@
 import type { LiveValues } from '../../charts/live';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { AuditRow } from '../../draw/notifications';
 import type { FamilyProjection, FamilySources, MirrorModel, MirrorRow } from '../contract.ts';
@@ -96,6 +95,7 @@ export interface TableModel {
   readonly columns: readonly TableColumnSpec[];
   readonly rows: readonly TableRow[];
   readonly hour: number;
+  readonly refused?: string;
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -301,6 +301,11 @@ export function nextTableChange(model: TableModel, hour: number): number {
   return soonest;
 }
 
+export interface CountryColorSource {
+  readonly countryLooks?: CountryLooksMap;
+  readonly country?: Readonly<Record<string, string>>;
+}
+
 export interface CellPaintModel {
   readonly value: Value;
   readonly format: ValueFormat | undefined;
@@ -312,6 +317,7 @@ export interface CellPaintModel {
   readonly tone: string | null;
   readonly status: 'dot' | 'outline' | 'fill' | null;
   readonly country: string | null;
+  readonly countryColor: string | null;
   readonly icon: string | null;
   readonly iconSlot: boolean;
   readonly missingName: boolean;
@@ -363,6 +369,7 @@ export function resolveCellPaintModel(
   column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat'>,
   hour: number,
   maxima: ReadonlyMap<string, number>,
+  countryColors?: CountryColorSource,
 ): CellPaintModel {
   const resolved = cell
     ? resolveCellAtHour(cell, hour)
@@ -370,13 +377,23 @@ export function resolveCellPaintModel(
   const bar = cell
     ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key))
     : { fraction: null, alert: false };
+  const tone = cell?.tone ?? column.tone ?? null;
+  const country = cell?.country ?? null;
+  const lookHour = cell?.lookHour ?? hour;
+  const countryColor = tone === 'country' && country
+    ? ((cell?.looks ? lookAt(cell.looks, lookHour)?.color : undefined)
+      ?? lookAt(countryColors?.countryLooks?.[country], lookHour)?.color
+      ?? countryColors?.country?.[country]
+      ?? null)
+    : null;
   return {
     value: resolved.value,
     format: cell?.format ?? column.valueFormat,
     bar: cell?.bar ? { ...bar, rawFraction: cell.bar.fraction } : bar,
-    tone: cell?.tone ?? column.tone ?? null,
+    tone,
     status: cell?.status ?? null,
-    country: cell?.country ?? null,
+    country,
+    countryColor,
     icon: resolved.icon ?? null,
     iconSlot: cell?.iconSlot === true,
     missingName: resolved.missingName,
@@ -391,12 +408,13 @@ export interface TableAuditInput {
   readonly rankShown?: boolean;
   readonly maxima?: ReadonlyMap<string, number>;
   readonly window?: { readonly first: number; readonly count: number };
+  readonly countryColors?: CountryColorSource;
 }
 
 const EMPTY_HIDDEN: ReadonlySet<string> = new Set();
 
 export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
-  const { model, flatRows, visibleColumns, window } = input;
+  const { model, flatRows, visibleColumns, window, countryColors } = input;
   const hour = model.hour;
   const hiddenKeys = input.hiddenKeys ?? EMPTY_HIDDEN;
   const rankShown = input.rankShown === true;
@@ -426,6 +444,7 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
         warnings: model.warnings ?? [],
         rankShown,
         totalRows: flatRows.length,
+        refused: model.refused ?? null,
         empty: hasData ? null : (model.empty ?? null),
         emptyKind: hasData ? null : (model.emptyKind ?? 'empty'),
         emptyDetail: hasData ? null : (model.emptyDetail ?? null),
@@ -461,7 +480,7 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
       out.push({
         row: item.key,
         key: `${item.key}:${col.key}`,
-        value: canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima)),
+        value: canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima, countryColors)),
       });
     }
     out.push({
@@ -480,14 +499,17 @@ export function deriveTableMirror(
   rankShown: boolean,
   window?: { readonly first: number; readonly count: number },
   focusedKey?: string | null,
+  focusedIndex?: number,
 ): MirrorModel {
   const first = window ? Math.max(0, Math.min(window.first, flatRows.length)) : 0;
   const end = window ? Math.min(flatRows.length, first + window.count) : flatRows.length;
   const indices: number[] = [];
   for (let i = first; i < end; i++) indices.push(i);
   if (focusedKey) {
-    const focusAt = flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey);
-    if (focusAt >= 0 && (focusAt < first || focusAt >= end)) {
+    const focusAt = focusedIndex !== undefined
+      ? focusedIndex
+      : flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey);
+    if (focusAt >= 0 && focusAt < flatRows.length && (focusAt < first || focusAt >= end)) {
       if (focusAt < first) indices.unshift(focusAt);
       else indices.push(focusAt);
     }
@@ -540,7 +562,6 @@ export function deriveRowTooltip(
   allColumns: readonly TableColumnSpec[],
   hiddenKeys: ReadonlySet<string>,
   hour: number,
-  options?: { readonly pinned?: boolean },
 ): TooltipContent {
   const { row } = found;
   const rows: TooltipRow[] = [];
@@ -569,12 +590,9 @@ export function deriveRowTooltip(
   const firstCell = firstCol ? row.cells[firstCol.key] : undefined;
   const firstResolved = firstCell ? resolveCellAtHour(firstCell, hour) : null;
   const title = row.tooltipTitle ?? (firstResolved && hasMeasuredValue(firstResolved.value) ? String(firstResolved.value.value) : found.name);
-  const dateText = formatDateTime(Math.floor(hour));
-  const subtitle = options?.pinned ? `Pinned at ${dateText}` : dateText;
   const noteParts = [row.tooltipNote, row.tooltipAction].filter((part): part is string => Boolean(part));
   return {
     title,
-    subtitle,
     rows,
     ...(firstResolved?.icon ? { countryFlag: { flag: firstResolved.icon } } : {}),
     ...(noteParts.length ? { note: noteParts.join(' \u00b7 ') } : {}),
@@ -588,11 +606,10 @@ export function deriveTableTooltip(
   allColumns: readonly TableColumnSpec[],
   hiddenKeys: ReadonlySet<string>,
   hour: number,
-  options?: { readonly pinned?: boolean },
 ): TooltipContent | null {
   const found = flatRows.find(item => item.kind === 'data' && item.key === itemKey);
   if (!found || found.kind !== 'data') return null;
-  return deriveRowTooltip(found, allColumns, hiddenKeys, hour, options);
+  return deriveRowTooltip(found, allColumns, hiddenKeys, hour);
 }
 
 const pathPartsCache = new Map<string, readonly string[]>();
@@ -744,6 +761,10 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       }));
       const rank = typeof spec.rank === 'function' ? spec.rank(options) : spec.rank;
       const rankMarkers = typeof spec.rankMarkers === 'function' ? spec.rankMarkers(options) : spec.rankMarkers;
+      const panelRefused = sources.refused?.get(panelKey);
+      if (panelRefused !== undefined) {
+        return { columns, rows: [], hour, refused: panelRefused, unsorted: spec.unsorted, rank, rankMarkers };
+      }
       if (reply === undefined) {
         return { columns, rows: [], hour, unsorted: spec.unsorted, rank, rankMarkers };
       }

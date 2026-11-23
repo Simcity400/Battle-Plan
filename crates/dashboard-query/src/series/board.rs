@@ -68,7 +68,10 @@ pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<B
     let countries: Vec<Country> = match rows {
         Rows::Countries(countries) => countries.iter().filter(|country| query.holders.at(*country, hour).is_some()).cloned().collect(),
         Rows::Top { by, n, least } => {
-            columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at_by(hour, n, least)?.into_iter().map(Country::from).collect()
+            match columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at_by_checked(hour, n, least)? {
+                Ok(ranked) => ranked.into_iter().map(Country::from).collect(),
+                Err(reason) => return Ok(Board { rows: Vec::new(), missing: Some(reason) }),
+            }
         }
     };
     let lines: Vec<&Line<'_, '_>> = columns.iter().flat_map(|column| std::iter::once(&column.line).chain(column.partial.as_ref())).collect();
@@ -269,5 +272,17 @@ mod tests {
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, FIRST + FIRST_HOURS + 1).unwrap();
         assert!(board.rows.is_empty());
         assert_eq!(board.missing.as_deref(), Some(GAP_REASON));
+    }
+
+    #[test]
+    fn top_ranking_with_unrecorded_ranking_table_returns_shared_missing_reason() {
+        let hour = both_recorded();
+        let fixture = Fixture::new(Data::Power, hour..=hour);
+        let query = fixture.query();
+        let factories = dashboard_declare::series("country-factories").unwrap();
+        let col = Column { line: Line::new(&query, factories, factories.measure("civilian").unwrap()).unwrap(), partial: None };
+        let board = at(&[col], Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
+        assert!(board.rows.is_empty());
+        assert_eq!(board.missing, table_unrecorded(factories.table, Status::NotRecorded, None));
     }
 }

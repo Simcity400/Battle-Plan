@@ -854,3 +854,39 @@ test('dated playback fails on playbackReasons, fails every placement on playing-
   assert.equal(withEmptyLossesIncomplete.pass, false);
   assert.ok(withEmptyLossesIncomplete.reasons.includes('incomplete presented playing window'));
 });
+
+test('S20: per-picture audit coverage checks every painted picture including owner 0 and isolates generations', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map((at, i) => ({
+      t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: i === 0 ? 0 : -1, generation: 1,
+      hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', mode: 'picture',
+    })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const baseAudit = presented.slice(1).map(at => ({ widget: 'w', surface: 'table', placement: 1, owner: -1, generation: 1, at, error: null }));
+  const window = {
+    page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'scoreboard', visible: true, surfaces: ['table'] }],
+    audit: baseAudit,
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] },
+  };
+  const missingOwner0 = datedPlaybackVerdict([window], records);
+  assert.equal(missingOwner0.pass, false, 'unaudited owner 0 painted picture fails even when owner -1 pictures on the same placement passed');
+
+  const wrongGenAudit = [
+    { widget: 'w', surface: 'table', placement: 1, owner: 0, generation: 2, at: presented[0], error: null },
+    ...baseAudit,
+  ];
+  assert.equal(datedPlaybackVerdict([{ ...window, audit: wrongGenAudit }], records).pass, false, 'audit from generation 2 cannot cover generation 1 picture');
+
+  const fullRecords = records.map(r => (r.t === 'picture' ? { ...r, owner: -1 } : r));
+  const fullAudit = [
+    { widget: 'w', surface: 'table', placement: 1, owner: -1, generation: 1, at: presented[0], error: null },
+    ...baseAudit,
+  ];
+  assert.equal(datedPlaybackVerdict([{ ...window, audit: fullAudit }], fullRecords).pass, true, 'passes once every painted picture is audited in its own generation with table renderer owner');
+});

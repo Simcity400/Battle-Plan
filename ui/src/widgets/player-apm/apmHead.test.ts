@@ -8,7 +8,7 @@ import { EMPTY_SOURCES } from '../../families/contract.ts';
 import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
-import { apmFromSort, apmHeadRows, apmHeadStructure, apmHolders, apmLiveValues, apmPausedView, apmSortValue, clockHead } from './apmHead.ts';
+import { apmFromSort, apmHeadNamesKey, apmHeadRows, apmHeadStructure, apmHolders, apmLiveValues, apmPausedView, apmSortValue, clockHead, datedPlayerNames } from './apmHead.ts';
 import { apmTableColumns, apmTableProjection } from './apmProjection.ts';
 
 const bits = (value: number) => { const view = new DataView(new ArrayBuffer(8)); view.setFloat64(0, value, true); return view.getBigInt64(0, true); };
@@ -196,4 +196,21 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.equal(apmTableProjection.nextChange?.(EMPTY_SOURCES, 15, followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
   assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 180, followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
   assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 188, followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
+});
+
+test('M2: APM graph legend and tooltips use dated player names from the window head rather than branch-end names', () => {
+  const branchRows = [{ id: 'p1', name: 'RenamedAtBranchEnd' }, { id: 'p2', name: 'Bob' }];
+  const registry = [{ id: 'p1', name: 'RenamedAtBranchEnd' }, { id: 'p2', name: 'Bob' }];
+  const earlyHead = headAnswer([
+    { key: 0n, id: 'p1', values: [bits(3.0), bits(3.0), 30n, 0n, bits(10), 1n, 0n, 'GER', 50n, 'EarlyAlias', null] },
+  ]);
+  const laterHead = headAnswer([
+    { key: 0n, id: 'p1', values: [bits(3.0), bits(3.0), 30n, 0n, bits(10), 1n, 0n, 'GER', 200n, 'LaterAlias', null] },
+  ]);
+  assert.notEqual(apmHeadNamesKey(earlyHead), apmHeadNamesKey(laterHead), 'structure key changes when player renames');
+  const earlyNames = datedPlayerNames(branchRows, earlyHead, registry);
+  assert.equal(earlyNames.get('p1'), 'EarlyAlias', 'dated head name overrides branch-end name');
+  assert.equal(earlyNames.get('p2'), 'Bob', 'players outside the head window keep their branch name');
+  const laterNames = datedPlayerNames(branchRows, laterHead, registry);
+  assert.equal(laterNames.get('p1'), 'LaterAlias', 'updates to the new alias at the later window');
 });

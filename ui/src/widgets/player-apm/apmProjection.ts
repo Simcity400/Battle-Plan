@@ -1,6 +1,7 @@
 import { rowName, textAt, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
+import { overlapsHourRanges } from '../../families/holders.ts';
 import { nextWindowRangesChange, type DeclaredTableContext, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
 import {
@@ -177,7 +178,7 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
       if (opt.unobserved?.length) {
         const win = opt.windowHours ?? TRAILING_HOURS;
         const [winFirst, winLast] = opt.staticSpan ?? [Math.max(opt.branchFirst ?? 0, hour - (win - 1)), hour];
-        if (opt.unobserved.some(([first, last]) => first <= winLast && winFirst <= last)) {
+        if (overlapsHourRanges(opt.unobserved, winFirst, winLast)) {
           return { rows: [], empty: 'Country group membership was not recorded throughout this period.', emptyKind: 'unavailable', warnings: parsed.warnings };
         }
       }

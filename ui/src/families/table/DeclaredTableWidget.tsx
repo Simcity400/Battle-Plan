@@ -9,13 +9,14 @@ import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
 import { lookStarts } from '../../dashboard/countryTimeline';
+import type { DashboardClient } from '../../dashboard/client';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { Channel } from '../../dashboard/follow/facts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import GateState from '../../dashboard/GateState';
-import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { resolveWindow, TRAILING_HOURS } from '../../dashboard/model';
+import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { resolveWindow, TRAILING_HOURS, type WidgetTime } from '../../dashboard/model';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveOptions } from '../../dashboard/options';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
@@ -37,6 +38,7 @@ import {
   resolveDisplayedStaticSnapshot,
   selectionUnobservedReason,
   type DisplayedStaticSnapshot,
+  type FrozenGate,
 } from '../sources.ts';
 import {
   resolveHeadSpan,
@@ -81,6 +83,61 @@ function buildFilterTimeline(
     }
   }
   return { passing, unrecorded, bounds };
+}
+
+interface FrozenExactSnapshot<TProjectionOptions, TAux> {
+  readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
+  readonly client: DashboardClient;
+  readonly following: boolean;
+  readonly timeMode: WidgetTime['mode'];
+  readonly window: { readonly firstHour: number; readonly lastHour: number } | null;
+  readonly ctx: DeclaredTableContext<TAux>;
+  readonly gate: FrozenGate;
+}
+
+function createFrozenExactSources<TProjectionOptions, TAux>(
+  frozen: FrozenExactSnapshot<TProjectionOptions, TAux>,
+): (wantedHour: number) => Promise<FamilySources | null> {
+  return async (wantedHour: number): Promise<FamilySources | null> => {
+    if (!perfLog) return null;
+    const recorded = frozen.gate.recorded(wantedHour);
+    if (recorded === null) return null;
+    const src = frozen.declaration.source;
+    const ctx = frozen.ctx;
+    if (src.kind === 'panel') {
+      const params = src.params(ctx);
+      if (!params) return null;
+      const req = forwardRequest(ctx.track.source, src.product, { ...params, hour: recorded });
+      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await frozen.client.product(req, new AbortController().signal)).data);
+      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map([['main', repliedCells(raw).read()]]) };
+    }
+    if (src.kind === 'head') {
+      const span = !frozen.following && ctx.staticSpan
+        ? frozen.gate.span(ctx.staticSpan[0], ctx.staticSpan[1])
+        : (() => {
+          const resolved = resolveHeadSpan(
+            src.timeShape,
+            src.windowHours ?? TRAILING_HOURS,
+            frozen.timeMode,
+            ctx.branch,
+            frozen.window,
+            recorded,
+          );
+          return resolved ? frozen.gate.span(resolved.first, resolved.last) : null;
+        })();
+      if (!span) return null;
+      const params = src.productParams(ctx, span);
+      if (!params) return null;
+      const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.product, params });
+      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await frozen.client.product(req, new AbortController().signal)).data);
+      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
+    }
+    const params = src.exactParams(ctx, recorded, 'exact');
+    if (!params) return null;
+    const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.exactProduct, params });
+    const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await frozen.client.product(req, new AbortController().signal)).data);
+    return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
+  };
 }
 
 export interface DeclaredTableWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
@@ -303,6 +360,11 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     [wantsLabels, labelsText],
   );
 
+  const filterUnobserved = useMemo(
+    () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
+    [isFilter, widget.countries, groups.data],
+  );
+
   const countriesState = useMemo<DeclaredCountryState>(() => ({
     all: widget.countries.kind === 'all',
     tags: effectiveMulti?.tags ?? NO_TAGS,
@@ -318,10 +380,10 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     factionUnobserved: factionData.unobserved,
     factionIncomplete: factionData.incomplete,
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
-    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, effectiveMulti?.unobserved) ?? null,
+    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => unobserved.some(([spanFirst, spanLast]) => spanFirst <= last && first <= spanLast),
-  }), [widget.countries, effectiveMulti, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const staticRange = useMemo(() => {
     if (following || !track || !window) return null;
@@ -485,17 +547,45 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   const staticHeld = !following && staticReq !== null && staticProduct.data !== undefined
     && (staticProduct.asking !== undefined || (expectedStaticKey !== null && staticProduct.moment !== expectedStaticKey));
 
-  const displayedStaticRef = useRef<DisplayedStaticSnapshot | null>(null);
+  const frozenGate = useMemo(
+    () => freezeGate(gate),
+    [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
+  );
+
+  const pendingStaticByMomentRef = useRef(new Map<string, { readonly context: DeclaredTableContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null }>());
+  if (!following && staticReq && ctx) {
+    const key = expectedStaticKey ?? '__single__';
+    pendingStaticByMomentRef.current.set(key, {
+      context: ctx,
+      gate: frozenGate,
+      span: staticRange ? [staticRange.first, staticRange.last] as const : null,
+    });
+    if (pendingStaticByMomentRef.current.size > 32) {
+      pendingStaticByMomentRef.current.delete(pendingStaticByMomentRef.current.keys().next().value!);
+    }
+  }
+
+  const displayedStaticRef = useRef<DisplayedStaticSnapshot<DeclaredTableContext<TAux>> | null>(null);
   const displayedStatic = useMemo(() => {
-    if (following || staticProduct.data === undefined) {
+    if (following || staticProduct.data === undefined || !ctx) {
       displayedStaticRef.current = null;
       return null;
     }
-    const requested = staticRange ? [staticRange.first, staticRange.last] as const : null;
-    const next = resolveDisplayedStaticSnapshot(displayedStaticRef.current, staticProduct.data, staticProduct.moment, requested);
+    const matched = pendingStaticByMomentRef.current.get(staticProduct.moment ?? '__single__');
+    const sourceCtx = matched?.context ?? ctx;
+    const sourceGate = matched?.gate ?? frozenGate;
+    const requested = matched?.span ?? (staticRange ? [staticRange.first, staticRange.last] as const : null);
+    const next = resolveDisplayedStaticSnapshot(
+      displayedStaticRef.current,
+      staticProduct.data,
+      staticProduct.moment,
+      requested,
+      sourceCtx,
+      sourceGate,
+    );
     displayedStaticRef.current = next;
     return next;
-  }, [following, staticProduct.data, staticProduct.moment, staticRange]);
+  }, [following, staticProduct.data, staticProduct.moment, staticRange, ctx, frozenGate]);
 
   const staticSources = useMemo<{ readonly sources: FamilySources; readonly hour: number; readonly span?: readonly [number, number] | null } | null>(() => {
     if (following || !displayedStatic) return null;
@@ -523,54 +613,24 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
 
   const retainedStaticSpan = staticSources?.span ?? null;
   const displayedCtx = useMemo<DeclaredTableContext<TAux> | null>(() => {
-    if (!ctx) return null;
-    if (following || !staticSources) return ctx;
-    return { ...ctx, staticSpan: retainedStaticSpan };
-  }, [ctx, following, staticSources, retainedStaticSpan]);
-  const frozenGate = useMemo(
-    () => freezeGate(gate),
-    [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
-  );
+    if (following) return ctx;
+    if (displayedStatic) return { ...displayedStatic.context, staticSpan: retainedStaticSpan };
+    return ctx;
+  }, [ctx, following, displayedStatic, retainedStaticSpan]);
+  const displayedGate = !following && displayedStatic ? displayedStatic.gate : frozenGate;
 
-  const exactSources = useCallback(async (wantedHour: number): Promise<FamilySources | null> => {
-    if (!displayedCtx || !perfLog) return null;
-    const recorded = frozenGate.recorded(wantedHour);
-    if (recorded === null) return null;
-    const src = declaration.source;
-    if (src.kind === 'panel') {
-      const params = src.params(displayedCtx);
-      if (!params) return null;
-      const req = forwardRequest(displayedCtx.track.source, src.product, { ...params, hour: recorded });
-      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
-      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map([['main', repliedCells(raw).read()]]) };
-    }
-    if (src.kind === 'head') {
-      const span = !following && displayedCtx.staticSpan
-        ? frozenGate.span(displayedCtx.staticSpan[0], displayedCtx.staticSpan[1])
-        : (() => {
-          const resolved = resolveHeadSpan(
-            src.timeShape,
-            src.windowHours ?? TRAILING_HOURS,
-            widget.time.mode,
-            displayedCtx.branch,
-            window,
-            recorded,
-          );
-          return resolved ? frozenGate.span(resolved.first, resolved.last) : null;
-        })();
-      if (!span) return null;
-      const params = src.productParams(displayedCtx, span);
-      if (!params) return null;
-      const req = productRequest({ sourceId: displayedCtx.track.source.id, revision: displayedCtx.track.source.revision, product: src.product, params });
-      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
-      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-    }
-    const params = src.exactParams(displayedCtx, recorded, 'exact');
-    if (!params) return null;
-    const req = productRequest({ sourceId: displayedCtx.track.source.id, revision: displayedCtx.track.source.revision, product: src.exactProduct, params });
-    const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
-    return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-  }, [displayedCtx, frozenGate, following, widget.time.mode, window, declaration.source, runtime.client]);
+  const exactSources = useMemo(() => {
+    if (!displayedCtx || !perfLog) return undefined;
+    return createFrozenExactSources({
+      declaration,
+      client: runtime.client,
+      following,
+      timeMode: widget.time.mode,
+      window,
+      ctx: displayedCtx,
+      gate: displayedGate,
+    });
+  }, [displayedCtx, displayedGate, declaration, runtime.client, following, widget.time.mode, window]);
 
   const projectionOptions = useMemo(
     () => (displayedCtx ? declaration.projectionOptions(displayedCtx) : ({} as TProjectionOptions)),
@@ -587,13 +647,13 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     [declaration.jumpToDate, runtime, track],
   );
 
-  const customUnavailable = ctx && declaration.unavailable ? declaration.unavailable(ctx, moment) : null;
+  const customUnavailable = displayedCtx && declaration.unavailable ? declaration.unavailable(displayedCtx, staticSources?.hour ?? moment) : null;
   const combinedWarnings = useMemo(() => {
-    const fromDecl = ctx && declaration.warnings ? declaration.warnings(ctx, followPlan.refused) : [];
+    const fromDecl = displayedCtx && declaration.warnings ? declaration.warnings(displayedCtx, followPlan.refused) : [];
     const fromGroups = groups.data?.warnings ?? [];
     const all = [...fromGroups, ...fromDecl, ...(extraWarnings ?? [])];
     return all.length ? all : undefined;
-  }, [ctx, declaration.warnings, followPlan.refused, groups.data?.warnings, extraWarnings]);
+  }, [displayedCtx, declaration.warnings, followPlan.refused, groups.data?.warnings, extraWarnings]);
 
   const loadingLabel = `Loading ${declaration.subject}…`;
   const blockedState = (() => {
@@ -616,6 +676,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (isFilter) {
       if (filterMatch?.reason) return <WidgetState kind="unavailable" message={filterMatch.reason} />;
+      if (countriesState.reason) return <WidgetState kind="unavailable" message={countriesState.reason} />;
       if (!filterMatch?.ready || !groups.data) return <WidgetState kind="loading" label={loadingLabel} />;
     }
     if (isMulti) {
@@ -676,7 +737,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     subscriptions={followPlan.subs}
     allowEmptyFollow={followPlan.allowEmptyFollow}
     staticSources={staticSources}
-    exactSources={ctx && perfLog && !blockedState ? exactSources : undefined}
+    exactSources={displayedCtx && perfLog && !blockedState ? exactSources : undefined}
     offset={track?.axisOffset ?? 0}
     pin={following ? null : (declaration.source.kind === 'panel' ? (staticSources?.hour ?? pinHour) : staticSources?.hour ?? null)}
     bounds={bounds}

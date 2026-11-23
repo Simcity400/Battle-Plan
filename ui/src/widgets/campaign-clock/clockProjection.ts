@@ -5,7 +5,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromNullable, wireFloat, wireWhole, type Value } from '../../families/value.ts';
-import { CLOCK_NOTE, UNCLASSIFIED, clockWarnings, validateClock } from './clockData.ts';
+import { CLOCK_NOTE, OVERLAP_REASON, OVERLAP_WARNING, UNCLASSIFIED, clockWarnings, validateClock } from './clockData.ts';
 
 interface ClockRow { readonly id: string; readonly label: string; readonly value: Value; readonly note: string }
 interface ParsedClock { readonly refusal?: string; readonly recorded: Value<number>; readonly playing: Value<number>; readonly paused: Value<number>; readonly complete: boolean; readonly warnings: readonly string[] }
@@ -26,9 +26,11 @@ const refusedClock = (reason: string, warnings: readonly string[] = []): ParsedC
 };
 
 function parseAnswer(answer: FollowedAnswer): ParsedClock {
-  if (answer.kind === 'notRecorded') return refusedClock(answer.reason);
+  if (answer.kind === 'notRecorded') {
+    return refusedClock(answer.reason, answer.reason === OVERLAP_REASON ? [OVERLAP_WARNING] : []);
+  }
   if (!answer.rows) return refusedClock('Not recorded at this hour');
-  const recorded = wireFloat(answer, CLOCK.recorded, { missingReason: 'Overlapping recordings prevent a unique campaign clock total.' });
+  const recorded = wireFloat(answer, CLOCK.recorded, { missingReason: OVERLAP_REASON });
   const playing = wireFloat(answer, CLOCK.playing, { missingReason: UNCLASSIFIED, unrecordedReason: UNCLASSIFIED });
   const paused = wireFloat(answer, CLOCK.paused, { missingReason: UNCLASSIFIED, unrecordedReason: UNCLASSIFIED });
   const completeVal = wireWhole(answer, CLOCK.complete);
@@ -39,7 +41,7 @@ function parseAnswer(answer: FollowedAnswer): ParsedClock {
 function parseReply(raw: unknown): ParsedClock {
   const data: CampaignClockReply = validateClock(raw);
   if (!data.available) return refusedClock('Playing and paused time were not recorded in this campaign.', data.warnings);
-  if (data.recordedSeconds === null) return refusedClock('Overlapping recordings prevent a unique campaign clock total.', data.warnings);
+  if (data.recordedSeconds === null) return refusedClock(OVERLAP_REASON, data.warnings);
   return {
     recorded: valueFromNullable(data.recordedSeconds, { kind: 'notRecorded', reason: 'Recorded time unavailable.' }),
     playing: valueFromNullable(data.playingSeconds, { kind: 'notRecorded', reason: UNCLASSIFIED }),

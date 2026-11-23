@@ -72,10 +72,8 @@ export function formatFixed5Amount(value: number | bigint): string {
 export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   if (typeof raw === 'string') return raw;
   if (!format || format === 'integer') {
-    if (typeof raw === 'bigint') {
-      const negative = raw < 0n;
-      const digits = String(negative ? -raw : raw).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      return `${negative ? '\u2212' : ''}${digits}`;
+    if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.abs(raw) >= 2 ** 53)) {
+      return formatGroupedBigInt(typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw)));
     }
     const whole = Math.trunc(raw);
     if (whole === 0) return '0';
@@ -85,17 +83,20 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   }
   if (format === 'clockSeconds') return formatClockSeconds(raw);
   if (format === 'decimal1') {
-    if (typeof raw === 'bigint') return formatGroupedBigInt(raw);
+    if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.trunc(raw) === raw && Math.abs(raw) >= 2 ** 53)) {
+      return formatGroupedBigInt(typeof raw === 'bigint' ? raw : BigInt(raw));
+    }
     if (raw === 0) return '0';
     const negative = raw < 0;
     const text = Math.abs(raw).toLocaleString('en-US', { maximumFractionDigits: 1 });
     return `${negative ? '\u2212' : ''}${text}`;
   }
   if (format === 'percent2') {
-    if (typeof raw === 'bigint') {
-      if (raw === 0n) return '0%';
-      const negative = raw < 0n;
-      return `${negative ? '-' : ''}${(negative ? -raw : raw).toString()}.00%`;
+    if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.trunc(raw) === raw && Math.abs(raw) >= 2 ** 53)) {
+      const big = typeof raw === 'bigint' ? raw : BigInt(raw);
+      if (big === 0n) return '0%';
+      const negative = big < 0n;
+      return `${negative ? '-' : ''}${(negative ? -big : big).toString()}.00%`;
     }
     if (raw === 0) return '0%';
     return `${raw.toFixed(2)}%`;

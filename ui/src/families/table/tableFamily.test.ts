@@ -22,12 +22,17 @@ import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../
 import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
-import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, resolveSlotHolderRuns } from '../holders.ts';
+import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
 import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
+import { SlotTags } from '../../dashboard/countrySlots.ts';
+import { groupMembers } from '../../dashboard/groups.ts';
+import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts';
+import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
+import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, type TableColumnSpec } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { openGate } from '../../test-support/gated.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -1030,12 +1035,17 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
   const retainedData = { series: [] };
-  const snap1 = resolveDisplayedStaticSnapshot(null, retainedData, undefined, [10, 50]);
-  const snapHeld = resolveDisplayedStaticSnapshot(snap1, retainedData, undefined, [20, 60]);
+  const ctxA = { tag: 'A' };
+  const ctxB = { tag: 'B' };
+  const frozenGate = openGate(0, 100);
+  const snap1 = resolveDisplayedStaticSnapshot(null, retainedData, undefined, [10, 50], ctxA, frozenGate);
+  const snapHeld = resolveDisplayedStaticSnapshot(snap1, retainedData, undefined, [20, 60], ctxB, frozenGate);
   assert.equal(snapHeld, snap1, 'S1: displayed static snapshot stays frozen on [10,50] while newer [20,60] request is in flight');
   assert.deepEqual(snapHeld?.span, [10, 50]);
-  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, { series: [1] }, JSON.stringify([20, 60, 1]), [20, 60]);
+  assert.equal(snapHeld?.context, ctxA, 'S1: retained snapshot keeps its original selection context');
+  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, { series: [1] }, JSON.stringify([20, 60, 1]), [20, 60], ctxB, frozenGate);
   assert.deepEqual(snap2?.span, [20, 60], 'S1: updates once new reply arrives');
+  assert.equal(snap2?.context, ctxB, 'S1: updated snapshot carries the new selection context');
 
   const emptyGsA = gameScoreProjection.project({
     answers: new Map(),
@@ -1062,4 +1072,194 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   const mutRanges: [number, number][] = [[1, 5]];
   assert.equal(nextRangesChange(mutRanges, 2), 6);
   assert.throws(() => { mutRanges[0]![1] = 20; }, TypeError, 'N18: indexed range tuples are frozen against in-place mutation');
+});
+
+test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 whole-panel refusal, P5 capture-gated audit serialization, N6 UTF-8 tag tie-break, N18 deep tuple freeze & indexed overlap, M4 filter ever-gap refusal, and M9 focused index', async () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
+    { key: 'score', label: 'Score', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'score', direction: 'descending' } });
+  const layouts = buildColumnLayouts(cols, settings);
+  const mkModel = (hour: number) => ({
+    columns: cols,
+    hour,
+    rank: true,
+    rows: [{
+      key: 'GER',
+      name: 'Germany',
+      cells: {
+        country: { value: knownValue('Germany'), iconSlot: true, country: 'GER' },
+        score: { value: knownValue(100), format: 'integer' as const, country: 'GER' },
+      },
+    }],
+  });
+  const m10 = mkModel(10);
+  const m12 = mkModel(12);
+  const flat10 = resolveTableRows(m10, settings);
+  const flat12 = resolveTableRows(m12, settings);
+  const colorsA = { countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(10, 20, 30)' }] }, country: {} };
+  const colorsB = { countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(200, 10, 10)' }] }, country: {} };
+  const audit10 = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsA });
+  const audit12 = deriveTableAudit({ model: m12, flatRows: flat12, visibleColumns: layouts, rankShown: true, countryColors: colorsA });
+  assert.equal(
+    pictureError('table', audit10, { values: new Map(audit12.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'P1: tooltip audit omits presentation hour so valid picture at hour 10 matches exact audit at hour 12',
+  );
+  const tip10 = deriveTableTooltip(flat10, 'GER', cols, new Set(), 10)!;
+  assert.equal(tip10.subtitle, undefined, 'P1: deriveRowTooltip carries no hour-derived subtitle');
+  const auditColorDiff = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsB });
+  assert.notEqual(
+    pictureError('table', audit10, { values: new Map(auditColorDiff.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'N1/P1: resolved country colour change is caught by CellPaintModel audit',
+  );
+  const paintModel = resolveCellPaintModel(m10.rows[0]!.cells.score, layouts[1]!, 10, new Map([['score', 100]]), colorsA);
+  assert.equal(paintModel.countryColor, 'rgb(10, 20, 30)', 'P1: CellPaintModel carries resolved countryColor for painter');
+
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const laneView = familyTableLaneView(() => {});
+    const laneState = new Map<string, unknown>();
+    let seq = 1;
+    const refusedPaint = laneView.paint({
+      widget: 1,
+      subs: [{ id: 7, channel: 'panel' }],
+      pictures: [{ parts: [{ value: { kind: 'panel', data: null, refused: 'Game score panel refused by recording' } }] }],
+      model: {
+        family: 'table',
+        kind: 'game-score',
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        sources: { main: 7 },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+      },
+      hour: 10,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    } as never, laneState, () => `r${seq++}`);
+    assert.equal(refusedPaint.mode, 'refused', 'P2: whole-panel refusal produces mode refused, never empty mode picture');
+    assert.equal(refusedPaint.reason, 'Game score panel refused by recording');
+
+    const auditState = new Map<string, unknown>();
+    const paintNoAudit = laneView.paint({
+      widget: 2,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'table',
+        kind: 'game-score',
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        sources: {},
+        staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+      },
+      hour: 10,
+      speed: 24,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    }, auditState, () => `a${seq++}`);
+    assert.equal(paintNoAudit.fields.audit, undefined, 'P5: zero audit serialization when capture is inactive');
+    assert.equal(paintNoAudit.mode, 'picture', 'P2: populated table returns explicit mode picture');
+
+    const seen: boolean[] = [];
+    const unsub = subscribeFamilyAuditing(() => { seen.push(isFamilyAuditing()); });
+    try {
+      assert.equal(isFamilyAuditing(), false);
+      await capturePictures(true);
+      assert.equal(isFamilyAuditing(), true);
+      await capturePictures(false);
+      assert.equal(isFamilyAuditing(), false);
+      assert.deepEqual(seen, [true, false], 'P5: shared family auditing hook notifies on capture start and end');
+    } finally {
+      unsub();
+      await capturePicturesBatch(100);
+    }
+
+    const paintWithAudit = laneView.paint({
+      widget: 2,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'table',
+        kind: 'game-score',
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        sources: {},
+        staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+        audit: true,
+        auditId: 42,
+      },
+      hour: 10,
+      speed: 24,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    }, auditState, () => `a${seq++}`);
+    assert.equal((paintWithAudit.fields.audit?.value as { id?: number } | undefined)?.id, 42, 'P5: serializes audit once capture activates');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+
+  const utf8Runs = [
+    { tag: '\u{10000}', firstHour: 0, lastHour: 10, countryId: 1 },
+    { tag: '\uE000', firstHour: 0, lastHour: 10, countryId: 1 },
+  ];
+  assert.equal(resolveSlotHolderRuns(utf8Runs)[0]!.tag, '\uE000', 'N6: U+E000 precedes U+10000 in UTF-8 byte order despite higher UTF-16 code unit');
+  assert.equal(holderRunAt(utf8Runs, 5)?.tag, '\uE000', 'N6: holderRunAt uses native UTF-8 order');
+  const slots = new SlotTags({
+    countries: [
+      { tag: '\u{10000}', identities: [{ slot: 1, countryId: 1, firstHour: 0, lastHour: 10 }], unresolved: [] },
+      { tag: '\uE000', identities: [{ slot: 1, countryId: 1, firstHour: 0, lastHour: 10 }], unresolved: [] },
+    ],
+  });
+  assert.equal(slots.tagAt(1, 5), '\uE000', 'N6: SlotTags.tagAt uses native UTF-8 order');
+
+  const shallowFrozenOuter = Object.freeze([[10, 20] as [number, number], [40, 50] as [number, number]]);
+  assert.equal(overlapsHourRanges(shallowFrozenOuter, 15, 25), true, 'N18: indexed overlap finds intersecting interval');
+  assert.equal(overlapsHourRanges(shallowFrozenOuter, 21, 39), false, 'N18: indexed overlap skips disjoint interval');
+  assert.equal(overlapsHourRanges(shallowFrozenOuter, 50, 60), true, 'N18: indexed overlap includes boundary');
+  assert.throws(() => { (shallowFrozenOuter[0] as [number, number])[1] = 999; }, TypeError, 'N18: inner tuple frozen even when outer array was already frozen');
+
+  const partialGroupMembers = groupMembers(
+    [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
+    'ever',
+    20,
+    20,
+    Infinity,
+    [{ firstHour: 10, lastHour: 20 }],
+  );
+  assert.equal(partialGroupMembers, null, 'M4: groupMembers returns null for membership ever when unobserved intervals exist');
+
+  const mirrorRows = Array.from({ length: 10 }, (_, i) => ({
+    key: `R${i}`,
+    name: `Row ${i}`,
+    cells: { country: { value: knownValue(`Row ${i}`) }, score: { value: knownValue(10 - i) } },
+  }));
+  const flatMirror = resolveTableRows({ columns: cols, hour: 10, rows: mirrorRows }, settings);
+  const mirrorWithIdx = deriveTableMirror(flatMirror, cols, 10, false, { first: 5, count: 2 }, 'R1', 1);
+  assert.equal(mirrorWithIdx.rows[0]!.key, 'R1', 'M9: deriveTableMirror uses supplied O(1) focusedIndex');
+  assert.equal(mirrorWithIdx.rows[0]!.rowIndex, 1);
 });
