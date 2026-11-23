@@ -253,15 +253,77 @@ class TestSupportBranch(unittest.TestCase):
         text = ('fn fixture() -> bool { cfg!(feature = "test-support") }\n'
                 '#[cfg(not(feature = "test-support"))] fn only_without_feature() {}\n')
         self.assertEqual(check({}, {
-            LIB: '#[cfg(test)] mod inline {\n' + text + '}\n#[cfg(test)] mod checks;\n',
+            LIB: ('#[cfg(test)] mod inline {\n' + text + '}\n'
+                  '#[cfg(test)] mod checks;\n#[cfg(test)] mod unit_tests;\n'
+                  '#[cfg(test)] mod test_support;\n#[cfg(test)] mod testing;\n'),
             'crates/a/src/checks.rs': text,
             'crates/a/src/unit_tests.rs': text,
             'crates/a/tests/support/fixture.rs': text,
-            'crates/a/src/test_support.rs': text,
+            'crates/a/src/test_support.rs': 'mod builder;\n' + text,
             'crates/a/src/test_support/builder.rs': text,
             'crates/a/src/testing.rs': text,
             'tools/example.rs': text,
         })[0], 0)
+
+    def test_a_production_module_named_contests_is_checked(self):
+        name = "crates/a/src/contests.rs"
+        code, out = check({LIB: "pub mod contests;\n"}, {
+            name: 'pub fn live() -> bool { cfg!(feature = "test-support") }\n',
+        })
+        self.assertEqual(code, 1)
+        self.assertIn(f"{name}: test-support-branch: 0 at the base, 1 now; new at line 1", out)
+
+    def test_test_only_item_bodies_are_exempt(self):
+        feature = 'cfg!(feature = "test-support")'
+        text = (
+            f'#[cfg(test)] impl<const N: usize> State<{{ N }}> {{ fn test() -> bool {{ {feature} }} }}\n'
+            f'#[cfg(test)] pub(crate) trait Fixture {{ const ENABLED: bool = {feature}; }}\n'
+            f'#[cfg(test)] enum Choice {{ First = {feature} as isize }}\n'
+            f'#[cfg(test)] struct Sample {{ bytes: [u8; {feature} as usize] }}\n'
+            f'fn live() -> bool {{ {feature} }}\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [5])
+
+    def test_any_test_only_attribute_exempts_the_whole_group(self):
+        text = (
+            '#![cfg(not(feature = "test-support"))]\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            '#[doc = "Fixture."]\n'
+            '#[cfg(any(test, feature = "test-support"))]\n'
+            'fn first() {}\n'
+            '#[cfg(test)]\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            'fn second() {}\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            'fn live() {}\n'
+            '#[cfg(not(feature = "test-support"))]\n'
+            '#[cfg(test)]\n'
+            'const FIXTURE: bool = true;\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [1, 9])
+
+    def test_comments_in_test_predicates_leave_inline_and_external_modules_exempt(self):
+        feature = 'fn example() -> bool { cfg!(feature = "test-support") }\n'
+        gate = '#[cfg(any(test /* units */, feature /* fixtures */ = "test-support"))] '
+        name = 'crates/a/src/external.rs'
+        base = {LIB: gate + 'mod inline {\n' + feature + '}\n' + gate + 'mod external;\n', name: feature}
+        self.assertEqual(check({}, base)[0], 0)
+        code, out = check(base, {LIB: gate + 'mod inline {\n' + feature + '}\nmod external;\n'})
+        self.assertEqual(code, 1)
+        self.assertIn(f"{name}: test-support-branch: 0 at the base, 1 now; new at line 1", out)
+
+    def test_stringify_arguments_are_exempt_and_do_not_hide_live_gates(self):
+        text = (
+            '#[doc = stringify!(cfg!(feature = "test-support"))] fn example() {}\n'
+            'const EXAMPLE: &str = stringify! {\n'
+            '    #[cfg(not(feature = "test-support"))] fn only_without_feature() {}\n'
+            '    #[cfg(test)] mod tests;\n'
+            '    #![cfg(test)]\n'
+            '};\n'
+            'const FEATURE: &str = core::stringify![cfg!(feature = "test-support")];\n'
+            'fn live() -> bool { cfg!(feature = "test-support") }\n'
+        )
+        self.assertEqual(rust({LIB: text}, LIB)["test-support-branch"], [8])
 
 
 class Against(unittest.TestCase):
