@@ -1,3 +1,4 @@
+import type { GatedHour } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -7,6 +8,7 @@ import { typeLabel } from './producedData';
 import { useProduct } from '../../dashboard/products';
 import type { Measure } from './producedData';
 import type { ProducedAtReply, ProducedTypesReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const amount = (value: { value?: unknown; reason?: unknown } | null | undefined) => value != null
   && (value.value === null ? typeof value.reason === 'string' : Number.isSafeInteger(value.value));
@@ -35,15 +37,15 @@ export function validateAtReply(data: unknown): ProducedAtReply {
 }
 
 export function useProducedTypes(runtime: WidgetRuntime, track: BoundTrack | undefined, refits: boolean, active: boolean) {
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-types',
-    params: { branchId: track.branch.id, refits } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-types',
+    params: { branchId: track.branch.id, refits } }) : null;
   return useProduct<ProducedTypesReply>(runtime.client, request, active, validateTypesReply, track?.source);
 }
 
-export function useProducedAt(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | null, hour: number | null,
+export function useProducedAt(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | null, hour: GatedHour | null,
   measure: Measure, refits: boolean, active: boolean) {
-  const request = track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-at',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: Math.floor(hour), measure, refits } } : null;
+  const request = track && tag && hour != null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-at',
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour, measure, refits } }) : null;
   return useProduct<ProducedAtReply>(runtime.client, request, active, validateAtReply, track?.source);
 }
 

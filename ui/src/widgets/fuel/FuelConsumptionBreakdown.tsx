@@ -1,3 +1,4 @@
+import type { CountryAt, Gate } from '../../dashboard/regionGate';
 import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -26,6 +27,7 @@ import { useDetailView } from './FuelBreakdown';
 import type { DrillChart } from './FuelBreakdown';
 import { useFuelAt, usePartSeries } from './fuelReads';
 import type { CountryFuelReply, FuelDemandHistoryReply, FuelDemandPart, FuelDemandReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 type HistoryChart = Omit<DrillChart, 'detailHours'>;
 const GAIN = 100000n;
@@ -46,24 +48,25 @@ function familyRows(reply: CountryFuelReply | undefined, digits: number): DrillP
 
 const familyStructure = (reply: CountryFuelReply) => JSON.stringify([reply.consumptionMissing, reply.consumption?.reasons ?? null, reply.consumerNames]);
 
-export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, digits, campaign,
-  aliases, detailHours, ...chart }: {
-  runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
-  aliases?: ReadonlyMap<string, readonly Span[]>;
+export default function FuelConsumptionBreakdown({ runtime, gate, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, digits, campaign,
+  aliases, detailHours, history, ...chart }: {
+  runtime: WidgetRuntime; gate: Gate; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
+  aliases?: ReadonlyMap<string, readonly Span[]>; history: CountryAt['history'];
   selection: FuelConsumptionSelection | null; onSelection: (selection: FuelConsumptionSelection | null) => void;
   level: FuelConsumptionLevel | null; onLevel: (level: FuelConsumptionLevel | null) => void;
 } & DrillChart) {
   const tokens = useChartTokens();
   const shown = useShownHour();
-  const at = useFuelAt(runtime, widget, track, tag, hour, follows, chart.active, familyStructure);
+  const at = useFuelAt(runtime, widget, tag, hour, follows, chart.active, familyStructure);
   const reply = at.data;
   useEffect(() => { shown(at.shownAt()); });
   const families = useMemo<LiveDrillParts>(() => mapLive(at.live, value => { shown(at.shownAt()); return { parts: familyRows(value, digits) }; }), [at, digits, shown]);
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
-  const demandHour = follows ? (playing ? null : at.live.read()?.read?.readHour ?? null) : hour;
-  const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: demandHour } } : null, chart.active, validateFuelDemand, track.source);
-  const data = demand.data && answersKey(demand.data.asked, tag) ? demand.data : undefined;
+  const demandHour = gate.recorded(follows ? (playing ? null : at.live.read()?.read?.readHour ?? null) : hour);
+  const demandTag = demandHour === null ? null : gate.country?.aliasAt(demandHour) ?? null;
+  const demand = useProduct<FuelDemandReply>(runtime.client, demandHour !== null && demandTag !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(demandTag), hour: demandHour } }) : null, chart.active, validateFuelDemand, track.source);
+  const data = demand.data && answersKey(demand.data.asked, demandTag) ? demand.data : undefined;
   const basis = data ? demandBasis(track.branch.id, data) : null;
   const levelName = level && data && level.basis.country === data.country && level.basis.countryInstance === data.countryInstance ? level.level : level ? null : 'all';
   const available = levelName !== null && (!data || consumptionLevelAvailable(data, levelName));
@@ -79,7 +82,7 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
   const chosen = fuelRecipientFor(selection, campaign, track.branch.id, tag, aliases);
   const part = chosen && data && data.country === chosen.basis.country && data.countryInstance === chosen.basis.countryInstance
     ? data.parts.find(row => row.key === chosen.key) : null;
-  const byBranch = usePartSeries(runtime, track, FUEL_DEMAND_TOTALS, FAMILY_MEASURES, tag, undefined, chart.active);
+  const byBranch = usePartSeries(runtime, gate, track, FUEL_DEMAND_TOTALS, FAMILY_MEASURES, history, chart.active);
   const branchSeries = useMemo(() => FAMILY_MEASURES.map((_, kind) => {
     const summary = scaledSummary(byBranch.summaries[kind], 1);
     const series: BreakdownSeries = { id: String(kind), label: reply?.consumerNames[kind] ?? 'Consumer name unavailable', color: tokens.categories[kind % tokens.categories.length],
@@ -90,7 +93,7 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
 
   return <div ref={at.root}>
     {at.error && <WidgetState kind="error" what="consumption" failure={at.error} onRetry={at.retry} />}
-    {!reply && !at.error && <WidgetState kind="loading" label="Loading current consumption…" />}
+    {!reply && !at.error && <WidgetState kind="loading" label="Loading current consumption…" read={at} />}
     {reply && <DrillParts positiveBars showShares={false} active={chart.active} parts={familyRows(reply, digits)} live={follows ? families : undefined}
       format={String} onPick={key => chooseLevel(`family:${key}`)} />}
     {demand.error && <WidgetState kind="error" what="consumers" failure={demand.error} onRetry={demand.retry} />}
@@ -99,12 +102,12 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
       <strong>{part?.recordedName ?? chosen.name ?? 'Name unavailable'}</strong>
       {part?.reason && <p className="drill-empty">Consumption unavailable: {part.reason}</p>}
       {data && !part && <p className="drill-empty">Consumer unavailable at this time.</p>}
-      <DemandHistory runtime={runtime} track={track} basis={chosen.basis} keys={[chosen.key]} names={new Map([[chosen.key, part?.recordedName ?? chosen.name]])}
+      <DemandHistory runtime={runtime} gate={gate} track={track} basis={chosen.basis} keys={[chosen.key]} names={new Map([[chosen.key, part?.recordedName ?? chosen.name]])}
         colors={new Map([[chosen.key, tokens.accent]])} hour={hour} detailHours={detailHours} within={within} chart={chart}
         label="Individual current consumption required per day" />
     </> : <>
       {demandHour === null ? <p className="drill-empty">{follows ? 'Individual consumers are listed for the day shown once playback stops.' : 'Individual consumption was not recorded for this moment.'}</p>
-        : !data && !demand.error ? <WidgetState kind="loading" label="Loading individual consumers…" /> : null}
+        : !data && !demand.error ? <WidgetState kind="loading" label="Loading individual consumers…" read={at} /> : null}
       {levelName !== 'all' && <button type="button" className="button small quiet" onClick={() => chooseLevel('all')}>All current consumers</button>}
       {data && !available && <p className="drill-empty">Not recorded at this moment.</p>}
       {data && available && <DrillParts virtual active={chart.active} positiveBars signedShares parts={inventory}
@@ -113,7 +116,7 @@ export default function FuelConsumptionBreakdown({ runtime, widget, track, tag, 
           value: !complete && !inventory.some(row => row.raw != null) ? 'Unavailable' : formatFuelPart(total, GAIN, digits) }}
         onPick={key => { const row = data.parts.find(item => item.key === key); if (row && basis) onSelection({ campaign, branch: track.branch.id, basis, key: row.key, name: row.recordedName }); }} />}
       {data && <ConsumptionTopology data={data} active={chart.active} onLevel={chooseLevel} />}
-      {basis && data && available && displayed.length > 0 && <DemandHistory runtime={runtime} track={track} basis={basis} keys={displayed.map(row => row.key)}
+      {basis && data && available && displayed.length > 0 && <DemandHistory runtime={runtime} gate={gate} track={track} basis={basis} keys={displayed.map(row => row.key)}
         names={new Map(displayed.map(row => [row.key, row.recordedName]))} colors={new Map(displayed.map(row => [row.key, tokens.categories[row.kind % tokens.categories.length]]))}
         hour={hour} detailHours={detailHours} within={within} chart={chart} label="Displayed individual current consumption required per day" />}
       <details><summary>By military branch</summary>
@@ -140,8 +143,8 @@ function ConsumptionTopology({ data, active, onLevel }: { data: FuelDemandReply;
   </details>;
 }
 
-function DemandHistory({ runtime, track, basis, keys, names, colors, hour, detailHours, within, chart, label }: {
-  runtime: WidgetRuntime; track: BoundTrack; basis: FuelBasis; keys: readonly string[]; names: ReadonlyMap<string, string | null>;
+function DemandHistory({ runtime, gate, track, basis, keys, names, colors, hour, detailHours, within, chart, label }: {
+  runtime: WidgetRuntime; gate: Gate; track: BoundTrack; basis: FuelBasis; keys: readonly string[]; names: ReadonlyMap<string, string | null>;
   colors: ReadonlyMap<string, string>; hour: number | null; detailHours: number; within: readonly Span[] | null | undefined; chart: HistoryChart; label: string;
 }) {
   const height = useViewportHeight();
@@ -149,9 +152,10 @@ function DemandHistory({ runtime, track, basis, keys, names, colors, hour, detai
   const start = Math.max(chart.extent[0], end - detailHours + 1);
   const [visible, onViewChange] = useDetailView(start, end, detailHours);
   const wanted = detailWindows(chart.extent, visible, hour, detailHours);
-  const windows = useProductWindows<FuelDemandHistoryReply>(runtime.client, JSON.stringify([track.source.id, track.source.revision, basis, keys]),
-    window => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-demand-history',
-      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basis.hour, window, keys } }),
+  const basisAt = gate.recorded(basis.hour);
+  const windows = useProductWindows<FuelDemandHistoryReply>(runtime.client, basisAt === null ? null : JSON.stringify([track.source.id, track.source.revision, basis, keys]),
+    window => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-demand-history',
+      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basisAt!, window, keys } })),
     wanted, chart.active, validateFuelDemandHistory, track.source);
   const runs = useMemo(() => new Map(keys.map(key => [key, joinedRuns([...windows.data.values()].map(reply => reply.parts.find(part => part.key === key)?.runs ?? []))])),
     [windows.data, keys]);

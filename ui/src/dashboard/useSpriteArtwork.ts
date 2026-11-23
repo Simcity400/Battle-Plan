@@ -7,6 +7,7 @@ import { loadTransientProduct } from './products';
 import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork';
 import type { SpriteFrame } from './spriteArtwork';
 import { PerClient } from './prepare.ts';
+import { productRequest } from './request.ts';
 
 const held = new PerClient<SpriteCaches>();
 
@@ -29,8 +30,8 @@ export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | und
     return release;
   }, [caches, scope]);
   const asked = spriteFrames(sprites).filter(sprite => !icons.has(spriteId(sprite)));
-  const request = track && asked.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork',
-    params: { sprites: asked } } : null;
+  const request = track && asked.length ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork',
+    params: { sprites: asked } }) : null;
   const key = JSON.stringify([request, revision, scope]);
   useEffect(() => {
     if (!active || !request) return;

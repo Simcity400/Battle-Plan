@@ -12,6 +12,8 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
+import { useAtHead } from '../../dashboard/atHead';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -25,23 +27,32 @@ import { experienceFactorText, experienceText } from '../generals/experience';
 import { OPTIONS } from './definition';
 import { LiveText } from './LiveText';
 import '../generals/generals.css';
-import type { LeaderCareerReply, LeaderHourReply } from '../../generated/dashboard';
+import type { LeaderCareerReply } from '../../generated/dashboard';
+import { axisAt, regionWindow, SPEC, type RegionAction } from '../../dashboard/regionTime.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_PORTRAIT: readonly PortraitAt[] = [];
+const BRANCH_WIDE = { outside: false };
 
-export default function CareerView({ reference, onPick, caption, widget, runtime, active, onDiagnostics }: WidgetProps & {
-  reference: string; onPick?: (hour: number) => void; caption?: ReactNode;
+export default function CareerView({ reference, onPick, caption, widget, runtime, active, onDiagnostics, time = SPEC }: WidgetProps & {
+  reference: string; onPick?: (hour: number) => void; caption?: ReactNode; time?: RegionAction;
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const career = useProduct<LeaderCareerReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'unit-leader-career', params: { branchId: track.branch.id, reference } } : null, active, validateCareer, track?.source);
+  const career = useProduct<LeaderCareerReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'unit-leader-career', params: { branchId: track.branch.id, reference } }) : null, active, validateCareer, track?.source);
   const params = useMemo(() => ({ reference }), [reference]);
-  const head = useHeadProduct<LeaderHourReply>(runtime, widget, 'unit-leader-hour', params, { active, validate: validateLeaderHour });
+  const region = useRegion(widget, time);
+  const head = useHeadProduct(runtime, useGate(runtime, widget, time), 'unit-leader-hour', params, { active, validate: validateLeaderHour });
+  const regionAt = useRegionHour(runtime, region, active);
   const data = career.data;
   const now = head.data;
   const first = track?.branch.firstHour ?? 0;
-  const hour = head.at ?? track?.branch.lastHour ?? first;
+  const after = useAtHead(runtime.clock, active && head.outside && !!track,
+    at => !!track && (regionWindow(region, track, runtime.tracks, axisAt(at))?.lastHour ?? -Infinity) > track.branch.lastHour);
+  const shownAt = head.outside ? after ? track?.branch.lastHour ?? null : null : head.at ?? regionAt;
+  const hour = shownAt ?? first - 1;
   const shown = useShownHour();
   const options = resolveOptions(OPTIONS, widget.options);
   const grow = options.growWithPlayback === true;
@@ -71,7 +82,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
   if (career.error) return <WidgetState kind="error" failure={career.error} onRetry={career.retry} />;
   if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading leader career…" />;
+  if (!data) return <WidgetState kind="loading" label="Loading leader career…" read={BRANCH_WIDE} />;
   if (data.missing) return <WidgetState kind="unavailable" message="Career unavailable for this leader." detail={data.missing} />;
   const role = now?.role ?? null;
   const country = role?.owner ? labelAt(hour)(role.owner) : { name: 'Owner not recorded' };
@@ -91,7 +102,8 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
         <span>{recordedSince(data.runs[0]?.firstHour ?? null, first)}</span>
         <span><strong><LiveText live={head.live} cell={liveKey(reference, 'experience')} onPaint={report}
           format={(value, missing) => value === undefined ? missing : experienceText(String(value), progress?.nextRequiredRaw ?? null)} /></strong>commander XP</span>
-      </div></div> : <p className="career-note">{now?.missing ?? 'Leader details unavailable at this time.'}</p>}
+      </div></div> : head.outside ? <WidgetState kind="outside" read={head} /> : !now ? <WidgetState kind="loading" label="Loading leader details…" read={head} />
+      : <p className="career-note">{now.missing ?? 'Leader details unavailable at this time.'}</p>}
     {progress && <div className="career-training">
       <strong>Trait training</strong>
       {progress.training === null ? <p>Unavailable</p> : progress.training.length === 0 ? <p>No traits in training</p>
@@ -109,7 +121,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
         return <li key={trait.token}>{trait.name ?? trait.token}: {traitDateText(now.traitDates[i] ?? null)}</li>; })}</ul>
     </div>}
     <Timeline label="General career" extent={playbackDomain(grow ? 'draw-in' : 'cursor',
-      [first, Math.max(first + 1, track.branch.lastHour + 1)], hour + 1, 0, 1)} playhead={hour + 1} labelHour={hour}
+      [first, Math.max(first + 1, track.branch.lastHour + 1)], hour + 1, 0, 1)} playhead={head.outside || shownAt === null ? null : hour + 1} labelHour={head.outside || shownAt === null ? undefined : hour}
       preserveZoomOnExtentChange={grow}
       lanes={lanes} showIcons showNames emptyLabel="Not recorded" active={active} revision={[data, labelAt]} tooltip={tooltip}
       description={`${leaderName(data)}: skill, traits, commands and battles.`}

@@ -1,12 +1,20 @@
+import { gatedTime, heldCountry } from '../../test-support/gated.ts';
+import { persistedSpec } from '../../dashboard/regionTime.ts';
 import assert from 'node:assert/strict';
+import type { DrillState } from '../drill/drillState';
 import test from 'node:test';
 import { registerWidgets } from '../../dashboard/definitions.ts';
 import { partsRaceModel, validatePartsRaceReply } from '../../dashboard/partsRace.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { runAt } from '../series.ts';
-import { drillHour } from '../drill/drillState.ts';
+import { axisAt, regionHour } from '../../dashboard/regionTime.ts';
+import { drillAction } from '../drill/drillState.ts';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, partsRaceDrillBands, partsRaceDrillData, pinPartsRace, reducePartsRaceDrill, validateNativePartsRaceReply } from './partsRaceDrill.ts';
 import { bindCountryParts, countryPartsSelection, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData.ts';
+
+const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000 } } as unknown as BoundTrack;
+const drillAt = (state: DrillState, playhead: number) =>
+  regionHour({ widget: { trackIds: ['wide'], time: { mode: 'follow' } } as unknown as WidgetSpec, action: drillAction(state) }, WIDE, [WIDE], axisAt(playhead));
 
 test('drawn actor candidates override ranking without adding hidden or missing countries', () => {
   let fallbacks = 0;
@@ -28,11 +36,11 @@ test('drawn actor candidates override ranking without adding hidden or missing c
 
 test('actor chooser retains the clicked hour and branch and rejects superseded input', () => {
   const key = JSON.stringify(['campaign', 'branch']);
-  let state = reducePartsRaceDrill(CLOSED_PARTS_RACE, { type: 'open', breakdown: 'old actor', hour: 20, playing: true, playhead: 20 });
+  let state = reducePartsRaceDrill(CLOSED_PARTS_RACE, { type: 'open', breakdown: 'old actor', hour: 20, follow: true });
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 31.9, tags: ['drawn A', 'drawn B'] });
   assert.equal(state.breakdown, null);
   assert.equal(state.follow, false);
-  assert.equal(drillHour(state, 500), 31);
+  assert.equal(drillAt(state, 500), 31);
   assert.equal(reducePartsRaceDrill(state, { type: 'follow' }), state);
   assert.equal(reducePartsRaceDrill(state, { type: 'pick', hour: 500 }), state);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 44, tags: ['drawn C', 'drawn D'] });
@@ -40,15 +48,15 @@ test('actor chooser retains the clicked hour and branch and rejects superseded i
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key: 'another branch', hour: 44, tag: 'drawn C' }), state);
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key, hour: 44, tag: 'hidden rank leader' }), state);
   state = reducePartsRaceDrill(state, { type: 'choose', key, hour: 44, tag: 'drawn D' });
-  assert.deepEqual(state, { breakdown: 'drawn D', follow: false, hour: 44, choices: null });
+  assert.deepEqual(state, { breakdown: 'drawn D', spec: false, follow: false, hour: 44, choices: null });
   state = reducePartsRaceDrill(state, { type: 'follow' });
-  assert.equal(drillHour(state, 500), 500);
+  assert.equal(drillAt(state, 500), 500);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 60, tags: ['drawn A', 'drawn B'] });
   state = reducePartsRaceDrill(state, { type: 'close' });
   assert.equal(reducePartsRaceDrill(state, { type: 'choose', key, hour: 60, tag: 'drawn A' }), state);
   state = reducePartsRaceDrill(state, { type: 'actors', key, hour: 60, tags: ['drawn A', 'drawn B'] });
-  state = reducePartsRaceDrill(state, { type: 'open', breakdown: 'direct actor', hour: 61, playing: true, playhead: 61 });
-  assert.deepEqual(state, { breakdown: 'direct actor', follow: true, hour: null, choices: null });
+  state = reducePartsRaceDrill(state, { type: 'open', breakdown: 'direct actor', hour: 61, follow: true });
+  assert.deepEqual(state, { breakdown: 'direct actor', spec: false, follow: true, hour: null, choices: null });
 });
 
 test('drill stacks retain exact totals through missing classification, zeros, gaps and identity changes', () => {
@@ -81,13 +89,13 @@ test('pin keeps the drilled country and chosen moment instead of re-ranking its 
     trackIds: ['track'], countries: { kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false },
     time: { mode: 'follow' }, contentScale: 125, options: { drill: 'popout', ownership: 'roster', measure: 'planes' } };
   const track = { id: 'track', branch: { firstHour: 1000 } } as Pick<BoundTrack, 'id' | 'branch'>;
-  const held = pinPartsRace(source, track, 'country with , separators', 1051.9, false, 'Types');
+  const held = pinPartsRace(source, track, 'country with , separators', gatedTime({ mode: 'pin', windows: { track: { firstOffset: 51, lastOffset: 51 } } }), 'Types');
   assert.deepEqual(held.countries, { kind: 'tags', tags: ['country with , separators'] });
-  assert.deepEqual(held.time, { mode: 'pin', windows: { track: { firstOffset: 51, lastOffset: 51 } } });
+  assert.deepEqual(held.time.value, { mode: 'pin', windows: { track: { firstOffset: 51, lastOffset: 51 } } });
   assert.deepEqual(held.options, { drill: 'popout', ownership: 'roster', measure: 'planes', show: 'breakdown' });
   assert.equal(held.contentScale, 125);
-  assert.deepEqual(pinPartsRace(source, track, 'country with , separators', 1051, true, 'Types').time, { mode: 'follow' });
-  assert.deepEqual(pinPartsRace({ ...source, time: { mode: 'campaign' } }, track, 'country with , separators', 1051, true, 'Types').time, { mode: 'follow' });
+  assert.deepEqual(pinPartsRace(source, track, 'country with , separators', gatedTime({ mode: 'follow' }), 'Types').time.value, { mode: 'follow' });
+  assert.deepEqual(pinPartsRace({ ...source, time: { mode: 'campaign' } }, track, 'country with , separators', gatedTime({ mode: 'follow' }), 'Types').time.value, { mode: 'follow' });
 });
 
 test('native force binding and restored pins follow aliases, refuse reused tags, gaps and conflicting holders', () => {
@@ -110,10 +118,12 @@ test('native force binding and restored pins follow aliases, refuse reused tags,
   const source: WidgetSpec = { id: 'source', kind: 'parts-drill-test', title: 'Force', configVersion: 1,
     trackIds: ['track'], countries: { kind: 'tags', tags: ['OLD'] }, time: { mode: 'campaign' } };
   const track = { id: 'track', branch: { id: 'branch', firstHour: 0, lastHour: 20 }, source: { metadata: { campaignKey: 'campaign' } } } as BoundTrack;
-  const pin = pinNativeCountryParts(source, track, selected, 12, false, 'Parts');
+  const [slot, countryId] = JSON.parse(selected!.key) as [number, number];
+  const held = heldCountry({ tag: selected!.tag, origin: selected!.hour, slot, countryId });
+  const pin = persistedSpec(pinNativeCountryParts(source, track, held, gatedTime({ mode: 'pin', windows: { track: { firstOffset: 12, lastOffset: 12 } } }), 'Parts'));
   assert.deepEqual(savedCountryPartsSelection(pin, track), selected);
   assert.equal(pin.options?.drillOriginHour, 1);
-  assert.equal(pinNativeCountryParts(source, track, selected, 12, true, 'Parts').time.mode, 'follow');
+  assert.equal(pinNativeCountryParts(source, track, held, gatedTime({ mode: 'follow' }), 'Parts').time.value.mode, 'follow');
   assert.equal(savedCountryPartsSelection({ ...pin, options: { ...pin.options, holder: 'malformed' } }, track), null);
   assert.equal(savedCountryPartsSelection(pin, { ...track, branch: { ...track.branch, id: 'another' } }), null);
   assert.equal(savedCountryPartsSelection({ ...pin, options: { show: 'breakdown' } }, track), undefined);

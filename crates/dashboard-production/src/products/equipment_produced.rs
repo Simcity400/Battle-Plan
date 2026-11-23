@@ -1074,6 +1074,7 @@ impl Product for EquipmentProduced {
     const KEY: &'static str = "equipment-produced";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EquipmentProducedParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, rankHour: Read, count, measure, types, refits, window, "countries[]"];
     type Reply = EquipmentProducedReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1116,6 +1117,7 @@ impl Product for EquipmentProducedTypes {
     const KEY: &'static str = "equipment-produced-types";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProducedTypesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, refits];
     type Reply = ProducedTypesReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1138,6 +1140,7 @@ impl Product for EquipmentProducedCountry {
     const KEY: &'static str = "equipment-produced-country";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProducedCountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, count, measure, refits];
     type Reply = ProducedCountryReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1162,6 +1165,7 @@ impl Product for EquipmentProducedAt {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProducedAtParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, measure, refits];
     type Reply = ProducedAtReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

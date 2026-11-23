@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { useMemo, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import FloatingPanel from '../../components/FloatingPanel';
@@ -7,7 +8,6 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import type { WidgetSpec } from '../../dashboard/model';
-import type { TechnologyEffects as TechnologyEffectsReply } from '../../generated/dashboard';
 import EntityStatsWindow from './EntityStatsWindow';
 import { GameArtFor, GameBlocks, type EntityLink } from './GameText';
 import { technologyEffectsStructure, validateTechnologyEffects } from './technologyEffects';
@@ -30,7 +30,7 @@ export function OpenedLink({ opened, onClose, ...shown }: Shown & { opened: Enti
 export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { token: string; databaseIndex: number | null }) {
   const { runtime, widget, tag, active } = shown;
   const params = useMemo(() => ({ country: countryFromKey(tag), token, databaseIndex }), [tag, token, databaseIndex]);
-  const effects = useHeadProduct<TechnologyEffectsReply>(runtime, widget, 'technology-effects', params,
+  const effects = useHeadProduct(runtime, useGate(runtime, widget), 'technology-effects', params,
     { active, validate: validateTechnologyEffects, structure: technologyEffectsStructure });
   const [opened, setOpened] = useState<EntityLink | null>(null);
   const { data, error, retry } = effects;

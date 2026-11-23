@@ -5,6 +5,7 @@ import type { PanelFeed } from './panelFeed';
 import type { PanelGeometry } from '../draw/panels/view';
 import type { PlaybackController } from './playback';
 import type { LiveMap } from '../draw/views/fields';
+import { holdElement } from '../draw/bitmapSurface.ts';
 import './drawnPanel.css';
 
 export interface PanelInspection { texts: ReadonlyMap<string, string>; live: ReadonlyMap<string, number | string>; date: { since: number; through: number } }
@@ -51,14 +52,14 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, _clock: Playb
     const layout = panelViews[view]?.geometry ?? {};
     const paint = () => {
       const shown = pipeline.view(pipe);
-      if (shown?.dim) node.setAttribute('data-held', 'stale'); else node.removeAttribute('data-held');
+      holdElement(node, !!shown?.dim);
       if (shown?.mode !== 'picture') return;
       paintFields(node, (shown.fields?.[`texts:${sub}`] as Map<string, string> | null | undefined) ?? null, layout);
     };
     painter.current = paint;
     paint();
     const stop = pipeline.onInstall(pipe, paint);
-    return () => { stop(); painter.current = null; node.removeAttribute('data-held'); };
+    return () => { stop(); painter.current = null; holdElement(node, false); };
   }, [root, active, pipeline, pipe, sub, view, feed?.structure]);
   useLayoutEffect(() => { painter.current?.(); });
   return useRef<DrawnPanel>({ inspected: () => {

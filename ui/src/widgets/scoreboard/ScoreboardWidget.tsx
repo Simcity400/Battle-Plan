@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { axisAt, SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -36,6 +38,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import { useHeadHour } from '../army-size/headHour.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE } from './definition';
@@ -46,6 +49,7 @@ import { drawnCell, followedRow, followedValues, measureCell, partialSource, ran
 import type { BoardRow } from './scoreboardData';
 import './scoreboard.css';
 import type { ScoreboardFamily, ScoreboardReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly BoardRow[] = [];
@@ -60,6 +64,8 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
+  const gate = useGate(runtime, widget, SPEC, active);
   const lastHour = track?.branch.lastHour ?? 0;
   const registryResult = useScoreboardColumns(runtime, track, active);
   const registryData = registryResult.data;
@@ -82,12 +88,12 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const branchId = track?.branch.id;
   const rankFamily = rank?.family ?? null;
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && rankFamily
-    ? { product: 'series-state', params: { branchId, family: rankFamily, top, least: descending ? undefined : true } } : null,
-  [following, branchId, top, rankFamily?.kind, rankFamily?.measure, descending]);
+    ? gate.follow({ product: 'series-state', params: { branchId, family: rankFamily, top, least: descending ? undefined : true } }) : null,
+  [following, branchId, top, rankFamily?.kind, rankFamily?.measure, descending, gate.follow]);
   const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root);
   const rankEntry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
@@ -111,11 +117,11 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const familiesText = JSON.stringify(families);
   const chosen = useStickyMembers(stickyReset, members, stickyLimit(members.length));
   const named = top != null ? every : chosen;
-  const columnReads = top != null ? 'every' : named.length ? named.map(tag => ({ country: countryFromKey(tag), hour: 0 })) : null;
+  const columnReads = top != null ? 'every' : named.length ? named.map(tag => ({ country: countryFromKey(tag) })) : null;
   const columnReadsText = JSON.stringify(columnReads);
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && columnReads
-    ? { product: 'series-state', params: { branchId, family, reads: columnReads } } : null),
-  [familiesText, following, branchId, columnReadsText]);
+    ? gate.follow({ product: 'series-state', params: { branchId, family, reads: columnReads } }) : null),
+  [familiesText, following, branchId, columnReadsText, gate.follow]);
   const columnsFollowed = useFollowedAll(store, columnQueries, root);
   const columnsNow = useRef(columnsFollowed);
   columnsNow.current = columnsFollowed;
@@ -131,17 +137,21 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const playbackHour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const moment = Math.floor(window?.lastHour ?? lastHour);
+  const askAt = following ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
   const askedTags = useMemo(() => top == null ? rankedCandidates(resolved, moment, resolved.tags) : [], [top, resolved, moment]);
   const asked = useMemo(() => shown.map(column => column.key), [shown]);
-  const params = !following && track && registryData && !resolved.reason ? scoreboardParams(track.branch.id, moment, shown, askedTags, top, rank, descending) : null;
-  const request = params && track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params } : null;
+  const params = !following && track && registryData && !resolved.reason && askAt !== null ? scoreboardParams(track.branch.id, askAt, shown, askedTags, top, rank, descending) : null;
+  const request = params && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params }) : null;
   const validate = useCallback((value: unknown) => validateScoreboardReply(value, asked.length), [asked]);
   const result = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour', 'tags'], active, validate, track?.source);
   const reply = followedHead ? undefined : result.data;
   const toTableRows = useRef<(board: readonly BoardRow[]) => TableRowModel[]>(() => []);
-  const exactRows: ExactRows | undefined = perfLog && track && registryData && !resolved.reason ? at => {
+  const exactRows: ExactRows | undefined = perfLog && track && registryData && !resolved.reason ? wanted => {
+    const at = gate.recorded(wanted);
+    if (at === null) return Promise.reject(new Error('This hour was not recorded.'));
     const params = scoreboardParams(track.branch.id, at, shown, top == null ? rankedCandidates(resolved, at, resolved.tags) : [], top, rank, descending);
-    const request = { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params };
+    if (!params) return Promise.reject(new Error('Nothing to read at this hour.'));
+    const request = productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params });
     return perfLog!.exactOnce(JSON.stringify(request), async () => {
       const board = replyRows(validateScoreboardReply((await runtime.client.product(request, new AbortController().signal)).data, asked.length), asked);
       return { rows: toTableRows.current(board), values: replyValues(board, shown) };
@@ -279,6 +289,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const hour = followedHead ? Math.floor(headAt(structureHour) ?? lastHour) : moment;
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
+    if (coverage.outside) return <WidgetState kind="outside" read={coverage} />;
     const failure = followedHead ? refused ?? ranking.failure ?? columnsFollowed.failure : undefined;
     if (failure) return <WidgetState kind="error" failure={asFailure(new Error(failure))} />;
     if (!window && !followedHead) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;

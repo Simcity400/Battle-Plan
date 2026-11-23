@@ -407,6 +407,7 @@ impl Product for CasualtyPairs {
     const KEY: &'static str = "casualty-pairs";
     const CONTENT_DEPENDENT: bool = false;
     type Params = CasualtyPairsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, between, window, "countries[]"];
     type Reply = CasualtyPairsReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -700,6 +701,7 @@ impl Product for CasualtyBreakdown {
     const KEY: &'static str = "casualty-breakdown";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CasualtyBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window];
     type Reply = CasualtyBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -796,6 +798,7 @@ impl Product for CasualtyLabels {
     const KEY: &'static str = "casualty-labels";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = CasualtyLabelsReply;
 
     #[cfg(any(test, feature = "export-types"))]

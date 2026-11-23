@@ -4,6 +4,7 @@ import * as React from 'react';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import { TILE_BINS } from './tile.ts';
 import { useTiles } from './useTiles.ts';
+import { gatedWindow } from '../../test-support/gated.ts';
 
 function mount<T>(read: () => T) {
   type Slot = { value?: any; initialized?: boolean; deps?: readonly unknown[]; cleanup?: () => void };
@@ -65,7 +66,7 @@ test('a chart on tiles renders when a tile lands, never because its view or the 
     },
   } as unknown as Parameters<typeof useTiles>[0];
   const series = { source: { id: 'source', revision: '1' }, branchId: '1', family: { kind: 'country-measure', measure: 'politicalPower' },
-    tags: ['GER', 'ITA'], lastHour: 100_000 };
+    tags: ['GER', 'ITA'], span: (first: number, last: number) => gatedWindow(first, last), lastHour: 100_000 };
   const hook = mount(() => useTiles(client, series, true));
   try {
     hook.render().onView({ from: 0, to: 8759, end: 8759, width: 600 });

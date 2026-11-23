@@ -193,6 +193,7 @@ impl AtHour for AirStatisticsAt {
     const TITLE: &'static str = "Air statistics";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirStatisticsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, channel];
     type Reply = AirStatisticsReply;
     type Context = Names;
 
@@ -281,6 +282,7 @@ impl Product for AirStatisticsRegions {
     const KEY: &'static str = "air-statistics-regions";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirStatisticsRegionsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = AirStatisticsRegionsReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

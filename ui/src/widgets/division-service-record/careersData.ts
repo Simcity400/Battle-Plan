@@ -1,3 +1,4 @@
+import type { GatedTime, PinnedSpec } from '../../dashboard/regionTime';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { sortRows } from '../../charts/table/logic.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -79,11 +80,8 @@ export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour:
   return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(hour)}`, rows };
 }
 
-export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, hour: number, follow: boolean): WidgetSpec {
+export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {
   const base = createWidget('division-service-record', track.id);
-  const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
-    [track.id]: { firstOffset: 0, lastOffset: Math.floor(hour) - track.branch.firstHour },
-  } };
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
     contentScale: source.contentScale, options: { division: subjectToken(track.source.metadata.campaignKey, division) } };
 }

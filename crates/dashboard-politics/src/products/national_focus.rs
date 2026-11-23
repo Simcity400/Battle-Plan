@@ -40,6 +40,7 @@ impl Product for NationalFocus {
     const KEY: &'static str = "national-focus";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = FocusReply;
 
     #[cfg(any(test, feature = "export-types"))]

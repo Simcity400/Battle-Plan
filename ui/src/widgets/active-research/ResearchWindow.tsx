@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { useRef, useSyncExternalStore } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import FloatingPanel from '../../components/FloatingPanel';
@@ -28,6 +29,7 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, repl
   active: boolean; anchor: FloatingAnchor; onClose: () => void;
 }) {
   const facts = useRef<HTMLDivElement>(null);
+  const gate = useGate(runtime, widget);
   useDrawnPanel(facts, runtime.clock, item ? feed : null, active);
   const numbers = item && slotNumbers(item.read, reply.hour);
   const estimated = useSyncExternalStore(subscribe, () => item ? estimateHour(installed(), reply, item.slot.index, item.token) : reply.hour);
@@ -55,11 +57,11 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, repl
       <TechnologyEffects runtime={runtime} widget={widget} tag={tag} token={opened.token} databaseIndex={opened.databaseIndex} active={active} />
       {item && slot && (item.entry
         ? <section className="dossier-section"><h4>Research time</h4>
-          <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={estimated} history={data.history} slots={estimatedSlots} slot={slot} entry={item.entry} />
+          <ResearchExplanation client={runtime.client} gate={gate} track={track} tag={tag} hour={estimated} history={data.history} slots={estimatedSlots} slot={slot} entry={item.entry} />
         </section>
         : <p className="dossier-missing">The research time breakdown is unavailable: this slot's history was not joined.</p>)}
       {finished && <section className="dossier-section"><h4>Research time</h4>
-        <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={reply.hour} history={data.history} slots={slots} slot={finished.slot} entry={finished.entry} />
+        <ResearchExplanation client={runtime.client} gate={gate} track={track} tag={tag} hour={reply.hour} history={data.history} slots={slots} slot={finished.slot} entry={finished.entry} />
       </section>}
       </div>
     </div>

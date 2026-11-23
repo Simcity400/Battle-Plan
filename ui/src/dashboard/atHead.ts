@@ -6,7 +6,7 @@ import { countryFromKey, isSlotKey } from './countryKey.ts';
 import { useSlotTags } from './countrySlots.ts';
 import type { SlotTags } from './countrySlots';
 import type { DashboardClient } from './client';
-import type { BoundTrack } from './model';
+import { type BoundTrack } from './model.ts';
 import type { PlaybackController } from './playback';
 import { usePlaybackHour } from './follow/useFollow.ts';
 

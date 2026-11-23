@@ -545,6 +545,7 @@ impl AtHour for AirSuperiorityAt {
     const TITLE: &'static str = "Air superiority";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirSuperiorityParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, regions, theatres, "regions[]"];
     type Reply = AirSuperiorityReply;
     type Context = AirContext;
 
@@ -619,6 +620,7 @@ impl Product for AirSuperiorityChoices {
     const KEY: &'static str = "air-superiority-choices";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AirChoicesReply;
 
     #[cfg(any(test, feature = "export-types"))]

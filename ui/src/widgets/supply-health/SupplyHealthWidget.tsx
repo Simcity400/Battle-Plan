@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
+import { useCallback, useEffect, useLayoutEffect, useMemo,  useRef, useState } from 'react';
 import DrillHost from '../../charts/drill/DrillHost';
-import { drillHour } from '../../charts/drill/drillState';
 import { CLOSED_PARTS_RACE, pinPartsRace, reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 import CountryPicker from '../../components/CountryPicker';
 import SupplyBreakdown from './SupplyBreakdown';
@@ -40,6 +41,9 @@ import { useSupplySeries } from './supplySeries';
 import './supplyHealth.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useDrill } from '../../charts/drill/useDrill';
+import type { PartsRaceDrillAction, PartsRaceDrillState } from '../../charts/race/partsRaceDrill';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -60,10 +64,12 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   }, []);
   const options = resolveOptions(definition.options, widget.options);
   const pinned = options.show === 'breakdown';
-  const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), null, reducePartsRaceDrill, CLOSED_PARTS_RACE);
+  const drill = drillControl.state, dispatchDrill = drillControl.dispatch;
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const playbackHour = usePlaybackHour(runtime.clock, false);
-  const drillFollows = drill.breakdown !== null && drill.follow;
+  const drillFollows = drillControl.following;
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<string[]>([]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -96,9 +102,10 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     return runAt((isSlotKey(tag) ? historyAt(groups.data?.countryIdentities ?? [], tag, at)?.identities : identities.get(tag)) ?? [], at) !== null;
   }, [identities, groups.data]);
   const [tip, setTip] = useChangedState<{ tag: string; hour: number } | null>(null);
-  const reads = useMemo(() => tip ? [tip] : [], [tip]);
-  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch.id, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
-    following, body, track?.axisOffset);
+  const tipAt = gate.recorded(tip?.hour);
+  const reads = useMemo(() => tip && tipAt !== null ? [{ tag: tip.tag, hour: tipAt }] : [], [tip, tipAt]);
+  const supply = useSupplySeries(runtime.client, runtime.clock, gate, track?.source, track?.branch, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
+    following, body);
   useShownEachFrame(runtime.clock, () => supply.drawn ? following ? Math.min(Math.floor(clockHead.read()), lastHour) : head : null);
   const { error, retry } = supply;
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time,
@@ -106,16 +113,16 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
   const choices = drill.choices?.key === resetKey ? drill.choices : null;
   const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
-  const drillAt = Math.floor((drill.breakdown === null && choices === null ? head : drillHour(drill, clockHour)) ?? head);
-  const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
-  const follow = () => { if (active && track) dispatchDrill({ type: 'follow' }); };
+  const drillHour = choices !== null ? drill.hour : drillFollows ? clockHour : drillControl.hour;
+  const drillAt = Math.floor((drillControl.open ? drillHour : head) ?? head);
+  const drillPlayhead = drillFollows ? clockHour : playhead;
+  const follow = () => { if (active && track) drillControl.follow(); };
   const drillTag = drill.breakdown;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;
   const open = (hour: number, tag: string) => {
     if (!active || !hasActor(tag, hour)) return;
     setDrillOrigin({ tag, hour: Math.floor(hour) });
-    dispatchDrill({ type: 'open', breakdown: tag, hour, playing: runtime.clock.getSnapshot().playing,
-      playhead: following ? playhead : null });
+    drillControl.show(tag, hour);
   };
   useEffect(() => {
     if (!pinned || invalidSavedSelection || !window || drill.breakdown !== null || drill.choices !== null || !groups.data) return;
@@ -123,7 +130,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       const { tag: fixed, hour: originHour } = savedSelection;
       if (!hasActor(fixed, originHour)) return;
       setDrillOrigin({ tag: fixed, hour: originHour });
-      dispatchDrill({ type: 'open', breakdown: fixed, hour: head, playing: false, playhead: following ? playhead : null });
+      drillControl.show(fixed, head);
       return;
     }
     const actors = countries.tags.filter(tag => hasActor(tag, head)
@@ -131,7 +138,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     if (actors.length === 1) {
       const tag = actors[0];
       setDrillOrigin({ tag, hour: head });
-      dispatchDrill({ type: 'open', breakdown: tag, hour: head, playing: false, playhead: following ? playhead : null });
+      drillControl.show(tag, head);
     } else if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour: head });
   }, [pinned, invalidSavedSelection, !!window, drill, groups.data, head, playhead, countries.tags, countries.membership, savedSelection?.tag, savedSelection?.hour, following, resetKey]);
   const drillOpen = drill.breakdown !== null || choices !== null;
@@ -233,7 +240,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     ? createPortal(unchosen ? <ChooseCountryChip /> : <DatedCountryChip label={null} hour={window ? drillAt : null}
       reason="Selected country unavailable." />, countrySlot) : null;
   const drillCountry = drillTag !== null && isSlotKey(drillTag) ? historyAt(groups.data?.countryIdentities ?? [], drillTag, originHour)?.tag ?? null : drillTag;
-  const breakdown = <SupplyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
+  const breakdown = <SupplyBreakdown runtime={runtime} gate={pinned ? gate : drillControl.gate} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && problem === undefined && choices === null && !unchosen ? countrySlot : null}
     headerSelection={hasOrigin || drillCountry === null ? savedSelection : { tag: drillCountry, hour: originHour }}
     identities={groups.data?.countryIdentities ?? null}
@@ -254,13 +261,11 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {neutralHeader}
     {headerSlot && createPortal(<small className="dash-widget-subtitle"> · share of divisions</small>, headerSlot)}
-    <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost
-      mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={body} title="Supply classification"
-      day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
-      returnFocus=".supply-health-country-chart" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}
-      onPin={track && drillCountry ? () => runtime.addWidgetBelow(widget.id, pinPartsRace(
-        { ...widget, time: drill.follow ? { mode: 'follow' } : widget.time,
-          options: { ...widget.options, drillOriginHour: originHour } }, track, drillCountry, drillAt, drill.follow,
-        'Supply classification')) : undefined} main={state}>{choice}</DrillHost>}</div>
+    <div ref={body} className="supply-health">{pinned ? problem ?? choice : <DrillHost drill={{ ...drillControl, open: drillOpen, follow }} runtime={runtime}
+      mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={body} title="Supply classification"
+      day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} canFollow={choices === null && track !== undefined}
+      returnFocus=".supply-health-country-chart"
+      pinRefused={drillControl.pinRefused} onPin={track && drillCountry && drillControl.time() ? () => { const time = drillControl.time(); if (time) runtime.addWidgetBelow(widget.id, pinPartsRace(
+        { ...widget, options: { ...widget.options, drillOriginHour: originHour } }, track, drillCountry, time, 'Supply classification')); } : undefined} main={state}>{choice}</DrillHost>}</div>
   </>;
 }

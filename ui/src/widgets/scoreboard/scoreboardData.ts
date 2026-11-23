@@ -1,3 +1,4 @@
+import type { GatedHour } from '../../dashboard/regionTime';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { Sort } from '../../charts/table/logic';
 import { liveKey, valuesOf } from '../../charts/live.ts';
@@ -73,8 +74,8 @@ export function rankingColumn(registry: readonly ScoreboardColumn[], sort: Sort,
 
 export const rankingDescending = (sort: Sort, rank: ScoreboardColumn | undefined) => !rank || sort.column !== rank.key || sort.direction === 'descending';
 
-export function scoreboardParams(branchId: string, hour: number, columns: readonly ScoreboardColumn[], tags: readonly string[],
-  top: number | null, rank: ScoreboardColumn | undefined, descending = true): ScoreboardParams | null {
+export function scoreboardParams(branchId: string, hour: GatedHour, columns: readonly ScoreboardColumn[], tags: readonly string[],
+  top: number | null, rank: ScoreboardColumn | undefined, descending = true): (Omit<ScoreboardParams, 'hour'> & { hour: GatedHour }) | null {
   if (!columns.length || (top == null ? !tags.length : !rank)) return null;
   const keys = columns.map(column => column.key);
   return top == null ? { branchId, hour, columns: keys, countries: tags.map(countryFromKey) }

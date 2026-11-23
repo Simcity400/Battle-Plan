@@ -1,3 +1,6 @@
+import { productRequest } from '../../dashboard/request.ts';
+import type { Gate } from '../../dashboard/regionGate';
+import { useGate } from '../../dashboard/regionGate';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
@@ -22,7 +25,7 @@ import type { Asked } from './ProjectDetails';
 import { REWARDS_PANEL, detailTexts, effectsRead, effectsStructure, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
 import { episodeBound, iterationCount, joinDue, lastScientist, readLabel, runtimeProject, scientistName, statusRead } from './specialProjectsData';
 import type { ProjectCard, RuntimeMatch } from './specialProjectsData';
-import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectIteration, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
 
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
@@ -82,7 +85,7 @@ function Runtime({ runtime, widget, tag, active, reply, card, hour, through }: A
   reply: SpecialProjectsReply; card: ProjectCard; hour: number; through: () => number | null;
 }) {
   const box = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'special-project-details', { country: countryFromKey(tag) },
     { active, validate: validateProjectDetails, structure: rewardsStructure, panel: REWARDS_PANEL });
   const { data, error, retry, root } = head;
   useDrawnPanel(box, runtime.clock, panelFeed(REWARDS_PANEL, head, rewardsStructure, widget, runtime), active);
@@ -118,7 +121,7 @@ function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { h
   const { project } = match;
   const done = run.state === 'completed';
   const box = useRef<HTMLDivElement>(null);
-  const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', { country: countryFromKey(tag), owner: project.owner, project: project.id },
+  const effects = useHeadProduct(runtime, useGate(runtime, widget), 'special-project-effects', { country: countryFromKey(tag), owner: project.owner, project: project.id },
     { active, validate: validateProjectEffects, structure: effectsStructure });
   const read = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effectsRead(hour, project, effects.data);
   const state = read ?? (effects.data?.output ? null : effects.data?.unavailable ?? null);
@@ -155,10 +158,11 @@ function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { h
 function Iterations({ runtime, widget, tag, active, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: ProjectStatus;
   onOpen: (link: EntityLink) => void }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget);
   const listed = (shown: readonly ProjectChoice[]) => <ol className="project-window-timeline">{shown.map(choice => <li key={choice.ordinal}>
     <time>{dayLabel(choice.date)}</time>
     <p className="project-window-choice-name"><Name label={choice.reward} /><span className="project-window-option"> · <Name label={choice.option} /></span></p>
-    <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={onOpen} />
+    <IterationOutput runtime={runtime} gate={gate} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={onOpen} />
   </li>)}</ol>;
   const current = Array.isArray(choices) ? choices.filter(choice => !choice.earlier) : [];
   const earlier = Array.isArray(choices) ? choices.filter(choice => choice.earlier) : [];
@@ -171,14 +175,14 @@ function Iterations({ runtime, widget, tag, active, project, choices, run, onOpe
   </section>;
 }
 
-function IterationOutput({ runtime, track, tag, active, project, choice, onOpen }: Pick<Asked, 'runtime' | 'tag' | 'active'> & {
-  track: BoundTrack | undefined; project: ProjectRuntimeDetails; choice: ProjectChoice; onOpen: (link: EntityLink) => void;
+function IterationOutput({ runtime, gate, track, tag, active, project, choice, onOpen }: Pick<Asked, 'runtime' | 'tag' | 'active'> & {
+  gate: Pick<Gate, 'recorded'>; track: BoundTrack | undefined; project: ProjectRuntimeDetails; choice: ProjectChoice; onOpen: (link: EntityLink) => void;
 }) {
-  const recorded = !!track && choice.date >= track.branch.firstHour && choice.date <= track.branch.lastHour;
-  const read = project.historyReadHour;
-  const request = useMemo(() => track && recorded && read !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'special-project-iteration',
-    params: { branchId: track.branch.id, hour: choice.date, country: countryFromKey(tag), owner: project.owner, project: project.id, ordinal: choice.ordinal, read } } : null,
-  [track, recorded, read, choice.date, choice.ordinal, tag, project.owner, project.id]);
+  const at = gate.recorded(choice.date), read = gate.recorded(project.historyReadHour);
+  const recorded = !!track && at !== null;
+  const request = useMemo(() => track && at !== null && read !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'special-project-iteration',
+    params: { branchId: track.branch.id, hour: at, country: countryFromKey(tag), owner: project.owner, project: project.id, ordinal: choice.ordinal, read } }) : null,
+  [track, at, read, choice.ordinal, tag, project.owner, project.id]);
   const validate = useMemo(() => (value: unknown) => validateProjectIteration(value, choice.date), [choice.date]);
   const { data, error } = useProduct<SpecialProjectIteration>(runtime.client, request, active, validate, track?.source);
   if (!recorded) return <p className="project-window-withheld" title="This iteration's hour is not recorded in this branch.">Not recorded</p>;

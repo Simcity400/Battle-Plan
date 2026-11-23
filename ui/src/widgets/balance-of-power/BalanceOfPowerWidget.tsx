@@ -1,8 +1,8 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo,  useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
@@ -26,6 +26,10 @@ import { OPTIONS, singleCountry, WEEKLY_BREAKDOWN } from './definition';
 import { useBalanceDetails, useSettledHour } from './useBalanceDetails';
 import './balanceOfPower.css';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
+import { regionHour, axisAt, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import { useGate } from '../../dashboard/regionGate';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const LANE_WORDS = { since: (hour: number) => `s${hour}`, before: (hour: number) => `b${hour}`, ended: (hour: number) => `e${hour}`,
   endedBy: (hour: number) => `y${hour}`, lastSeen: (hour: number) => `l${hour}` };
@@ -39,7 +43,10 @@ export default function BalanceOfPowerWidget(props: WidgetProps) {
 function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const pinnedWeekly = options.show === WEEKLY_BREAKDOWN.id;
-  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const gate = useGate(runtime, widget, SPEC, active);
+  const drill = drillControl.state;
+  const dispatchDrill = drillControl.dispatch;
   const drillOpen = drill.breakdown !== null && !pinnedWeekly;
   const following = widget.time.mode === 'follow';
   const clock = runtime.clock;
@@ -62,8 +69,8 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const limit = playhead === null ? Math.floor(extent[1]) : limitAt(playhead);
   const saved = typeof options.balance === 'string' ? options.balance : '';
 
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(tag) } } : null;
+  const request = track && tag ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(tag) } }) : null;
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
   const branchFirst = track?.branch.firstHour ?? 0;
   const unknown = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null),
@@ -84,13 +91,14 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
     return JSON.stringify([held?.holder ?? null, tagAt(held?.tags ?? [], hour), chosen?.token ?? null, held && hour <= cut ? valueAt(held.shown, hour) : null, lanes, kind,
       hour < track.branch.firstHour || hour > track.branch.lastHour, playing ? null : hour]);
   };
-  useShownEachFrame(clock, () => data && tag ? liveHead ? Math.floor(Math.min(liveHead.read(), track?.branch.lastHour ?? Infinity)) : at : null);
+  useShownEachFrame(clock, () => data && tag ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
 
   const liveHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
-  const drillAt = drillOpen ? drillHour(drill, liveHour) : null;
+  const drillRegion = drillControl.region;
+  const drillAt = drillOpen ? regionHour(drillRegion, track, runtime.tracks, axisAt(playbackHour)) : null;
   const detailsAt = useSettledHour(drillOpen ? drillAt : at, SETTLE_MS, drillOpen ? !drill.follow : !following);
   const inside = detailsAt !== null && !!track && detailsAt >= track.branch.firstHour && detailsAt <= track.branch.lastHour;
-  const details = useBalanceDetails(runtime, track, inside ? detailsAt : null, active && !!tag && (pinnedWeekly || !!balance));
+  const details = useBalanceDetails(runtime, track, inside ? (drillOpen ? drillControl.gate : gate).recorded(detailsAt) : null, active && !!tag && (pinnedWeekly || !!balance));
   const memberTags = useMemo(() => {
     const byToken = new Map<string, string[]>();
     if (!details.data || details.hour !== at || !subject) return byToken;
@@ -123,7 +131,7 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see the balance of power." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in the widget settings." />;
-  if (at < track.branch.firstHour || at > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (at < track.branch.firstHour || at > track.branch.lastHour) return <WidgetState kind="outside" />;
   if (error && !data) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the balance of power…" />;
   if (pinnedWeekly) return <div className="balance-of-power is-pinned">
@@ -142,13 +150,15 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
     countryName={countryName} at={at} limit={limit} extent={extent} playhead={playhead}
     playback={{ mode: playback, afterPlayhead, windowHours: Number(options.windowDays ?? 365) * 24 }} unknown={unknown}
     membersOf={membersOf} pickOwner={pickOwner} onChoose={setOption ? token => setOption('balance', token) : undefined}
-    onPick={hour => dispatchDrill({ type: 'open', breakdown: WEEKLY_BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? liveHour : null })} />;
+    onPick={hour => dispatchDrill({ type: 'open', breakdown: WEEKLY_BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) })} />;
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   return <div className="balance-of-power" ref={anchor}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
-      title={`${countryName}: ${WEEKLY_BREAKDOWN.label}`} day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={`${countryName}: ${WEEKLY_BREAKDOWN.label}`} day={drillAt === null ? '' : dayLabel(drillAt)}
       canFollow={liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
-      returnFocus=".balance-chart canvas" onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
-      onPin={drillAt === null ? undefined : () => runtime.addWidgetBelow(widget.id, pinBalanceDrill(widget, track, drillAt, drill.follow, balance.token))} main={main}>
+      returnFocus=".balance-chart canvas" onClose={() => dispatchDrill({ type: 'close' })}
+      pinRefused={pinTimed.refused ?? null} onPin={pinTime ? () => runtime.addWidgetBelow(widget.id, pinBalanceDrill(widget, track, pinTime, balance.token)) : undefined} main={main}>
       <BalanceDrill runtime={runtime} track={track} history={data} tag={tag} at={at} token={balance.token} details={details} active={active} />
     </DrillHost>
   </div>;

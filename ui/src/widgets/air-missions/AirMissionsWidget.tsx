@@ -1,11 +1,11 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureDetails, type Failure } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -19,17 +19,21 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { headRead, useHeadProduct } from '../../dashboard/headProduct';
+import type { ReadCoverage } from '../../dashboard/widgetTime';
+
 import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountryNamesAt, nameKey } from '../../dashboard/countryNamesAt';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { DEFAULT_SORT } from './definition';
-import { efficiencyText, flownBy, missionRows, missionTooltip, missionValues, openWings, regionRows, shownMissions, theatreRegions, validateAirWings } from './airMissionsData';
+import { efficiencyText, flownBy, missionRows, missionTooltip, missionValues, regionRows, shownMissions, theatreRegions, validateAirWings } from './airMissionsData';
 import type { MissionRow } from './airMissionsData';
 import type { AirMissionWing, AirMissionWingsReply } from '../../generated/dashboard';
 import { useAirMissions } from './useAirMissions';
 import './airMissions.css';
+import { SPEC, axisAt } from '../../dashboard/regionTime';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const rowKey = (row: MissionRow) => row.key;
 const wingKey = (row: AirMissionWing) => row.id;
@@ -37,10 +41,12 @@ const NO_ROWS: readonly MissionRow[] = [];
 const count = (value: NonNullable<SortValue>) => typeof value === 'string' ? value : value.toLocaleString('en-US');
 const wingsStructure = (reply: AirMissionWingsReply) => JSON.stringify([reply.wings, reply.missing, reply.warnings]);
 
+const HOLDERS = { holders: true };
+
 export default function AirMissionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const anchor = useRef<HTMLDivElement | null>(null);
-  const { track, tag, options, data, error, retry, root, read, live, shownAt, at } = useAirMissions(widget, runtime, active);
+  const { track, tag, options, data, error, retry, root, live, shownAt, at } = useAirMissions(widget, runtime, active);
   const shown = useShownHour();
   const shownNow = useRef(shownAt);
   shownNow.current = shownAt;
@@ -73,19 +79,21 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const tooltip = useCallback((row: MissionRow) => missionTooltip(row, missions, values.read(), readDate), [missions, values, readDate]);
   const menu = useCallback(() => track && readHour !== null ? [jumpItem(runtime, track.id, readHour)] : [], [runtime, track, readHour]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, HOLDERS);
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [region, setRegion] = useState<MissionRow | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setRegion(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
-  const following = widget.time.mode === 'follow';
   const onRowClick = useCallback((row: MissionRow) => {
-    const hour = headRead(widget, track, runtime.tracks, null).hourAt(runtime.clock.getHour());
+    const hour = headRead({ widget, action: SPEC }, track, runtime.tracks).hourAt(axisAt(runtime.clock.getHour()));
     if (hour === null) return;
     setRegion(row);
-    dispatch(openWings(hour, following));
-  }, [widget, track, runtime, following]);
+    drillControl.show('wings', hour, tag ? { tag, origin: Math.floor(hour) } : null);
+  }, [widget, track, runtime, drillControl]);
   const open = drill.breakdown !== null && region !== null;
-  const wings = useHeadProduct<AirMissionWingsReply>(runtime, widget, 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
-    { active: active && open, validate: validateAirWings, structure: wingsStructure, hoverHour: drill.follow ? null : drill.hour });
+  const wingTag = drillControl.gate.country?.tag ?? null;
+  const wings = useHeadProduct(runtime, drillControl.gate, 'air-mission-wings', region && drill.breakdown !== null && wingTag ? { country: countryFromKey(wingTag), region: Number(region.region) } : null,
+    { active: active && open, validate: validateAirWings, structure: wingsStructure });
   const wingsShown = useRef(wings.shownAt);
   wingsShown.current = wings.shownAt;
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => wingsShown.current() ?? Number.NaN,
@@ -98,10 +106,9 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const pill = headerSlot && data && !data.missing && theatresKnown && createPortal(<span className="pill">{rows.length} {rows.length === 1 ? 'region' : 'regions'}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see air missions." />;
   if (!tag) return <WidgetState kind="empty" icon="plane" message="Choose a country in the widget's header." />;
-  if (read === 'off' && !data) return <div ref={attach}><WidgetState kind="unavailable" message="Choose another time in widget settings." /></div>;
-  if (error) return <div ref={attach}><WidgetState kind="error" failure={error} onRetry={retry} /></div>;
-  if (!data) return <div ref={attach}><WidgetState kind="loading" label="Loading air missions…" /></div>;
-  const main = data.missing ? <WidgetState kind="unavailable" message={data.missing} />
+  const main = error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    : !data ? <WidgetState kind="loading" label="Loading air missions…" />
+    : data.missing ? <WidgetState kind="unavailable" message={data.missing} />
     : !theatresKnown ? <WidgetState kind="unavailable" message={data.theatresMissing ?? 'Air theatre membership was not recorded at this time.'} />
     : !rows.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no air missions at this date.`} />
     : <Table rowRevision={row => [row, columns]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Air missions by region" rows={rows} columns={columns}
@@ -110,17 +117,16 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
       hoursPerSecond={hoursPerSecond} onRowClick={onRowClick} live={values} />;
   return <div ref={attach} data-detail={failureDetails([...country.values()].map(nameReadFailure))} className="air-missions">
     {pill}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open}
-      title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)}
-      following={drill.follow} canFollow={following} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={open} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)} canFollow onClose={() => dispatch({ type: 'close' })} main={main}>
       <div ref={wings.root} className="air-missions">
-        <WingTable reply={wings.data} error={wings.error} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
+        {data && <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />}
       </div>
     </DrillHost>
   </div>;
 }
 
-function WingTable({ reply, error, missions, live, hoursPerSecond }: { reply?: AirMissionWingsReply; error?: Failure; missions: readonly { id: string; name: string }[];
+function WingTable({ reply, error, read, missions, live, hoursPerSecond }: { reply?: AirMissionWingsReply; error?: Failure; read: ReadCoverage; missions: readonly { id: string; name: string }[];
   live: Live<LiveValues<number>>; hoursPerSecond: number | undefined }) {
   const names = useMemo(() => new Map(missions.map(mission => [mission.id, mission.name])), [missions]);
   const missionText = useCallback((row: AirMissionWing) => row.missions.map(id => names.get(id) ?? `Mission ${id}`).join(', '), [names]);
@@ -145,7 +151,7 @@ function WingTable({ reply, error, missions, live, hoursPerSecond }: { reply?: A
     ] };
   }, [live, missionText]);
   if (error) return <WidgetState kind="error" what="the region’s wings" failure={error} />;
-  if (!reply) return <WidgetState kind="loading" label="Loading wings…" />;
+  if (!reply) return <WidgetState kind="loading" label="Loading wings…" read={read} />;
   if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
   if (!reply.wings.length) return <WidgetState kind="empty" message="No wings are assigned here at this date." />;
   return <Table rowRevision={row => [row, columns]} label="Wings in this region" rows={reply.wings} columns={columns} rowKey={wingKey}

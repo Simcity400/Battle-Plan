@@ -1016,7 +1016,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
 pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
     let mut params = asked.clone();
     params.as_object_mut().ok_or("Invalid special-projects panel")?.remove("panel");
-    let params: SpecialProjectsParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: SpecialProjectsParams = dashboard_query::named::named(&params).map_err(|e| e.to_string())?;
     SpecialProjects::validate(&params)?;
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|e| e.to_string())?;
@@ -1037,6 +1037,7 @@ impl Product for SpecialProjects {
     const KEY: &'static str = "special-projects";
     const CONTENT_DEPENDENT: bool = true;
     type Params = SpecialProjectsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![hour: Read, branchId, country];
     type Reply = SpecialProjectsReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

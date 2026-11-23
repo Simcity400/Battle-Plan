@@ -193,6 +193,7 @@ impl Product for ScoreboardColumns {
     const KEY: &'static str = "scoreboard-columns";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = ScoreboardColumnsReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -304,6 +305,7 @@ impl Product for Scoreboard {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = ScoreboardParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, columns, countries, top, "countries[]", "top.count"];
     type Reply = ScoreboardReply;
 
     #[cfg(any(test, feature = "export-types"))]

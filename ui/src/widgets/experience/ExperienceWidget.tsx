@@ -23,6 +23,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { trackHourOf } from '../../dashboard/settledHour';
@@ -37,6 +38,7 @@ import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, SCALE, experienceBranches, exp
 import type { ExperienceBranch } from './experienceData';
 import { summaryEnd } from '../country-measure/measureData';
 import './experience.css';
+import { SPEC, at as pickAt, recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_PAINT = () => {};
@@ -63,19 +65,20 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
-  const lane = (branch: ExperienceBranch) => track && resolved.tags.length && branches.includes(branch) ? { source: track.source, branchId: track.branch.id,
+  const gate = useGate(runtime, widget, SPEC, active);
+  const lane = (branch: ExperienceBranch) => track && resolved.tags.length && branches.includes(branch) ? { source: track.source, span: gate.span, branchId: track.branch.id,
     family: experienceFamily(measure, branch), tags: resolved.tags, ...(resolved.membership ? { within: resolved.membership } : {}), lastHour } : null;
   const tiles = { army: useTiles(runtime.client, lane('army'), active, following), navy: useTiles(runtime.client, lane('navy'), active, following),
     air: useTiles(runtime.client, lane('air'), active, following) };
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const followed = {
-    army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
-    navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
-    air: useFollow(store, useMemo(() => headQuery('air'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT),
+    army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
+    navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
+    air: useFollow(store, useMemo(() => headQuery('air'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
   };
   const entryOf = (branch: ExperienceBranch) => followsHead(followed[branch]) ? followed[branch].entry : null;
   const refused = followRefusal(followed.army, followed.navy, followed.air);
@@ -84,11 +87,11 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]);
   const first = resolved.tags[0] ?? null;
   const [hover, setHover] = useState<number | null>(null);
-  const card = useHeadProduct(runtime, widget, 'country-experience', track && first ? { country: countryFromKey(first)} : null,
-    { active, validate: validateExperienceReply, structure: experienceStructure, hoverHour: hover });
+  const card = useHeadProduct(runtime, useGate(runtime, widget, hover === null ? SPEC : pickAt(hover)), 'country-experience', track && first ? { country: countryFromKey(first)} : null,
+    { active, validate: validateExperienceReply, structure: experienceStructure });
   const setRoots = useCallback((element: HTMLDivElement | null) => { setRoot(element); card.root(element); }, [card.root]);
   const styleAt = Math.max(extent[0], Math.min(moment, extent[1]));
-  const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
+  const styles = useCountryLineStyles(runtime.client, gate, track, resolved.tags, styleAt, active);
   const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => resolved.tags.map(tag => ({ tag, hour: styleAt })), [resolved.tags, styleAt]), active);
   const single = resolved.tags.length === 1;
   const lines = useMemo(() => experienceLines(resolved.tags, branches, single,
@@ -132,7 +135,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   if (!branches.length) return <WidgetState kind="empty" message="Turn on an experience branch in the widget settings." />;
   const legend = single ? branches.map(branch => {
     const row = head ? experienceCard(head, branch).rows.find(item => item.label === MEASURE_LABELS[measure]) : null;
-    return { id: branch, label: BRANCH_LABELS[branch], color: lines.find(line => line.branch === branch)?.color, value: row ? String(row.value) : 'Loading…' };
+    return { id: branch, label: BRANCH_LABELS[branch], color: lines.find(line => line.branch === branch)?.color, value: row ? String(row.value) : card.outside ? 'Outside the recording' : 'Loading…' };
   }) : resolved.tags.map(tag => ({ id: tag, label: labels.labelAt(styleAt)(tag).name, color: lines.find(line => line.tag === tag)?.color }));
   const title = `Experience, ${MEASURE_LABELS[measure].toLowerCase()}`;
   return <div className="experience" ref={setRoots}>
@@ -151,7 +154,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
         onHover={hour => setHover(hour === null ? null : Math.floor(hour))}
         formatValue={value => formatExperience(value * SCALE, measure !== 'banked')}
         tooltip={hour => ({ title: dayLabel(hour), subtitle: first ? `${labels.labelAt(Math.floor(hour))(first).name}: ${title}` : title,
-          rows: head && card.at === Math.floor(hour) ? branches.flatMap(branch => experienceCard(head, branch).rows.filter(row => row.label === MEASURE_LABELS[measure])
+          rows: recordedHour(track, hour) === null ? [{ label: 'Outside the recording', tone: 'muted' as const }]
+            : head && card.at === Math.floor(hour) ? branches.flatMap(branch => experienceCard(head, branch).rows.filter(row => row.label === MEASURE_LABELS[measure])
             .map(row => ({ ...row, label: BRANCH_LABELS[branch] }))) : [{ label: 'Loading…', tone: 'muted' as const }] })}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;

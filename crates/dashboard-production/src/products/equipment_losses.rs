@@ -712,6 +712,7 @@ impl Product for EquipmentLosses {
     const KEY: &'static str = "equipment-losses";
     const CONTENT_DEPENDENT: bool = true;
     type Params = LossesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, landSource, identity, from: Start, to: End, width, "reads[]": Read, "identity.countryId", "identity.slot"];
     type Reply = LossesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -793,6 +794,7 @@ impl AtHour for EquipmentLossHead {
     const TITLE: &'static str = "Equipment losses";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LossHeadParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, identity, "identity.countryId", "identity.slot"];
     type Reply = LossHeadReply;
     type Context = ();
 

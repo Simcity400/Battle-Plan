@@ -535,6 +535,7 @@ impl Product for RegionalWeather {
     const KEY: &'static str = "regional-weather";
     const CONTENT_DEPENDENT: bool = true;
     type Params = RegionalWeatherParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, width, show, modifier, regions];
     type Reply = RegionalWeatherReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -642,6 +643,7 @@ impl AtHour for WeatherProvinces {
     const TITLE: &'static str = "Province weather";
     const CONTENT_DEPENDENT: bool = true;
     type Params = RegionalWeatherProvincesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, region];
     type Reply = RegionalWeatherProvincesReply;
     type Context = ProvincesContext;
 

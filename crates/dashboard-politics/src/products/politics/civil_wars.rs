@@ -108,6 +108,7 @@ impl Product for CivilWars {
     const KEY: &'static str = "civil-wars";
     const CONTENT_DEPENDENT: bool = false;
     type Params = CivilWarsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = CivilWarsReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -1,7 +1,6 @@
 use super::{Envelope, LoadContext, Product, ReplyWarnings};
 use crate::Source;
 use dashboard_core::transport::{MAX_REPLY_BYTES, bounded_json};
-use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
 
 #[macro_export]
@@ -74,8 +73,12 @@ pub struct Registered {
         &LoadContext,
         &AtomicBool,
     ) -> Result<String, dashboard_core::QueryError>,
+    pub fields: super::Fields,
+    pub read_hour: bool,
     #[cfg(any(test, feature = "export-types"))]
     pub types: Option<fn() -> Vec<String>>,
+    #[cfg(any(test, feature = "export-types"))]
+    pub params: fn() -> dashboard_query::fields::Walk,
 }
 
 pub const fn register<P: Product>() -> Registered {
@@ -85,8 +88,12 @@ pub const fn register<P: Product>() -> Registered {
         interactive: P::INTERACTIVE,
         replays: P::REPLAYS,
         load: load_json::<P>,
+        fields: P::FIELDS,
+        read_hour: false,
         #[cfg(any(test, feature = "export-types"))]
         types: None,
+        #[cfg(any(test, feature = "export-types"))]
+        params: dashboard_query::fields::walk::<P::Params>,
     }
 }
 
@@ -98,7 +105,7 @@ fn load_json<P: Product>(
     cancelled: &AtomicBool,
 ) -> Result<String, dashboard_core::QueryError> {
     let request = params;
-    let params = P::Params::deserialize(&request)
+    let params = dashboard_query::named::named::<P::Params>(&request)
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     reply_json(

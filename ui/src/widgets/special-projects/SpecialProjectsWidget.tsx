@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, HTMLAttributes, KeyboardEvent, MouseEvent, ReactNode } from 'react';
@@ -132,6 +133,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const view = options.view === 'history' ? 'history' : 'live';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget);
   const axisOffset = track?.axisOffset ?? 0;
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryKey(track);
@@ -142,7 +144,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     [track, resolved.ready, tags, view]);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
-  const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
+  const live = useHeadProduct(runtime, gate, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateSpecialProjectsReply, structure: projectStructure });
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const membershipAt = useCallback((hour: number) => resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour), [resolved.unobserved]);
@@ -164,7 +166,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     historyPicture(replies, hour, reply => resolved.memberships.get(reply.tag) ?? [], from, openTo), [resolved.memberships, from, openTo]);
   const historyRoot = useRef<HTMLDivElement>(null);
   const asked = Math.floor(playhead ?? last);
-  const history = useProjectHistory(runtime, track, historyParams, following, active && view === 'history', asked, picture, historyRoot);
+  const history = useProjectHistory(runtime, gate, track, historyParams, following, active && view === 'history', asked, picture, historyRoot);
   const data = view === 'history' ? history.replies : currentData;
   const { error, retry } = view === 'history' ? history : live;
   const at = view === 'live' ? live.at ?? target ?? last : following ? history.hour ?? asked : asked;

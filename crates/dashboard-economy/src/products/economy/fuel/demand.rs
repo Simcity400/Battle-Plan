@@ -641,6 +641,7 @@ impl Product for CountryFuelDemand {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = FuelDemandParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = FuelDemandReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -775,6 +776,7 @@ impl Product for CountryFuelDemandHistory {
     const KEY: &'static str = "country-fuel-demand-history";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FuelDemandHistoryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, window, keys];
     type Reply = FuelDemandHistoryReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

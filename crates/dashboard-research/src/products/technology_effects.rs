@@ -65,6 +65,7 @@ impl AtHour for TechnologyEffectsAt {
     const TITLE: &'static str = "Technology effects";
     const CONTENT_DEPENDENT: bool = true;
     type Params = TechnologyEffectsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, token, databaseIndex];
     type Reply = TechnologyEffects;
     type Context = Context;
 

@@ -170,7 +170,7 @@ fn line<'q, 'a>(query: &'q Query<'a>, measure: ArmyMeasure, attribution: ArmyAtt
 }
 
 pub fn tile_line<'q, 'a>(query: &'q Query<'a>, params: &Value) -> io::Result<Line<'q, 'a>> {
-    let family: Family = serde_json::from_value(params.get("family").cloned().unwrap_or(Value::Null)).map_err(|error| invalid(format!("Invalid army tile request: {error}")))?;
+    let family: Family = dashboard_query::named::named(params.get("family").unwrap_or(&Value::Null)).map_err(|error| invalid(format!("Invalid army tile request: {error}")))?;
     if family.top.is_some() {
         return Err(invalid("A ranked army chart is not served as tiles"));
     }
@@ -185,6 +185,7 @@ impl Product for ArmySize {
     const KEY: &'static str = "army-size";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ArmySizeParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, countFor, byType, window, "countries[]"];
     type Reply = ArmySizeReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -674,6 +675,10 @@ fn token_name(tokens: &TableView<'_>, slot: Option<u32>, token: u32) -> String {
     read::text(tokens, literal, slot).and_then(|bytes| std::str::from_utf8(bytes).ok()).map_or_else(unresolved, str::to_owned)
 }
 
+pub fn tile_family_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<Family>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Family {
@@ -682,6 +687,10 @@ struct Family {
     measure: ArmyMeasure,
     count_for: ArmyAttribution,
     top: Option<usize>,
+}
+
+pub fn series_params_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<SeriesParams>()
 }
 
 #[derive(Deserialize)]
@@ -725,7 +734,7 @@ fn hour(value: Option<f64>, name: &str) -> io::Result<i32> {
 }
 
 pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value, _context: &LoadContext) -> io::Result<Value> {
-    let params: SeriesParams = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid army series request: {error}")))?;
+    let params: SeriesParams = dashboard_query::named::named(params).map_err(|error| invalid(format!("Invalid army series request: {error}")))?;
     let _ = &params.branch_id;
     let line = line(query, params.family.measure, params.family.count_for)?;
     let (from, to) = match product {

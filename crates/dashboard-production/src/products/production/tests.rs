@@ -84,6 +84,37 @@ fn recording() -> Source {
     Source::from_replay(dashboard_base::SourceKey { source_id: "production".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
+fn moved_frame(hour: i32) -> DecodedFrame {
+    let mut frame = frame(hour);
+    if hour >= 1_150
+        && let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        for row in rows.iter_mut().filter(|row| row.id == 11) {
+            row.canonical_slot = 8;
+        }
+    }
+    frame
+}
+
+fn moved_recording() -> Source {
+    let frames = (FIRST..=LAST).map(moved_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(dashboard_base::SourceKey { source_id: "production-moved".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn a_scoped_reply_holds_only_what_its_identity_owned_inside_the_scope() {
+    let source = moved_recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into(), within: Some(vec![dashboard_base::span::HourSpan { first_hour: FIRST, last_hour: 1_205 }]) };
+    let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
+    let moved = reply.lines.iter().find(|line| line.key == "1#1").expect("raw country 11's line is GER's while 11 links to GER's slot");
+    assert_eq!(moved.steps, [step(1_000, 1_099, true, "100", 2), step(1_100, 1_149, false, "101", 2)], "the line leaves GER at the hour its raw country's link moves");
+    assert_eq!((moved.ended_by, moved.final_output.is_none()), (None, true), "a line whose country moves on did not end for GER, so it takes none of the next holder's output");
+    let ended = reply.lines.iter().find(|line| line.key == "2#1").and_then(|line| line.final_output.as_ref()).expect("GER's ended line keeps its final count");
+    assert!(ended.last_hour <= 1_205, "ended output is read only inside the scope, not through {}", ended.last_hour);
+}
+
 fn no_content() -> names::Context {
     Err("no content in the fixture".to_owned())
 }
@@ -96,7 +127,7 @@ fn step(first: i32, last: i32, starts: bool, variant: &str, active: i32) -> line
 fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_published_count() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into() };
+    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into(), within: None };
     let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
     let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();
     assert_eq!(keys, ["1#1", "2#1"], "ITA's line is not GER's; a line the alias produced is");
@@ -119,13 +150,18 @@ fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_publish
     let variants: Vec<&str> = reply.variants.iter().map(|variant| variant.id.as_str()).collect();
     assert_eq!(variants, ["100", "101", "200"]);
     assert!(reply.variants.iter().all(|variant| variant.name.is_none() && variant.name_unknown.is_some()), "a name not known says why, never blank");
+    let held = ProductionLinesParams { within: Some(vec![dashboard_base::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }]), ..params };
+    let within = lines_reply(&source, &query, &held, &no_content(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(within.lines[0].steps, [step(1_000, 1_099, true, "100", 2)], "a held identity's lines are read only within its own runs");
+    assert_eq!(within.lines[0].key, reply.lines[0].key, "a line keeps its key whatever scope asks for it");
+    assert_eq!(within.line_hours, [dashboard_base::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }], "the scoped reply's hours are the held identity's");
 }
 
 #[test]
 fn a_detail_window_holds_every_value_and_each_output_change_of_the_lines_in_it() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = ProductionDetailParams { branch_id: "1".into(), country: "GER".into(), window: 1 };
+    let params = ProductionDetailParams { branch_id: "1".into(), country: "GER".into(), window: 1, within: None };
     let reply = detail_reply(&source, &query, &params, &AtomicBool::new(false)).unwrap();
     assert_eq!((reply.first_hour, reply.last_hour), (720, 1_439));
     let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();

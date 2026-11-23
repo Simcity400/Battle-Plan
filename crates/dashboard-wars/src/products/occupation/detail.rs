@@ -89,6 +89,7 @@ impl AtHour for OccupationDetail {
     const TITLE: &'static str = "Occupation";
     const CONTENT_DEPENDENT: bool = false;
     type Params = OccupationDetailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, collaboration, "countries[]"];
     type Reply = OccupationDetailReply;
     type Context = ();
 

@@ -246,6 +246,7 @@ impl AtHour for EspionageOperations {
     const TITLE: &'static str = "Espionage operations";
     const CONTENT_DEPENDENT: bool = false;
     type Params = EspionageOperationsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EspionageOperationsReply;
     type Context = ();
 
@@ -353,6 +354,7 @@ impl Product for EspionageOperation {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = EspionageOperationParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, id, hour: Read];
     type Reply = EspionageOperationReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -506,6 +508,7 @@ impl Product for EspionageEnded {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = EspionageEndedParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, from: Start, to: End];
     type Reply = EspionageEndedReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -649,6 +652,7 @@ impl Product for EspionageTypes {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = EspionageTypesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = EspionageTypesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -708,6 +712,7 @@ impl Product for EspionageTypeTokens {
     const KEY: &'static str = "espionage-type-tokens";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EspionageTypesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = EspionageTypeTokensReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -846,6 +851,7 @@ impl Product for EspionageLog {
     const KEY: &'static str = "espionage-log";
     const CONTENT_DEPENDENT: bool = false;
     type Params = EspionageLogParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "facets[].countries[]", "facets[].values[]"];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]

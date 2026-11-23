@@ -312,6 +312,7 @@ impl Product for NavalLosses {
     const KEY: &'static str = "naval-losses";
     const CONTENT_DEPENDENT: bool = false;
     type Params = NavalLossesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, attribution, kind, period, window, "countries[]"];
     type Reply = ForceSizeReply;
 
     #[cfg(any(test, feature = "export-types"))]

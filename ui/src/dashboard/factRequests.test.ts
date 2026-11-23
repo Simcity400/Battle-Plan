@@ -264,7 +264,7 @@ test('a failing read is tried again at once on a new attempt, and not at all onc
 });
 
 test('configuration errors stay failures; refusals for want of room can be retried automatically', async () => {
-  const spec = { product: 'country-flags', perRequest: 8, params: () => ({}), extract: () => new Map<string, string>() };
+  const spec = { product: 'country-flags' as const, perRequest: 8, params: () => ({}), extract: () => new Map<string, string>() };
   const source = { sourceId: 's', revision: '1', branchId: '1' };
   const outcome = async (error: unknown) => {
     const client = { product: async () => { throw error; } } as unknown as DashboardClient;
@@ -292,7 +292,7 @@ test('flags at the same source and hour are requested again after configuring fo
     if (!configured) throw new Error('Choose the game and user folders in Settings first');
     return { ...request, data: { ABC: 'flag of the current country' } };
   } } as unknown as DashboardClient;
-  const spec = { product: 'country-flags', perRequest: 32, params: () => ({}),
+  const spec = { product: 'country-flags' as const, perRequest: 32, params: () => ({}),
     extract: (data: unknown) => new Map(Object.entries(data as Record<string, string>)) };
   const read: FactRead<string> = (plan, signal, onChunk) => readFacts(client, { sourceId: 'same', revision: 'same', branchId: '1' }, spec, plan, signal, onChunk);
   const store = new HourStore<string>(8);
@@ -340,7 +340,7 @@ test('a read the desktop’s full request queue refused stays wanted and is read
       return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { GER: 'flag of GER' } };
     },
   } as unknown as DashboardClient;
-  const spec = { product: 'country-flags', perRequest: 8, params: () => ({}),
+  const spec = { product: 'country-flags' as const, perRequest: 8, params: () => ({}),
     extract: (data: unknown) => new Map(Object.entries(data as Record<string, string>)) };
   const read: FactRead<string> = (plan, signal, onChunk) => readFacts(client, { sourceId: 's', revision: '1', branchId: '1' }, spec, plan, signal, onChunk);
   const store = new HourStore<string>(8);
@@ -381,7 +381,7 @@ test('busy browser and full native queue refusals are retried without caching an
       if (busy) throw new Error(message);
       return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { fact: 'Aardvark' } };
     } } as unknown as DashboardClient;
-    const spec = { product: 'capacity-test', perRequest: 64, params: () => ({}), extract: (data: unknown) => new Map([['AAA', (data as { fact: string }).fact]]) };
+    const spec = { product: 'country-flags' as const, perRequest: 64, params: () => ({}), extract: (data: unknown) => new Map([['AAA', (data as { fact: string }).fact]]) };
     const source = { sourceId: 's', revision: '1', branchId: '1' };
     const { clock, advance, timers } = clockedReads(1);
     const store = new HourStore<string>(8);
@@ -533,7 +533,7 @@ test('shared and independent fact reads retain each failure and its retry policy
     const client = { product: async (request: { params: { tags: string[] } }) => {
       throw request.params.tags[0] === 'A' ? refusal : failure;
     } } as unknown as DashboardClient;
-    const spec = { product: 'synthetic-facts', shared, perRequest: 1,
+    const spec = { product: 'country-facts' as const, shared, perRequest: 1,
       params: (_branch: string, _hour: number, tags: readonly string[]) => ({ tags }), extract: () => new Map<string, string>() };
     const store = new HourStore<string>(2);
     const reads: Promise<void>[] = [];

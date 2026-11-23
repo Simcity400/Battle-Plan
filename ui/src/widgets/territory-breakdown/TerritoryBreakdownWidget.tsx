@@ -18,6 +18,7 @@ import { factionNameLabel } from '../../dashboard/factionNames';
 import { resolveCountries } from '../../dashboard/groups';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useCampaignGate, useGate } from '../../dashboard/regionGate';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -29,6 +30,7 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import type { RegionalRule } from './breakdownData';
 import { LEVELS, OPTIONS } from './definition';
 import type { TerritoryBreakdownReply } from './types';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -38,7 +40,9 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const rule: RegionalRule = options.rule === 'owned' ? 'owned' : 'controlled';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const params = useMemo(() => ({ measure, rule }), [measure, rule]);
-  const breakdown = useHeadProduct<TerritoryBreakdownReply>(runtime, widget, 'territory-breakdown', track ? params : null,
+  const gate = useGate(runtime, widget);
+  const campaign = useCampaignGate(runtime, widget, active);
+  const breakdown = useHeadProduct(runtime, gate, 'territory-breakdown', track ? params : null,
     { active, validate: validateBreakdownReply });
   const hour = breakdown.at ?? breakdown.hour ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
   const shownAt = useRef(breakdown.shownAt);
@@ -46,8 +50,9 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   useShownEachFrame(runtime.clock, () => breakdown.data ? breakdown.shownAt() : null, breakdown.live);
   const fill = options.growth === 'fill';
   const end = track ? (widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : track.branch.lastHour) : 0;
-  const ending = useProduct<TerritoryBreakdownReply>(runtime.client, track && fill ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'territory-breakdown', params: { branchId: track.branch.id, hour: Math.floor(end), measure, rule } } : null, active, validateBreakdownReply, track?.source);
+  const endAt = widget.time.mode === 'range' ? gate.window?.lastHour ?? null : campaign.hour;
+  const ending = useProduct<TerritoryBreakdownReply>(runtime.client, track && fill && endAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'territory-breakdown', params: { branchId: track.branch.id, hour: endAt, measure, rule } }) : null, active, validateBreakdownReply, track?.source);
   const groups = useCountryGroups(runtime, track, active);
   const colours = useFactionColours(runtime.client, track?.source);
   const fallback = defaultCountryKey(track);

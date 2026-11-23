@@ -366,6 +366,7 @@ impl AtHour for CountryFuel {
     const TITLE: &'static str = "Fuel";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryFuelParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = CountryFuelReply;
     type Context = Content;
 

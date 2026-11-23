@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
-import type { ServerResponse } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createReadStream, existsSync, rmSync } from 'node:fs';
+import { createServer as createHttpServer, type ServerResponse } from 'node:http';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, resolve, sep } from 'node:path';
+import { basename, extname, resolve, sep } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
+import { build, createServer, type PluginOption } from 'vite';
 import { browserStage, ownedEdgeProcesses, stopBrowser, stopOwnedProfile } from './canvas-page.ts';
 
 function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -59,17 +59,51 @@ export interface NativePage {
   stage<T>(label: string, run: (signal: AbortSignal) => Promise<T>, timeout?: number): Promise<T>;
 }
 
-export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>): Promise<void> {
-  const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
-    .filter((directory): directory is string => Boolean(directory))
-    .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
-  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLEPLAN_CANVAS_BROWSER to its executable');
-  const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
-  const route = `/${name}-page`;
-  const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('../', import.meta.url)),
+const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const TYPES: Readonly<Record<string, string>> = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.webp': 'image/webp', '.wasm': 'application/wasm', '.woff2': 'font/woff2' };
+const builds = new Map<string, Promise<string>>();
+
+function builtFixture(name: string, fixture: string, plugins: PluginOption[]): Promise<string> {
+  const held = builds.get(fixture) ?? (async () => {
+    const out = await mkdtemp(resolve(tmpdir(), `${name}-built-`));
+    process.once('exit', () => rmSync(out, { recursive: true, force: true }));
+    await build({ configFile: false, root: ROOT, logLevel: 'error', mode: 'development', plugins, define: { 'process.env.NODE_ENV': JSON.stringify('development') },
+      build: { outDir: out, emptyOutDir: false, minify: false, sourcemap: false, modulePreload: false, target: 'esnext', reportCompressedSize: false, copyPublicDir: false,
+        rollupOptions: { input: { fixture: resolve(ROOT, fixture.replace(/^\//, '')) }, preserveEntrySignatures: 'exports-only',
+          output: { format: 'es', entryFileNames: 'fixture.js', chunkFileNames: 'chunks/[name]-[hash].js', assetFileNames: 'assets/[name]-[hash][extname]' } } } });
+    return out;
+  })();
+  builds.set(fixture, held);
+  return held;
+}
+
+async function builtServer(name: string, route: string, out: string) {
+  const server = createHttpServer((request, response) => {
+    const path = (request.url ?? '/').split('?')[0]!;
+    if (path.startsWith('/recorded-replies')) {
+      recordedReplies(path.slice('/recorded-replies'.length) || '/', response).catch(error => { response.statusCode = 500; response.end(String(error)); });
+      return;
+    }
+    if (path === route) { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><title>${name}</title>`); return; }
+    const file = resolve(out, `.${decodeURIComponent(path)}`);
+    if (!file.startsWith(out + sep)) { response.statusCode = 403; response.end(); return; }
+    stat(file).then(found => {
+      if (!found.isFile()) throw new Error('not a file');
+      response.setHeader('Content-Type', TYPES[extname(file)] ?? 'application/octet-stream');
+      createReadStream(file).pipe(response);
+    }, () => { response.statusCode = 404; response.end(`${path} is not in the built fixture`); });
+  });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  return { port: address.port, fixture: '/fixture.js', close: () => new Promise<void>(done => server.close(() => done())) };
+}
+
+async function devServer(name: string, route: string, fixture: string, profile: string, plugins: PluginOption[]) {
+  const vite = await createServer({ configFile: false, root: ROOT,
     cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-grid-layout'], noDiscovery: true },
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
-    plugins: [{ name: `${name}-page`, configureServer(server) {
+    plugins: [...plugins, { name: `${name}-page`, configureServer(server) {
       server.middlewares.use('/recorded-replies', (request, response) => {
         recordedReplies((request.url ?? '/').split('?')[0]!, response).catch(error => { response.statusCode = 500; response.end(String(error)); });
       });
@@ -77,10 +111,22 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
         response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><title>${name}</title>`);
       });
     } }] });
+  await vite.listen();
+  const address = vite.httpServer!.address(); assert.ok(address && typeof address !== 'string');
+  return { port: address.port, fixture, close: () => vite.close() };
+}
+
+export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>, plugins: PluginOption[] = [], built = false): Promise<void> {
+  const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
+    .filter((directory): directory is string => Boolean(directory))
+    .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
+  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLEPLAN_CANVAS_BROWSER to its executable');
+  const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
+  const route = `/${name}-page`;
+  const served = built ? await builtServer(name, route, await builtFixture(name, fixture, plugins)) : await devServer(name, route, fixture, profile, plugins);
   let browser: ReturnType<typeof spawn> | undefined, endpoint = '', browserPid: number | undefined;
   try {
-    await vite.listen();
-    const address = vite.httpServer!.address(); assert.ok(address && typeof address !== 'string');
+    const address = { port: served.port };
     browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--edge-skip-compat-layer-relaunch',
       '--remote-debugging-port=0', `--user-data-dir=${profile}`], { windowsHide: true });
     browser.stdout?.resume(); browser.stderr?.resume();
@@ -109,7 +155,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     await browserStage(browser, `${name} page navigation`, async signal => {
       while (await evaluate('location.pathname') !== route) await pause(50, undefined, { signal });
     });
-    await evaluate(`import(${JSON.stringify(fixture)})`);
+    await evaluate(`import(${JSON.stringify(served.fixture)})`);
     const press = async (key: NativeKey, shift = false) => {
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 });
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 });
@@ -129,7 +175,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
         if (!browserPid) return browser!.exitCode !== null || browser!.signalCode !== null;
         try { process.kill(browserPid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true; throw error; }
       }, { profile });
-    } finally { await vite.close(); }
+    } finally { await served.close(); }
     assert.ok(profile.startsWith(resolve(tmpdir()) + sep));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }

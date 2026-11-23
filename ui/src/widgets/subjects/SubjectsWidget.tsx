@@ -33,6 +33,8 @@ import type { OverlordOrder, SubjectOrder } from './subjectsData';
 import './subjects.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { SubjectLevel, SubjectReply } from '../../generated/dashboard';
+import { recordedHour } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -45,7 +47,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
   const root = useRef<HTMLDivElement>(null);
@@ -61,7 +63,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const at = Math.floor(playhead ?? last);
-  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
+  useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const identityChanges = groups.data?.identityChanges;
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
@@ -107,7 +109,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   return <div ref={root} style={{ display: 'contents' }}>{(() => {
   if (!track) return <WidgetState kind="empty" icon="hierarchy" message="Load a campaign to see its overlords and subjects." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
   if (product.error) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
   const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;

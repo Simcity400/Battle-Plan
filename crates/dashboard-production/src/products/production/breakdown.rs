@@ -769,6 +769,10 @@ pub struct ProductionBreakdownParams {
     #[doc = " The factor shown in full; the others carry only their totals."]
     pub group: String,
     pub hour: i32,
+    #[doc = " The held identity's own runs: lines are read only while the country holds them."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -825,6 +829,7 @@ impl Product for ProductionLineBreakdown {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProductionBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, key, group, hour: Bucket, "within[].firstHour": Start, "within[].lastHour": End];
     type Reply = ProductionLineBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -859,7 +864,7 @@ impl Product for ProductionLineBreakdown {
         let content = names::context(source, context)?;
         let (first, last) = window_hours(params.hour.div_euclid(DETAIL_HOURS)).ok_or_else(|| dashboard_core::invalid("Invalid production hour"))?;
         let index = index_of(source);
-        let found = appearances(&query, &params.country, query.timeline.first, query.timeline.last, &index)?;
+        let found = appearances(&query, &params.country, params.within.as_deref(), query.timeline.first, query.timeline.last, &index)?;
         let appearance = found
             .into_iter()
             .find(|appearance| appearance.key == params.key)
@@ -953,7 +958,7 @@ impl Product for ProductionLineBreakdown {
         }
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, query.timeline.last),
+            tag: query.holders.name(&params.country, params.hour),
             key: params.key.clone(),
             first_hour: first,
             last_hour: last,

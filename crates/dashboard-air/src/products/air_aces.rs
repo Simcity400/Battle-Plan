@@ -442,6 +442,7 @@ impl AtHour for AirAcesAt {
     const TITLE: &'static str = "Aces";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirAcesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AirAcesReply;
     type Context = Context;
 
@@ -572,6 +573,7 @@ impl AtHour for AirAcePortraits {
     const TITLE: &'static str = "Ace portraits";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirAcePortraitParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, ids];
     type Reply = AirAcePortraitReply;
     type Context = Context;
 

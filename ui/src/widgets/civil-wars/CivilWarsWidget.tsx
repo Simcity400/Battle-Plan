@@ -40,6 +40,8 @@ import type { CivilWarLaneInfo, Look } from './civilWarsData';
 import './civilWars.css';
 import { motionOf } from '../../charts/easing.ts';
 import type { CivilWarsReply } from '../../generated/dashboard';
+import { recordedHour } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const WORDS = { pending: NAME_LOADING, missing: NAME_NOT_KNOWN };
@@ -61,7 +63,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'civil-wars', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'civil-wars', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<CivilWarsReply>(runtime.client, request, active, validateCivilWarsReply, track?.source);
   const data = product.data;
   const branchFirst = track?.branch.firstHour ?? 0;
@@ -74,7 +76,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
     subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
-  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
+  useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const dashboardTag = track ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, lastHour, identities),
@@ -168,7 +170,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="flag-torn" message="Load a campaign to see its civil wars." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
     if (product.error) return <WidgetState kind="error" failure={product.error} onRetry={product.retry} />;
     if (narrowing && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (!data || !view || narrowing && !identities) return <WidgetState kind="loading" label="Loading civil wars…" />;

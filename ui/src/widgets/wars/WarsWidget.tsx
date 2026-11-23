@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -37,6 +39,7 @@ import {
 import type { CountryResolver, WarsColour, WarsLaneInfo, WarsView } from './warsData';
 import { warTooltip } from './warsTooltip';
 import { warsColourPlan, warsCountryColours, warsFixedColourKey, warsLookStart, warsSideColours } from './warsColours';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 const pendingCountry = () => ({ name: NAME_WORDS.pending });
@@ -49,9 +52,10 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const product = useProduct<WarsReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, validateWarsReply, track?.source);
+  const product = useProduct<WarsReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'wars',
+    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } }) : null, active, validateWarsReply, track?.source);
   const data = product.data;
   const groups = useCountryGroups(runtime, track, active);
   const factions = useFactionColours(runtime.client, track?.source);
@@ -88,11 +92,12 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   useEffect(() => { if (!following) shown(data ? at : null); }, [following, data, at, shown]);
   const until = () => following ? trackHour(clock.getHour()) ?? at : at;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const hourParams = track && hoverHour !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverHour } : null;
-  const losses = useProduct<WarLossesReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'war-losses', params: hourParams } : null, active, validateWarLosses, track?.source);
-  const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'war-contributions', params: hourParams } : null, active, validateWarContributions, track?.source);
+  const hoverAt = gate.recorded(hoverHour);
+  const hourParams = track && hoverAt !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverAt } : null;
+  const losses = useProduct<WarLossesReply>(runtime.client, track && hourParams ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'war-losses', params: hourParams }) : null, active, validateWarLosses, track?.source);
+  const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'war-contributions', params: hourParams }) : null, active, validateWarContributions, track?.source);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => { setExpanded(new Set()); }, [track?.source.id, track?.branch.id, viewpointTag]);
   useEffect(() => {
@@ -160,7 +165,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its wars." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
   const state = warsReplyState(data, product.error);
   if (state === 'error') return <WidgetState kind="error" failure={product.error!} onRetry={product.retry} />;
   if (state === 'unavailable') return <WidgetState kind="unavailable" message="Wars are not in this recording." />;

@@ -206,6 +206,7 @@ impl Product for ConstructionLogManifest {
     const KEY: &'static str = "construction-log-manifest";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = ConstructionLogManifestReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -248,6 +249,7 @@ impl Product for ConstructionLog {
     const KEY: &'static str = "construction-log";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ConstructionLogParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, window];
     type Reply = ConstructionLogReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

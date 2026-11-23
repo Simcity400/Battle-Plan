@@ -1,3 +1,6 @@
+import type { GatedParams } from '../../dashboard/regionTime';
+import { productRequest } from '../../dashboard/request.ts';
+import type { Gate } from '../../dashboard/regionGate';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -37,12 +40,12 @@ export function readingKey(reading: HistoryReading, picture: Picture): string {
   return ready(reading) ? `=${picture(reading.replies, reading.hour)}` : '';
 }
 
-export function useProjectHistory(runtime: WidgetRuntime, track: BoundTrack | undefined, params: readonly Params[], following: boolean, active: boolean,
+export function useProjectHistory(runtime: WidgetRuntime, gate: Pick<Gate, 'follow' | 'recorded'>, track: BoundTrack | undefined, params: readonly Params[], following: boolean, active: boolean,
   at: number, picture: Picture, root: RefObject<Element | null>): ProjectHistoryFeed {
   const followed = following && active && !!track;
-  const store = useMemo(() => followed && track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null,
+  const store = useMemo(() => followed && track ? followStore(runtime.client, track, runtime.clock) : null,
     [followed, runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const queries = useMemo(() => followed ? params.map(param => ({ ...param, panel: HISTORY_PANEL })) : [], [followed, params]);
+  const queries = useMemo(() => followed ? params.map(param => gate.follow({ ...param, panel: HISTORY_PANEL })) : [], [followed, params, gate.follow]);
   const all = useFollowedAll(store, queries, root);
   const read = useCallback((): HistoryReading => {
     let error = all.failure !== undefined ? asFailure(new Error(all.failure)) : undefined;
@@ -67,8 +70,9 @@ export function useProjectHistory(runtime: WidgetRuntime, track: BoundTrack | un
     update();
     return all.subscribe(update);
   }, [followed, read, picture, all.subscribe]);
-  const requests = useMemo(() => !followed && track ? params.map(param => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
-    params: { ...param, hour: at } })) : [], [followed, track, params, at]);
+  const askedAt = gate.recorded(at);
+  const requests = useMemo(() => !followed && track && askedAt !== null ? params.map(param => productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'special-projects', params: { ...param, hour: askedAt } as GatedParams })) : [], [followed, track, params, askedAt]);
   const asked = useProducts<SpecialProjectsReply>(runtime.client, requests, active && !followed, validateSpecialProjectsReply, track?.source);
   const askedLatest = useRef<HistoryReading>({ replies: [], hour: null, through: null });
   askedLatest.current = { replies: asked.data ?? [], hour: asked.data ? at : null, through: asked.data ? at : null };

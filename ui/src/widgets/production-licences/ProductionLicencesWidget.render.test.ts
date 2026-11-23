@@ -16,7 +16,7 @@ test('licences load until the groups come; with no licence, a group with no memb
   hour: ${BRANCH.lastHour}, at: ${BRANCH.lastHour}, live: { read: () => ({ get: () => undefined, missing: () => '' }), subscribe: () => () => {} }, shownAt: () => ${BRANCH.lastHour} });`,
     '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {}, data: undefined });',
     '/dashboard/atHead.ts': `export const useAtHead = () => ${BRANCH.lastHour}; export const useIdentityHour = () => null;`,
-    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
+    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {}; export const useDrillShown = () => {}; export const DrillScope = props => props.children; export const ShownHour = () => null;',
     '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ muted: "#777", fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
@@ -26,7 +26,8 @@ test('licences load until the groups come; with no licence, a group with no memb
     '/charts/flow/FlowDiagram.tsx': 'export default props => props.message;',
   });
   try {
-    const props = { widget: { id: 'production-licences', kind: 'production-licences', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'pin' }, options: {} },
+    const props = { widget: { id: 'production-licences', kind: 'production-licences', trackIds: ['main'], countries: humansBy('hour'),
+      time: { mode: 'pin', windows: { main: { firstOffset: BRANCH.lastHour - BRANCH.firstHour, lastOffset: BRANCH.lastHour - BRANCH.firstHour } } }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [], campaignKey: 'campaign' } }, branch: { ...BRANCH, gaps: [] } }],
         client: {}, clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0, playing: false, position: BRANCH.lastHour }), subscribeFrame: () => () => {} } },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;

@@ -56,12 +56,42 @@ pub struct ArmyLossesParams {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", tag = "kind", try_from = "LossViewAsked")]
 pub enum LossView {
     #[default]
     Manpower,
     Equipment { ledgers: Vec<u8> },
     Month { month: i32 },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LossViewAsked {
+    kind: LossKind,
+    ledgers: Option<Vec<u8>>,
+    month: Option<i32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum LossKind {
+    Manpower,
+    Equipment,
+    Month,
+}
+
+impl TryFrom<LossViewAsked> for LossView {
+    type Error = &'static str;
+
+    fn try_from(asked: LossViewAsked) -> Result<Self, Self::Error> {
+        match (asked.kind, asked.ledgers, asked.month) {
+            (LossKind::Manpower, _, _) => Ok(Self::Manpower),
+            (LossKind::Equipment, Some(ledgers), _) => Ok(Self::Equipment { ledgers }),
+            (LossKind::Month, _, Some(month)) => Ok(Self::Month { month }),
+            (LossKind::Equipment, None, _) => Err("An equipment loss view names its ledgers"),
+            (LossKind::Month, _, None) => Err("A month loss view names its month"),
+        }
+    }
 }
 
 impl LossView {
@@ -309,6 +339,7 @@ impl AtHour for ArmyLosses {
     const TITLE: &'static str = "Army losses";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ArmyLossesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, view, "view.ledgers[]", "view.month"];
     type Reply = ArmyLossesReply;
     type Context = Content;
 

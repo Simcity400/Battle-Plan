@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { liveKey } from '../../charts/live.ts';
 import { validateLeaseHistory, validateMarketReply } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import { agreementRows, agreementValues, amountOf, openAgreement } from './agreementsData.ts';
+import { agreementRows, agreementValues, amountOf } from './agreementsData.ts';
 import type { CountryGroupReply, LeaseTerms } from '../../generated/dashboard';
 import { countryMatch, membershipUnrecordedAt } from '../../dashboard/groups.ts';
 
@@ -43,7 +43,6 @@ test('Delivered and Lost paint an active agreement\'s fuel from its live cells a
   assert.equal(values.missing(liveKey('1:fuel', 'lost')), 'Not read yet');
   assert.equal(values.get(liveKey('1', 'delivered')), 1500000);
   assert.equal(amountOf(rows[1], 98304n), '3');
-  assert.deepEqual(openAgreement(rows[2], 'agreement', true, 50), { type: 'open', breakdown: 'agreement', hour: 30, playing: true, playhead: null });
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;

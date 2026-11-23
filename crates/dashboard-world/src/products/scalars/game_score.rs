@@ -151,6 +151,7 @@ impl AtHour for GameScore {
     const TITLE: &'static str = "Game score";
     const CONTENT_DEPENDENT: bool = true;
     type Params = GameScoreParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = GameScoreReply;
     type Context = (BTreeMap<String, String>, Vec<String>);
 

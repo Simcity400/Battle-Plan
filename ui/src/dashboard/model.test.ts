@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryMetadata } from '../shell/api';
 import type { DashboardSource } from './client';
-import { bindTracks, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, recordingEndTime, resolveWindow, widgetAtDefault } from './model.ts';
+import { bindTracks, clockBounds, createWidget, defaultTemplate, rebaseWidget, recordingEndTime, resolveWindow, widgetAtDefault } from './model.ts';
 import { setOption } from './options.ts';
 import type { OptionField } from './options';
 import { parseTemplate } from './storage.ts';
@@ -85,7 +85,7 @@ test('pinning freezes the selected window and range alignment follows the first 
   const template = defaultTemplate();
   const tracks = bindTracks(template, new Map([['primary', source()]]));
   const widget = { ...createWidget('history', 'main', 'pinned'), time: { mode: 'range' as const, firstOffset: 20, lastOffset: 50 } };
-  const pinned = { ...widget, time: pinTime(widget, tracks, 1400) };
+  const pinned = { ...widget, time: { mode: 'pin' as const, windows: { [tracks[0].id]: { firstOffset: 20, lastOffset: 50 } } } };
   assert.deepEqual(resolveWindow(pinned, tracks[0], tracks, 1100), { firstHour: 1020, lastHour: 1050 });
   assert.deepEqual(resolveWindow(pinned, tracks[0], tracks, 1990), { firstHour: 1020, lastHour: 1050 });
   const missing = { ...pinned, time: { mode: 'pin' as const, windows: {} } };

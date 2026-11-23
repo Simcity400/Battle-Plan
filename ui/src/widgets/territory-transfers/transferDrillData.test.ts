@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decodeTransfers } from './territoryData.ts';
-import { linkEnds, selectedTransfers, transferDrillOpen, transferSelection, transferSelectionToken } from './transferDrillData.ts';
+import { linkEnds, selectedTransfers, transferSelection, transferSelectionToken } from './transferDrillData.ts';
 import { deal, holder, reply } from './transfers.fixture.ts';
 import type { Move } from './transfers.fixture.ts';
 
@@ -32,7 +32,3 @@ test('selections pick their transfers and count saved links this scope lacks', (
   assert.equal(selectedTransfers(data.all, { ids: [], fromOffset: null, country: null }).shown.length, 3);
 });
 
-test('a held view opens its drill at the drawn moment; Follow inherits the clock', () => {
-  assert.deepEqual(transferDrillOpen(50, false, 70, true), { type: 'open', breakdown: 'parts', hour: 50, playhead: null, playing: false });
-  assert.deepEqual(transferDrillOpen(50, true, 70, true), { type: 'open', breakdown: 'parts', hour: 50, playhead: 70, playing: true });
-});

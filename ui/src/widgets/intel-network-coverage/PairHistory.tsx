@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -15,7 +16,7 @@ import { OPTIONS } from './definition';
 import { fieldText, LABELS, measureField, pairOf } from './intelCoverageData';
 import type { Basis, ChosenPair, Measure } from './intelCoverageData';
 
-export default function PairHistory({ widget, runtime, active, pair, hour }: WidgetProps & { pair: ChosenPair | null; hour: number }) {
+export default function PairHistory({ widget, runtime, active, pair, gate, hour }: WidgetProps & { pair: ChosenPair | null; gate: Gate; hour: number | null }) {
   const tokens = useChartTokens();
   const root = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Intel network history');
@@ -26,8 +27,8 @@ export default function PairHistory({ widget, runtime, active, pair, hour }: Wid
   const keys = useMemo(() => chosen ? [{ tag: chosen.owner, part: String(chosen.targetId) }] : [], [chosen?.owner, chosen?.targetId]);
   const family = useMemo(() => ({ kind: 'intel-networks', measure: field }), [field]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const series = useKeyedSeries(runtime.client, runtime.clock, track && keys.length ? { source: track.source, branchId: track.branch.id, family, keys, partBits: 32,
-    lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, hour, hoverHour, false, active, root);
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, track && keys.length ? { source: track.source, branch: track.branch, family, keys, partBits: 32,
+    lastHour: track.branch.lastHour } : null, gate.recorded(hour), gate.recorded(hoverHour), false, active, root);
   const layers = useMemo<ChartLayer[]>(() => keys.map(key => ({
     draw: (ctx, frame, chartTokens, state) => {
       const summary = series.summaryOf(keyId(key));

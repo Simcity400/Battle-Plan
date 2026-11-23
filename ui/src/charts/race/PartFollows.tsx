@@ -1,3 +1,5 @@
+import type { FollowQuery, GatedHour } from '../../dashboard/regionTime';
+import type { Gate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { RefObject } from 'react';
@@ -8,6 +10,8 @@ import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import type { SeriesStateReply } from '../../generated/dashboard';
 import { keyedAnswer, keyedStates, measureAnswer, measureParts, measureStates } from './measureParts.ts';
 import type { MeasureParts, PartValues } from './measureParts';
+import { productRequest } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
 
 export class PartsHead {
   private entries = new Map<string, FollowEntry | null>();
@@ -47,7 +51,7 @@ export class PartsHead {
   }
 }
 
-function PartFollow({ store, query, root, id, head }: { store: FollowStore | null; query: Readonly<Record<string, unknown>> | null;
+function PartFollow({ store, query, root, id, head }: { store: FollowStore | null; query: FollowQuery | null;
   root: RefObject<Element | null>; id: string; head: PartsHead }) {
   const followed = useFollow(store, query, root, () => head.land());
   const entry = followsHead(followed) ? followed.entry : null;
@@ -56,11 +60,11 @@ function PartFollow({ store, query, root, id, head }: { store: FollowStore | nul
   return null;
 }
 
-export function PartFollows({ store, branchId, tags, on, root, head }: { store: FollowStore | null; branchId: string | undefined;
+export function PartFollows({ store, gate, branchId, tags, on, root, head }: { store: FollowStore | null; gate: Pick<Gate, 'follow'>; branchId: string | undefined;
   tags: readonly string[]; on: boolean; root: RefObject<Element | null>; head: PartsHead }) {
   const parts = head.parts;
-  const reads = useMemo(() => tags.map(tag => ({ tag, hour: 0 })), [tags]);
-  const query = (family: unknown) => on && branchId && reads.length ? { product: 'series-state', params: { branchId, family, reads } } : null;
+  const reads = useMemo(() => tags.map(tag => ({ country: countryFromKey(tag) })), [tags]);
+  const query = (family: unknown) => on && branchId && reads.length ? gate.follow({ product: 'series-state', params: { branchId, family, reads } }) : null;
   if (parts.kind === 'keyed') return <PartFollow store={store} query={query(parts.family)} root={root} id="keyed" head={head} />;
   return <>{parts.items.map(item => <PartFollow key={item.id} store={store} query={query(item.measure)} root={root} id={item.id} head={head} />)}</>;
 }
@@ -72,16 +76,16 @@ function validateStates(value: unknown): SeriesStateReply {
 }
 
 export function usePartStates(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined, parts: MeasureParts | undefined,
-  tags: readonly string[], hour: number, enabled: boolean) {
-  const key = enabled && source && branchId && parts && tags.length ? JSON.stringify([source.id, source.revision, branchId, parts.kind === 'keyed' ? parts.family
+  tags: readonly string[], hour: GatedHour | null, enabled: boolean) {
+  const key = enabled && source && branchId && parts && tags.length && hour !== null ? JSON.stringify([source.id, source.revision, branchId, parts.kind === 'keyed' ? parts.family
     : parts.items.map(item => item.measure), tags, hour]) : null;
   const [state, setState] = useState<{ key: string; values?: Map<string, PartValues>; error?: unknown }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (!key || !parts) return;
+    if (!key || !parts || hour === null) return;
     const controller = new AbortController();
-    const ask = (family: unknown) => loadProduct(client, { sourceId: source!.id, revision: source!.revision, product: 'series-state',
-      params: { branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) } }, controller.signal, validateStates, source);
+    const ask = (family: unknown) => loadProduct(client, productRequest({ sourceId: source!.id, revision: source!.revision, product: 'series-state',
+      params: { branchId, family: family as ParamsFor<'series-state'>['family'], reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) } }), controller.signal, validateStates, source);
     const made = parts.kind === 'keyed'
       ? ask(parts.family).then(reply => keyedStates(reply, hour))
       : Promise.all(parts.items.map(item => ask(item.measure).then(reply => [item.id, measureStates(reply, hour)] as const)))

@@ -561,6 +561,7 @@ impl AtHour for CountryPeople {
     const TITLE: &'static str = "Country people";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PeopleParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = PeopleReply;
     type Context = PeopleContext;
 

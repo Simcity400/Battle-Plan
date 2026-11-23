@@ -1,3 +1,4 @@
+import { gatedHour } from '../../test-support/gated.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -42,13 +43,13 @@ test.skip('a top ranks by the sorted measure, else the measure chosen, never by 
   assert.equal(rankingColumn(registry, { column: 'stability', direction: 'ascending' }, '', 'factories'), stability);
   assert.equal(rankingColumn(registry, { column: 'country', direction: 'ascending' }, 'politicalPower', 'factories'), power);
   assert.equal(rankingColumn(registry, { column: 'casualties', direction: 'descending' }, 'casualties', 'factories'), factories);
-  assert.deepEqual(scoreboardParams('1', 50, [power, casualties], [], 10, factories),
+  assert.deepEqual(scoreboardParams('1', gatedHour(50), [power, casualties], [], 10, factories),
     { branchId: '1', hour: 50, columns: ['politicalPower', 'casualties'], countries: [], top: { count: 10, sort: 'factories', descending: true } });
   assert.equal(rankingDescending({ column: 'factories', direction: 'ascending' }, factories), false, 'sorted ascending by the rank column: the least');
   assert.equal(rankingDescending({ column: 'country', direction: 'ascending' }, factories), true, 'sorted by name: the greatest');
-  assert.deepEqual(scoreboardParams('1', 50, [power], ['GER'], null, factories), { branchId: '1', hour: 50, columns: ['politicalPower'], countries: ['GER'] });
-  assert.equal(scoreboardParams('1', 50, [power], [], null, factories), null, 'no country chosen asks nothing');
-  assert.equal(scoreboardParams('1', 50, [], ['GER'], null, factories), null, 'no column asks nothing');
+  assert.deepEqual(scoreboardParams('1', gatedHour(50), [power], ['GER'], null, factories), { branchId: '1', hour: 50, columns: ['politicalPower'], countries: ['GER'] });
+  assert.equal(scoreboardParams('1', gatedHour(50), [power], [], null, factories), null, 'no country chosen asks nothing');
+  assert.equal(scoreboardParams('1', gatedHour(50), [], ['GER'], null, factories), null, 'no column asks nothing');
 });
 
 test('a reply\'s cells are exact amounts by the columns asked, a missing value keeps its reason and never reads as zero', () => {

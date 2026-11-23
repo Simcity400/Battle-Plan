@@ -7,8 +7,10 @@ import { useHeldFailure } from './heldFailures';
 import type { BoundTrack } from './model';
 import { useProducts } from './products';
 import { STYLES } from './useCountriesAt';
+import type { Gate } from './regionGate';
+import { productRequest } from './request.ts';
 
-export function useCountryLineStyles(client: DashboardClient, track: BoundTrack | undefined, keys: string[], at: number, active: boolean) {
+export function useCountryLineStyles(client: DashboardClient, gate: Pick<Gate, 'recorded'>, track: BoundTrack | undefined, keys: string[], at: number, active: boolean) {
   const moment = track ? Math.floor(Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, at))) : 0;
   const sample = track ? lookHour(track.branch, moment) : null;
   const hour = sample?.hour ?? null, stretch = sample?.stretch ?? null;
@@ -33,8 +35,10 @@ export function useCountryLineStyles(client: DashboardClient, track: BoundTrack 
     }
     return [...byHour].sort(([a], [b]) => a - b).map(([hour, tags]) => ({ hour, tags: [...tags].sort() }));
   }, [asked]);
-  const requests = track ? plan.map(({ hour, tags }) => ({ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product,
-    params: STYLES.params(track.branch.id, hour, tags) })) : [];
+  const requests = track ? plan.flatMap(({ hour, tags }) => {
+    const asked = gate.recorded(hour);
+    return asked === null ? [] : [productRequest({ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product, params: { branchId: track.branch.id, hour: asked, tags } })];
+  }) : [];
   const styles = useProducts<CountryStyleReply>(client, requests, active);
   const data = useMemo<CountryStyleReply | undefined>(() => styles.data?.length ? {
     branchId: styles.data[0].branchId, hour: styles.data[0].hour,

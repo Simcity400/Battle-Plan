@@ -80,6 +80,7 @@ impl AtHour for WarContributions {
     const TITLE: &'static str = "War contributions";
     const CONTENT_DEPENDENT: bool = true;
     type Params = WarContributionsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint];
     type Reply = WarContributionsReply;
     type Context = ContributionContent;
 

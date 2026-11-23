@@ -549,6 +549,7 @@ impl Product for Wars {
     const KEY: &'static str = "wars";
     const CONTENT_DEPENDENT: bool = true;
     type Params = WarsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint];
     type Reply = WarsReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -613,6 +614,7 @@ impl Product for WarLosses {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = WarLossesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint, hour: Read];
     type Reply = WarLossesReply;
 
     #[cfg(any(test, feature = "export-types"))]

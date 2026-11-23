@@ -7,6 +7,7 @@ import { manifestClassChoices, validateShipsSunkReply } from './shipsSunkData.ts
 import { isOrderedSpans } from '../../charts/series.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import type { ShipsSunkManifestReply, ShipsSunkReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface ShipsSunkWindowReply { window: number; indices: number[]; reply: ShipsSunkReply }
 
@@ -30,7 +31,7 @@ export function validateSinkingManifest(value: unknown): ShipsSunkManifestReply 
 }
 export function useShipsSunk(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'ships-sunk-manifest', params: { branchId: track.branch.id } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'ships-sunk-manifest', params: { branchId: track.branch.id } }) : null;
   return { track, ...useProduct<ShipsSunkManifestReply>(runtime.client, request, active, validateSinkingManifest, track?.source) };
 }
 export function useShipClassChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {

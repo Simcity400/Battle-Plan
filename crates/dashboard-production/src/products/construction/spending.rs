@@ -186,6 +186,7 @@ impl Product for ConstructionSpending {
     const KEY: &'static str = "construction-spending";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ConstructionSpendingParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ConstructionSpendingReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

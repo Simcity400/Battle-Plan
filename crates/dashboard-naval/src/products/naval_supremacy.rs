@@ -263,6 +263,7 @@ impl Product for NavalSupremacy {
     const KEY: &'static str = "naval-supremacy";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalSupremacyParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window];
     type Reply = NavalSupremacyReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

@@ -9,6 +9,8 @@ import type { Binding } from '../../draw/lane';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import type { AuditRow } from '../../draw/notifications';
+import { productRequest } from '../request.ts';
+import type { GatedParams } from '../regionTime';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
@@ -401,9 +403,10 @@ export class Pipeline {
     if (held) this.host.lanes[held.lane]!.postMessage({ type: 'exact', sub, hour, data, refused });
   }
 
-  private ask(product: string, params: Record<string, unknown>, route: RouteState) {
+  private ask(product: 'follow' | 'unfollow' | 'follow-clock', params: Record<string, unknown>, route: RouteState) {
     const sessioned = this.session ? { ...params, session: this.session } : params;
-    return this.client.product({ sourceId: route.source.id, revision: route.source.revision, product, params: sessioned }, new AbortController().signal).then(reply => reply.data);
+    return this.client.product(productRequest({ sourceId: route.source.id, revision: route.source.revision, product, params: sessioned as GatedParams }),
+      new AbortController().signal).then(reply => reply.data);
   }
 
   private register(sub: SubState, query: FollowQuery, product?: string) {

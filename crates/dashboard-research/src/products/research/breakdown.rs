@@ -63,6 +63,7 @@ impl Product for ResearchBreakdown {
     const KEY: &'static str = "research-breakdown";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ResearchBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, "parts[].firstObservedHour": Read, "parts[].lastHour": End, "parts[].slot"];
     type Reply = ResearchBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]

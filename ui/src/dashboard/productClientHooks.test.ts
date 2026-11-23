@@ -3,11 +3,12 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import type { ProductState } from './products';
+import { productRequest } from './request.ts';
 
 type Effect = { deps: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
 type Payload = { owner: string };
-const request: ProductRequest = { sourceId: 'same-source', revision: 'same-revision', product: 'country-fuel',
-  params: { branchId: 'same-branch', tag: 'ONE' } };
+const request: ProductRequest = productRequest({ sourceId: 'same-source', revision: 'same-revision', product: 'country-fuel',
+  params: { branchId: 'same-branch', tag: 'ONE' } });
 const frames = new Map<number, FrameRequestCallback>();
 let frameIds = 0;
 const settle = async () => {

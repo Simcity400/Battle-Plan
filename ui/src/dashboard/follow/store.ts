@@ -6,15 +6,15 @@ import type { Pipeline } from './pipeline';
 import { componentReading, installedAnswer, installedModel, installedPanel } from './useFollowed.ts';
 import type { LiveMap } from '../../draw/views/fields';
 
-export type FollowQuery = Readonly<Record<string, unknown>>;
+export type { FollowQuery } from '../regionTime';
 
 export const FollowedWidgetKey = createContext<string | null>(null);
 export const FollowedCard = createContext<Element | null>(null);
 
 export interface FollowStore { readonly client: DashboardClient; readonly source: DashboardSource; readonly clock: PlaybackController; readonly offset: number }
 
-export function followStore(client: DashboardClient, source: DashboardSource, clock: PlaybackController, offset = 0): FollowStore {
-  return { client, source, clock, offset };
+export function followStore(client: DashboardClient, track: { readonly source: DashboardSource; readonly axisOffset: number }, clock: PlaybackController): FollowStore {
+  return { client, source: track.source, clock, offset: track.axisOffset };
 }
 
 export interface FollowEntry {

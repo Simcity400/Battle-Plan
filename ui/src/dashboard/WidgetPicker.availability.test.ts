@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 import type { DashboardSource, ProductRequest } from './client';
 import type { WidgetRuntime } from './definitions';
 import { syntheticDashboardSource } from './source.fixture.ts';
+import { productRequest } from './request.ts';
 
 // quarantine: #3 re-enable in the dashboard rework; the issue names its failure
 test.skip('the casualty-pairs catalogue probe carries its source into prepared product routing', async () => {
@@ -37,8 +38,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     for (const call of calls) {
       assert.equal(call.source, source);
       assert.equal(call.active, true);
-      assert.deepEqual(call.request, { sourceId: source.id, revision: source.revision, product: 'casualty-pairs',
-        params: { tags: [], between: false, window: null, branchId: 'branch' } });
+      assert.deepEqual(call.request, productRequest({ sourceId: source.id, revision: source.revision, product: 'casualty-pairs',
+        params: { tags: [], between: false, window: null, branchId: 'branch' } }));
     }
   } finally { await vite.close(); delete globals.__pickerAvailability; }
 });

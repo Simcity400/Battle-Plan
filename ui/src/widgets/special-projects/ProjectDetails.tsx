@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -65,7 +66,7 @@ function Shown({ details }: { details: SpecialProjectDetails }) {
 
 export default function ProjectDetails({ runtime, widget, tag, active, onWarnings }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
   const box = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'special-project-details', { country: countryFromKey(tag) },
     { active, validate: validateProjectDetails, structure: detailsStructure });
   const { data, error, retry, root } = head;
   useDrawnPanel(box, runtime.clock, panelFeed('special-project-details', head, detailsStructure, widget, runtime), active);

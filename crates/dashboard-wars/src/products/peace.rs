@@ -1066,6 +1066,7 @@ impl Product for PeaceDeals {
     const KEY: &'static str = "peace-deals";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PeaceDealsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = PeaceDealsReply;
 
     #[cfg(any(test, feature = "export-types"))]

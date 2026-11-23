@@ -1,4 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { GatedHour } from '../../dashboard/regionTime.ts';
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../TimeChart';
@@ -23,6 +25,7 @@ import type { FactionGroup, HourSpan, SeriesStateReply } from '../../generated/d
 import { useMeasureSeries } from '../../widgets/country-measure/measureSeries';
 import { partColours } from './countryRace';
 import { factionMembersAt, factionMemberSpans, stateValues } from './factionTotalsData.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface FactionMembersProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
@@ -30,6 +33,8 @@ export interface FactionMembersProps {
   faction: FactionGroup | null;
   extent: [number, number]; playhead: number | null;
   hour: number;
+  gate: SeriesGate;
+  at: GatedHour | null;
   head: Live<ReadonlyMap<string, number>> | null;
   onPick?: (hour: number) => void;
 }
@@ -40,17 +45,17 @@ function validateStates(value: unknown): SeriesStateReply {
   return reply;
 }
 
-export default function FactionMembers({ runtime, track, active, options, kind, measure, label, format, faction, extent, playhead, hour, head, onPick }: FactionMembersProps) {
+export default function FactionMembers({ runtime, gate, at: askAt, track, active, options, kind, measure, label, format, faction, extent, playhead, hour, head, onPick }: FactionMembersProps) {
   const tokens = useChartTokens();
   const spans = useMemo(() => faction ? factionMemberSpans(faction) : new Map<string, HourSpan[]>(), [faction]);
   const tags = useMemo(() => [...spans.keys()].sort(), [spans]);
   const at = useMemo(() => faction ? factionMembersAt(faction, hour) : [], [faction, hour]);
   const atKey = at.join(',');
-  const lines = useMeasureSeries(runtime.client, track.source, track.branch.id, kind, measure, tags, null, null, active, false, spans, track.branch.lastHour, head !== null);
+  const lines = useMeasureSeries(runtime.client, gate, track.source, track.branch, kind, measure, tags, null, null, active, false, spans, track.branch.lastHour, head !== null);
   const looks = useCountryLooks(runtime.client, track, tags, hour, active);
   const colours = useMemo(() => partColours(tags.map(tag => ({ id: tag, label: tag })), tokens.categories), [tags, tokens.categories]);
-  const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ country: countryFromKey(tag), hour })) } } : null, active, validateStates, track.source);
+  const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length && askAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+    params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } }) : null, active, validateStates, track.source);
   const summaries = useCallback((): ChartSummary[] | null => {
     const out: ChartSummary[] = [];
     for (const tag of tags) {

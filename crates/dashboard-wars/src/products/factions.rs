@@ -151,6 +151,7 @@ impl AtHour for FactionRosters {
     const TITLE: &'static str = "Faction rosters";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FactionRostersParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = FactionRostersReply;
     type Context = ();
 
@@ -417,6 +418,7 @@ impl Product for FactionLines {
     const KEY: &'static str = "faction-lines";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FactionLinesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, measure, from: Start, to: End, width, membership, "members[].spans[].0": Start, "members[].spans[].1": End, "unread[].0": Start, "unread[].1": End];
     type Reply = FactionLinesReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -7,7 +7,10 @@ import { createPortal } from 'react-dom';
 import { formatDate, gameDate } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
-import { resolveWindow } from '../../dashboard/model';
+import { useGate } from '../../dashboard/regionGate';
+import GateState from '../../dashboard/GateState';
+import { axisAt, SPEC } from '../../dashboard/regionTime';
+import { useRegionHourAt } from '../../dashboard/widgetTime';
 import { useHeadHour } from '../army-size/headHour';
 import { setAttr, setHidden, setText } from '../../charts/domText';
 import { useProduct } from '../../dashboard/products';
@@ -155,12 +158,11 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const live = widget.time.mode === 'follow';
   const moment = live || widget.time.mode === 'pin';
-  const request = track && tag ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, country: countryFromKey(tag) }) : null;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const hourAt = useRegionHourAt(runtime, gate.region);
+  const request = track && tag && gate.open ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, country: countryFromKey(tag) }) : null;
   const { data, error, retry } = useProduct<FocusReply>(runtime.client, request, active, validateFocusReply);
-  const trackHour = (clockHour: number): number | null => {
-    const hour = track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour : undefined;
-    return hour === undefined || !track || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour);
-  };
+  const trackHour = (clockHour: number): number | null => hourAt(axisAt(clockHour));
   useShownEachFrame(runtime.clock, () => data ? trackHour(runtime.clock.getHour()) : null);
   const headHour = useHeadHour(runtime.clock, active && live && !!data, clockHour => data ? focusShownAt(data, trackHour(clockHour)) : '');
   const settled = live ? null : trackHour(runtime.clock.getHour());
@@ -195,7 +197,7 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
       const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
       return () => { for (const stop of stops) stop(); };
     } };
-  }, [data, moment, live, settled, runtime.clock, track, JSON.stringify(widget.time)]);
+  }, [data, moment, live, settled, runtime.clock, hourAt]);
   const asked = useRef<{ wanted: NameAt[]; continuous: NameAt[] }>({ wanted: [], continuous: [] });
   const aheadUntil = live && segment ? focusAheadUntil(segment.lastHour + 1, runtime.clock.getSnapshot().hoursPerSecond, AHEAD_SECONDS) : -Infinity;
   const ahead = (asks: NameAt[], asksOf: (order: FocusOrder, hours: SegmentHours) => NameAt[]) => data
@@ -265,9 +267,10 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     seen.current = count;
   }, [live, count]);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="target" /></span><p>Load a campaign and choose a country to see its national focuses.</p></div>;
+  if (!gate.open) return <GateState gate={gate} loading="Loading national focuses…" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <ListSkeleton label="Loading national focuses…" />;
-  if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
+  if (!inRange) return <WidgetState kind="outside" />;
   if (!order || readingHour === undefined) {
     return <div className="dash-empty" role="status" data-detail={missing?.reason}>No complete focus data recorded at this date.{missing && <small className="focus-missing-reason">{missing.reason}</small>}</div>;
   }

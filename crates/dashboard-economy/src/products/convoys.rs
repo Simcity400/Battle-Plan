@@ -482,6 +482,7 @@ impl Product for ConvoyHealth {
     const KEY: &'static str = KEY;
     const CONTENT_DEPENDENT: bool = true;
     type Params = ConvoyHealthParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End];
     type Reply = ConvoyHealthReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

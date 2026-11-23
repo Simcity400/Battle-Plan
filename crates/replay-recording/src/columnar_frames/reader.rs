@@ -454,6 +454,14 @@ impl Recording {
         self.withheld.iter().find(|(held, _)| *held == table).map(|(_, reason)| reason.as_str())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_coverage_from(mut self, table: TableId, from_run: u32, from_ordinal: u32, reason: &str) -> Self {
+        let mut held = self.derived_coverage.to_vec();
+        held.push(crate::columnar_frames::DerivedCoverage { table: table.index(), from_run, from_ordinal, reason: reason.to_owned() });
+        self.derived_coverage = held.into();
+        self
+    }
+
     pub fn table_coverage(&self, table: usize, run: u32) -> TableCoverage<'_> {
         if let Some(reason) = self.withheld_reason(table) {
             return TableCoverage::WithheldAll(reason);

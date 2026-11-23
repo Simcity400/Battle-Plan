@@ -1,3 +1,5 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import type { CompactStackModel, StackRun } from '../../charts/stack';
 import { runAt } from '../../charts/series.ts';
@@ -28,12 +30,9 @@ export function readPairSelection(value: unknown, track: Pick<BoundTrack, 'sourc
   } catch { return null; }
 }
 
-export function pinPairs(widget: WidgetSpec, track: BoundTrack, ids: readonly string[], hour: number, following: boolean): WidgetSpec {
-  const pinned = pinnedBreakdown(widget, DETAIL, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
-  return { ...pinned, time: following ? { mode: 'follow' } : { mode: 'pin', windows: {
-    [track.id]: { firstOffset: offset, lastOffset: offset },
-  } }, options: { ...pinned.options, pairSelection: setToken(JSON.stringify({ campaign: track.source.metadata.campaignKey,
+export function pinPairs(widget: WidgetSpec, track: BoundTrack, ids: readonly string[], time: GatedTime): PinnedSpec {
+  const pinned = pinnedBreakdown(widget, DETAIL, track.id, time);
+  return { ...pinned, options: { ...pinned.options, pairSelection: setToken(JSON.stringify({ campaign: track.source.metadata.campaignKey,
     branch: track.branch.id, ids: [...new Set(ids)] })) } };
 }
 

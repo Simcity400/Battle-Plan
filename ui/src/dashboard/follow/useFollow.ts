@@ -1,4 +1,4 @@
-import { useCallback, useContext, useId, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 import type { PlaybackController } from '../playback';
 import { PreparingPage } from '../preparing.ts';
@@ -7,6 +7,7 @@ import { FollowedCard, FollowedWidgetKey, installedEntry, type FollowEntry, type
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
 import { branchBounds, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline, componentReading, datedReading, datedStore, onInstalled } from './useFollowed.ts';
 import type { Reading } from './useFollowed';
+import { holdElement } from '../../draw/bitmapSurface.ts';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 export type { OnScreen } from './onScreen.ts';
@@ -56,6 +57,13 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
   const channel = query && typeof query.panel === 'string' ? 'panel' : 'followed';
   const sub = useFollowedSub(pipeline, pipe, follow, query && visible ? query : null, channel, typeof query?.panel === 'string' ? query.panel : undefined);
   const view = useInstalled(pipeline, pipe);
+  const [holder] = useState(() => ({}));
+  const dim = !!query && !!view?.dim;
+  useLayoutEffect(() => {
+    if (!element) return;
+    holdElement(element, dim, holder);
+    return () => holdElement(element, false, holder);
+  }, [element, dim, holder]);
   const entry = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedEntry(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const painting = useRef(paint);
   painting.current = paint;

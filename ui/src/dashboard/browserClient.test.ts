@@ -1,5 +1,8 @@
+import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { forwardRequest, type DeclaredProduct } from './request.ts';
+import type { ParamsFor } from './regionTime';
 
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 
@@ -67,17 +70,33 @@ function pendingTransport() {
     for (let pass = 0; pass < 10; pass++) { for (const request of requests) if (!request.done) request.finish(); await tick(); }
   } };
 }
-const query = (product: string, sourceId = 'scheduler-source'): import('./client').ProductRequest => ({
-  sourceId, revision: 'v1', product, params: { branchId: '1', tag: 'Synthetic country', hour: 100, tokens: ['synthetic-focus'] },
-});
+async function openSources(...ids: string[]) {
+  const { browserDashboardClient: client } = await import('./browserClient.ts');
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    const branches = [{ id: '1', firstHour: 0, lastHour: 1000, gaps: [] }];
+    return { ok: true, arrayBuffer: async () => jsonBytes({ id: body.path, revision: 'v1', metadata: { branches } }) };
+  }) as unknown as typeof fetch;
+  try { for (const id of ids) await client.openSource(id, new AbortController().signal); } finally { globalThis.fetch = previous; }
+}
+const FIXTURES = {
+  'national-focus': { branchId: '1', country: 'GER' },
+  'focus-artwork': { branchId: '1', hour: gatedHour(100), country: 'GER', database: 'national', tokens: ['synthetic-focus'] },
+  'technology-artwork': { tokens: ['synthetic-technology'] },
+  'land-owners': {},
+} as const satisfies Partial<Record<DeclaredProduct, Readonly<Record<string, unknown>>>>;
+const query = (product: keyof typeof FIXTURES, sourceId = 'scheduler-source'): import('./client').ProductRequest => (forwardRequest({ id: sourceId, revision: 'v1' }, product,
+  FIXTURES[product] as unknown as ParamsFor<typeof product>));
 
 test('actual browser transport reserves focus capacity while five histories wait and eventually returns every history', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');
   const { INTERACTIVE_PRODUCTS } = await import('../generated/dashboard.ts');
   assert.ok(INTERACTIVE_PRODUCTS.includes('focus-artwork'));
+  await openSources('scheduler-source');
   const transport = pendingTransport();
-  const histories = Array.from({ length: 5 }, () => client.product(query('national-focus'), new AbortController().signal));
   try {
+    const histories = Array.from({ length: 5 }, () => client.product(query('national-focus'), new AbortController().signal));
     await tick();
     assert.equal(transport.requests.length, 2, 'ordinary reads leave the interactive connections free before fetch');
     const focus = client.product<{ name: string }>(query('focus-artwork'), new AbortController().signal);
@@ -95,11 +114,12 @@ test('actual browser transport reserves focus capacity while five histories wait
 
 test('actual transport cancels queued reads without fetch, holds an aborted body slot, and preserves independent text after an image refusal', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');
+  await openSources('scheduler-source');
   const transport = pendingTransport();
-  const controllers = Array.from({ length: 4 }, () => new AbortController());
-  const histories = controllers.map(controller => client.product(query('national-focus'), controller.signal));
-  const queuedFailure = assert.rejects(histories[3], { name: 'AbortError' }), activeFailure = assert.rejects(histories[0], { name: 'AbortError' });
   try {
+    const controllers = Array.from({ length: 4 }, () => new AbortController());
+    const histories = controllers.map(controller => client.product(query('national-focus'), controller.signal));
+    const queuedFailure = assert.rejects(histories[3], { name: 'AbortError' }), activeFailure = assert.rejects(histories[0], { name: 'AbortError' });
     await tick();
     controllers[3].abort(); await queuedFailure;
     assert.equal(transport.requests.length, 2);
@@ -123,11 +143,12 @@ test('actual transport cancels queued reads without fetch, holds an aborted body
 
 test('source release bypasses histories and cancels only its queued and active reads', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');
+  await openSources('released-source', 'other-source');
   const transport = pendingTransport();
-  const released = Array.from({ length: 4 }, () => client.product(query('national-focus', 'released-source'), new AbortController().signal));
-  const failures = released.map(promise => assert.rejects(promise, { name: 'AbortError' }));
-  const other = client.product(query('focus-artwork', 'other-source'), new AbortController().signal);
   try {
+    const released = Array.from({ length: 4 }, () => client.product(query('national-focus', 'released-source'), new AbortController().signal));
+    const failures = released.map(promise => assert.rejects(promise, { name: 'AbortError' }));
+    const other = client.product(query('focus-artwork', 'other-source'), new AbortController().signal);
     await tick();
     const release = client.releaseSource('released-source');
     await tick();

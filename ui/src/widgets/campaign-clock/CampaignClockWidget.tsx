@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table from '../../charts/table/Table';
@@ -35,11 +37,12 @@ const FILL = { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHe
 export default function CampaignClockWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const headQuery = useMemo(() => following && active && track ? clockHeadQuery(track.branch) : null,
-    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const headQuery = useMemo(() => following && active && track ? gate.follow(clockHeadQuery(track.branch)) : null,
+    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, gate.follow]);
   const woken = useMemo(() => new Set<() => void>(), []);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => {
@@ -65,7 +68,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
 
   const hour = usePlaybackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, hour);
-  const request = following ? null : clockRequest(widget, track, window ?? null);
+  const request = following ? null : clockRequest(gate, widget, track, window ?? null);
   const { data, error, retry, moment } = useFollowedProduct<CampaignClockReply>(runtime.client, request,
     ['firstHour', 'lastHour'], active, validateClock, track?.source);
   const showing = data && !error && moment ? (JSON.parse(moment) as [number, number])[1] : null;
@@ -84,8 +87,8 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
       if (!head) return <WidgetState kind="loading" label="Loading campaign clock…" />;
       if ('reason' in head) return <WidgetState kind="unavailable" message={head.reason} />;
     } else {
-      if (following && window) return <WidgetState kind="loading" label="Loading campaign clock…" />;
-      if (!request) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+      if (following && gate.outside === null) return <WidgetState kind="loading" label="Loading campaign clock…" />;
+      if (!request) return <WidgetState kind="outside" />;
       if (error) return <WidgetState kind="error" what="campaign clock" failure={error} onRetry={retry} />;
       if (!data) return <WidgetState kind="loading" label="Loading campaign clock…" />;
       if (!data.available) return <WidgetState kind="unavailable" message="Playing and paused time were not recorded in this campaign." />;

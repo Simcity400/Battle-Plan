@@ -12,13 +12,8 @@ export interface DashboardSource {
   metadata: ReplayMetadata;
 }
 
-export interface ProductRequest<P = unknown> {
-  sourceId: string;
-  revision: string;
-  product: string;
-  params: P;
-  asksFrom?: number;
-}
+export type { ProductRequest } from './request.ts';
+import type { ProductRequest } from './request.ts';
 
 export interface ProductReply<T> {
   sourceId: string;

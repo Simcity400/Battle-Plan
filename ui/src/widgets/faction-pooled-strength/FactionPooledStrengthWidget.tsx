@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo,  useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -10,7 +10,7 @@ import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import { dayLabel } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import LiveText from '../../charts/LiveText';
 import type { LiveTexts } from '../../charts/LiveText';
 import { mapLive } from '../../charts/live';
@@ -35,6 +35,7 @@ import type { MemberAmount } from './poolsData';
 import '../resource-balance/resourceBalance.css';
 import './factionPooledStrength.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_TAGS: readonly string[] = [];
@@ -84,14 +85,15 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const tableLive = useMemo(() => mapLive(live, manpowerTableValues), [live]);
   const tags = useMemo(() => [...new Set(pool === 'manpower' ? members.flatMap(row => row.tag ? [row.tag] : [])
     : pool === 'research' ? data?.researchCountries ?? [] : [])], [pool, members, data]);
-  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const drillOwner = JSON.stringify([track?.source.id ?? null, track?.source.revision ?? null, track?.branch.id ?? null, faction?.id ?? null]);
-  const [openedFor, setOpenedFor] = useState<string | null>(null);
-  useEffect(() => { dispatch({ type: 'close' }); setOpenedFor(null); }, [drillOwner]);
-  const drill = openedFor === drillOwner ? savedDrill : CLOSED;
-  const picked = drill.breakdown;
-  const pickedHour = drill.hour ?? dataHour;
-  const pickedHolder = useMemo(() => picked ? [{ key: 'picked', tag: picked, hour: pickedHour }] : [], [picked, pickedHour]);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const savedDrill = drillControl.state;
+  const dispatch = drillControl.dispatch;
+  const drillOwner = JSON.stringify([track?.source.id ?? null, track?.source.revision ?? null, track?.branch.id ?? null]);
+  useEffect(() => { dispatch({ type: 'close' }); }, [drillOwner]);
+  const drill = savedDrill;
+  const picked = useMemo(() => drill.breakdown === null ? null : JSON.parse(drill.breakdown) as { faction: string; tag: string }, [drill.breakdown]);
+  const pickedHour = drillControl.hour;
+  const pickedHolder = useMemo(() => picked && pickedHour !== null ? [{ key: 'picked', tag: picked.tag, hour: pickedHour }] : [], [picked, pickedHour]);
   const pickedLook = useHolderLooks(runtime.client, track, pickedHolder, active, tokens);
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tags.map(tag => ({ hour: dataHour, tag })), [tags, dataHour]), active);
   const listed = pool === 'manpower' && members.length > 0;
@@ -137,7 +139,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   }, [data, pool, faction, dataHour, members, label, live, displayNames]);
   const tips = useRowTooltips<string>({ owner, active, content, revision: `${dataHour}:${pool}`, onMenu: () => {} });
   const anchor = useRef<HTMLDivElement>(null);
-  const open = (tag: string | null) => { if (tag) { setOpenedFor(drillOwner); dispatch({ type: 'open', breakdown: tag, hour: dataHour, playing: false, playhead: null }); } };
+  const open = (tag: string | null) => { if (tag && faction) drillControl.showAt(JSON.stringify({ faction: faction.id, tag }), dataHour); };
   const manpowerColumns = useMemo<readonly TableColumn<MemberAmount>[]>(() => [
     { key: 'member', header: 'Member', label: 'Member', width: 'minmax(var(--table-name-min), 2fr)', value: entry => { const name = entry.tag ? names.get(nameKey(dataHour, entry.tag)) : undefined; return nameReadText(name); },
       text: entry => entry.tag ? label(entry.tag).name : null, renderMissing: true, render: entry => entry.tag ? <CountryCell {...label(entry.tag)} /> : 'Country unavailable' },
@@ -151,7 +153,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const following = widget.time.mode === 'follow';
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see faction pools." />;
-    if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (hour === null) return <WidgetState kind="outside" />;
     const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
     if (groupFailure && !groups.data) return groupFailure;
     if (!groups.data) return <WidgetState kind="loading" label="Loading faction pools…" />;
@@ -191,11 +193,12 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
       {setOption && offered.length > 1 && <div className="faction-pooled-caption">
         <Segmented value={pool} options={POOL_CHOICES.filter(choice => offered.includes(choice.value))} label="Pool" onChange={value => setOption('pool', value)} />
       </div>}
-      <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title="Manpower over time" day={dayLabel(pickedHour)}
-        following={false} canFollow={false} anchor={anchor} onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={main}>
-        {picked && <ManpowerHistory runtime={runtime} track={track} faction={faction.id} tag={picked} picked={pickedHour} name={pickedLook.name('picked')}
-          colour={pickedLook.colour('picked')} following={following} active={active} />}
-      </DrillHost></>;
+      {main}</>;
   })();
-  return <div ref={element => { anchor.current = element; head.root(element); }} className="faction-pooled">{body}</div>;
+  return <div ref={element => { anchor.current = element; head.root(element); }} className="faction-pooled">
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} title="Manpower over time"
+      day={pickedHour === null ? '' : dayLabel(pickedHour)} canFollow={false} anchor={anchor} main={body}>
+      {picked && pickedHour !== null && track && <ManpowerHistory runtime={runtime} track={track} faction={picked.faction} tag={picked.tag} picked={pickedHour} name={pickedLook.name('picked')}
+        colour={pickedLook.colour('picked')} following={false} active={active} />}
+    </DrillHost></div>;
 }

@@ -7,15 +7,16 @@ import { HeldFailures } from './heldFailures.ts';
 import { failureText, queryFailure } from './queryError.ts';
 import { registerPageJoin } from './pageJoins.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client.ts';
+import { productRequest } from './request.ts';
 
 const source = { id: 'progressive', revision: '1' } as DashboardSource;
-const request = { sourceId: source.id, revision: source.revision, product: 'party-history', params: { branchId: '1' } };
+const request = productRequest({ sourceId: source.id, revision: source.revision, product: 'party-history', params: { branchId: '1' } });
 const complete = { rows: ['whole'] };
 
 type Page = { rows: string[]; cursor: string | null };
 registerPageJoin(['synthetic-pages'], pages => ({ rows: (pages as Page[]).flatMap(page => page.rows), cursor: null }));
-const paged = (params: Record<string, unknown> = {}): ProductRequest => ({ sourceId: source.id, revision: source.revision, product: 'series-summary',
-  params: { branchId: '1', family: { kind: 'synthetic-pages' }, ...params } });
+const paged = (params: Record<string, unknown> = {}): ProductRequest => (productRequest({ sourceId: source.id, revision: source.revision, product: 'series-summary',
+  params: { branchId: '1', family: { kind: 'synthetic-pages' }, ...params } }));
 const first: Page = { rows: ['first'], cursor: 'second' };
 const second: Page = { rows: ['second'], cursor: null };
 const cursorOf = (asked: ProductRequest) => (asked.params as { cursor?: string }).cursor;

@@ -14,6 +14,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { lookStarts } from '../../dashboard/countryTimeline';
@@ -54,7 +55,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const role: CountryRole = options.countryRole === 'occupied' ? 'occupied' : 'occupier';
-  const head = useHeadProduct(runtime, widget, 'occupied-states', track ? PARAMS : null, { active, validate: validateOccupiedStates,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'occupied-states', track ? PARAMS : null, { active, validate: validateOccupiedStates,
     structure: occupiedStructure });
   const data = head.data;
   const shown = useShownHour();
@@ -125,7 +126,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
 
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see occupied states." />;
-  else if (head.read === 'off') body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  else if (head.outside) body = <WidgetState kind="outside" read={head} />;
   else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;

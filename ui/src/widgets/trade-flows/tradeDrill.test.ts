@@ -1,3 +1,4 @@
+import { gatedTime } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { stackEdges } from '../../charts/stack.ts';
@@ -8,9 +9,11 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { parseStoredOptions, resolveOptions } from '../../dashboard/options.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { buildDiagram, decodeTrade, flowCountryAt, flowValue } from './tradeData.ts';
-import { contributionAmounts, contributionCountryTag, contributionExtent, contributionHistory, contributionHour, linkSelection, nodeSelections,
+import { contributionAmounts, contributionCountryTag, contributionExtent, contributionHistory, linkSelection, nodeSelections,
   contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment,
-  observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, selectionToken, tradeContext } from './tradeDrill.ts';
+  observedTradeSpans, pinContributions, readSelection, selectedContributors, selectionToken, tradeContext } from './tradeDrill.ts';
+import { regionHour, type AxisHour } from '../../dashboard/regionTime.ts';
+import { drillAction } from '../../charts/drill/drillState.ts';
 import { createElement } from 'react';
 import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -194,7 +197,7 @@ test('Total and Average history track their selected basis, and picking a histor
     forEachContributionMeasureSegment(model, 30, at, 1, piece => { if (piece.hours.at(-1) === at) end = piece.bands[0].high.at(-1)!; });
     assert.ok(Math.abs(end! - geometry) < 1e-9);
     assert.ok(contributionMeasureExtent(model, 30, at)![1] >= end!);
-    const picked = reduceDrill({ breakdown: 'contributions', follow: true, hour: null }, { type: 'pick', hour: at + 0.7 });
+    const picked = reduceDrill({ breakdown: 'contributions', spec: false, follow: true, hour: null }, { type: 'pick', hour: at + 0.7 });
     const amount = contributionAmounts(data.flows, measure, from, picked.hour!, item.known)[0].raw;
     assert.equal(amount, BigInt(exact));
   }
@@ -318,15 +321,6 @@ test('Average extent covers clipped fractional prefixes at the selected origin a
   assert.deepEqual(contributionAmounts(data.flows, 'average', 12, 12, data.reply.known).map(part => part.raw), [2n, 1n]);
 });
 
-test('opening Campaign, Range or Pin at a drawn hour preserves it, even beside a nearby paused global clock', () => {
-  for (const time of [{ mode: 'campaign' }, { mode: 'range', firstOffset: 0, lastOffset: 200 },
-    { mode: 'pin', windows: {} }] as WidgetSpec['time'][]) {
-    const state = reduceDrill(CLOSED, openContributions({ time }, 200, false, 100));
-    assert.equal(state.follow, false);
-    assert.equal(state.hour, 200);
-  }
-  assert.equal(reduceDrill(CLOSED, openContributions({ time: { mode: 'follow' } }, 200, false, 100)).follow, true);
-});
 
 registerWidgets([definition]);
 test('campaign drill Follow uses the actual aligned clock; day pick and Pin preserve branch-relative values and history', () => {
@@ -334,17 +328,18 @@ test('campaign drill Follow uses the actual aligned clock; day pick and Pin pres
   const source: WidgetSpec = { id: 'w', kind: 'trade-flows', configVersion: 1, title: 'Trade flows', campaign: 'tracks', trackIds: ['t'],
     countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 500, lastOffset: 6000 }, options: { measure: 'total', drill: 'popout' } };
   const selection = { kind: 'node', side: 'source', holders: [identity(7)] } as const;
-  const opened = reduceDrill(CLOSED, { type: 'open', breakdown: 'contributions', hour: 9999, playing: true, playhead: 4000 });
-  assert.equal(contributionHour(opened, track, 3000.8), 4000);
+  const opened = reduceDrill(CLOSED, { type: 'open', breakdown: 'contributions', hour: 9999, follow: true });
+  const at = (state: typeof opened, clock: number) => regionHour({ widget: source, action: drillAction(state) }, track, [track], clock as AxisHour);
+  assert.equal(at(opened, 3000.8), 4000);
   const picked = reduceDrill(opened, { type: 'pick', hour: 5500.8 });
-  assert.equal(contributionHour(picked, track, 3500), 5500);
-  assert.equal(contributionHour(reduceDrill(picked, { type: 'follow' }), track, 3600), 4600);
-  const pinned = pinContributions(source, track, selection, 5500.8, false, [2500, 8000]);
-  assert.deepEqual(pinned.time, { mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } });
+  assert.equal(at(picked, 3500), 5500);
+  assert.equal(at(reduceDrill(picked, { type: 'follow' }), 3600), 4600);
+  const pinned = pinContributions(source, track, selection, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } }), [2500, 8000]);
+  assert.deepEqual(pinned.time.value, { mode: 'pin', windows: { t: { firstOffset: 3500, lastOffset: 3500 } } });
   assert.deepEqual(readSelection(pinned.options?.tradeSelection, tradeContext(track)), selection);
   assert.deepEqual(contributionExtent(pinned.options?.tradeExtent, { firstHour: 20_000 }), [20_500, 26_000]);
   assert.equal(pinned.options?.measure, 'total');
-  assert.deepEqual(pinContributions(source, track, selection, 5500, true, [2500, 8000]).time, { mode: 'follow' });
+  assert.deepEqual(pinContributions(source, track, selection, gatedTime({ mode: 'follow' }), [2500, 8000]).time.value, { mode: 'follow' });
 });
 
 test('a country view saves one native holder, selects both its sides and pins for that country', () => {
@@ -357,7 +352,7 @@ test('a country view saves one native holder, selects both its sides and pins fo
   const data = decodeTrade(reply(3));
   assert.deepEqual(selectedContributors(data.flows, selection).map(flow => flow.key), [data.flows[1].key]);
   assert.equal(selectedContributors(data.flows, { kind: 'country', holder: identity(3) }).length, 3);
-  const pinned = pinContributions(source, track, selection, 5000, false, [2000, 9999], 'Country 00001');
+  const pinned = pinContributions(source, track, selection, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 3000, lastOffset: 3000 } } }), [2000, 9999], 'Country 00001');
   assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['Country 00001'] }, 'the pin reads and names that country');
   assert.equal(pinned.title, 'Trade flows: Country trade');
   assert.equal(pinned.options?.show, 'contributions');

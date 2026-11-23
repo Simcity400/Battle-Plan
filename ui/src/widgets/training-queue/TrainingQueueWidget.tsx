@@ -12,12 +12,12 @@ import { usNumber } from '../../charts/numberFormat';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useCountryNameAt, useReachedCountry } from '../../dashboard/reachedProduct';
+import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import { useIdentityHour } from '../../dashboard/atHead';
-import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime.ts';
+import GateState from '../../dashboard/GateState';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS } from './definition';
 import { divisionName, divisionTooltip, orderIcon, equipmentFill, lowestFill, orderName, orderTooltip, percent, queueRows, queueStructure, trainingRatio, validateTrainingQueue } from './trainingQueueData';
@@ -34,18 +34,15 @@ function meterCell({ ratio, label }: { ratio: number | null; label: string }) {
 
 export default function TrainingQueueWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
-  const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
-    clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
-  const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
-  const tag = country.tag;
+  const gate = useGate(runtime, widget, SPEC, active, { country: { stored: widget.options?.country, setOption } });
+  const country = gate.country!;
+  const hour = gate.hour;
+  const tag = gate.open ? country.tag : null;
   const countryLabel = useCountryNameAt(runtime.client, track, tag ?? country.chosen, hour, active);
   const countryName = countryLabel.name;
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
-  const state = useHeadProduct(runtime, widget, 'training-queue', track && window && tag ? { country: countryFromKey(tag) } : null,
+  const state = useHeadProduct(runtime, gate, 'training-queue', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateTrainingQueue, structure: queueStructure });
   const data = state.data;
   const rows = useMemo(() => data ? queueRows(data) : [], [data]);
@@ -87,19 +84,14 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
         ? <span className="training-queue-missing" data-tooltip={row.order.priorityMissing ?? 'Not recorded'}>—</span>
         : <span title={row.order.priorityName}>{row.order.priorityName}</span> : '' },
   ], [closed]);
-  const tooltip = useCallback((row: QueueRow) => fitTooltip([row.kind === 'order' ? orderTooltip(row.order, data?.readHour ?? hour)
-    : divisionTooltip(row.division, data?.readHour ?? hour)], viewportHeight), [data, hour, viewportHeight]);
+  const tooltip = useCallback((row: QueueRow) => { const at = data?.readHour ?? hour ?? Number.NaN;
+    return fitTooltip([row.kind === 'order' ? orderTooltip(row.order, at) : divisionTooltip(row.division, at)], viewportHeight); }, [data, hour, viewportHeight]);
   const training = data ? data.orders.reduce((sum, order) => sum + order.divisions.length, 0) : 0;
   const pill = headerSlot && data && data.missing === null && createPortal(<span className="pill">{training} in training</span>, headerSlot);
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see the training queue." />;
-  else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  else if (!country.chosen) body = <WidgetState kind="empty" message="Choose a country to see its training queue." />;
-  else if (country.error && !country.historyHeld) body = <WidgetState kind="error" failure={country.error} onRetry={country.retry} />;
-  else if (country.holders) body = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
-  else if (country.reason) body = <WidgetState kind="unavailable" message={country.reason} />;
-  else if (country.absent) body = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
-  else if (!tag) body = <WidgetState kind="loading" label="Loading the training queue…" />;
+  else if (!gate.open) body = <GateState gate={gate} loading="Loading the training queue…" choose="Choose a country to see its training queue."
+    absent={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (state.error) body = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading the training queue…" />;
   else if (data.missing !== null) body = <WidgetState kind="unavailable" message="The training queue wasn’t recorded at this time." detail={nameDetail} />;

@@ -145,6 +145,7 @@ impl AtHour for TerritoryShare {
     const TITLE: &'static str = "Territory share";
     const CONTENT_DEPENDENT: bool = false;
     type Params = TerritoryShareParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure];
     type Reply = TerritoryShareReply;
     type Context = ();
 
@@ -337,6 +338,7 @@ impl AtHour for TerritoryBreakdown {
     const TITLE: &'static str = "Territory breakdown";
     const CONTENT_DEPENDENT: bool = true;
     type Params = TerritoryBreakdownParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, rule];
     type Reply = TerritoryBreakdownReply;
     type Context = Arc<BreakdownContent>;
 

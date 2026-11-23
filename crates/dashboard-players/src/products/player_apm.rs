@@ -338,6 +338,7 @@ impl Product for PlayerApm {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = ApmParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, group, registry, firstHour: Start, lastHour: End, tags, players, buckets, "membership[].firstHour": Start, "membership[].lastHour": End];
     type Reply = ApmReply;
 
     fn validate(params: &ApmParams) -> Result<(), &'static str> {

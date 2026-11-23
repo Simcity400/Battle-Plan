@@ -1,5 +1,6 @@
-import { drillHour, pinnedBreakdown } from '../../charts/drill/drillState.ts';
-import type { DrillAction, DrillState } from '../../charts/drill/drillState';
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
+import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import { addStackAmount, forEachCompactStackSegment, stackEdges } from '../../charts/stack.ts';
 import type { CompactStackModel, StackRun, StackSegment, StackSum } from '../../charts/stack';
 import { contentKey, setToken } from '../../dashboard/options.ts';
@@ -278,21 +279,12 @@ export function contributionMeasureExtent(model: ContributionMeasureModel, from:
   return highest == null ? null : [0, highest];
 }
 
-export function openContributions(widget: Pick<WidgetSpec, 'time'>, hour: number, playing: boolean, playhead: number | null): DrillAction {
-  return { type: 'open', breakdown: 'contributions', hour, playing, playhead: widget.time.mode === 'follow' ? playhead : null };
-}
-
-export function contributionHour(state: DrillState, track: Pick<BoundTrack, 'axisOffset'>, clockHour: number): number | null {
-  return drillHour(state, Math.floor(clockHour) + track.axisOffset);
-}
-
 export function pinContributions(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, selection: TradeSelection,
-  hour: number, follow: boolean, extent: readonly [number, number], countryTag: string | null = null): WidgetSpec {
+  time: GatedTime, extent: readonly [number, number], countryTag: string | null = null): PinnedSpec {
   const country = selection.kind === 'country' && countryTag;
   const pinned = pinnedBreakdown(country ? { ...source, countries: { kind: 'tags', tags: [countryTag] } } : source,
-    selection.kind === 'country' ? COUNTRY_BREAKDOWN : selection.kind === 'market' ? { id: 'contributions', label: 'Market & lend-lease' } : TRADE_BREAKDOWN, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
-  return { ...pinned, time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
+    selection.kind === 'country' ? COUNTRY_BREAKDOWN : selection.kind === 'market' ? { id: 'contributions', label: 'Market & lend-lease' } : TRADE_BREAKDOWN, track.id, time);
+  return { ...pinned,
     options: { ...pinned.options, tradeSelection: selectionToken(selection, tradeContext(track)),
       tradeExtent: setToken(JSON.stringify(extent.map(at => at - track.branch.firstHour))) } };
 }

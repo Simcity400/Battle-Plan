@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
@@ -10,6 +11,7 @@ import WidgetState from '../../components/WidgetState';
 import { validateMeasureDrops } from './measureSeriesData';
 import { loadTransientProduct } from '../../dashboard/products';
 import { netSpend } from './measureData';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const DROP_LIST_PAGE = 32n;
 export function dropListRange(first: bigint, total: bigint, end: bigint | null): { last: bigint; count: number } {
@@ -18,8 +20,8 @@ export function dropListRange(first: bigint, total: bigint, end: bigint | null):
   return { last, count: Number(last > first ? last - first : 0n) };
 }
 
-export default function BalanceChanges({ client, source, branchId, measure, tags, initialTag, firstOrdinal = '0', endOrdinal,
-  digits, unit, visibleThrough, label, onClose, onPick }: { client: DashboardClient; source: DashboardSource; branchId: string; measure: string;
+export default function BalanceChanges({ client, gate, source, branchId, measure, tags, initialTag, firstOrdinal = '0', endOrdinal,
+  digits, unit, visibleThrough, label, onClose, onPick }: { client: DashboardClient; gate: Pick<Gate, 'within'>; source: DashboardSource; branchId: string; measure: string;
   tags: readonly string[]; initialTag: string; firstOrdinal?: string; endOrdinal?: string; digits: number; unit: string;
   visibleThrough: number; label: (tag: string) => string; onClose: () => void; onPick: (tag: string, hour: number) => void }) {
   const [tag, setTag] = useState(initialTag);
@@ -33,8 +35,10 @@ export default function BalanceChanges({ client, source, branchId, measure, tags
   useEffect(() => {
     const controller = new AbortController();
     const count = end === null ? Number(DROP_LIST_PAGE) : Number(end - first < DROP_LIST_PAGE ? end - first : DROP_LIST_PAGE);
-    void loadTransientProduct<unknown>(client, { sourceId: source.id, revision: source.revision, product: 'events-page',
-      params: { branchId, family: { kind: 'country-measure', measure }, countries: ([tag]).map(countryFromKey), cursor: first.toString(), pageSize: count, to: Math.floor(visibleThrough) } }, controller.signal)
+    const to = gate.within(visibleThrough);
+    if (to === null) return () => controller.abort();
+    void loadTransientProduct<unknown>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'events-page',
+      params: { branchId, family: { kind: 'country-measure', measure }, countries: ([tag]).map(countryFromKey), cursor: first.toString(), pageSize: count, to } }), controller.signal)
       .then(value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
       .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: asFailure(error) } : { owner, error: asFailure(error) }); });
     return () => controller.abort();

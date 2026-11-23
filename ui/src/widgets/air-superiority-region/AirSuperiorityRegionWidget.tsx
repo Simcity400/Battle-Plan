@@ -135,7 +135,7 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   useLayoutEffect(() => () => observer?.disconnect(), [observer]);
   if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
-  if (air.read === 'off' && !data) return <div ref={attach}><WidgetState kind="unavailable" message="This time is outside the recording." /></div>;
+  if (air.read === 'off' && !data) return <div ref={attach}><WidgetState kind="outside" /></div>;
   if (air.error) return <div ref={attach}><WidgetState kind="error" failure={air.error} onRetry={air.retry} /></div>;
   if (!data) return <div ref={attach}><WidgetState kind="loading" label="Loading air superiority…" /></div>;
   if (order === 'name' && !choices.data && !choices.error) return <div ref={attach}><WidgetState kind="loading" label="Loading air regions…" /></div>;

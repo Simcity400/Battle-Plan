@@ -56,10 +56,12 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     update.current = send;
     const install = () => {
       const shown = pipeline.view(pipe);
-      holdElement(region, !!shown?.dim);
+      const held = !!shown?.dim;
+      holdElement(region, held);
       canvas.style.visibility = shown?.mode === 'picture' ? '' : 'hidden';
+      if (held) canvas.removeAttribute('aria-describedby'); else canvas.setAttribute('aria-describedby', owner + '-ranking');
       const listed = items(), p = latest.current;
-      if (ranking.current) ranking.current.textContent = raceText(listed, p.name) || p.empty || '';
+      if (ranking.current) ranking.current.textContent = held ? '' : raceText(listed, p.name) || p.empty || '';
       if (extent.current) extent.current.style.height = `calc(${raceHeight(listed.length)}px - 100%)`;
       const inspected = shown?.tooltip as RaceInspection | null | undefined, item = inspected?.item;
       if (!item || shown?.dim) { hideTooltip(owner); if (description.current) description.current.textContent = ''; return; }
@@ -73,7 +75,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     };
     const perform = (kind: string, item: RaceItem, x: number, y: number) => {
       const shown = pipeline.view(pipe);
-      if (shown?.mode !== 'picture') return;
+      if (shown?.mode !== 'picture' || shown.dim) return;
       const at = { ...item, hour: shown.through ?? shown.h ?? item.hour };
       if (kind === 'pick') latest.current.onPick?.(at.key, at);
       else latest.current.onContextMenu?.(at.key, x, y, at);

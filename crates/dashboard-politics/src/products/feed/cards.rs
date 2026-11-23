@@ -252,6 +252,7 @@ impl Product for EventChoices {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
     type Reply = ScriptOccurrencePage;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -275,6 +276,7 @@ impl Product for Decisions {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
     type Reply = ScriptOccurrencePage;
 
     #[cfg(any(test, feature = "export-types"))]

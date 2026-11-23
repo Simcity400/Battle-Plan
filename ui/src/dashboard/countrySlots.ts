@@ -3,6 +3,8 @@ import type { DashboardClient, ProductRequest } from './client';
 import { countryFromKey } from './countryKey.ts';
 import type { BoundTrack } from './model';
 import { useProduct } from './products.ts';
+import type { Failure } from './queryError';
+import { productRequest } from './request.ts';
 
 export type { CountryRef } from '../generated/dashboard';
 
@@ -75,12 +77,17 @@ const slotTagsOf = (reply: CountryIdentitiesReply) => {
   return held;
 };
 
-export function useSlotTags(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true): SlotTags | undefined {
-  const request: ProductRequest | null = track
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-identities', params: { branchId: track.branch.id } }
+export function useSlotTagsState(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true)
+  : { slots: SlotTags | undefined; error: Failure | undefined; retry: () => void } {
+  const request: ProductRequest | null = track && active
+    ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'country-identities', params: { branchId: track.branch.id } })
     : null;
-  const data = useProduct<CountryIdentitiesReply>(client, request, active && !!track, undefined, track?.source).data;
-  return data ? slotTagsOf(data) : undefined;
+  const { data, error, retry } = useProduct<CountryIdentitiesReply>(client, request, active && !!track, undefined, track?.source);
+  return { slots: data && request ? slotTagsOf(data) : undefined, error: data || !request ? undefined : error, retry };
+}
+
+export function useSlotTags(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true): SlotTags | undefined {
+  return useSlotTagsState(client, track, active).slots;
 }
 
 export function countryTagAt(slots: SlotTags | undefined, country: CountryRef | null | undefined, hour: number): string | null {

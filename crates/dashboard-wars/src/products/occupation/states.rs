@@ -694,6 +694,7 @@ impl AtHour for OccupiedStates {
     const TITLE: &'static str = "Occupied states";
     const CONTENT_DEPENDENT: bool = true;
     type Params = OccupiedStatesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = OccupiedStatesReply;
     type Context = Content;
 

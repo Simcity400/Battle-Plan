@@ -653,6 +653,7 @@ impl Product for RaidLog {
     const KEY: &'static str = "raid-log";
     const CONTENT_DEPENDENT: bool = true;
     type Params = RaidLogParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, from: Start, to: End, countries, catalogue, "countries[]"];
     type Reply = RaidLogReply;
 
     #[cfg(any(test, feature = "export-types"))]
