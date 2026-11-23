@@ -650,10 +650,13 @@ impl Hooks {
             return Ok(false);
         }
         ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
-        collector_timing::capture_gate::exempt(
-            collector_timing::hook_timing::Family::PortraitChanges as usize,
-            enabled && !self.hooks.is_empty(),
-        );
+        // SAFETY: PortraitChanges owns its hook family slot and coordinates its pre-image protocol.
+        unsafe {
+            collector_timing::capture_gate::exempt(
+                collector_timing::hook_timing::Family::PortraitChanges as usize,
+                enabled && !self.hooks.is_empty(),
+            );
+        }
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {

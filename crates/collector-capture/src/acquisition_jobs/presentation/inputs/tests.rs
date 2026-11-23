@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn closing_a_busy_fanin_never_blocks_and_keeps_the_ordered_fallback() {
+    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
     let executor = Arc::new(
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe {
             collector_workers::acquisition::Pool::start(1, 8, |_: &mut Job| {
                 Report::DivisionInputs(false)
@@ -28,8 +28,8 @@ fn closing_a_busy_fanin_never_blocks_and_keeps_the_ordered_fallback() {
 #[test]
 fn failed_input_closes_before_the_last_notification_and_keeps_ordered_fallback() {
     use collector_workers::acquisition::Publication;
+    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
     let executor = Arc::new(
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe {
             collector_workers::acquisition::Pool::start(1, 8, |_: &mut Job| {
                 Report::DivisionInputs(false)
@@ -59,8 +59,8 @@ fn failed_input_closes_before_the_last_notification_and_keeps_ordered_fallback()
 #[test]
 fn successful_inputs_wait_for_the_last_notification_without_closing_the_fanin() {
     use collector_workers::acquisition::Publication;
+    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
     let executor = Arc::new(
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe {
             collector_workers::acquisition::Pool::start(1, 8, |_: &mut Job| {
                 Report::DivisionInputs(false)
@@ -109,8 +109,8 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             self.executor.notify_ready();
         }
     }
+    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
     let executor = Arc::new(
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe {
             collector_workers::acquisition::Pool::start(1, 8, |job: &mut Job| match job {
                 Job::DivisionInputs(_) => Report::DivisionInputs(true),

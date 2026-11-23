@@ -31,11 +31,17 @@ pub fn begin(previous_epoch: u64, previous_sequence: u64) -> Result<(), &'static
     Ok(())
 }
 
-pub fn invalidate() {
+/// # Safety
+/// Caller must own the active session's recovery or capture failure path (or an isolated test)
+/// when invalidating map-event observation continuity.
+pub unsafe fn invalidate() {
     START.store(true, Ordering::SeqCst);
 }
 
-pub fn lost_output() {
+/// # Safety
+/// Caller must own the active session's assembly, recovery, or publication failure path (or an
+/// isolated test) when recording lost map-event output.
+pub unsafe fn lost_output() {
     OUTPUT_LOST.store(true, Ordering::SeqCst);
 }
 
@@ -51,7 +57,10 @@ pub struct Interval {
     pub world: Option<u64>,
 }
 
-pub fn seal(hour: i32, world: Option<u64>) -> Interval {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer sealing map-event
+/// intervals while map-event lanes stay live and teardown is excluded.
+pub unsafe fn seal(hour: i32, world: Option<u64>) -> Interval {
     let seal = lanes::seal();
     let changed = WORLD.swap(world.unwrap_or(0), Ordering::SeqCst) != world.unwrap_or(0);
     let start = START.swap(false, Ordering::SeqCst) | changed | world.is_none();
