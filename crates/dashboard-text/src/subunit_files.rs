@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, io};
 
 pub fn subunit_keys(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
-    for path in content_reader_script::sub_units::sub_unit_files(layers)? {
+    for path in content_reader_key_names::unit_leader::sub_unit_files(layers)? {
         let document = parser::parse(&path.read(layers)?)
             .map_err(|error| invalid(format!("{}: {error}", path.text())))?;
         for root in document

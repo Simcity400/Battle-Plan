@@ -1,6 +1,6 @@
 use super::{paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
-use content_reader_layers::content::Content;
+use crate::content::Content;
 use crate::tooltips::{hover_text, set_hover};
 use content_reader_localisation::localisation::Argument;
 use dashboard_text::occupation_law::{self, GroupLaw, LawInputs};

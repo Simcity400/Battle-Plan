@@ -60,7 +60,10 @@ impl BoundLocalization {
                 value.read_string().unwrap_or(b"{"),
             ))
         }
-        fn node(value: &content_reader_parser::parser::Value, result: &mut BoundLocalization) -> usize {
+        fn node(
+            value: &content_reader_parser::parser::Value,
+            result: &mut BoundLocalization,
+        ) -> usize {
             let at = result.nodes.len();
             result.nodes.push(BoundNode::default());
             if let Some(fields) = value.items() {
@@ -74,8 +77,10 @@ impl BoundLocalization {
                             BoundValue::Localization(formatted(&field.value))
                         };
                         result.nodes[at].arguments.push(BoundArgument {
-                            name: content_reader_parser::parser::c_string(field.key.as_deref().unwrap_or_default())
-                                .to_vec(),
+                            name: content_reader_parser::parser::c_string(
+                                field.key.as_deref().unwrap_or_default(),
+                            )
+                            .to_vec(),
                             value,
                         });
                     }

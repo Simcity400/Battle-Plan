@@ -265,3 +265,10 @@ mod tests {
         assert_eq!(format!("{:?}", path(b"sound/\x80.asset")), "b\"sound/\\x80.asset\"");
     }
 }
+
+pub fn trigger_files(
+    layers: &ResolvedLayers,
+    folder: &str,
+) -> io::Result<Vec<ScriptPath>> {
+    layers.directory_files(folder, ".txt")
+}

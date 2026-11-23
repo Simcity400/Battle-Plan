@@ -37,8 +37,10 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

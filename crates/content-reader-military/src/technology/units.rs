@@ -3,8 +3,7 @@ use content_reader_key_names::equipment::equipment_pool_roster;
 use std::{collections::BTreeSet, io};
 
 use content_reader_layers::ResolvedLayers;
-use content_reader_key_names::equipment;
-use content_reader_parser::{fields::invalid, parser::{self, Item}, tokens::Token};
+use content_reader_parser::{fields::invalid, parser::{self, Item}};
 use content_reader_script::{modifiers, native::{self, Field, Shape}};
 
 #[derive(Default)]

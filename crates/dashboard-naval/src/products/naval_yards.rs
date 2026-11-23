@@ -158,7 +158,7 @@ fn sub_units(cat: &Catalogue) -> Result<Arc<SubUnits>, String> {
     cat.content
         .layers
         .derived::<catalogue::CachedResult<SubUnits>>()
-        .get_or_init(|| content_reader_script::sub_units::sub_units(&cat.content.layers))
+        .get_or_init(|| content_reader_key_names::unit_leader::sub_units(&cat.content.layers))
         .map_err(|error| format!("Ship class content is unavailable: {error}"))
 }
 

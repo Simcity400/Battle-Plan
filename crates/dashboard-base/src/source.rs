@@ -15,8 +15,13 @@ use content_reader_layers::content::diagnostics::{self, Diagnostics};
 use content_reader_layers::{ResolveOptions, content::ResolvedContent};
 use replay::campaign::Replay;
 
-use crate::{ReplayMetadata, metadata::{self, MetadataRefusals, ResidentMetadata, Warnings}, presentation::{Admitted, Binding, Cancel, Presentation, Presented}, products::ContentOptions};
-use content_reader_layers::content::{ContentKey, content_key, name_localisation};
+use crate::{
+    ReplayMetadata,
+    content::{ContentKey, content_key, name_localisation},
+    metadata::{self, MetadataRefusals, ResidentMetadata, Warnings},
+    presentation::{Admitted, Binding, Cancel, Presentation, Presented},
+    products::ContentOptions,
+};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::localisation::Localisation;
 use replay::campaign::SeekResult;

@@ -630,7 +630,7 @@ fn memoized_building_tokens_equal_a_fresh_build_hour_by_hour() {
 #[test]
 fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_none_is_drawn() {
     content_reader_script::test_game::enter();
-    use content_reader_map::map::counters::preparation::plan_probe;
+    use crate::map::counters::preparation::plan_probe;
     use building_facts::{AIR_BASE, ICON_KINDS, IconAnchor, RADAR, SiteIcon};
     use replay_data::rows::{TableId, TableRows};
     use replay_frame::frame::TableView;

@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::{Eval, Evaluator, Scope};
+use crate::triggers::{Eval, Evaluator, Scope};
 use replay_data::{
     rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::TableId, rows::TableRows,
 };
@@ -42,7 +42,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
     )
     .items;
     assert_eq!(
-        evaluator.evaluate(&triggers, content_reader_script::triggers::Scopes::of(Scope::Country(1))),
+        evaluator.evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(1))),
         Eval::True
     );
     drop(evaluator);
@@ -57,7 +57,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
         ]));
     let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let refused = Evaluator::new(text.world().unwrap(), None)
-        .evaluate(&triggers, content_reader_script::triggers::Scopes::of(Scope::Country(1)))
+        .evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(1)))
         .decided()
         .unwrap_err();
     assert!(
@@ -92,7 +92,7 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
         EventScope::of(EventObject::Country(2)),
     ]);
     let evaluator = Evaluator::new(text.world().unwrap(), None);
-    let caller = content_reader_script::triggers::Scopes::of(Scope::Country(1));
+    let caller = crate::triggers::Scopes::of(Scope::Country(1));
     evaluator.begin_description();
     let set = content_reader_script::triggers::read(
         b"set_temp_variable = { x = 7 }",

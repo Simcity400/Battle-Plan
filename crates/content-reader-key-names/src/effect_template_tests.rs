@@ -1,6 +1,11 @@
-use content_reader_script::{native::Read, test_game::effect_assertions::{assert_complete_template_read, body, scalar}};
+use content_reader_script::{
+    native::Read,
+    test_game::effect_assertions::{assert_complete_template_read, body, scalar},
+};
 
-fn initialize_tables() { content_reader_script::test_game::enter(); }
+fn initialize_tables() {
+    content_reader_script::test_game::enter();
+}
 
 fn read_with_synthetic_units(text: &[u8]) -> Read {
     read_with_synthetic_units_and_widths(text, TEMPLATE_TEST_UNITS, Some([3; 3]))
@@ -47,7 +52,9 @@ fn read_with_synthetic_units_and_widths(
     }
     let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&fixture.0, &[])]).unwrap();
     initialize_tables();
-    let names = crate::key_name_products::KeyNameProducts::read(&layers).unwrap().names;
+    let names = crate::key_name_products::KeyNameProducts::read(&layers)
+        .unwrap()
+        .names;
     content_reader_script::test_game::read_effect_body(text, &names)
 }
 #[test]

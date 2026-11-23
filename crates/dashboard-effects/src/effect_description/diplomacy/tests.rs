@@ -2337,7 +2337,7 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
         }]));
     for table in [TableId::CountryWargoals, TableId::WargoalTargets] {
         assert!(
-            content_reader_script::triggers::RECORDED_TABLES.contains(&table),
+            crate::triggers::RECORDED_TABLES.contains(&table),
             "effect-description consumers must request {table:?}"
         );
     }

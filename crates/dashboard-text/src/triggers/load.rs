@@ -1,4 +1,4 @@
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 
 use content_reader_parser::parser::Item;
 

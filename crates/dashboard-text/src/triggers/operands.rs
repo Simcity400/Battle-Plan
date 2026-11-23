@@ -1,4 +1,4 @@
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 
 use content_reader_parser::{fixed5::{IntOperand, decimal_fixed5, decimal_i32, int_operand, script_fixed5}, parser::{Item, Operator, Value, read_bool}};
 
@@ -144,7 +144,7 @@ impl Evaluator<'_, '_> {
             })
         };
         if texts.len() > 1 && self.operand(text).map_err(within)?.literal.is_none() {
-            return Err(within(content_reader_script::triggers::refusal::refused(format!(
+            return Err(within(crate::triggers::refusal::refused(format!(
                 "{key} is assigned {} times, and a later assignment into the one operand keeps fields an earlier one set, which is not reproduced",
                 texts.len()
             ))));

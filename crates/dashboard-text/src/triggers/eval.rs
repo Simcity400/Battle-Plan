@@ -1,4 +1,4 @@
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 
 use std::{
     cell::{Cell, RefCell},
@@ -16,8 +16,11 @@ use super::{
     variables::{TEMP_WRITERS, Temps, Value},
     world::{CHARACTER_FLAGS, NULL_STATE, World, table},
 };
-use crate::{character_scope::TraitNames, state_resources::{ONE, resource_comparison}};
-use content_reader_script::scope::{Context, Target, Unresolved, valid_saved_target};
+use crate::{
+    character_scope::TraitNames,
+    scope::{Context, Target, Unresolved, valid_saved_target},
+    state_resources::{ONE, resource_comparison},
+};
 
 pub trait Combat: Sync {
     fn country(&self) -> Result<u32, Failure>;
@@ -91,7 +94,7 @@ pub(super) enum Child<'t> {
 }
 
 struct LoadNames<'n> {
-    recorded: &'n content_reader_script::scope::RecordedScopes<'n>,
+    recorded: &'n crate::scope::RecordedScopes<'n>,
     templates: &'n dyn Fn() -> Result<&'n BTreeSet<Vec<u8>>, &'n str>,
     asked: RefCell<Vec<Failure>>,
 }
@@ -420,7 +423,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     Failure::from(why).context(|why| format!("trigger {}: {why}", key_text(item))),
                 );
             }
-            return Eval::unknown(content_reader_script::triggers::refusal::refused(fail_text(item, why)));
+            return Eval::unknown(crate::triggers::refusal::refused(fail_text(item, why)));
         }
         if let Some(combat) = self.combat
             && let Some(value) = combat.trigger(name, item, scopes.this, self)

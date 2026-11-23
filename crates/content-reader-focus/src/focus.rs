@@ -1,8 +1,15 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
-use content_reader_script::key_names::KeyNames;
-use content_reader_layers::ResolvedLayers;
-use content_reader_parser::{fields::invalid, parser::Item};
-use content_reader_script::{modifiers, native::{self, Shape}, scope::ScopeKind};
+use crate::key_names::KeyNames;
+use content_reader_script::native::{self, Shape};
+use crate::{
+    ResolvedLayers,
+    fields::invalid,
+    modifiers,
+    parser::{
+        Item,
+    },
+    scope::ScopeKind,
+};
 use content_reader_parser::coverage::{Coverage, Gap};
 use content_reader_layers::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
@@ -131,8 +138,8 @@ pub struct FocusDefinition {
     pub icon: Option<String>,
     pub scripted_icon: bool,
     pub icon_present: bool,
-    pub icons: content_reader_script::scripted_keys::ScriptedKey,
-    pub alternate_icons: content_reader_script::scripted_keys::ScriptedKey,
+    pub icons: crate::scripted_keys::ScriptedKey,
+    pub alternate_icons: crate::scripted_keys::ScriptedKey,
     pub alternate_icon_present: bool,
 }
 
@@ -223,7 +230,7 @@ pub fn parse(
     input: &[u8],
     database: Database,
     names: &KeyNames,
-) -> Result<(Definitions, Vec<content_reader_parser::Diagnostic>), (content_reader_parser::DiagnosticKind, io::Error)> {
+) -> Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -408,12 +415,12 @@ pub fn parse(
     }
     if let Some(cause) = undecided.first() {
         return Err((
-            content_reader_parser::DiagnosticKind::Unsettled,
+            crate::DiagnosticKind::Unsettled,
             invalid(format!("focus: {cause}")),
         ));
     }
     if let Some(cause) = refused.first() {
-        return Err((content_reader_parser::DiagnosticKind::Refused, invalid(cause)));
+        return Err((crate::DiagnosticKind::Refused, invalid(cause)));
     }
     fn vectors(items: &[Item], inlay: bool) -> io::Result<()> {
         for item in items {
@@ -448,7 +455,7 @@ pub fn parse(
         }
         Ok(())
     }
-    vectors(&document.items, false).map_err(|error| (content_reader_parser::DiagnosticKind::Unsupported, error))?;
+    vectors(&document.items, false).map_err(|error| (crate::DiagnosticKind::Unsupported, error))?;
     fn collect(items: &[Item], output: &mut BTreeMap<String, FocusDefinition>) -> io::Result<()> {
         for item in items {
             let Some(children) = item.value.items() else {
@@ -462,8 +469,8 @@ pub fn parse(
                     return Err(invalid("focus definition has no id"));
                 };
                 let localisation = scalar(children, "text")?.unwrap_or(id);
-                let mut icons = content_reader_script::scripted_keys::ScriptedKey::default();
-                let mut alternate_icons = content_reader_script::scripted_keys::ScriptedKey::default();
+                let mut icons = crate::scripted_keys::ScriptedKey::default();
+                let mut alternate_icons = crate::scripted_keys::ScriptedKey::default();
                 let mut alternate_icon_present = false;
                 let mut icon_present = false;
                 for field in children {
@@ -495,7 +502,7 @@ pub fn parse(
                             .rev()
                             .filter(|item| item.keyword_is("cost"))
                             .filter_map(|item| item.value.scalar())
-                            .find_map(content_reader_parser::fixed5::script_fixed5)
+                            .find_map(crate::fixed5::script_fixed5)
                             .filter(|cost| *cost >= 0)
                             .map(|cost| cost as f64 / 100_000.0),
                         icon,
@@ -522,7 +529,7 @@ pub fn parse(
         .into_iter()
         .filter(|item| roots.iter().any(|root| item.keyword_is(root)))
         .collect();
-    collect(&own, &mut result).map_err(|error| (content_reader_parser::DiagnosticKind::Refused, error))?;
+    collect(&own, &mut result).map_err(|error| (crate::DiagnosticKind::Refused, error))?;
     Ok((
         result,
         document
@@ -534,7 +541,7 @@ pub fn parse(
 }
 
 pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
-    let defines = match content_reader_defines::defines::read(layers) {
+    let defines = match crate::defines::read(layers) {
         Ok(defines) => defines,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(None),
         Err(error) => return Err(error),
@@ -545,11 +552,11 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
         .filter(|days| days.is_finite() && *days > 0.0))
 }
 
-pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     read_databases(layers, true)
 }
 
-pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
+pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     read_databases(layers, false)
 }
 
@@ -584,7 +591,7 @@ fn database_paths(
 fn read_databases(
     layers: &ResolvedLayers,
     continuous: bool,
-) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
+) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let paths = database_paths(layers, continuous)?;
     let names = layers.key_names()?;
     let workers = std::thread::available_parallelism().map_or(1, usize::from);
@@ -592,7 +599,7 @@ fn read_databases(
 }
 
 type ParsedFile =
-    Result<(Definitions, Vec<content_reader_parser::Diagnostic>), (content_reader_parser::DiagnosticKind, io::Error)>;
+    Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
 
 fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
     paths: &[(usize, ScriptPath)],
@@ -600,7 +607,7 @@ fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
     workers: usize,
     mut read: impl FnMut(&ScriptPath) -> io::Result<B>,
     parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
-) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
+) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut result = Focuses::default();
     let mut warnings = Vec::new();
     for wave in paths.chunks(workers.max(1)) {
@@ -736,7 +743,7 @@ free_operative = { operative = a } free_operative = { operative = b }
         );
         assert!(warning.contains("count: 2"), "{warning}");
         assert!(read(&layers)?.1.iter().any(|(kind, message)| *kind
-            == content_reader_parser::DiagnosticKind::Unsupported
+            == crate::DiagnosticKind::Unsupported
             && message == warning));
         std::fs::remove_dir_all(root)?;
         Ok(())

@@ -435,8 +435,8 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
         }],
     );
     let text = ScriptedText::new(&f, &catalogue.localisation, content, 2);
-    let evaluator = content_reader_script::triggers::Evaluator::new(text.world().unwrap(), None);
-    let scopes = content_reader_script::triggers::Scopes::of(content_reader_script::triggers::Scope::Country(2));
+    let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
+    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(2));
     assert_eq!(
         evaluator.scoped_value(b"num_of_controlled_factories", scopes),
         Ok(700_000)
@@ -471,8 +471,8 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
     content.set_synthetic_environment(Default::default());
     let f = frame();
     let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
-    let evaluator = content_reader_script::triggers::Evaluator::new(text.world().unwrap(), None);
-    let scopes = content_reader_script::triggers::Scopes::of(content_reader_script::triggers::Scope::Country(1));
+    let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
+    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(1));
     let member =
         |source: &str| content_reader_scripted_localisation::scripted_localisation::RandomMember {
             weight: 1_000_000,

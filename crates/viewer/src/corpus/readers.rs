@@ -1009,7 +1009,7 @@ fn units(
         log.notes("unit_leader.traits", Kind::Unsupported, &traits.unsupported);
     }
     if let Some(sub_units) = log.read("unit_leader.sub_units", || {
-        content_reader_script::sub_units::sub_units(layers)
+        content_reader_key_names::unit_leader::sub_units(layers)
     }) {
         log.notes("unit_leader.sub_units", Kind::Misread, sub_units.warnings());
     }

@@ -1,7 +1,6 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use super::*;
-use content_reader_parser::DiagnosticKind;
-use content_reader_layers::test_support::Stack;
+use crate::{DiagnosticKind, test_support::Stack};
 use std::sync::{
     Barrier, Condvar, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -14,7 +13,7 @@ fn paths(layers: &ResolvedLayers) -> Vec<(usize, ScriptPath)> {
 fn serial(
     layers: &ResolvedLayers,
     names: &KeyNames,
-) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
+) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut definitions = Focuses::default();
     let mut warnings = Vec::new();
     for (_, path) in paths(layers) {

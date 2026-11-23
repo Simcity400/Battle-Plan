@@ -119,7 +119,7 @@ impl Content {
                 .get_or_init(|| Database::load_complete(layers))?,
             ..Self::default()
         };
-        for path in content_reader_script::sub_units::sub_unit_files(layers)? {
+        for path in content_reader_key_names::unit_leader::sub_unit_files(layers)? {
             let shown = path.text();
             let document = parser::parse(&path.read(layers)?)
                 .map_err(|error| invalid(format!("{shown}: {error}")))?;
@@ -129,7 +129,7 @@ impl Content {
         }
         let units = layers
             .derived::<crate::catalogue::CachedResult<SubUnits>>()
-            .get_or_init(|| content_reader_script::sub_units::sub_units(layers))?;
+            .get_or_init(|| content_reader_key_names::unit_leader::sub_units(layers))?;
         content.take_database(&units)?;
         content.canonicalize_requirements()?;
         Ok(content)

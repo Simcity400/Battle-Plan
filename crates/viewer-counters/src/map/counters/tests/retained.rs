@@ -41,7 +41,7 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
             content.region_of = Arc::new([(1, 1), (2, 1), (3, 2)].into());
         },
         |mut inputs| {
-            use content_reader_map::map::counters::preparation::plan_probe;
+            use crate::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -232,7 +232,7 @@ fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_cha
             content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
         },
         |mut inputs| {
-            use content_reader_map::map::counters::preparation::plan_probe;
+            use crate::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -331,8 +331,8 @@ fn land_plates_against_fresh(
     overlay: &str,
     extra: &str,
     frames: Vec<LandFrame>,
-) -> Vec<(content_reader_map::map::counters::preparation::plan_probe::Counts, content_reader_map::map::counters::preparation::plan_probe::Counts)> {
-    use content_reader_map::map::counters::preparation::plan_probe;
+) -> Vec<(crate::map::counters::preparation::plan_probe::Counts, crate::map::counters::preparation::plan_probe::Counts)> {
+    use crate::map::counters::preparation::plan_probe;
     content_reader_script::test_game::enter();
     let guis = layout_gui(
         format!(
@@ -479,7 +479,7 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
             content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
         },
         |mut inputs| {
-            use content_reader_map::map::counters::preparation::plan_probe;
+            use crate::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -686,7 +686,7 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
         |_| {},
         |_| {},
         |inputs| {
-            use content_reader_map::map::counters::preparation::plan_probe;
+            use crate::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -1604,8 +1604,8 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
 
 #[test]
 fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_alone() {
-    use content_reader_map::map::counters::base_windows::{Family, PreparedBases, State};
-    use content_reader_map::map::counters::preparation::plan_probe;
+    use crate::map::counters::base_windows::{Family, PreparedBases, State};
+    use crate::map::counters::preparation::plan_probe;
     with_base_windows("base-windows-kept", |mut inputs| {
         inputs.camera.height = 80.;
         inputs.camera.center = [2., 2.];

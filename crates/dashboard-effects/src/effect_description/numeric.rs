@@ -50,13 +50,13 @@ impl Renderer<'_, '_, '_> {
             NumericFormat::Fixed5 => ("VAL", Argument::Fixed5(value), true, true),
             NumericFormat::Skill => (
                 "NUM",
-                Argument::Int32(content_reader_script::triggers::fixed_round(value) as i32),
+                Argument::Int32(crate::triggers::fixed_round(value) as i32),
                 false,
                 true,
             ),
             NumericFormat::Rounded => (
                 "VAL",
-                Argument::Int32(content_reader_script::triggers::fixed_round(value) as i32),
+                Argument::Int32(crate::triggers::fixed_round(value) as i32),
                 true,
                 true,
             ),
@@ -206,7 +206,7 @@ impl Renderer<'_, '_, '_> {
             )
         } else {
             let value =
-                content_reader_script::triggers::fixed_round(self.numeric_field(item, "amount", scopes)?) as i32;
+                crate::triggers::fixed_round(self.numeric_field(item, "amount", scopes)?) as i32;
             self.char_native_line(
                 b"EFFECT_ADD_DECRYPTION",
                 &[
@@ -299,7 +299,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let region =
-            content_reader_script::triggers::fixed_round(self.numeric_field(item, "region", scopes)?) as i32;
+            crate::triggers::fixed_round(self.numeric_field(item, "region", scopes)?) as i32;
         if region < 1 {
             return Ok(String::new());
         }
@@ -314,7 +314,7 @@ impl Renderer<'_, '_, '_> {
         };
         let hour = self.tables().hour();
         let day = hour.wrapping_sub(hour.wrapping_sub(game_model::calendar::HOUR_EPOCH) % 24);
-        let days = content_reader_script::triggers::fixed_round(self.numeric_field(item, "days", scopes)?) as i32;
+        let days = crate::triggers::fixed_round(self.numeric_field(item, "days", scopes)?) as i32;
         let (year, month, date) = numeric_date_parts(day.wrapping_add(days.wrapping_mul(24)));
         let month = self.char_native_text(month.as_bytes(), &[], scopes, false)?;
         let date = format!("{date} {month}, {year}");

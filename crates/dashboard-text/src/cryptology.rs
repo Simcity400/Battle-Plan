@@ -20,7 +20,7 @@ impl Defines {
 }
 
 pub fn threshold(strength: i64, defines: Defines) -> i64 {
-    (i64::from(content_reader_script::triggers::fixed_round(strength) as i32)
+    (i64::from(crate::triggers::fixed_round(strength) as i32)
         .wrapping_mul(100_000)
         .wrapping_mul(defines.upgrade)
         / 100_000)
@@ -44,7 +44,7 @@ pub fn progress_percent(amount: i64, active: u8, threshold: i64) -> Option<u8> {
         amount.wrapping_mul(100_000).checked_div(threshold)?
     };
     let ratio = if active != 0 { 100_000 } else { ratio };
-    Some((content_reader_script::triggers::fixed_round(ratio.wrapping_mul(100)) as i32).clamp(1, 100) as u8)
+    Some((crate::triggers::fixed_round(ratio.wrapping_mul(100)) as i32).clamp(1, 100) as u8)
 }
 
 #[cfg(test)]

@@ -635,7 +635,7 @@ fn compare_statistics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_layers::test_support::frame;
+    use crate::test_support::frame;
     use content_reader_parser::parser;
     use replay_data::{
         rows::AirStatisticsRow, rows::TableId, rows::TableRows, rows::WingCumulativeRow,
@@ -773,7 +773,7 @@ mod tests {
         let mut report = Report::default();
         compare_region_combat(&frame, &save, &links, 24, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
-        let mut dead = content_reader_layers::test_support::frame([TableRows::AirRegionCombat(vec![row])]);
+        let mut dead = crate::test_support::frame([TableRows::AirRegionCombat(vec![row])]);
         dead.hour = frame.hour;
         let mut report = Report::default();
         compare_region_combat(&dead, &save, &links, 24, &mut report).unwrap();

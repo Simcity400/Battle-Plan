@@ -298,7 +298,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             0xffff_ffff
         };
-        let days = content_reader_script::triggers::fixed_round(
+        let days = crate::triggers::fixed_round(
             i64::from(definition.prototype_time(constants)?)
                 .wrapping_mul(ratio)
                 .wrapping_mul(100),

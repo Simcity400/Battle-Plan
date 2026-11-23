@@ -20,6 +20,7 @@ content-reader-script.workspace = true
 replay-data.workspace = true
 content-reader-regions.workspace = true
 [dev-dependencies]
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-support"] }
 content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
@@ -33,9 +34,11 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

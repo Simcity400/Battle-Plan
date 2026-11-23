@@ -7,7 +7,7 @@ const ONE: i64 = 100_000;
 const REFUSED: i64 = 0xffff_ffff;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(in content_reader_map::map::counters) struct Defines {
+pub(in crate::map::counters) struct Defines {
     pub base: i64,
     pub radar: i64,
     pub navy_factor: i64,
@@ -17,7 +17,7 @@ pub(in content_reader_map::map::counters) struct Defines {
     pub control_ratio: i64,
 }
 impl Defines {
-    pub(in content_reader_map::map::counters) fn read(
+    pub(in crate::map::counters) fn read(
         defines: &content_reader_defines::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
@@ -53,7 +53,7 @@ fn saturate(density: i64, maximum: i64) -> Fact<i64> {
     Ok(mul(fraction, maximum))
 }
 
-pub(in content_reader_map::map::counters) fn packet<'a>(
+pub(in crate::map::counters) fn packet<'a>(
     hour: &Hour<'a>,
     handle: u64,
 ) -> Fact<&'a NavalPatrolMissionInputRow> {
@@ -275,7 +275,7 @@ fn radar(hour: &Hour<'_>, region: u32) -> Fact<i64> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(in content_reader_map::map::counters) struct Breakdown {
+pub(in crate::map::counters) struct Breakdown {
     pub total: i64,
     pub base: i64,
     pub navy_density: i64,
@@ -289,7 +289,7 @@ pub(in content_reader_map::map::counters) struct Breakdown {
     pub weather: i64,
 }
 impl Breakdown {
-    pub(in content_reader_map::map::counters) fn read(
+    pub(in crate::map::counters) fn read(
         hour: &mut Hour<'_>,
         ledger: &NavalMissionLedgerRow,
         visibility: [i64; 2],
@@ -297,7 +297,7 @@ impl Breakdown {
     ) -> Fact<Self> {
         Self::read_inner(hour, ledger, visibility, decryption, false)
     }
-    pub(in content_reader_map::map::counters) fn read_convoy(
+    pub(in crate::map::counters) fn read_convoy(
         hour: &mut Hour<'_>,
         ledger: &NavalMissionLedgerRow,
         visibility: [i64; 2],
@@ -379,7 +379,7 @@ impl Breakdown {
             weather,
         })
     }
-    pub(in content_reader_map::map::counters) fn append(&self, out: &mut Prepared, body: bool) {
+    pub(in crate::map::counters) fn append(&self, out: &mut Prepared, body: bool) {
         out.line(
             body,
             0,
@@ -617,7 +617,7 @@ mod tests {
     }
     #[test]
     fn navy_radar_counts_own_occurrences_without_air_controller_weighting() {
-        use content_reader_map::map::counters::naval_mission_inputs::tests as fixture;
+        use crate::map::counters::naval_mission_inputs::tests as fixture;
         let mut frame = fixture::frame();
         fixture::set(
             &mut frame,
@@ -651,7 +651,7 @@ mod tests {
     }
     #[test]
     fn progress_preserves_ledger_repeats_when_an_unrelated_breakdown_refuses() {
-        use content_reader_map::map::counters::naval_mission_inputs::tests as fixture;
+        use crate::map::counters::naval_mission_inputs::tests as fixture;
         let mut frame = fixture::frame();
         fixture::set(
             &mut frame,

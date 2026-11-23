@@ -1,5 +1,5 @@
 use super::{Eval, Evaluator, Scope, Scopes, Store};
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 use content_reader_parser::parser::Item;
 use replay_data::rows::{TableSchema, mask, tables};
 use replay_frame::frame::HourFrame;

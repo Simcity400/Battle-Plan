@@ -38,10 +38,10 @@ pub fn character_script_token_in<'a>(
 ) -> Option<&'a str> {
     let token = u32::try_from(character.name_token_id).ok()?;
     let missing = || {
-        content_reader_script::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None)
+        crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None)
     };
-    let literal = content_reader_script::triggers::refusal::reference(spelling(&lexical, token), token != 0, missing)?;
-    content_reader_script::triggers::refusal::reference(std::str::from_utf8(literal).ok(), token != 0, missing)
+    let literal = crate::triggers::refusal::reference(spelling(&lexical, token), token != 0, missing)?;
+    crate::triggers::refusal::reference(std::str::from_utf8(literal).ok(), token != 0, missing)
 }
 
 pub fn built_template<'a>(
@@ -65,14 +65,14 @@ pub fn built_template_in(
         ));
     }
     let token = character.template_tag;
-    let lexical = content_reader_script::triggers::refusal::reference(lexical, token != 0,
-        || content_reader_script::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None))
+    let lexical = crate::triggers::refusal::reference(lexical, token != 0,
+        || crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None))
         .ok_or_else(|| format!("character {id}'s template tag token {token} is not spelled: {} is incomplete", replay_data::rows::TableId::LexicalTokens.words()))?;
-    let literal = content_reader_script::triggers::refusal::reference(
+    let literal = crate::triggers::refusal::reference(
         spelling(&lexical, token),
         token != 0,
         || {
-            content_reader_script::triggers::refusal::missing_reference(
+            crate::triggers::refusal::missing_reference(
                 replay_data::rows::TableId::LexicalTokens,
                 None,
             )
@@ -95,8 +95,8 @@ pub fn civil_war<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<bool, Strin
     CivilWars::new(frame)?.holds(slot)
 }
 
-pub fn civil_war_reads() -> Vec<content_reader_script::triggers::inputs::TableRead> {
-    use content_reader_script::triggers::inputs::TableRead;
+pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
+    use crate::triggers::inputs::TableRead;
     vec![
         TableRead::fields(TableId::Countries, &["canonical_slot"]),
         TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
@@ -201,7 +201,7 @@ impl<'a> CivilWars<'a> {
                 };
                 for row in rows.iter() {
                     let row = row.map_err(text)?;
-                    if !content_reader_script::triggers::ongoing(row.start_hour, row.end_hour, hour) {
+                    if !crate::triggers::ongoing(row.start_hour, row.end_hour, hour) {
                         continue;
                     }
                     match (slot_of(row.first_country)?, slot_of(row.second_country)?) {
@@ -330,15 +330,15 @@ pub const LOOK: u64 = mask::<CountryAppearanceRow>(&[
 impl Look {
     pub fn read<F: Tables + ?Sized>(frame: &F, row: &CountryRow) -> Option<Self> {
         let appearances =
-            content_reader_script::triggers::refusal::complete_table::<F, tables::CountryAppearance>(frame, LOOK)
+            crate::triggers::refusal::complete_table::<F, tables::CountryAppearance>(frame, LOOK)
                 .ok()?;
-        let appearance = content_reader_script::triggers::refusal::reference(
+        let appearance = crate::triggers::refusal::reference(
             appearances.get(u128::from(row.id)).ok().flatten(),
             row.id != 0,
             || {
-                content_reader_script::triggers::refusal::missing_reference(
+                crate::triggers::refusal::missing_reference(
                     replay_data::rows::TableId::CountryAppearance,
-                    Some(content_reader_script::triggers::Store::Country(row.canonical_slot)),
+                    Some(crate::triggers::Store::Country(row.canonical_slot)),
                 )
             },
         )?;

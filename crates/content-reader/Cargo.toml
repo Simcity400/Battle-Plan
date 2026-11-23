@@ -51,6 +51,11 @@ content-reader-division-names = { workspace = true, features = ["layer-fixtures"
 [features]
 test-support = [
     "content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support",
+    "content-reader-gui/test-support",
+    "content-reader-key-names/test-support",
+    "content-reader-map/test-support",
+    "content-reader-mesh/test-support",
+    "content-reader-politics/test-support",
     "content-reader-abilities/test-support",
     "content-reader-country-names/test-support",
     "content-reader-division-names/test-support",
@@ -88,6 +93,7 @@ content-reader-equipment-graphics = { workspace = true, features = ["test-suppor
 content-reader-events = { workspace = true, features = ["test-support"] }
 content-reader-focus = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 content-reader-naval-combat-defines = { workspace = true, features = ["test-support"] }
 content-reader-naval-path = { workspace = true, features = ["test-support"] }
@@ -105,3 +111,4 @@ engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

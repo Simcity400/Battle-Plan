@@ -3081,7 +3081,7 @@ mod tests {
             content_reader_key_names::buildings::BuildingType::default(),
         );
         let mut names = names(&ScriptedTriggers::default());
-        names.counts = CountTriggerNames::new(
+        names.counts = content_reader_key_names::key_name_products::count_trigger_names(
             &buildings,
             &content_reader_key_names::ideologies::Ideologies::default(),
             &Default::default(),
@@ -4253,7 +4253,7 @@ mod tests {
         let weigh_with_units = |hour, participants: &[u64], trigger: &str| {
             let frame = frame_at(hour);
             let mut content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
-            content.set_count_names(CountTriggerNames::new(
+            content.set_count_names(content_reader_key_names::key_name_products::count_trigger_names(
                 &buildings,
                 &ideologies,
                 &Default::default(),

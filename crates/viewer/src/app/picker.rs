@@ -1029,7 +1029,7 @@ mod tests {
         unsafe { std::env::set_var("LOCALAPPDATA", &root) };
         let mut host = Store::open();
         let service = dashboard::Service::new(Arc::new(|_| true)).unwrap();
-        let replay = content_reader_layers::playback::tests::fixture();
+        let replay = crate::playback::tests::fixture();
         let campaign = dashboard_core::map_settings::campaign_key(&replay);
         let widget = dashboard_core::map_settings::widget_key(&campaign, "another-map");
         let mut viewer = viewer();

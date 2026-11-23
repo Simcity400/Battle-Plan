@@ -1,5 +1,5 @@
 
-use content_reader_parser::{fields, parser::Item};
+use crate::{fields, parser::Item};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Definition {
@@ -73,7 +73,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
     for item in items {
         match item
             .keyword()
-            .map(content_reader_parser::parser::Keyword::folded)
+            .map(crate::parser::Keyword::folded)
             .as_deref()
         {
             Some(b"days_to_prepare") => super::integer(&item.value, &mut out.days_to_prepare),
@@ -108,7 +108,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
                         for field in body {
                             let slot = match field
                                 .keyword()
-                                .map(content_reader_parser::parser::Keyword::folded)
+                                .map(crate::parser::Keyword::folded)
                                 .as_deref()
                             {
                                 Some(b"weight") => &mut modifier.weight,
@@ -196,7 +196,7 @@ mod tests {
         let doc = super::super::reader::document(
             &text,
             &|_| Some(false),
-            &content_reader_script::key_names::KeyNames::default(),
+            &crate::key_names::KeyNames::default(),
             &mut Vec::new(),
         )
         .unwrap();

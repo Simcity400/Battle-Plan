@@ -392,7 +392,7 @@ pub fn compare_bombing_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_layers::test_support::frame;
+    use crate::test_support::frame;
     use content_reader_save::air::DailyStatistics;
     use replay_data::{
         rows::AirLossEventRow, rows::BuildingBombingDamageCause, rows::BuildingBombingDamageRow,

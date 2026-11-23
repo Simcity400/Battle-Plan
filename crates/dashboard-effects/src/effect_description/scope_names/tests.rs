@@ -11,7 +11,7 @@ const MIO: u64 = 6 << 32 | 79;
 const WING: u64 = 9 << 32 | 77;
 
 fn assert_missing_reference(table: TableId, read: impl FnOnce() -> Result<String, String>) {
-    let (result, failures) = content_reader_script::triggers::refusal::capture(read);
+    let (result, failures) = crate::triggers::refusal::capture(read);
     assert_eq!(
         result.unwrap_err(),
         format!("{}: the object it refers to is not recorded", table.words())

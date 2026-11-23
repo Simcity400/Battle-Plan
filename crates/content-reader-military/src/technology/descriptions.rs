@@ -280,7 +280,7 @@ mod tests {
             "technologies={ignored={}}",
         );
         let layers = stack.layers(&["common/technologies"]);
-        let names = KeyNames::read(&layers).unwrap();
+        let names = content_reader_key_names::key_name_products::KeyNameProducts::read(&layers).unwrap().names;
         let catalog = Catalog::read(&layers, &names).unwrap();
         assert!(catalog.refusal.is_none(), "{:?}", catalog.refusal);
         assert_eq!(catalog.definitions.len(), 3);

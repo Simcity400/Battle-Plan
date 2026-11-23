@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::Eval;
+use crate::triggers::Eval;
 
 #[cfg(test)]
 mod tests;
@@ -244,7 +244,7 @@ impl Renderer<'_, '_, '_> {
         let value = field(fields, "chance")
             .and_then(|item| item.value.scalar())
             .unwrap_or(b"0");
-        let chance = content_reader_script::triggers::fixed_round(self.scoped_value(value, scopes)?) as i32;
+        let chance = crate::triggers::fixed_round(self.scoped_value(value, scopes)?) as i32;
         let mut text = "   ".repeat(indent);
         text.push_str(&self.localised(
             b"RANDOM_EFFECT",

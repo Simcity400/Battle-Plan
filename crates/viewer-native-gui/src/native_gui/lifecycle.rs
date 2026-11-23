@@ -4106,7 +4106,7 @@ impl Instance {
 #[cfg(test)]
 mod retained_work_tests {
     use super::*;
-    use content_reader_layers::test_support::gui::fixture;
+    use crate::test_support::gui::fixture;
 
     fn template() -> native::Gui {
         content_reader_script::test_game::enter();
@@ -4257,7 +4257,7 @@ mod retained_work_tests {
 
     #[test]
     fn transaction_elements_keep_transactional_lifecycle_requests_and_output_across_frames() {
-        use content_reader_layers::test_support::gui::Fixture;
+        use crate::test_support::gui::Fixture;
         use std::cell::{Cell, RefCell};
 
         struct Requested<'a> {
@@ -4724,7 +4724,7 @@ mod traversal_tests {
 #[cfg(test)]
 mod clock_pruning_tests {
     use super::*;
-    use content_reader_layers::test_support::gui::{Fixture, fixture};
+    use crate::test_support::gui::{Fixture, fixture};
     use std::cell::Cell;
 
     struct Metadata<'a> {
@@ -5017,8 +5017,7 @@ mod clock_pruning_tests {
 #[cfg(test)]
 mod disabled_icon_tests {
     use super::*;
-    use crate::native_effects::synthetic;
-    use content_reader_layers::test_support::gui::fixture;
+    use crate::{native_effects::synthetic, test_support::gui::fixture};
 
     #[test]
     fn an_icon_the_code_disables_draws_its_disable_technique() {

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use content_reader_layers::textures::texture_candidates;
 
 use std::collections::BTreeMap;
 
@@ -171,22 +173,6 @@ pub struct GlyphSet {
     pub pages: Vec<Vec<u8>>,
     pub glyphs: BTreeMap<u32, Glyph>,
     pub missing: Vec<String>,
-}
-
-pub fn texture_candidates(name: &[u8]) -> Vec<Vec<u8>> {
-    let name: Vec<u8> = content_reader_parser::parser::c_string(name)
-        .iter()
-        .map(|byte| if *byte == b'\\' { b'/' } else { *byte })
-        .collect();
-    let Some(dot) = name.iter().rposition(|byte| *byte == b'.') else {
-        return Vec::new();
-    };
-    let base = &name[..dot];
-    vec![
-        [base, b".dds"].concat(),
-        [base, b".tga"].concat(),
-        name.clone(),
-    ]
 }
 
 pub fn load_glyphs<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<content_reader_image::Bytes>>(family: &FontFamily, read: &dyn Fn(&[u8]) -> Option<B>) -> GlyphSet {

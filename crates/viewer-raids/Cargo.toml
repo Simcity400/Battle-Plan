@@ -48,6 +48,7 @@ dashboard-text.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 
 [dev-dependencies]
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 content-reader-script = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
@@ -72,6 +73,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 dashboard-effects = { workspace = true, features = ["test-support"] }

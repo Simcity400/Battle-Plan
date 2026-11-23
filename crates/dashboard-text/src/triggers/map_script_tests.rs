@@ -295,12 +295,12 @@ fn map_scripts_state_callbacks_keep_holes_fractional_population_and_recorded_val
         );
         assert_eq!(eval.scoped_value(b"global.states^79", scope), Ok(0));
         let hole = eval.encode(Scope::State(79)).unwrap();
-        let (states, failures) = content_reader_script::triggers::refusal::capture(|| {
+        let (states, failures) = crate::triggers::refusal::capture(|| {
             (
                 eval.scoped_state(b"79", scope),
                 eval.scoped_state(b"global.states^78", scope),
-                eval.decoded(content_reader_script::triggers::variables::Value::Raw(hole), scope),
-                eval.decoded(content_reader_script::triggers::variables::Value::Raw(79 * ONE), scope),
+                eval.decoded(crate::triggers::variables::Value::Raw(hole), scope),
+                eval.decoded(crate::triggers::variables::Value::Raw(79 * ONE), scope),
             )
         });
         assert_eq!(states, (Ok(NULL_STATE), Ok(NULL_STATE), Ok(None), Ok(None)));

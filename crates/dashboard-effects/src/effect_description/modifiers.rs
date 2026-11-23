@@ -1,6 +1,9 @@
 use super::*;
-use crate::{idea_names::{self, CountryLook, IdeaCountry, IdeaName}, identity};
-use content_reader_script::triggers::{Scope, Scopes};
+use crate::{
+    idea_names::{self, CountryLook, IdeaCountry, IdeaName},
+    identity,
+    triggers::{Scope, Scopes},
+};
 use content_reader_script::{modifiers::Modifiers, scope::Scope as Parsed};
 use content_reader_localisation::localisation::crt_case_text;
 use replay_data::rows::{
@@ -564,7 +567,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let old = self.timed_idea_days(remove, scopes)?.unwrap_or(-1);
         let mut days = old;
         if let Some(days) = field(fields, "add_days") {
-            let added = content_reader_script::triggers::fixed_round(
+            let added = crate::triggers::fixed_round(
                 self.scoped_value(days.value.scalar().unwrap_or_default(), scopes)?,
             ) as i32;
             let total = added.wrapping_add(if old == -1 { 0 } else { old });
@@ -579,7 +582,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
             return self.swap_idea_description(add, remove, old, total, scopes);
         } else if let Some(value) = field(fields, "days") {
-            days = content_reader_script::triggers::fixed_round(
+            days = crate::triggers::fixed_round(
                 self.scoped_value(value.value.scalar().unwrap_or_default(), scopes)?,
             ) as i32;
         }
@@ -1080,7 +1083,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             field(fields, "days")
                 .map(|days| self.scoped_value(scalar_operand(days)?, scopes))
                 .transpose()?
-                .map(content_reader_script::triggers::fixed_round)
+                .map(crate::triggers::fixed_round)
                 .unwrap_or(-1) as i32
         };
         let key: &[u8] = if remove {

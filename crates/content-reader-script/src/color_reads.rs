@@ -1,4 +1,7 @@
-use content_reader_parser::{crt::{Scanned, scan_x32, scan_f32}, parser::Item};
+use content_reader_parser::{
+    crt::{Scanned, scan_f32, scan_x32},
+    parser::Item,
+};
 
 pub const WHITE: [f32; 4] = [1.0; 4];
 

@@ -1,5 +1,5 @@
-use content_reader_script::triggers::Failure;
-use content_reader_script::triggers::refusal::refused;
+use crate::triggers::Failure;
+use crate::triggers::refusal::refused;
 
 use std::{
     borrow::Cow,
@@ -22,8 +22,11 @@ use replay_frame::frame::{HourFrame, Leader, OperandStatus, Province, Rowset};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
 use super::{Eval, Scope, ongoing, variables::Store};
-use crate::{character_scope, state_resources::{Links, ONE, StateResources}};
-use content_reader_script::scope::RecordedScopes;
+use crate::{
+    character_scope,
+    scope::RecordedScopes,
+    state_resources::{Links, ONE, StateResources},
+};
 
 #[path = "world/literals.rs"]
 mod literals;
@@ -101,7 +104,7 @@ thread_local! {
     static FOLDS: RefCell<Vec<(ViewIdentity, Arc<Folds>)>> = const { RefCell::new(Vec::new()) };
 }
 
-pub(in content_reader_script::triggers) enum Names {
+pub(in crate::triggers) enum Names {
     Own(Arc<Folds>),
 }
 type Linked<T> = (T, Option<Failure>);

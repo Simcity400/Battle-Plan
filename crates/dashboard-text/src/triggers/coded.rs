@@ -1,4 +1,4 @@
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 
 use std::collections::BTreeSet;
 
@@ -135,7 +135,7 @@ impl Evaluator<'_, '_> {
                         if let Some(gap) = gap {
                             return Err(gap.to_string().into());
                         }
-                        Err(content_reader_script::triggers::refusal::refused(format!(
+                        Err(crate::triggers::refusal::refused(format!(
                             "leader ideology {} has no recorded-content declaration",
                             String::from_utf8_lossy(token)
                         )))
@@ -326,7 +326,7 @@ impl Evaluator<'_, '_> {
                 .to_ascii_lowercase();
             let continents = world.continents.map_err(Failure::from)?;
             if !continents.contains(&wanted) {
-                return Err(content_reader_script::triggers::refusal::refused(format!(
+                return Err(crate::triggers::refusal::refused(format!(
                     "continent {wanted} has no recorded-content declaration"
                 )));
             }
@@ -341,7 +341,7 @@ impl Evaluator<'_, '_> {
                     .map_err(|_| "recorded continent token is not UTF-8")?
                     .to_ascii_lowercase();
                 if !continents.contains(&name) {
-                    return Err(content_reader_script::triggers::refusal::refused(format!(
+                    return Err(crate::triggers::refusal::refused(format!(
                         "recorded continent {name} has no recorded-content declaration"
                     )));
                 }
@@ -450,7 +450,7 @@ impl Evaluator<'_, '_> {
                     .read_string()
                     .ok_or("has_dynamic_modifier modifier is not a string token")?;
             } else if field.keyword_is("scope") && field.value.scalar().is_none() {
-                return Err(content_reader_script::triggers::refusal::refused(
+                return Err(crate::triggers::refusal::refused(
                     "has_dynamic_modifier scope is not a scalar scoped-variable token",
                 ));
             }

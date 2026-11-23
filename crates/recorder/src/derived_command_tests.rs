@@ -110,7 +110,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         launcher: Roster::default(),
         memory: Roster::default(),
     };
-    let mut records = content_reader_layers::test_support::allocation_records();
+    let mut records = crate::test_support::allocation_records();
     let mut encoder = FrameEncoder::new();
     for record in &mut records {
         match record {
@@ -208,7 +208,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         }
         let replay = Replay::from_records(
             recorder_derive::writers(),
-            content_reader_layers::test_support::ALLOCATION_CAMPAIGN.to_vec(),
+            crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
             &[records],
         )
         .unwrap();

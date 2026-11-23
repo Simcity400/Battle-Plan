@@ -146,7 +146,7 @@ pub(super) mod tests {
     };
     use viewer_foundation::test_support::{test_frame, test_put};
 
-    pub(in content_reader_map::map::counter_tooltips) fn with_test_context<R>(
+    pub(in crate::map::counter_tooltips) fn with_test_context<R>(
         frame: &DecodedFrame,
         loc: &Localisation,
         unavailable: &str,

@@ -4,7 +4,7 @@ use dashboard_world::products::army_windows::ArmySpan;
 use dashboard_base::Source;
 use dashboard_base::catalogue::{self, Catalogue, CachedResult, Refusals, View};
 use dashboard_query::{Query, read};
-use content_reader_script::sub_units::{SubUnits, sub_units};
+use content_reader_key_names::unit_leader::{SubUnits, sub_units};
 use content_reader_localisation::localisation::display_text;
 use replay::{at::Seeker, columnar_frames::Recording};
 use replay_data::rows::{SunkShipEntry, TableId, tables};

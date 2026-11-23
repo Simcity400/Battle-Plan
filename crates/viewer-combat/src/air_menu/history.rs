@@ -325,7 +325,7 @@ pub(crate) fn draw(
     root: &content_reader_gui::gui::native::Element,
     layout: &viewer_native_gui::native_gui::Layout,
     origin: [i32; 2],
-    resources: &impl content_reader_gui::gui::CombatResources,
+    resources: &impl crate::gui::CombatResources,
     chart: &Chart,
     drawn: &mut crate::Drawn,
 ) {
@@ -347,7 +347,7 @@ pub(crate) fn draw(
             .or_default() += 1;
         return;
     };
-    if content_reader_gui::gui::region_rect(region, origin).is_none() {
+    if crate::gui::region_rect(region, origin).is_none() {
         return;
     }
     let [x, y, width, height] = region.rect;

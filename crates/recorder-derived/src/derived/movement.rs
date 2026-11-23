@@ -57,7 +57,7 @@ impl Content {
                 .iter()
                 .flat_map(|(&id, region)| region.provinces.iter().map(move |&p| (p, id)))
                 .collect(),
-            sub_units: content_reader_script::sub_units::sub_units(layers)
+            sub_units: content_reader_key_names::unit_leader::sub_units(layers)
                 .map_err(|error| error.to_string()),
         })
     }

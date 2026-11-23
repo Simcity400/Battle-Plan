@@ -1,5 +1,36 @@
 use crate::equipment;
-pub use content_reader_script::sub_units::{SubUnit, SubUnits, sub_unit_files, sub_units};
+pub use content_reader_script::sub_units::{SubUnit, SubUnits};
+use content_reader_layers::{ResolvedLayers, script_files};
+use std::io;
+
+pub fn sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
+    layers.recorded_product("sub-unit database", 1, &[], read_sub_units).map(|units| units.as_ref().clone())
+}
+
+fn read_sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
+    let mut indices = SubUnits::default();
+    for path in sub_unit_files(layers)? {
+        indices.read(&path.read(layers)?, &path.text());
+    }
+    Ok(indices)
+}
+
+pub fn sub_unit_files(layers: &ResolvedLayers) -> io::Result<Vec<script_files::ScriptPath>> {
+    let mut files = Vec::new();
+    for directory in SUB_UNIT_DIRECTORIES {
+        files.extend(script_files::paths(layers, directory, Some(".txt"))?);
+    }
+    Ok(files)
+}
+
+pub const SUB_UNIT_DIRECTORIES: [&str; 4] = [
+    "common/units/unit_modifiers/",
+    "common/unit_tags/",
+    "common/units/critical_parts/",
+    "common/units/",
+];
+
+
 
 pub trait AirWings {
     fn air_carrier_capable(

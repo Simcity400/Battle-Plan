@@ -1,8 +1,11 @@
 
 pub use dashboard_text::catalogue::*;
 
-use crate::{Source, presentation::{Presentation, Presented}, products::ContentOptions};
-use content_reader_layers::content;
+use crate::{
+    Source, content,
+    presentation::{Presentation, Presented},
+    products::ContentOptions,
+};
 use dashboard_text::scripted_text::ScriptedContent;
 use kept::Keeping;
 use std::{io, sync::Arc};
@@ -674,7 +677,7 @@ mod loader_tests {
                 "Recorded name"
             );
             assert_eq!(catalogue.localisation.language, "english");
-            let localisation = content_reader_layers::content::localisation(&source, &options).unwrap();
+            let localisation = crate::content::localisation(&source, &options).unwrap();
             assert_eq!(localisation.get("NAME"), Some("Recorded name"));
             if unreadable {
                 let why = catalogue.gui_decode.as_ref().unwrap_err();

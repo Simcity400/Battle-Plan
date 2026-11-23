@@ -15,7 +15,7 @@ use replay_derive::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeSet;
-use content_reader_map::map::division_eta::CounterQueries;
+use crate::map::division_eta::CounterQueries;
 use replay_derive::directed_wars::Owner;
 use dashboard_text::table_access::TokenNames;
 

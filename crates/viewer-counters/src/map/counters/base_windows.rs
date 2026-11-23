@@ -1495,8 +1495,8 @@ mod tests {
     fn retained_base_offers_reproject_every_family_in_order_including_previously_hidden_anchors() {
         content_reader_script::test_game::enter();
         use viewer_gpu::camera::{Free, Lens, Pose};
-        content_reader_map::map::counters::tests::with_counter_inputs_fixture(
-            content_reader_map::map::counters::tests::action_gui(false),
+        crate::map::counters::tests::with_counter_inputs_fixture(
+            crate::map::counters::tests::action_gui(false),
             |_| {},
             |_| {},
             |mut inputs| {

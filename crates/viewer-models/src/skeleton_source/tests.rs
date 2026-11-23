@@ -1,6 +1,5 @@
 use crate::skeleton_source::*;
-use crate::{ModelLibrary, ModelMesh};
-use content_reader_layers::test_support::triangle_mesh;
+use crate::{ModelLibrary, ModelMesh, test_support::triangle_mesh};
 use content_reader_layers::ResolvedLayers;
 use content_reader_image::native::Decode;
 use std::sync::Arc;

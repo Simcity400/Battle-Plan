@@ -1,3 +1,4 @@
+use content_reader_script::native::{self, Shape};
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{
@@ -5,9 +6,15 @@ use std::{
     io,
 };
 
-use content_reader_layers::ResolvedLayers;
-use content_reader_parser::{fixed5::script_fixed5, parser::{self, Item, Operator, Value}};
-use content_reader_script::{key_names::KeyNames, native::{self, Shape}};
+use crate::{
+    ResolvedLayers,
+    fixed5::script_fixed5,
+    key_names::KeyNames,
+    parser::{
+        self, Item, Operator, Value,
+
+    },
+};
 
 pub mod aircraft;
 pub mod context;
@@ -299,10 +306,10 @@ pub struct Names {
 impl Names {
     pub fn read(
         layers: &ResolvedLayers,
-        default_map: &content_reader_key_names::terrain::DefaultMap,
+        default_map: &crate::terrain::DefaultMap,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
-        let index = content_reader_key_names::country_tags::country_tag_index(layers)?;
+        let index = crate::country_tags::country_tag_index(layers)?;
         warnings.extend(index.warning());
         Ok(Self {
             countries: index.files.into_keys().collect(),
@@ -454,7 +461,7 @@ impl Content {
                             }
                             Some(b"limit") => {
                                 pool.limit.extend(
-                                    content_reader_script::triggers::body(&field.value).unwrap_or_default(),
+                                    crate::triggers::body(&field.value).unwrap_or_default(),
                                 );
                             }
                             _ => {}
@@ -1089,7 +1096,7 @@ fn strings(value: &Value) -> io::Result<Vec<String>> {
         .collect()
 }
 
-pub use content_reader_parser::fixed5::authored_fixed5;
+pub use crate::fixed5::authored_fixed5;
 
 fn folded_strings(value: &Value) -> io::Result<Vec<String>> {
     Ok(strings(value)?

@@ -49,18 +49,18 @@ pub fn law_for(input: LawInputs<'_>, valid: impl FnOnce(&str) -> Result<bool, St
     if valid(&candidate)? { Ok(candidate) } else { token(input.fallback?) }
 }
 
-pub fn admitted(world: &content_reader_script::triggers::World<'_>, law: &Law, controller: u32, occupied: u32) -> Result<bool, String> {
+pub fn admitted(world: &crate::triggers::World<'_>, law: &Law, controller: u32, occupied: u32) -> Result<bool, String> {
     use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
     let mut occupier_scope = EventScope::of(EventObject::Country(controller));
     occupier_scope.from = Link::Scope(1);
     let mut occupied_scope = EventScope::of(EventObject::Country(occupied));
     occupied_scope.root = Link::Scope(0);
     let graph = std::rc::Rc::new(std::cell::RefCell::new(EventScopes::new(vec![occupier_scope, occupied_scope])));
-    let evaluator = content_reader_script::triggers::Evaluator::new(world, None).with_event_scopes(graph);
+    let evaluator = crate::triggers::Evaluator::new(world, None).with_event_scopes(graph);
     let scope = evaluator.event_scopes(0).map_err(|why| why.to_string())?;
     evaluator
         .evaluate(&law.visible, scope)
-        .and(|| if controller == occupied { content_reader_script::triggers::Eval::True } else { evaluator.evaluate(&law.available, scope) })
+        .and(|| if controller == occupied { crate::triggers::Eval::True } else { evaluator.evaluate(&law.available, scope) })
         .decided()
 }
 

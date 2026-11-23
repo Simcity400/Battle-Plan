@@ -27,6 +27,10 @@ tauri = { version = "2.11.5", default-features = false, features = ["common-cont
 test-unify = { workspace = true }
 unify-bitflags = { workspace = true }
 unify-hashbrown = { workspace = true }
+unify-lock_api = { workspace = true }
 unify-log = { workspace = true }
+unify-parking_lot = { workspace = true }
+unify-rustc-hash = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }

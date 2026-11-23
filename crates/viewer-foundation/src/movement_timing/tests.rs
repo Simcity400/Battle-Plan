@@ -1027,7 +1027,7 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
 }
 
 fn sub_unit_database() -> std::sync::Arc<content_reader_script::sub_units::SubUnits> {
-    content_reader_layers::test_support::enter_fixed_modifier_tables();
+    crate::test_support::enter_fixed_modifier_tables();
     let mut units = content_reader_script::sub_units::SubUnits::default();
     units.read(
         b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",

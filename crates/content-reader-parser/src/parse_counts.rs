@@ -1,5 +1,8 @@
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeMap, sync::{Mutex, OnceLock}};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, OnceLock},
+};
 
 #[derive(serde::Serialize)]
 pub struct ParseCount {
@@ -25,14 +28,27 @@ pub fn parse(parser: &'static str, bytes: &[u8]) {
 
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE"))
-                .is_some())
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("BATTLEPLAN_CONTENT_COUNTS_FILE")
+            .or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE"))
+            .is_some()
+    })
 }
 
 pub fn snapshot() -> Vec<ParseCount> {
-    PARSES.get().map(|parses| {
-        parses.lock().unwrap_or_else(|error| error.into_inner()).iter()
-            .map(|((parser, digest), calls)| ParseCount { parser, digest: *digest, calls: *calls })
-            .collect()
-    }).unwrap_or_default()
+    PARSES
+        .get()
+        .map(|parses| {
+            parses
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .map(|((parser, digest), calls)| ParseCount {
+                    parser,
+                    digest: *digest,
+                    calls: *calls,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }

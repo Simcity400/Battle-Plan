@@ -237,7 +237,7 @@ fn native_input<T: Clone>(value: &Recorded<Option<T>>, field: &str) -> Result<T,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_layers::test_support::allegiance::*;
+    use crate::test_support::allegiance::*;
     use replay_data::{rows::CountryLinkRow, rows::PlayerRow, rows::TableId, rows::TableRows};
     use replay_frame::frame::TableView;
 

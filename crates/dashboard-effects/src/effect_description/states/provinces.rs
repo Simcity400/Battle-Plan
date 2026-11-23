@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::scope_selector;
+use crate::triggers::scope_selector;
 use content_reader_parser::crt::{Scanned, scan_i32};
 use replay_data::rows::TableId;
 
@@ -96,7 +96,7 @@ impl Renderer<'_, '_, '_> {
         let id = match field(children(item), "province") {
             Some(operand) => {
                 let value = scalar_operand(operand)?;
-                content_reader_script::triggers::fixed_round(self.scoped_value(value, scopes)?) as u32
+                crate::triggers::fixed_round(self.scoped_value(value, scopes)?) as u32
             }
             None => 0,
         };
@@ -146,7 +146,7 @@ impl Renderer<'_, '_, '_> {
         }
         let value = match field(children(item), "value") {
             Some(operand) => {
-                content_reader_script::triggers::fixed_round(self.scoped_value(scalar_operand(operand)?, scopes)?)
+                crate::triggers::fixed_round(self.scoped_value(scalar_operand(operand)?, scopes)?)
                     as i32
             }
             None => 0,

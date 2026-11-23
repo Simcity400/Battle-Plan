@@ -3005,7 +3005,7 @@ mod tests {
 
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
-        use content_reader_map::map::division_eta::test_support::neutral_land_movement;
+        use crate::map::division_eta::test_support::neutral_land_movement;
         use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain};
         use viewer_foundation::movement_timing::{
             Etas, LandSpeedContent, MovementContent, arrival as movement_timing_arrival,

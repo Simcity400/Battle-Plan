@@ -1314,7 +1314,7 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     struct Side;
     impl Combat for Side {
-        fn country(&self) -> Result<u32, content_reader_script::triggers::Failure> {
+        fn country(&self) -> Result<u32, crate::triggers::Failure> {
             Ok(4)
         }
         fn trigger(
@@ -1326,7 +1326,7 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
         ) -> Option<Eval> {
             None
         }
-        fn category_share(&self, _: u64) -> Result<i64, content_reader_script::triggers::Failure> {
+        fn category_share(&self, _: u64) -> Result<i64, crate::triggers::Failure> {
             Err("unused combat equipment count".into())
         }
     }
@@ -3550,7 +3550,7 @@ fn hours_reading_one_lexer_table_share_its_folds() {
 fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use content_reader_script::triggers::inputs::{Key, capture};
+    use crate::triggers::inputs::{Key, capture};
     use replay_data::rows::StateCoreRow;
     let with_claims = |claims: Vec<u32>| {
         let mut f = with_variables(frame(&original_countries(), &[]), &[]);
@@ -3587,7 +3587,7 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
 fn invasion_preparation_on_a_warmed_world_records_its_table() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use content_reader_script::triggers::inputs::capture;
+    use crate::triggers::inputs::capture;
     use replay_data::rows::InvasionPreparationRow;
     let with_progress = |progress| {
         let mut f = with_variables(frame(&original_countries(), &[]), &[]);

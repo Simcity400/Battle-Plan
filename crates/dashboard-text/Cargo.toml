@@ -64,6 +64,8 @@ shader-pipeline = { path = "../shader-pipeline" }
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 content-reader-script = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
@@ -93,6 +95,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
@@ -104,6 +107,7 @@ test-unify = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }

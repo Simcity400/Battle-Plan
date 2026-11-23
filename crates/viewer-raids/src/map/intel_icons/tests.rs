@@ -1,6 +1,6 @@
 use super::values::*;
 use super::*;
-use content_reader_map::map::raids::test_support::{self, put};
+use crate::map::raids::test_support::{self, put};
 use replay_data::{
     rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow, rows::OperationEquipment,
     rows::OperationEquipmentTotal, rows::OperationRequirement, rows::PoliticsRow,

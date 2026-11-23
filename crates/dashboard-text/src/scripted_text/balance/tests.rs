@@ -75,7 +75,7 @@ pub fn fixture(
             ),
         ),
     ]);
-    let mut frame = content_reader_script::scope::tests::positive_frame();
+    let mut frame = crate::scope::tests::positive_frame();
     *frame.tables[TableId::PowerBalances.index()] =
         TableView::Complete(TableRows::PowerBalances(vec![PowerBalanceRow {
             balance: b"balance".to_vec(),

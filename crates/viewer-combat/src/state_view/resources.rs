@@ -1,6 +1,6 @@
 use super::{paths_named, withhold_named};
 use crate::binding::Bindings;
-use content_reader_layers::content::Content;
+use crate::content::Content;
 use content_reader_gui::gui::native;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;

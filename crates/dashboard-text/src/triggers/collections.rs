@@ -1,5 +1,5 @@
 use super::{Evaluator, Scope, Scopes};
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 use content_reader_politics::{collections::{Collection, Input, Operator}, script_constants::CollectionConstant};
 use replay_data::rows::{TableSchema, tables};
 

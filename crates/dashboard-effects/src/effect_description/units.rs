@@ -359,7 +359,7 @@ impl Renderer<'_, '_, '_> {
             &[
                 (
                     "AMOUNT",
-                    Argument::Int32(content_reader_script::triggers::fixed_round(amount) as i32),
+                    Argument::Int32(crate::triggers::fixed_round(amount) as i32),
                 ),
                 ("EQUIPMENT_NAME", Argument::Text(&name)),
                 ("COUNTRY", Argument::Text(&country)),
@@ -440,7 +440,7 @@ impl Renderer<'_, '_, '_> {
             Some(value) => self.scoped_value(scalar_operand(value)?, scopes)?,
             None => 0,
         };
-        let amount = content_reader_script::triggers::fixed_round(amount) as i32;
+        let amount = crate::triggers::fixed_round(amount) as i32;
         let producer = match field(fields, "producer") {
             Some(value) => self
                 .evaluator()?
@@ -1079,7 +1079,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn units_manpower(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let amount =
-            content_reader_script::triggers::fixed_round(self.scoped_value(scalar_operand(item)?, scopes)?) as i32;
+            crate::triggers::fixed_round(self.scoped_value(scalar_operand(item)?, scopes)?) as i32;
         let (key, name) = match scopes.this {
             Scope::State(state) if (state as i32) > 0 => (
                 b"EFFECT_MANPOWER_ADD_STATE".as_slice(),
@@ -1400,7 +1400,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let result = (|| {
-            let copied = content_reader_script::triggers::event_scopes::project(&self.graph.borrow(), at)
+            let copied = crate::triggers::event_scopes::project(&self.graph.borrow(), at)
                 .map_err(|why| why.to_string())?;
             self.units_create_in(item, copied, scopes)
         })();
@@ -1421,7 +1421,7 @@ impl Renderer<'_, '_, '_> {
             Some(count) => self.scoped_value(scalar_operand(count)?, scopes)?,
             None => 100_000,
         };
-        let count = content_reader_script::triggers::fixed_round(count) as i32;
+        let count = crate::triggers::fixed_round(count) as i32;
         if count < 1 {
             return Ok(String::new());
         }
@@ -1663,7 +1663,7 @@ impl Renderer<'_, '_, '_> {
                                     ))
                                 });
                             let result = (|| {
-                                let projected = content_reader_script::triggers::event_scopes::project(
+                                let projected = crate::triggers::event_scopes::project(
                                     &self.graph.borrow(),
                                     at,
                                 )?;

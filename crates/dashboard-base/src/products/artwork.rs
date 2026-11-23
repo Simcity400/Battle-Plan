@@ -142,7 +142,7 @@ impl TechnologyNames {
 #[cfg(test)]
 fn technology_name(
     presentation: &content_reader_military::technology::PresentationName,
-    world: Result<&content_reader_script::triggers::World<'_>, String>,
+    world: Result<&crate::triggers::World<'_>, String>,
     database: Option<&Arc<content_reader_key_names::equipment::Database>>,
 ) -> Result<String, String> {
     let mut children = technology_children(presentation, world, database)?;
@@ -155,7 +155,7 @@ fn technology_name(
 
 fn technology_children(
     presentation: &content_reader_military::technology::PresentationName,
-    world: Result<&content_reader_script::triggers::World<'_>, String>,
+    world: Result<&crate::triggers::World<'_>, String>,
     database: Option<&Arc<content_reader_key_names::equipment::Database>>,
 ) -> Result<Vec<String>, String> {
     presentation.children(
@@ -163,7 +163,7 @@ fn technology_children(
             world
                 .as_ref()
                 .map_err(Clone::clone)?
-                .evaluate(body, content_reader_script::triggers::Scopes::empty())
+                .evaluate(body, crate::triggers::Scopes::empty())
                 .decided()
         },
         |child| {
@@ -442,7 +442,7 @@ pub struct FocusFrame<'a> {
         catalogue::OwnRefusals,
     )>,
     rereads:
-        std::cell::RefCell<std::collections::HashMap<content_reader_script::triggers::inputs::Key, Option<u64>>>,
+        std::cell::RefCell<std::collections::HashMap<crate::triggers::inputs::Key, Option<u64>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub text_builds: std::cell::Cell<usize>,
 }
@@ -463,7 +463,7 @@ impl<'a> FocusFrame<'a> {
     }
 
 
-    pub fn reread(&self, key: &content_reader_script::triggers::inputs::Key) -> Option<u64> {
+    pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
         if let Some(read) = self.rereads.borrow().get(key) {
             return *read;
         }
@@ -472,9 +472,9 @@ impl<'a> FocusFrame<'a> {
         read
     }
 
-    fn read_now(&self, key: &content_reader_script::triggers::inputs::Key) -> Option<u64> {
+    fn read_now(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
         match key {
-            content_reader_script::triggers::inputs::Key::FocusTag(tag) => Some(content_reader_script::triggers::inputs::digest(
+            crate::triggers::inputs::Key::FocusTag(tag) => Some(crate::triggers::inputs::digest(
                 &focus_slot(self.frame, tag),
             )),
             _ => self.text().ok()?.reread(key),
@@ -491,7 +491,7 @@ impl<'a> FocusFrame<'a> {
             self.text_builds.set(self.text_builds.get() + 1);
             catalogue::capture(|| {
                 shown.scripted_content().map(|content| {
-                    content_reader_script::triggers::inputs::unrecorded(|| {
+                    crate::triggers::inputs::unrecorded(|| {
                         crate::scripted_text::ScriptedText::new_in(
                             frame,
                             &shown.localisation,
@@ -638,7 +638,7 @@ impl Context {
                             None => Some(true),
                             Some(trigger) => world.as_ref().ok().and_then(|world| {
                                 world
-                                    .evaluate(trigger, content_reader_script::triggers::Scopes::empty())
+                                    .evaluate(trigger, crate::triggers::Scopes::empty())
                                     .decided()
                                     .ok()
                             }),
@@ -1465,8 +1465,8 @@ impl Context {
             let country = country_scopes
                 .entry(tag)
                 .or_insert_with(|| {
-                    content_reader_script::triggers::inputs::query(
-                        || content_reader_script::triggers::inputs::Key::FocusTag(tag.to_owned()),
+                    crate::triggers::inputs::query(
+                        || crate::triggers::inputs::Key::FocusTag(tag.to_owned()),
                         || focus_slot(frame, tag),
                     )
                 })
@@ -1500,7 +1500,7 @@ impl Context {
                                                 ),
                                             ]),
                                         ));
-                                        let evaluator = content_reader_script::triggers::Evaluator::new(
+                                        let evaluator = crate::triggers::Evaluator::new(
                                             context()?.trigger_world()?,
                                             None,
                                         )
@@ -1560,7 +1560,7 @@ impl Context {
                 let mut scope = crate::scripted_text::EventScope::of(
                     crate::scripted_text::EventObject::Country(slot),
                 );
-                let seed = content_reader_script::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed_in(frame));
+                let seed = crate::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed_in(frame));
                 scope.clock_seed = Some(seed);
                 let scopes = match seed {
                     Some(seed) => {
@@ -2599,7 +2599,7 @@ mod tests {
         let triggers = content_reader_script::trigger_keys::TriggerNames::default();
         let aliases = Arc::new(content_reader_key_names::tag_aliases::TagAliases::default());
         let empty = BTreeSet::new();
-        let world = content_reader_script::triggers::World::unrecorded(&empty, &triggers, &aliases);
+        let world = crate::triggers::World::unrecorded(&empty, &triggers, &aliases);
         let named = |key: &str| {
             presentation
                 .definitions
@@ -2621,13 +2621,13 @@ mod tests {
         assert_eq!(select("invalid").unwrap(), "invalid");
         assert_eq!(select("harbor").unwrap(), "harbor");
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
-        let world = content_reader_script::triggers::World::unrecorded(&enabled, &triggers, &aliases);
+        let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
             technology_name(named("dlc"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_child"
         );
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
-        let world = content_reader_script::triggers::World::unrecorded(&enabled, &triggers, &aliases);
+        let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
             technology_name(named("harbor"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_harbor"

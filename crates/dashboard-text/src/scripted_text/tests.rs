@@ -1,6 +1,6 @@
 use super::*;
 pub(super) use super::complete_test_frame as complete_frame;
-use content_reader_script::scope::tests::positive_frame as frame;
+use crate::scope::tests::positive_frame as frame;
 use replay_data::{
     rows::FactionMemberRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
 };
@@ -617,7 +617,7 @@ fn numeric_brackets_use_the_country_the_text_is_shown_for() {
     for (country, expected) in [(1, "1.2"), (2, "2.7")] {
         let text = ScriptedText::new(&frame, &catalogue.localisation, content, country);
         let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(country))]);
-        let evaluator = content_reader_script::triggers::Evaluator::new(text.world().unwrap(), None);
+        let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
         assert_eq!(
             text.expand_in_session("[?my_var|1]", &scopes, 0, &evaluator),
             Ok(expected.into())
@@ -1097,9 +1097,9 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     assert_eq!(
         world.evaluate(
             &parsed.items,
-            content_reader_script::triggers::Scopes::of(content_reader_script::triggers::Scope::Country(1))
+            crate::triggers::Scopes::of(crate::triggers::Scope::Country(1))
         ),
-        content_reader_script::triggers::Eval::True
+        crate::triggers::Eval::True
     );
     assert!(world.state_order(64).is_err());
     assert!(text.world().is_err());

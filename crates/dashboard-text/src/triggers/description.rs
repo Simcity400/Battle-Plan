@@ -305,7 +305,7 @@ impl<'a> Formatter<'_, '_, 'a> {
 
     fn taint_and_push_err(&self, sink: &mut Sink<'_>, key: String, why: String) {
         self.evaluator.taint_temps(
-            content_reader_script::triggers::Failure::from(why.clone())
+            crate::triggers::Failure::from(why.clone())
                 .context(|why| format!("trigger tooltip session is uncertain: {why}")),
         );
         sink.push_err(key, why);
@@ -498,7 +498,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 .any(|later| later.refused.is_some());
                             if later_refused {
                                 self.evaluator.taint_temps(
-                                    content_reader_script::triggers::Failure::from(why).context(|why| {
+                                    crate::triggers::Failure::from(why).context(|why| {
                                         format!("trigger tooltip session is uncertain: {why}")
                                     }),
                                 );
@@ -508,7 +508,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                             {
                                 self.evaluator.clear_temp_writer();
                                 self.evaluator.taint_temps(
-                                    content_reader_script::triggers::Failure::from(why).context(|why| {
+                                    crate::triggers::Failure::from(why).context(|why| {
                                         format!("trigger tooltip session is uncertain: {why}")
                                     }),
                                 );

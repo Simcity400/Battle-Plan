@@ -1,6 +1,8 @@
 use super::*;
-use crate::native_gui::lifecycle::{Instance, Tick};
-use content_reader_layers::test_support::{Fixture, SYNTHETIC_NAVAL_GUI, SYNTHETIC_NAVY_GUI, VIEWPORT, part};
+use crate::{
+    native_gui::lifecycle::{Instance, Tick},
+    test_support::{Fixture, SYNTHETIC_NAVAL_GUI, SYNTHETIC_NAVY_GUI, VIEWPORT, part},
+};
 const STILL: Tick = Tick { time: 0.0, dt: 0.0 };
 
 #[test]

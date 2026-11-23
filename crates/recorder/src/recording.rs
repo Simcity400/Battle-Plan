@@ -5218,7 +5218,7 @@ pub fn discard_waiting(session: &Path, campaign: &str) -> Result<(), String> {
 mod tests {
     #[test]
     fn failed_cli_timestamp_never_blocks_detach_or_invents_the_controller_poll_time() {
-        let root = content_reader_layers::test_support::allocation_test_directory("stop-timestamp-failure");
+        let root = crate::test_support::allocation_test_directory("stop-timestamp-failure");
         fs::create_dir(root.join("stop.request")).unwrap();
         let signalled = Cell::new(0);
         for result in [Ok(()), Err("detach event unavailable".to_owned())] {
@@ -5244,7 +5244,7 @@ mod tests {
 
     #[test]
     fn cli_timestamp_and_missing_counter_are_diagnostics_only() {
-        let root = content_reader_layers::test_support::allocation_test_directory("stop-timestamp-success");
+        let root = crate::test_support::allocation_test_directory("stop-timestamp-success");
         let control = Control::new();
         let signalled = Cell::new(false);
         signal_detach_request(&root, None, || {
@@ -5382,7 +5382,9 @@ mod tests {
     }
 
     fn orphaned_session(root: &Path, pid: u32, start: u64) -> (PathBuf, PathBuf, PathBuf, Events) {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, write_campaign_journal,
+        };
         use replay_data::identity::IdentityCodec as _;
         let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         let output = root.join("captures");
@@ -5442,7 +5444,7 @@ mod tests {
 
     #[test]
     fn a_recorder_takes_over_the_session_a_stopped_recorder_left_loaded() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_test_directory};
+        use crate::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_test_directory};
         let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         let root = allocation_test_directory("orphan-take-over");
         let (pid, start) = orphan_game();
@@ -5522,7 +5524,7 @@ mod tests {
 
     #[test]
     fn stop_or_discard_during_a_take_over_scan_detaches_the_inherited_collector_and_ends_its_session() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         for discard in [false, true] {
             let root = allocation_test_directory(&format!("take-over-scan-stop-{discard}"));
             let (pid, start) = orphan_game();
@@ -5609,7 +5611,7 @@ mod tests {
 
     #[test]
     fn a_session_another_build_started_ends_with_the_game_alive_before_recording_afresh() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, allocation_test_directory};
+        use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_test_directory};
         let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         let root = allocation_test_directory("orphan-restart");
         let (pid, start) = orphan_game();
@@ -5687,7 +5689,7 @@ mod tests {
 
     #[test]
     fn a_refused_content_check_names_its_reason_and_both_folders() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("content-refused");
         let session = root.join("session");
         fs::create_dir_all(session.join("bin")).unwrap();
@@ -5748,7 +5750,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_content_record_says_the_reason_could_not_be_read() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("content-unreadable");
         let session = root.join("session");
         fs::create_dir_all(&session).unwrap();
@@ -5776,7 +5778,7 @@ mod tests {
 
     #[test]
     fn a_live_recorders_game_and_an_ended_sessions_collector_stay_refused() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("orphan-refused");
         let (pid, start) = orphan_game();
         let (output, _target, session, events) = orphaned_session(&root, pid, start);
@@ -5960,7 +5962,9 @@ mod tests {
 
     #[test]
     fn finalization_progress_locked_reader_does_not_abort_publication() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
@@ -6009,7 +6013,7 @@ mod tests {
 
     #[test]
     fn finalization_progress_initial_write_failure_is_advisory_and_throttled() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
 
         let root = allocation_test_directory("finalization-progress-initial-write");
         let session = root.join("session");
@@ -6090,7 +6094,7 @@ mod tests {
 
     #[test]
     fn stale_json_follows_real_work_and_process_activity_but_still_detects_inactivity() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("finalization-work-watch");
         let observe = |_| {};
         let progress = FinalizationProgress::new(&root, &observe);
@@ -6126,7 +6130,7 @@ mod tests {
 
     #[test]
     fn unreadable_progress_files_follow_cpu_reads_and_writes_without_inventing_counts() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("finalization-process-watch");
         fs::create_dir(root.join("finalization-progress.json")).unwrap();
         fs::create_dir(root.join("finalization-work")).unwrap();
@@ -6415,7 +6419,7 @@ mod tests {
 
     #[test]
     fn allocation_failure_witness_overrides_stale_success_and_publishes_terminal_status() {
-        use content_reader_layers::test_support::{allocation_test_directory, allocation_witness};
+        use crate::test_support::{allocation_test_directory, allocation_witness};
         let directory = allocation_test_directory("terminal-status");
         create_failure_witness(&directory, 7, 13).unwrap();
         assert!(
@@ -6459,7 +6463,7 @@ mod tests {
 
     #[test]
     fn live_failure_refuses_refresh_and_authenticates_request_diagnostics() {
-        use content_reader_layers::test_support::{allocation_test_directory, allocation_witness};
+        use crate::test_support::{allocation_test_directory, allocation_witness};
         let directory = allocation_test_directory("live-failure-refresh");
         create_failure_witness(&directory, 7, 13).unwrap();
         let active = json!({"session_id":7,"process_start_time":13});
@@ -6495,7 +6499,7 @@ mod tests {
 
     #[test]
     fn final_spool_allows_an_incomplete_drain_without_claiming_clean_detach() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let directory = allocation_test_directory("final-pinned-spool");
         create_failure_witness(&directory, 7, 13).unwrap();
         write_json(
@@ -6520,7 +6524,9 @@ mod tests {
 
     #[test]
     fn done_with_a_retained_module_saves_only_the_committed_prefix_and_its_gap() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, allocation_witness};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, allocation_witness,
+        };
         let root = allocation_test_directory("done-retained-module");
         let session = root.join("session");
         let output = root.join("recordings");
@@ -6531,8 +6537,8 @@ mod tests {
                 |record| matches!(record, replay::spool::Record::Frame(frame) if frame.hour == 4),
             )
             .unwrap();
-        content_reader_layers::test_support::write_capture(
-            &session.join(std::str::from_utf8(content_reader_layers::test_support::ALLOCATION_CAMPAIGN).unwrap()),
+        crate::test_support::write_capture(
+            &session.join(std::str::from_utf8(crate::test_support::ALLOCATION_CAMPAIGN).unwrap()),
             0,
             &records[..end],
             false,
@@ -6582,7 +6588,9 @@ mod tests {
 
     #[test]
     fn cli_finalize_preserves_incomplete_drain_without_an_allocation_witness() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         let root = allocation_test_directory("cli-incomplete-drain");
         let session = root.join("session");
         let output = root.join("output");
@@ -6665,7 +6673,7 @@ mod tests {
 
     #[test]
     fn completion_writers_serialize_both_orders_without_resurrecting_waiting_campaigns() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         use std::sync::mpsc;
 
         #[derive(Clone, Copy, Debug)]
@@ -6796,7 +6804,9 @@ mod tests {
 
     #[test]
     fn saved_notification_and_diagnostics_precede_deferred_unload() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         for loaded in [true, false] {
             let root = allocation_test_directory(&format!("save-ready-before-unload-{loaded}"));
             let directory = root.join("session");
@@ -6881,7 +6891,7 @@ mod tests {
 
     #[test]
     fn unload_followup_preserves_later_completion_and_does_not_reconcile_checkpoints() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let directory = allocation_test_directory("unload-followup-completion");
         let campaign = directory.join("00000000-0000-4000-8000-000000000000");
         fs::create_dir_all(&campaign).unwrap();
@@ -6939,7 +6949,10 @@ mod tests {
 
     #[test]
     fn a_discard_after_a_failed_capture_leaves_the_recording_as_it_was_and_keeps_only_a_failure_report() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, RELOAD, allocation_records, allocation_test_directory, allocation_witness, load_segment_records, write_campaign_journal, write_capture};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, RELOAD, allocation_records, allocation_test_directory,
+            allocation_witness, load_segment_records, write_campaign_journal, write_capture,
+        };
         let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         for failure in ["sync", "allocation", "clean"] {
             for exited in [false, true] {
@@ -7133,7 +7146,7 @@ mod tests {
 
     #[test]
     fn failure_reports_keep_only_the_newest_five() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("failure-reports-bound");
         let target = root.join("output");
         let reports = target.join(FAILURE_REPORTS);
@@ -7167,7 +7180,9 @@ mod tests {
 
     #[test]
     fn fully_drained_pinned_collector_finalizes_with_warnings_and_blocks_attach() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         let root = allocation_test_directory("restoration-only-warning");
         let session = root.join("session");
         let output = root.join("output");
@@ -7219,7 +7234,9 @@ mod tests {
 
     #[test]
     fn healthy_stop_waits_for_unload_only_after_publishing_its_replays() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         for empty in [false, true] {
             let root = allocation_test_directory(&format!("healthy-stop-unload-{empty}"));
             let session = root.join("session");
@@ -7273,7 +7290,7 @@ mod tests {
 
     #[test]
     fn unload_warning_is_reported_only_after_the_bounded_wait_expires() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         for loaded in [Some(true), None] {
             let root = allocation_test_directory(&format!("unload-wait-expired-{loaded:?}"));
             let session = root.join("session");
@@ -7319,7 +7336,7 @@ mod tests {
 
     #[test]
     fn unload_observation_uses_the_remaining_deadline_and_still_writes_completion() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("unload-observation-deadline");
         let session = root.join("session");
         let output = root.join("output");
@@ -7385,7 +7402,9 @@ mod tests {
 
     #[test]
     fn completion_refreshes_slow_unload_after_finalization_without_a_partial_recording() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         let root = allocation_test_directory("completion-slow-unload");
         let session = root.join("session");
         let output = root.join("output");
@@ -7416,7 +7435,10 @@ mod tests {
 
     #[test]
     fn a_failed_campaign_waits_only_with_the_hours_its_recording_holds_unsaved() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+            write_campaign_journal,
+        };
         let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         for (saved, expected) in [
             (true, json!([])),
@@ -7466,7 +7488,9 @@ mod tests {
 
     #[test]
     fn unconfirmed_unload_warns_without_making_saved_data_partial_or_allowing_attach() {
-        use content_reader_layers::test_support::{allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_journal,
+        };
         for loaded in [Some(true), None] {
             let root = allocation_test_directory(&format!("completion-unconfirmed-{loaded:?}"));
             let session = root.join("session");
@@ -7520,7 +7544,7 @@ mod tests {
 
     #[test]
     fn completion_refreshes_process_exit_without_claiming_a_live_detach() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         let root = allocation_test_directory("completion-process-exit");
         let session = root.join("session");
         let output = root.join("output");
@@ -7543,7 +7567,7 @@ mod tests {
 
     #[test]
     fn allocation_failure_missing_invalid_or_foreign_witness_never_reports_success() {
-        use content_reader_layers::test_support::{allocation_test_directory, allocation_witness};
+        use crate::test_support::{allocation_test_directory, allocation_witness};
         let directory = allocation_test_directory("terminal-refusals");
         write_json(
             &directory.join("status.json"),
@@ -7746,7 +7770,7 @@ mod tests {
 
     #[test]
     fn admission_asks_once_per_load_and_records_each_decision_on_disk() {
-        use content_reader_layers::test_support::allocation_test_directory;
+        use crate::test_support::allocation_test_directory;
         const KEPT: &str = "00000000-0000-4000-8000-000000000001";
         const REFUSED: &str = "00000000-0000-4000-8000-000000000002";
         let root = allocation_test_directory("admission-record");
@@ -7805,7 +7829,10 @@ mod tests {
 
     #[test]
     fn the_opening_load_is_admitted_before_the_collector_starts() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory,
+            write_campaign_journal,
+        };
         let root = allocation_test_directory("opening-load");
         let session = root.join("session");
         let target = root.join("target");
@@ -7836,7 +7863,10 @@ mod tests {
 
     #[test]
     fn a_brief_load_never_probed_is_admitted_at_save_and_published() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory,
+            write_campaign_journal,
+        };
         let root = allocation_test_directory("brief-load");
         let session = root.join("session");
         let output = root.join("replays");
@@ -7870,7 +7900,10 @@ mod tests {
 
     #[test]
     fn a_reload_that_ends_before_its_probe_is_asked_at_save_by_the_same_rule() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records,
+            write_campaign_journal,
+        };
         let campaign = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         for refusal in [Refusal::Off, Refusal::Elsewhere] {
             let root = allocation_test_directory(&format!("reload-at-save-{}", refusal.as_str()));
@@ -7906,7 +7939,10 @@ mod tests {
 
     #[test]
     fn save_time_decisions_follow_load_order_across_campaigns() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+            write_campaign_journal,
+        };
         use replay::{spool::ControlRecord, spool::Record};
         const LATER: &str = "00000000-0000-4000-8000-000000000001";
         let first = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
@@ -7932,7 +7968,7 @@ mod tests {
                 record
             })
             .collect();
-        content_reader_layers::test_support::write_capture(&session.join(LATER), 0, &later, true);
+        crate::test_support::write_capture(&session.join(LATER), 0, &later, true);
         let chosen: RefCell<Option<String>> = RefCell::new(None);
         let admit = |campaign: &str, _: bool| -> Result<(), Refusal> {
             let mut chosen = chosen.borrow_mut();
@@ -7968,7 +8004,10 @@ mod tests {
 
     #[test]
     fn a_refused_reload_stays_unpublished_when_the_session_never_completes() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records,
+            write_campaign_journal,
+        };
         let root = allocation_test_directory("refused-reload-unfinished");
         let session = root.join("session");
         let output = root.join("replays");
@@ -8003,7 +8042,10 @@ mod tests {
 
     #[test]
     fn new_file_chosen_after_the_first_load_waits_for_the_reload() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, two_load_records,
+            write_campaign_journal,
+        };
         let root = allocation_test_directory("new-file-after-first-load");
         let session = root.join("session");
         let output = root.join("replays");
@@ -8048,7 +8090,10 @@ mod tests {
 
     #[test]
     fn repeated_finalization_of_a_failed_session_publishes_exactly_its_admitted_loads() {
-        use content_reader_layers::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, allocation_witness, two_load_records, write_campaign_journal};
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, allocation_witness,
+            two_load_records, write_campaign_journal,
+        };
         let root = allocation_test_directory("failed-session-admissions");
         let session = root.join("session");
         let output = root.join("replays");

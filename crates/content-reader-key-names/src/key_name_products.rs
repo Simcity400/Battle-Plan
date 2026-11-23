@@ -1,8 +1,20 @@
-use std::{collections::{BTreeMap, BTreeSet}, io, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::Arc,
+};
 
+use crate::{
+    buildings,
+    equipment::Database,
+    ideologies::Ideologies,
+    resources::{self, Resources},
+};
 use content_reader_layers::ResolvedLayers;
-use crate::{buildings, resources::{self, Resources}, ideologies::Ideologies, equipment::Database};
-use content_reader_script::{key_names::{KeyNames, file_tags}, trigger_keys::CountTriggerNames};
+use content_reader_script::{
+    key_names::{KeyNames, file_tags},
+    trigger_keys::CountTriggerNames,
+};
 
 mod effect_names;
 
@@ -33,12 +45,16 @@ impl KeyNameProducts {
         ) = std::thread::scope(|scope| {
             let ideologies = spawn(scope, || crate::ideologies::read(layers));
             let resources = spawn(scope, || resources::read(layers));
-            let scripted = spawn(scope, || content_reader_script::scripted_trigger_grammar::names(layers));
+            let scripted = spawn(scope, || {
+                crate::scripted_triggers::names(layers)
+            });
             let effects = spawn(scope, || crate::scripted_effects::names(layers));
             let countries = spawn(scope, || country_tags(layers));
             let aliases = spawn(scope, || crate::tag_aliases::names(layers));
             let characters = spawn(scope, || crate::characters::tokens(layers));
-            let sub_units = spawn(scope, || content_reader_script::sub_units::sub_units(layers));
+            let sub_units = spawn(scope, || {
+                crate::unit_leader::sub_units(layers)
+            });
             let columns = spawn(scope, || template_columns(layers));
             (
                 join(ideologies),
@@ -67,7 +83,9 @@ impl KeyNameProducts {
             ..KeyNames::default()
         };
         let buildings = if layers.paths()?.any(buildings::is_building_file) {
-            let buildings = layers.product("building types", 1, &[], |layers| buildings::read_with(layers, &names))?;
+            let buildings = layers.product("building types", 1, &[], |layers| {
+                buildings::read_with(layers, &names)
+            })?;
             names.counts.buildings =
                 count_trigger_names(&buildings, &ideologies, &Default::default()).buildings;
             for (name, building) in &buildings.types {
@@ -91,9 +109,12 @@ impl KeyNameProducts {
         };
         let (effects, equipment_database) = effect_names::read(layers, &names)?;
         names.effects = effects;
-        Ok(Self { names: Arc::new(names), buildings, equipment_database: Some(equipment_database) })
+        Ok(Self {
+            names: Arc::new(names),
+            buildings,
+            equipment_database: Some(equipment_database),
+        })
     }
-
 }
 
 pub trait KeyNamesExt {
@@ -108,7 +129,11 @@ impl KeyNamesExt for ResolvedLayers {
 
     fn key_name_products(&self) -> io::Result<Arc<KeyNameProducts>> {
         self.retained_recorded_roster_product("key names", 1, KeyNameProducts::read, |product| {
-            !product.names.template_columns.as_ref().is_some_and(Result::is_err)
+            !product
+                .names
+                .template_columns
+                .as_ref()
+                .is_some_and(Result::is_err)
         })
     }
 }
@@ -127,7 +152,9 @@ fn template_columns(layers: &ResolvedLayers) -> Result<[i32; 3], String> {
 
 pub fn country_tags(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tags = BTreeSet::new();
-    for path in content_reader_layers::script_files::paths(layers, "common/country_tags/", Some(".txt"))? {
+    for path in
+        content_reader_layers::script_files::paths(layers, "common/country_tags/", Some(".txt"))?
+    {
         tags.extend(file_tags(&path.read(layers)?));
     }
     Ok(tags)
@@ -196,7 +223,7 @@ mod tests {
         let (resources, _) = resources::read(&layers).unwrap();
         assert_eq!(
             names.scripted,
-            content_reader_script::scripted_trigger_grammar::names(&layers).unwrap()
+            crate::scripted_triggers::names(&layers).unwrap()
         );
         assert!(names.scripted.contains(b"synthetic_trigger".as_slice()));
         assert_eq!(
@@ -212,11 +239,10 @@ mod tests {
         );
         assert_eq!(
             names.sub_units,
-            Some(content_reader_script::sub_units::sub_units(&layers).unwrap())
+            Some(crate::unit_leader::sub_units(&layers).unwrap())
         );
         assert_eq!(names.template_columns, Some(template_columns(&layers)));
-        let counts =
-            count_trigger_names(&buildings::Buildings::default(), &ideologies, &resources);
+        let counts = count_trigger_names(&buildings::Buildings::default(), &ideologies, &resources);
         assert_eq!(names.counts.resources, counts.resources);
         assert_eq!(names.counts.ideologies, counts.ideologies);
         assert_eq!(names.counts.ideology_types, counts.ideology_types);
@@ -299,60 +325,66 @@ mod tests {
         assert!(matches!(whole.template_columns, Some(Ok(_))));
         assert!(log.lock().unwrap().iter().any(|read| {
             read.path == b"common/defines/zz_synthetic.lua"
-                && matches!(read.outcome, content_reader_layers::content::ReadOutcome::Bytes { .. })
+                && matches!(
+                    read.outcome,
+                    content_reader_layers::content::ReadOutcome::Bytes { .. }
+                )
         }));
         assert!(Arc::ptr_eq(&whole, &traced("c").0.key_names().unwrap()));
         let _ = std::fs::remove_dir_all(&overlay);
     }
-
 }
 
-pub fn count_trigger_names(buildings: &buildings::Buildings, ideologies: &Ideologies, resources: &Resources) -> CountTriggerNames {
-        let mut provincial = BTreeMap::new();
-        for (name, building) in &buildings.types {
-            let class = building.provincial();
-            let agreed = buildings
-                .repeated_types
-                .get(name)
-                .is_none_or(|repeats| repeats.iter().all(|other| other.provincial() == class));
-            let class = agreed.then_some(class);
-            provincial
-                .entry(name.as_bytes().to_ascii_lowercase())
-                .and_modify(|known: &mut Option<bool>| {
-                    if *known != class {
-                        *known = None;
-                    }
-                })
-                .or_insert(class);
-        }
-        CountTriggerNames::new(
-            buildings
-                .types
-                .keys()
-                .map(|name| name.as_bytes().to_ascii_lowercase())
-                .collect(),
-            provincial,
-            ideologies
-                .groups()
-                .0
-                .iter()
-                .map(|group| group.token.as_bytes().to_ascii_lowercase())
-                .collect(),
-            ideologies
-                .groups()
-                .0
-                .iter()
-                .flat_map(|group| &group.types)
-                .map(|token| token.as_bytes().to_ascii_lowercase())
-                .collect(),
-            ideologies.groups().1.map(ToString::to_string),
-            resources
-                .declarations
-                .iter()
-                .map(|resource| resource.token.as_bytes().to_ascii_lowercase())
-                .collect(),
-            resources.gap().map(ToString::to_string),
-        )
+pub fn count_trigger_names(
+    buildings: &buildings::Buildings,
+    ideologies: &Ideologies,
+    resources: &Resources,
+) -> CountTriggerNames {
+    let mut provincial = BTreeMap::new();
+    for (name, building) in &buildings.types {
+        let class = building.provincial();
+        let agreed = buildings
+            .repeated_types
+            .get(name)
+            .is_none_or(|repeats| repeats.iter().all(|other| other.provincial() == class));
+        let class = agreed.then_some(class);
+        provincial
+            .entry(name.as_bytes().to_ascii_lowercase())
+            .and_modify(|known: &mut Option<bool>| {
+                if *known != class {
+                    *known = None;
+                }
+            })
+            .or_insert(class);
+    }
+    CountTriggerNames::new(
+        buildings
+            .types
+            .keys()
+            .map(|name| name.as_bytes().to_ascii_lowercase())
+            .collect(),
+        provincial,
+        ideologies
+            .groups()
+            .0
+            .iter()
+            .map(|group| group.token.as_bytes().to_ascii_lowercase())
+            .collect(),
+        ideologies
+            .groups()
+            .0
+            .iter()
+            .flat_map(|group| &group.types)
+            .map(|token| token.as_bytes().to_ascii_lowercase())
+            .collect(),
+        ideologies.groups().1.map(ToString::to_string),
+        resources
+            .declarations
+            .iter()
+            .map(|resource| resource.token.as_bytes().to_ascii_lowercase())
+            .collect(),
+        resources.gap().map(ToString::to_string),
+    )
 }
 
 #[cfg(test)]
@@ -432,8 +464,7 @@ mod count_tests {
         buildings
             .repeated_types
             .insert("site".into(), vec![BuildingType::default(), provincial]);
-        let names =
-            count_trigger_names(&buildings, &Ideologies::default(), &Resources::default());
+        let names = count_trigger_names(&buildings, &Ideologies::default(), &Resources::default());
         assert_eq!(names.is_provincial(b"BUNKER"), Some(true));
         assert_eq!(names.is_provincial(b"Mill"), Some(false));
         assert_eq!(names.is_provincial(b"site"), None);

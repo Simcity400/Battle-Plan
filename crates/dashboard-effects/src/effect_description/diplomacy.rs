@@ -1189,7 +1189,7 @@ impl Renderer<'_, '_, '_> {
         let Some((_, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
-        let name = if content_reader_script::triggers::scope_selector(item).is_some() {
+        let name = if crate::triggers::scope_selector(item).is_some() {
             &b""[..]
         } else {
             item.value
@@ -1237,7 +1237,7 @@ impl Renderer<'_, '_, '_> {
             Some(value) => self.scoped_value(scalar_operand(value)?, scopes)?,
             None => 0,
         };
-        let value = content_reader_script::triggers::fixed_round(value) as i32;
+        let value = crate::triggers::fixed_round(value) as i32;
         let faction = self.current_faction(scopes)?;
         match faction {
             Some((_, faction)) => {
@@ -1266,7 +1266,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn faction_initiative(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        let amount = if content_reader_script::triggers::scope_selector(item).is_some() {
+        let amount = if crate::triggers::scope_selector(item).is_some() {
             0
         } else {
             self.scoped_value(scalar_operand(item)?, scopes)?

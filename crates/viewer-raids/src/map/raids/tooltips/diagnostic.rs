@@ -168,7 +168,7 @@ impl Context<'_, '_> {
             &mut result,
             offers::category_admits_unlock(self.assets, self.world, owner, kind),
         );
-        let used = content_reader_map::map::raids::eligibility::used_up(self.assets, self.world, owner, kind);
+        let used = crate::map::raids::eligibility::used_up(self.assets, self.world, owner, kind);
         match &used {
             Eval::True => add(
                 &mut lines,
@@ -588,7 +588,7 @@ impl Context<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_map::map::raids::test_support::{assets, positive_frame as base_frame, put};
+    use crate::map::raids::test_support::{assets, positive_frame as base_frame, put};
     use replay_data::{
         rows::CountryAppearanceRow, rows::LexicalTokenRow, rows::PoliticsRow,
         rows::RaidCooldownRow, rows::RaidCountryRow, rows::RaidTooltipOperandRow,

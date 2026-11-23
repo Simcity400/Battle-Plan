@@ -1,5 +1,6 @@
 use super::*;
 use content_reader_parser::parser::Operator;
+use content_reader_script::native::Shape;
 
 #[test]
 fn custom_tooltip_bindings_read_localisation_before_conditions() {

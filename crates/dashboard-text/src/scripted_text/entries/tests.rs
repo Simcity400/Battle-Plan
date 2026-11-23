@@ -152,7 +152,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
         );
         let inputs = &content.environment().unwrap().prepared;
         assert_eq!(
-            content_reader_script::triggers::PreparedContent::geography(content)
+            crate::triggers::PreparedContent::geography(content)
                 .neighbors()
                 .unwrap()[&64],
             [65]
@@ -192,7 +192,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
                 .iter()
                 .any(|line| line.contains("map/logs/rivers.bmp"))
         );
-        let cached = content_reader_script::triggers::PreparedContent::geography(content)
+        let cached = crate::triggers::PreparedContent::geography(content)
             .terrain()
             .unwrap();
         (warnings, cached)
@@ -211,7 +211,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
         assert_eq!(content.recorded_world(&frame).unwrap().coastal(1), Ok(true));
         assert!(std::ptr::eq(
             cached,
-            content_reader_script::triggers::PreparedContent::geography(content)
+            crate::triggers::PreparedContent::geography(content)
                 .terrain()
                 .unwrap()
         ));

@@ -115,7 +115,7 @@ fn previous_inputs(
     )?;
     let traits = content_reader_key_names::unit_leader::Traits::registered(layers)?;
     let _sub_units =
-        content_reader_script::sub_units::sub_units(layers).map_err(|error| error.to_string());
+        content_reader_key_names::unit_leader::sub_units(layers).map_err(|error| error.to_string());
     let country_traits = content_reader_military::leader_traits::read(layers)
         .map(|(traits, _)| Arc::new(traits))
         .map_err(|error| error.to_string());

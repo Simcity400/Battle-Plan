@@ -1,7 +1,6 @@
 
 use content_reader_parser::{Diagnostic, DiagnosticKind, fixed5, parser};
 use content_reader_layers::{ResolvedLayers, script_files};
-use content_reader_military::combat_tactics;
 use content_reader_script::{key_names, triggers};
 
 pub mod scripted_localisation;

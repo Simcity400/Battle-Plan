@@ -8,9 +8,11 @@ use std::{
     sync::Arc,
 };
 
-use content_reader_script::triggers::{NULL_STATE, Scope, Selected, Selector, scope_selector};
-use crate::scripted_text::{EffectDescriber, EventObject, EventScopes, ExpansionScopes, Link, ScriptedContent, ScriptedText};
-use content_reader_script::triggers::{Evaluator, Scopes, World};
+use crate::triggers::{NULL_STATE, Scope, Selected, Selector, scope_selector};
+use crate::{
+    scripted_text::{EffectDescriber, EventObject, EventScopes, ExpansionScopes, Link, ScriptedContent, ScriptedText},
+    triggers::{Evaluator, Scopes, World},
+};
 use content_reader_parser::parser::Item;
 use content_reader_script::scope::{Keyword, Scope as Parsed};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
@@ -116,7 +118,7 @@ const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
 ];
 
 pub fn recorded_tables() -> impl Iterator<Item = replay_data::rows::TableId> {
-    content_reader_script::triggers::RECORDED_TABLES
+    crate::triggers::RECORDED_TABLES
         .iter()
         .chain(OPERAND_TABLES)
         .copied()
@@ -579,7 +581,7 @@ impl ScriptedEffects for ScriptedContent {
 pub struct Context<'c, 'f> {
     text: &'c ScriptedText<'f>,
     localisation: &'c Localisation,
-    session: RefCell<Option<content_reader_script::triggers::VariableSession>>,
+    session: RefCell<Option<crate::triggers::VariableSession>>,
     nested_session: bool,
     expansion: Option<&'c ExpansionScopes<'c, 'f>>,
     perspective: u32,
@@ -616,7 +618,7 @@ impl<'c, 'f> Context<'c, 'f> {
 
     pub(crate) fn with_variable_session(
         mut self,
-        session: &content_reader_script::triggers::VariableSession,
+        session: &crate::triggers::VariableSession,
     ) -> Self {
         self.session.replace(Some(session.clone()));
         self.nested_session = true;
@@ -628,7 +630,7 @@ impl<'c, 'f> Context<'c, 'f> {
         self
     }
 
-    pub(crate) fn variable_session(&self) -> Option<content_reader_script::triggers::VariableSession> {
+    pub(crate) fn variable_session(&self) -> Option<crate::triggers::VariableSession> {
         self.session.borrow().clone()
     }
 }
@@ -649,7 +651,7 @@ pub fn describe(
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let projected = content_reader_script::triggers::event_scopes::project(&out.graph.borrow(), 0);
+    let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
     match projected {
         Ok(scopes) => {
             out.out.text = out.group(items, scopes, 0);
@@ -660,7 +662,7 @@ pub fn describe(
                     out.refuse("description cleanup", why.to_string());
                 }
             } else if !context.nested_session {
-                let result = content_reader_script::triggers::event_scopes::cleanup_description(
+                let result = crate::triggers::event_scopes::cleanup_description(
                     &mut out.graph.borrow_mut(),
                     0,
                 );
@@ -1056,7 +1058,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
         let recorded = self.context.text.recorded();
         match recorded.saved_target(name).map_err(|why| why.to_string())? {
-            Some(row) if content_reader_script::scope::valid_saved_target(&row) => {
+            Some(row) if crate::scope::valid_saved_target(&row) => {
                 Ok(Some(EffectSavedTarget::Recorded(row)))
             }
             _ => Ok(None),

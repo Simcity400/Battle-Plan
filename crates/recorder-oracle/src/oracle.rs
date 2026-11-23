@@ -237,7 +237,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         .and_then(|raids| raids.essential_caps(equipment.as_ref().map_err(ToString::to_string)?));
     let leader_traits =
         content_reader_military::leader_traits::read(&content.layers).map(|(traits, _)| traits);
-    let sub_units = content_reader_script::sub_units::sub_units(&content.layers);
+    let sub_units = content_reader_key_names::unit_leader::sub_units(&content.layers);
     let regions = content_reader_regions::regions::read(&content.layers);
     let intelligence = content_reader_military::intelligence::read_agency_upgrades(&content.layers);
     let temperature = raid_graph

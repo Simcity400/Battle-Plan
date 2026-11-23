@@ -156,7 +156,7 @@ pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
     put(frame, TableRows::CountryUnitSpeedEntries(vec![]));
     put(frame, TableRows::DivisionTransportSpeeds(vec![]));
     if !engine_executable::executable_tables::is_initialized() {
-        content_reader_layers::test_support::enter_fixed_modifier_tables();
+        crate::test_support::enter_fixed_modifier_tables();
     }
     let mut keys = engine_executable::modifier_keys::all()
         .unwrap()

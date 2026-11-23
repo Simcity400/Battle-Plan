@@ -1,8 +1,12 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
-use std::io;
 use content_reader_layers::ResolvedLayers;
-use content_reader_script::{key_names::KeyNames, native::{self, Shape}, trigger_grammar::{Node, Shaper, effect_slot, empty_scalar_groups, normalise_trigger_body}};
 use content_reader_parser::parser::{Item, Value, c_string};
+use content_reader_script::{
+    key_names::KeyNames,
+    native,
+    trigger_grammar::{Node, Shaper, effect_slot, empty_scalar_groups},
+};
+use std::io;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Database {

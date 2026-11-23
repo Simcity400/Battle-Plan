@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::scope_selector;
+use crate::triggers::scope_selector;
 use content_reader_parser::fixed5::fixed5_percent;
 use replay_data::rows::ModifierDefinitionRow;
 
@@ -89,7 +89,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let value = content_reader_script::triggers::fixed_round(self.occupation_operand(item, scopes)?) as i32;
+        let value = crate::triggers::fixed_round(self.occupation_operand(item, scopes)?) as i32;
         self.line(
             if value > 0 {
                 b"EFFECT_ADD_EXTRA_STATE_SHARED_BUILDING_SLOTS"
@@ -230,7 +230,7 @@ impl Renderer<'_, '_, '_> {
             .map(|item| self.scoped_value(scalar_operand(item)?, scopes))
             .transpose()?
             .unwrap_or(0);
-        let days = content_reader_script::triggers::fixed_round(days) as i32;
+        let days = crate::triggers::fixed_round(days) as i32;
         let country = |name| -> Result<u32, String> {
             field(fields, name)
                 .map(|item| {

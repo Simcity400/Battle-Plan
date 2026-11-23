@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
 content-reader-layers.workspace = true
 content-reader-parser.workspace = true
 content-reader-script.workspace = true
@@ -33,3 +34,4 @@ content-reader-division-names = { workspace = true, features = ["layer-fixtures"
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

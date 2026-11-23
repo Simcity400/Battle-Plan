@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::Scopes;
+use crate::triggers::Scopes;
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CountryLinkRow, rows::FactionMemberRow,
     rows::LandTheatreRow, rows::OrdersGroupPlanRow, rows::OrdersGroupRow, rows::Recorded,

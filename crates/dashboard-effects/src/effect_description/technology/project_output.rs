@@ -426,9 +426,9 @@ impl Renderer<'_, '_, '_> {
 
     fn project_output_condition(&self, items: &[Item], scopes: Scopes) -> Result<bool, String> {
         match self.evaluator()?.evaluate(items, scopes) {
-            content_reader_script::triggers::Eval::True => Ok(true),
-            content_reader_script::triggers::Eval::False => Ok(false),
-            content_reader_script::triggers::Eval::Unknown(why) => {
+            crate::triggers::Eval::True => Ok(true),
+            crate::triggers::Eval::False => Ok(false),
+            crate::triggers::Eval::Unknown(why) => {
                 Err(why.into_iter().collect::<Vec<_>>().join("; "))
             }
         }

@@ -6,6 +6,7 @@ mod reader;
 pub mod target;
 pub mod tooltips;
 
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use crate::{
     ResolvedLayers,
     fields::{block, invalid, key_str},
@@ -537,7 +538,7 @@ fn unit_model(items: &[Item], what: &str) -> io::Result<RaidUnitModel> {
             match keyword(field).as_deref() {
                 Some(b"equipment") => {
                     let mask = value_keyword(field)
-                        .and_then(crate::equipment::category_mask)
+                        .and_then(content_reader_script::equipment_stats::category_mask)
                         .unwrap_or(0);
                     out.equipment = if mask & 0x1F_0037_FC00 == mask {
                         mask
@@ -887,7 +888,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let mut misreads = Vec::new();
     let names = layers.key_names()?;
     let mut documents = |folder: &str| -> io::Result<Vec<parser::Document>> {
-        triggers::folder_files(layers, folder)?
+        content_reader_layers::script_files::trigger_files(layers, folder)?
             .iter()
             .map(|path| {
                 let mut notes = Vec::new();

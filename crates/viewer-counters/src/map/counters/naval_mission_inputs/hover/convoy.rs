@@ -505,7 +505,7 @@ fn read(hour: &mut Hour<'_>, handle: u64, row: &NavalMissionTaskForceRow) -> Fac
     Ok(inputs)
 }
 
-pub(in content_reader_map::map::counters::naval_mission_inputs) fn prepare(
+pub(in crate::map::counters::naval_mission_inputs) fn prepare(
     hour: &mut Hour<'_>,
     ledger: &NavalMissionLedgerRow,
     handle: u64,
@@ -736,7 +736,7 @@ mod tests {
     use super::*;
     #[test]
     fn aliased_intel_owners_use_current_ids_and_canonical_target_slots() {
-        use content_reader_map::map::counters::naval_mission_inputs::tests as fixture;
+        use crate::map::counters::naval_mission_inputs::tests as fixture;
         let mut frame = fixture::frame();
         fixture::set(
             &mut frame,
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn owner_resolves_before_stateless_target_zeros_difference_without_intel() {
-        use content_reader_map::map::counters::naval_mission_inputs::tests as fixture;
+        use crate::map::counters::naval_mission_inputs::tests as fixture;
         let mut frame = fixture::frame();
         fixture::set(
             &mut frame,
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn null_target_is_zero_after_owner_resolution_before_target_or_ownership_reads() {
-        use content_reader_map::map::counters::naval_mission_inputs::tests as fixture;
+        use crate::map::counters::naval_mission_inputs::tests as fixture;
         let mut frame = fixture::frame();
         for table in [TableId::CountryCounterInputs, TableId::CountryIntel] {
             *frame.tables[table.index()] = replay_frame::frame::TableView::Unavailable {

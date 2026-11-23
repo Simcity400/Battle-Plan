@@ -75,7 +75,12 @@ pub fn overlaid_stack(
         .unwrap()
 }
 
-pub fn overlay_folders(base: &Path, visual: &Path, name: &str, defines_visible: bool) -> ResolvedLayers {
+pub fn overlay_folders(
+    base: &Path,
+    visual: &Path,
+    name: &str,
+    defines_visible: bool,
+) -> ResolvedLayers {
     let mut layers = ResolvedLayers::from_folders(&[(base, &[]), (visual, &[])]).unwrap();
     layers.layers[1].overlay = Some(Overlay {
         name: name.into(),

@@ -67,7 +67,7 @@ use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
 use viewer_native_gui::icon_windows::admitted;
-use content_reader_map::map::{counter_groups::{self, Bounds, Extents, GroupDefines, Level}, counter_portraits};
+use crate::map::{counter_groups::{self, Bounds, Extents, GroupDefines, Level}, counter_portraits};
 use viewer_foundation::{
     allegiance::{self, Allegiance},
     perspective::{SharingUnknown, Sight, Vision},
@@ -1183,7 +1183,7 @@ impl CounterContent {
             region_provinces.insert(id, members);
         }
         let (terrain, default_map) = content_reader_key_names::terrain::read(layers)?;
-        let wing_types = content_reader_script::sub_units::sub_units(layers)
+        let wing_types = content_reader_key_names::unit_leader::sub_units(layers)
             .map(Arc::new)
             .map_err(|error| error.to_string());
         let attrition = viewer_unit_reads::counter_attrition::Content::read(
@@ -1595,7 +1595,7 @@ impl CounterInputs<'_> {
     fn selected_join(&self, first: Unit, candidate: Unit, height: f32) -> bool {
         let split = self.selected.len() as i32 <= self.content.defines.split_selected_limit
             && height < self.content.defines.units_cutoff;
-        content_reader_map::map::unit_selection::joins(self.selected, first, candidate, split)
+        crate::map::unit_selection::joins(self.selected, first, candidate, split)
     }
 
     pub(crate) fn priority(&self, icon: PriorityIcon) -> i8 {

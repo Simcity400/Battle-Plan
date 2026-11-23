@@ -1,8 +1,14 @@
-use std::{fs, io, sync::Arc};
-use sha2::{Digest, Sha256};
 use crate::mesh::MeshProducts as _;
-use content_reader_layers::content::{Generation, ReadOutcome, fixtures::{overlaid_stack, overlay_folders}};
-use content_reader_layers::content::visual::{apply, fixtures::{Machine, pick, never}};
+use content_reader_layers::content::visual::{
+    apply,
+    fixtures::{Machine, never, pick},
+};
+use content_reader_layers::content::{
+    Generation, ReadOutcome,
+    fixtures::{overlaid_stack, overlay_folders},
+};
+use sha2::{Digest, Sha256};
+use std::{fs, io, sync::Arc};
 
 #[test]
 fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {

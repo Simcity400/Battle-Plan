@@ -60,7 +60,9 @@ pub struct Counts {
 static READS: OnceLock<Option<Mutex<BTreeMap<Key, (u64, u64)>>>> = OnceLock::new();
 
 fn reads() -> Option<&'static Mutex<BTreeMap<Key, (u64, u64)>>> {
-    READS.get_or_init(|| content_reader_parser::parse_counts::enabled().then(Mutex::default)).as_ref()
+    READS
+        .get_or_init(|| content_reader_parser::parse_counts::enabled().then(Mutex::default))
+        .as_ref()
 }
 
 pub(super) fn record(source: Source, path: &[u8], digest: [u8; 32], length: u64) {

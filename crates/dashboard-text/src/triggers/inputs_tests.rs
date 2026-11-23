@@ -1,5 +1,7 @@
 use super::*;
-use content_reader_script::triggers::{ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query};
+use crate::triggers::{
+    ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query,
+};
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
     rows::CountryWarRow, rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow,
@@ -1575,7 +1577,7 @@ fn richer_frame() -> DecodedFrame {
 }
 
 fn other_world_queries() -> Vec<Query> {
-    use content_reader_script::triggers::Scope;
+    use crate::triggers::Scope;
     vec![
         Query::UnitStatus(77),
         Query::RaidWingName(9),
@@ -1917,7 +1919,7 @@ fn every_declaration_names_existing_fields() {
     for query in declared_world_queries() {
         assert!(Key::World(query).dependence().is_some());
     }
-    use content_reader_script::scope::Query as Scopes;
+    use crate::scope::Query as Scopes;
     for query in [
         Scopes::Slot(101),
         Scopes::RawSlot(0),
@@ -1929,7 +1931,7 @@ fn every_declaration_names_existing_fields() {
         Scopes::AliasEntry("AAA".into()),
         Scopes::ResolveTag("AAA".into()),
         Scopes::Roster,
-        Scopes::Describe(content_reader_script::scope::Target::Country(1)),
+        Scopes::Describe(crate::scope::Target::Country(1)),
     ] {
         assert!(Key::Scopes(query).dependence().is_some());
     }
@@ -1944,7 +1946,7 @@ fn every_declaration_names_existing_fields() {
 
 #[test]
 fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read() {
-    use content_reader_script::scope::{Query as Scopes, RecordedScopes, Target};
+    use crate::scope::{Query as Scopes, RecordedScopes, Target};
     use content_reader_key_names::tag_aliases::{TagAlias, TagAliases};
     use replay_data::{
         rows::CountryCounterInputRow, rows::Recorded, rows::ReservedCountryNamingRow,
@@ -1998,7 +2000,7 @@ fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read(
     let (_, resolved) = capture(&frame, || {
         scopes.resolve(
             &content_reader_script::scope::Scope::Country("AAA".into()),
-            &content_reader_script::scope::Context::default(),
+            &crate::scope::Context::default(),
         )
     });
     keys.extend(resolved.keys().cloned());
@@ -2106,7 +2108,7 @@ fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read(
 
 #[test]
 fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
-    use content_reader_script::scope::{Context, RecordedScopes, Target};
+    use crate::scope::{Context, RecordedScopes, Target};
     use content_reader_script::scope::{Keyword, Scope};
     use replay_data::rows::CountryAppearanceRow;
     let mut frame = frame(100, BASE);
@@ -2205,7 +2207,7 @@ fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
 
 #[test]
 fn the_capital_scope_declares_the_politics_links_and_tags_it_reads() {
-    use content_reader_script::scope::{Context, RecordedScopes, Target};
+    use crate::scope::{Context, RecordedScopes, Target};
     use content_reader_script::scope::{Keyword, Scope};
     use replay_data::rows::PoliticsRow;
     let mut frame = frame(100, BASE);

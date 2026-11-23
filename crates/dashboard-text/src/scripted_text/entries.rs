@@ -1,5 +1,7 @@
 use super::*;
-use content_reader_script::triggers::{ContentFacts, Eval, GeographyInputs, LeaderRoles, Scope, Scopes, Temps, World};
+use crate::triggers::{
+    ContentFacts, Eval, GeographyInputs, LeaderRoles, Scope, Scopes, Temps, World,
+};
 use std::collections::{BTreeMap, BTreeSet};
 mod prepared;
 
@@ -450,7 +452,7 @@ impl<'a> ScriptedText<'a> {
     pub fn trigger_world(&self) -> Result<&World<'a>, String> {
         self.world
             .get_or_init(|| {
-                content_reader_script::triggers::inputs::unrecorded(|| {
+                crate::triggers::inputs::unrecorded(|| {
                     self.content.lazy_world(self.frame)
                 })
             })
@@ -583,8 +585,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn state_name_for(&self, id: u32, plain: bool) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::StateNameFor(id, plain)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::StateNameFor(id, plain)),
             || self.state_name_for_unrecorded(id, plain),
         )
     }
@@ -662,8 +664,8 @@ pub fn plain_state_name_of(
 impl<'a> ScriptedText<'a> {
 
     pub fn province_display_name_primary(&self, id: u32) -> Result<Option<String>, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayNamePrimary(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayNamePrimary(id)),
             || self.province_display_name_primary_unrecorded(id),
         )
     }
@@ -678,8 +680,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub fn province_display_name(&self, id: u32) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayName(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayName(id)),
             || self.province_display_name_unrecorded(id),
         )
     }
@@ -701,8 +703,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn province_name_override(&self, id: u32) -> Result<Option<&[u8]>, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::ProvinceNameOverride(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceNameOverride(id)),
             || self.province_name_override_unrecorded(id),
         )
     }
@@ -725,8 +727,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::ProvinceVictoryPointName(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceVictoryPointName(id)),
             || self.province_victory_point_name_unrecorded(id),
         )
     }
@@ -763,7 +765,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub fn province_terrain(&self, id: u32) -> Result<i32, String> {
-        content_reader_script::triggers::PreparedContent::geography(self.content).terrain().and_then(|map| map.terrain(id))
+        crate::triggers::PreparedContent::geography(self.content).terrain().and_then(|map| map.terrain(id))
             .map(|terrain| terrain.index)
             .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable"))
     }
@@ -851,9 +853,9 @@ fn bound_scope(
 ) -> usize {
     let this = match object {
         Object::Event => return active,
-        Object::Country(0) => EventObject::State(content_reader_script::triggers::NULL_STATE),
+        Object::Country(0) => EventObject::State(crate::triggers::NULL_STATE),
         Object::Country(slot) => EventObject::Country(slot),
-        Object::State(id) => EventObject::State(id.unwrap_or(content_reader_script::triggers::NULL_STATE)),
+        Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
         Object::Character(id) => EventObject::Character(id),
         Object::FactionEnvironment(_) | Object::Faction(_) => {
             unreachable!("scripted entries do not bind these text kinds")
@@ -931,7 +933,7 @@ pub(super) fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> S
         this,
         prev,
         from,
-        unknown: content_reader_script::triggers::UnknownLinks {
+        unknown: crate::triggers::UnknownLinks {
             root: root.is_none(),
             from: from.is_none(),
             prev: prev.is_none(),

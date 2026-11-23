@@ -6,6 +6,7 @@ pub mod content;
 pub mod kept;
 pub mod parallel;
 pub mod script_files;
+pub mod textures;
 #[cfg(any(test, feature = "layer-fixtures"))]
 pub mod test_support;
 

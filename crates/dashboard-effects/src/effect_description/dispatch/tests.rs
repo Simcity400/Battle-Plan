@@ -21,7 +21,7 @@ fn aliases_share_one_class_dispatch() {
         Content::default(),
     );
     let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-    let scopes = content_reader_script::triggers::event_scopes::project(&graph, 0).unwrap();
+    let scopes = crate::triggers::event_scopes::project(&graph, 0).unwrap();
     let mut renderer = Renderer {
         context: &context,
         graph: Rc::new(RefCell::new(graph)),

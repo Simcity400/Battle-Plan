@@ -1,9 +1,6 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
-use content_reader_layers::ResolvedLayers;
-use content_reader_defines::defines;
-use content_reader_parser::parser;
-use crate::sound::{Notes, registered};
+use crate::{ResolvedLayers, defines, parser, sound::Notes, sound::registered};
 use content_reader_script::native::{self, Shape};
 use std::{collections::BTreeMap, io, path::Path};
 
@@ -116,7 +113,7 @@ impl Music {
             let volume = match text("volume") {
                 None => 1.0,
                 Some(value) => {
-                    match content_reader_parser::crt::scan_f32(value.as_bytes()).filter(|value| value.is_finite()) {
+                    match crate::crt::scan_f32(value.as_bytes()).filter(|value| value.is_finite()) {
                         Some(volume) => volume,
                         None => {
                             self.notes.note(format!(

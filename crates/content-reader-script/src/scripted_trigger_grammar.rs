@@ -1,14 +1,10 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
 };
 
-use content_reader_layers::ResolvedLayers;
 use crate::{trigger_grammar::Node, key_names::KeyNames, native::{self, Shape}};
 use content_reader_parser::parser::{Item, Value, c_string};
-
-pub const DIRECTORY: &str = "common/scripted_triggers/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
@@ -36,7 +32,7 @@ impl ScriptedTriggers {
         }
     }
 
-    fn read_names(&mut self, bytes: &[u8], path: &str) {
+    pub fn read_names(&mut self, bytes: &[u8], path: &str) {
         let read = native::read(
             bytes,
             native::Mode::KeepMark,
@@ -54,13 +50,6 @@ impl ScriptedTriggers {
                     body: Ok(Vec::new()),
                 });
         }
-    }
-
-    pub fn read_all_names(&mut self, layers: &ResolvedLayers) -> io::Result<()> {
-        for path in content_reader_layers::script_files::paths(layers, DIRECTORY, Some(".txt"))? {
-            self.read_names(&path.read(layers)?, &path.text());
-        }
-        Ok(())
     }
 
     pub fn read_bodies(&mut self, bytes: &[u8], path: &str, names: &KeyNames, tooltip_bindings: bool) {
@@ -325,9 +314,4 @@ mod tests {
             }
         }
     }
-}
-pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
-    let mut triggers = ScriptedTriggers::default();
-    triggers.read_all_names(layers)?;
-    Ok(triggers.templates.into_keys().collect())
 }

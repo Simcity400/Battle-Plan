@@ -1,7 +1,6 @@
 
 use super::*;
-use crate::scripted_text::EventScope;
-use content_reader_script::triggers::Eval;
+use crate::{scripted_text::EventScope, triggers::Eval};
 use content_reader_military::doctrines::DefinitionSources;
 use content_reader_parser::tokens::Token;
 
@@ -272,7 +271,7 @@ pub fn doctrine_benefits(
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let selected = content_reader_script::triggers::event_scopes::project(scopes, 0);
+    let selected = crate::triggers::event_scopes::project(scopes, 0);
     let mut output = String::new();
     match selected {
         Ok(selected) => {

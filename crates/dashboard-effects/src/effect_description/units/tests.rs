@@ -1,6 +1,7 @@
 use super::*;
-use crate::{effect_description::tests::Fixture, scripted_text::EventScope};
-use content_reader_script::triggers::ContentFacts;
+use crate::{
+    effect_description::tests::Fixture, scripted_text::EventScope, triggers::ContentFacts,
+};
 use EventObject::{Country as C, State as S, Unit as U};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;

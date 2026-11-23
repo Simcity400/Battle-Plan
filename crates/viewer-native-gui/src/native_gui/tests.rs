@@ -2,7 +2,7 @@ use super::*;
 use viewer_gpu::gpu_contract::device_descriptor;
 use crate::native_effects::synthetic;
 use viewer_gpu::test_support::gpu;
-use content_reader_layers::test_support::gui::*;
+use crate::test_support::gui::*;
 #[cfg(test)]
 use viewer_gpu::test_support::serial;
 use content_reader_gui::gui::native::read;

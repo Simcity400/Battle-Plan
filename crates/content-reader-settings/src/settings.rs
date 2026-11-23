@@ -1,5 +1,8 @@
-use content_reader_parser::{fixed5::decimal_i32, parser::{self, Document, Item}};
-use content_reader_gui::gui::native::{Case, PersistentKey, PointAxis};
+use crate::{
+    fixed5::decimal_i32,
+    gui::native::{Case, PersistentKey, PointAxis},
+    parser::{self, Document, Item},
+};
 use std::{
     fs,
     io::{self, Read},
@@ -33,7 +36,7 @@ fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<&'a str> {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SettingsKeys(Vec<content_reader_gui::gui::native::PersistentKey>, Absent);
+pub struct SettingsKeys(Vec<crate::gui::native::PersistentKey>, Absent);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Absent(bool);
@@ -171,7 +174,7 @@ fn map_rendering_case(keyword: &str) -> Option<Case> {
 
 impl SettingsKeys {
     pub fn read(bytes: &[u8]) -> Self {
-        Self(content_reader_gui::gui::native::persistent_keys(bytes, settings_case), Absent(false))
+        Self(crate::gui::native::persistent_keys(bytes, settings_case), Absent(false))
     }
 
     pub fn absent() -> Self {
@@ -219,15 +222,15 @@ impl SettingsKeys {
     }
 
     pub fn bool_at(&self, path: &[&str]) -> Option<bool> {
-        self.stored(path, content_reader_gui::gui::native::bool_of)
+        self.stored(path, crate::gui::native::bool_of)
     }
 
     pub fn i32_at(&self, path: &[&str]) -> Option<i32> {
-        self.stored(path, |text| content_reader_parser::crt::scan_i32(text).stored())
+        self.stored(path, |text| crate::crt::scan_i32(text).stored())
     }
 
     pub fn f32_at(&self, path: &[&str]) -> Option<f32> {
-        self.stored(path, content_reader_parser::crt::scan_f32)
+        self.stored(path, crate::crt::scan_f32)
     }
 
     pub fn string_at(&self, path: &[&str]) -> Option<Vec<u8>> {
@@ -254,8 +257,8 @@ impl SettingsKeys {
         self.bool_at(&["force_pow2_textures"]).unwrap_or(false)
     }
 
-    pub fn texture_decode(&self) -> content_reader_image::native::Decode {
-        content_reader_image::native::Decode {
+    pub fn texture_decode(&self) -> crate::image::native::Decode {
+        crate::image::native::Decode {
             force_pow2_textures: self.force_pow2_textures(),
         }
     }
@@ -371,7 +374,7 @@ impl MapOptions {
             ("show_allied_plans", &mut options.allied_plans, false),
         ] {
             for key in settings.assignments(name) {
-                match content_reader_gui::gui::native::bool_of(&key.value) {
+                match crate::gui::native::bool_of(&key.value) {
                     Some(value) => *field = value != invert,
                     None => unread.push(note(name, &key.value, "the game keeps the value before it")),
                 }
@@ -384,7 +387,7 @@ impl MapOptions {
             let mut stored = Some(*field);
             let mut unknown = None;
             for key in settings.assignments(name) {
-                stored = content_reader_parser::crt::scan_i32(&key.value)
+                stored = crate::crt::scan_i32(&key.value)
                     .stored()
                     .map(|value| value.clamp(0, 1) == selects);
                 if stored.is_none() {
@@ -520,7 +523,7 @@ impl Display {
                     .iter()
                     .filter(move |key| key.keyword == Some(keyword))
             };
-            let gui_scale = match stored_in(here("gui_scale"), content_reader_parser::crt::scan_f32) {
+            let gui_scale = match stored_in(here("gui_scale"), crate::crt::scan_f32) {
                 Some(scale) if !scale.is_finite() => {
                     return Err(io::Error::other("Invalid gui_scale in game settings"));
                 }
@@ -530,10 +533,10 @@ impl Display {
             point_in(here("min_gui"), "graphics.min_gui", &mut min_gui_point)
                 .map_err(io::Error::other)?;
             fullscreen =
-                stored_in(here("fullscreen"), content_reader_gui::gui::native::bool_of).unwrap_or(fullscreen);
+                stored_in(here("fullscreen"), crate::gui::native::bool_of).unwrap_or(fullscreen);
             borderless =
-                stored_in(here("borderless"), content_reader_gui::gui::native::bool_of).unwrap_or(borderless);
-            display_index = stored_in(here("adapter"), |text| content_reader_parser::crt::scan_i32(text).stored())
+                stored_in(here("borderless"), crate::gui::native::bool_of).unwrap_or(borderless);
+            display_index = stored_in(here("adapter"), |text| crate::crt::scan_i32(text).stored())
                 .unwrap_or(display_index);
             size = pair("size", size_point, None)?;
             clamps.push(Clamp {

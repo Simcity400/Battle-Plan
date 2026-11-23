@@ -1307,7 +1307,7 @@ mod tests {
             "native-map-binding-{}.battleplan",
             uuid::Uuid::new_v4()
         ));
-        let replay = content_reader_layers::playback::tests::fixture();
+        let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
         let revision = dashboard_core::protocol::replay_revision(&path).unwrap();
         let service = Service::new(Arc::new(|_| true)).unwrap();
@@ -1378,7 +1378,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let away = path.with_extension("away");
-        let replay = content_reader_layers::playback::tests::fixture();
+        let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
         let revision = dashboard_core::protocol::replay_revision(&path).unwrap();
         std::fs::rename(&path, &away).unwrap();

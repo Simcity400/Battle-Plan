@@ -15,6 +15,7 @@ content-reader-layers.workspace = true
 content-reader-script.workspace = true
 
 [dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-support"] }
 content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
@@ -32,3 +33,4 @@ content-reader-gfx = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-smallvec = { workspace = true }

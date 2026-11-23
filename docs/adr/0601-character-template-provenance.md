@@ -8,4 +8,4 @@ Within one template, apply fields in order. A scalar portrait supplies the large
 
 Use ordered keyword dispatch for leader and scientist fields. Unit-leader and scientist fields can consume an object even from a scalar, so following tokens can belong to that role. A later role replaces an earlier one, and repeated visibility blocks within a role append to its AND conjunction. Preserve refusal for a visibility payload the reader cannot follow. Scientist visibility uses the origin of its last visible block separately from any effect origin. An officer-corps idea group listed by the content define supplies a template under its idea key, with a default slot from the group, a default name from the entry, and a small army portrait derived from that name. Reuse the same advisor field application, then set the idea token back to the entry key.
 
-[Character reader and template projections](../../crates/content-reader-core/src/characters.rs)
+[Character reader and template projections](../../crates/content-reader-key-names/src/characters.rs)

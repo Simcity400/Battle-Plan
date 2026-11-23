@@ -33,6 +33,7 @@ viewer-runtime.workspace = true
 viewer-unit-reads.workspace = true
 
 [dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 content-reader-script = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }
@@ -54,6 +55,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }

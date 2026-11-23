@@ -9035,7 +9035,7 @@ pub(crate) mod tests {
     #[test]
     fn partial_recording_notice_names_the_failure_without_diagnostics() {
         use replay::{spool::ControlRecord, spool::Record};
-        let healthy = content_reader_layers::playback::tests::fixture();
+        let healthy = crate::playback::tests::fixture();
         let partial = healthy
             .append(recorder_derive::writers(), &[vec![
                 Record::SessionStart(healthy.sessions[0].clone()),
@@ -9074,7 +9074,7 @@ pub(crate) mod tests {
     fn a_map_recording_names_its_mode_and_what_it_leaves_out() {
         use replay::{campaign::Replay, spool::Record};
         use replay_data::scope::CaptureMode;
-        let healthy = content_reader_layers::playback::tests::fixture();
+        let healthy = crate::playback::tests::fixture();
         let mut session = healthy.sessions[0].clone();
         session.capture_mode = CaptureMode::Map;
         let map = Replay::from_records(

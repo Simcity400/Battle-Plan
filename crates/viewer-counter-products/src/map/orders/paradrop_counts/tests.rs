@@ -9,8 +9,8 @@ use replay_data::{
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
-pub(in content_reader_map::map::orders) struct Fixture {
-    pub(in content_reader_map::map::orders) frame: DecodedFrame,
+pub(in crate::map::orders) struct Fixture {
+    pub(in crate::map::orders) frame: DecodedFrame,
     geometry: ProvinceGeometry,
     states: BTreeMap<u32, Vec<u32>>,
     region_by_province: BTreeMap<u32, u32>,
@@ -19,7 +19,7 @@ pub(in content_reader_map::map::orders) struct Fixture {
 }
 
 impl Fixture {
-    pub(in content_reader_map::map::orders) fn new() -> Self {
+    pub(in crate::map::orders) fn new() -> Self {
         let mut out = Self::without_unit_content();
         out.units.read(
             b"sub_units={Cargo={type=air_transport} Fighter={type=fighter}}",
@@ -106,7 +106,7 @@ impl Fixture {
         self.frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows)).into();
     }
 
-    pub(in content_reader_map::map::orders) fn context(&self) -> Context<'_> {
+    pub(in crate::map::orders) fn context(&self) -> Context<'_> {
         Context {
             frame: &self.frame,
             registry: OnceCell::new(),

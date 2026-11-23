@@ -182,14 +182,14 @@ fn capital_and_overlord_indexes_preserve_failed_country_joins() {
             ..Default::default()
         }]));
     *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![]));
-    let scopes = content_reader_script::scope::RecordedScopes::read(&f, Arc::default());
+    let scopes = crate::scope::RecordedScopes::read(&f, Arc::default());
     for _ in 0..2 {
         let (_, failures) = super::super::refusal::capture(|| {
             for name in ["capital_scope", "overlord"] {
                 let error = scopes
-                    .resolve_text(name, false, &content_reader_script::scope::Context::country(1))
+                    .resolve_text(name, false, &crate::scope::Context::country(1))
                     .unwrap_err();
-                let content_reader_script::scope::Unresolved::Missing(failure) = error else {
+                let crate::scope::Unresolved::Missing(failure) = error else {
                     panic!("missing join");
                 };
                 super::super::refusal::assert_reached(&failure);

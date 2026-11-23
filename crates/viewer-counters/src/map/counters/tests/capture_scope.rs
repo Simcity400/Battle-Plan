@@ -118,23 +118,23 @@ fn map_counters_markers_and_selections_read_only_recorded_tables() {
                 };
                 scoped(
                     "fleet choices",
-                    content_reader_map::map::naval_selection::fleet_choices(&frame, viewer).map(drop),
+                    crate::map::naval_selection::fleet_choices(&frame, viewer).map(drop),
                 );
                 scoped(
                     "fleet home bases",
-                    content_reader_map::map::naval_selection::home_bases(&frame, viewer, &fleets).map(drop),
+                    crate::map::naval_selection::home_bases(&frame, viewer, &fleets).map(drop),
                 );
                 scoped(
                     "naval mission members",
-                    content_reader_map::map::naval_selection::mission_members(&frame, viewer, 1, 1).map(drop),
+                    crate::map::naval_selection::mission_members(&frame, viewer, 1, 1).map(drop),
                 );
                 scoped(
                     "air base target",
-                    content_reader_map::map::air_selection::base_target(&frame, viewer, 1, 1).map(drop),
+                    crate::map::air_selection::base_target(&frame, viewer, 1, 1).map(drop),
                 );
                 scoped(
                     "air mission members",
-                    content_reader_map::map::air_selection::mission_members(&frame, viewer, 1, 1).map(drop),
+                    crate::map::air_selection::mission_members(&frame, viewer, 1, 1).map(drop),
                 );
             });
         },

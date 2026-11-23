@@ -1,7 +1,5 @@
 
-use content_reader_politics::faction_templates::read;
-use content_reader_script::localization_binding::FormattedLocalization;
-use content_reader_layers::test_support::Stack;
+use crate::{faction_templates::read, content_reader_script::localization_binding::FormattedLocalization, test_support::Stack};
 
 #[test]
 fn faction_templates_resolve_mod_files_merge_names_and_localisation() {

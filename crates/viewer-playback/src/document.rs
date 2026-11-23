@@ -51,7 +51,7 @@ use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{BranchId, rows::tables as row_tables};
 use replay_frame::frame::DecodedFrame;
 
-use content_reader_layers::playback::Playback;
+use crate::playback::Playback;
 use viewer_gpu::province_map::{HeightField, ProvinceMap};
 use viewer_borders::{
     border_pass::{BorderAssets, Topology, strait_quads},
@@ -261,7 +261,7 @@ pub struct Hour<'a> {
     pub(crate) product_hour: map_products::ProductHour<'a>,
     pool_limits: viewer_unit_models::equipment_graphics::LimitValues,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
-    air_rosters: Option<Arc<content_reader_layers::playback::AirRosters>>,
+    air_rosters: Option<Arc<crate::playback::AirRosters>>,
     moved_hours: Option<Arc<viewer_unit_reads::counter_move::MovedHours>>,
 }
 
@@ -3615,7 +3615,7 @@ impl<'a> Hour<'a> {
 
     pub fn with_air_rosters(
         mut self,
-        air_rosters: Option<Arc<content_reader_layers::playback::AirRosters>>,
+        air_rosters: Option<Arc<crate::playback::AirRosters>>,
     ) -> Self {
         self.air_rosters = air_rosters;
         self

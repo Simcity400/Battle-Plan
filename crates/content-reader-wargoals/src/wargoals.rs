@@ -1,8 +1,16 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
-use content_reader_layers::{ResolvedLayers, script_files};
-use content_reader_parser::{fields::invalid, parser::{self, c_string}, tokens::Token};
-use content_reader_script::{key_names::KeyNames, native::{self, Shape}};
+use content_reader_script::native::{self, Shape};
+use crate::{
+    ResolvedLayers,
+    fields::invalid,
+    key_names::KeyNames,
+    parser::{
+        self, c_string,
+    },
+    script_files,
+    tokens::Token,
+};
 use std::{collections::BTreeMap, io};
 
 #[derive(Default)]

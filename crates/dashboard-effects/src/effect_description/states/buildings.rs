@@ -309,7 +309,7 @@ impl Renderer<'_, '_, '_> {
             Some(amount) => self.scoped_value(scalar_operand(amount)?, scopes)?,
             None => 0,
         };
-        let amount = content_reader_script::triggers::fixed_round(amount) as i32;
+        let amount = crate::triggers::fixed_round(amount) as i32;
         let resource = self.resource_icon(item)?;
         let resource = format!("{}\u{13}resources_strip|{resource} ", amount.wrapping_abs());
         let state = match field(children(item), "state") {
@@ -330,7 +330,7 @@ impl Renderer<'_, '_, '_> {
             Some(days) => self.scoped_value(scalar_operand(days)?, scopes)?,
             None => 0,
         };
-        let days = content_reader_script::triggers::fixed_round(days) as i32;
+        let days = crate::triggers::fixed_round(days) as i32;
         let show = parser::read_bool_field(children(item), "show_state_in_tooltip", true);
         let key: &[u8] = match (amount > 0, days != 0, show) {
             (true, false, true) => b"EFFECT_ADD_RESOURCE",
@@ -636,7 +636,7 @@ impl Renderer<'_, '_, '_> {
             Some(level) => self.scoped_value(scalar_operand(level)?, scopes)?,
             None => default,
         };
-        Ok(content_reader_script::triggers::fixed_round(value) as i32)
+        Ok(crate::triggers::fixed_round(value) as i32)
     }
 
     fn building_province(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, String> {

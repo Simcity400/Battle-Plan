@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::key_names::KeyNames;
+use crate::key_names::KeyNames;
 
 const EQUIPMENT: Equipment<'static> = &|key| Some(matches!(key, b"convoy" | b"ship_hull_light"));
 
@@ -21,13 +21,13 @@ fn raid_reader_notes_keep_diagnostic_kinds() {
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Misread),
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
         "{notes:?}"
     );
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Unsupported),
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Unsupported),
         "{notes:?}"
     );
 }
@@ -235,7 +235,7 @@ fn scalar_selector_names_read_the_lexers_current_token() {
 #[test]
 fn launch_buildings_resolve_types_and_tags_in_database_order() {
     content_reader_script::test_game::enter();
-    let buildings = content_reader_key_names::buildings::parse(
+    let buildings = crate::buildings::parse(
         b"buildings = {
                 launcher = { tags = { launch_group } level_cap = { province_max = 1 } }
                 Silo = { level_cap = { province_max = 2 } }
@@ -317,7 +317,7 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
     assert!(catalog.uncertain[0].reason.contains("equipment tank"));
     assert_eq!(
         catalog.uncertain[0].kind,
-        content_reader_parser::DiagnosticKind::Unsupported
+        crate::DiagnosticKind::Unsupported
     );
     let block = reader::document(
         b"types = { later = { essential_equipment = { tank = { 3 } } } }",
@@ -435,7 +435,7 @@ fn a_name_declared_twice_or_thrice_is_refused_once() {
     assert_eq!(catalog.uncertain.len(), 1);
     assert_eq!(catalog.uncertain[0].name, "a");
     assert_eq!(catalog.uncertain[0].declarations.len(), 3);
-    assert_eq!(catalog.uncertain[0].kind, content_reader_parser::DiagnosticKind::Refused);
+    assert_eq!(catalog.uncertain[0].kind, crate::DiagnosticKind::Refused);
 }
 
 #[test]
@@ -555,7 +555,7 @@ fn graphics_defines(replace: &[(&str, &str)]) -> io::Result<RaidGraphicsDefines>
             assert!(source.contains(from), "{from} is not in the fixture");
             source.replace(from, to)
         });
-    let defines = content_reader_defines::defines::Defines::new().unwrap();
+    let defines = crate::defines::Defines::new().unwrap();
     defines
         .load("common/defines/raid_fixture.lua", source.as_bytes())
         .unwrap();

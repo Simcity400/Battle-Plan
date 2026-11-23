@@ -1,5 +1,5 @@
-use content_reader_parser::parser::Item;
 use crate::native::{Field, Shape};
+use content_reader_parser::parser::Item;
 
 pub fn ledger(bits: u32, item: &Item) -> u32 {
     match item.value_keyword().as_deref() {

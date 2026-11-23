@@ -82,7 +82,7 @@ fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
         Selection::State(0),
         Selection::NavalRegion(0),
     ]
-    .map(|selection| content_reader_gui::gui::window_name(selection).as_bytes())
+    .map(|selection| crate::gui::window_name(selection).as_bytes())
     .into_iter()
     .chain(crate::state_view::TEMPLATES.iter().copied())
     .chain(crate::naval_region_view::TEMPLATES.iter().copied())

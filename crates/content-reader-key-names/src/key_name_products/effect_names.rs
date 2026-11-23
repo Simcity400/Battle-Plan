@@ -13,7 +13,7 @@ pub(super) fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<(Eff
         let sub_units = if let Some(sub_units) = &names.sub_units {
             sub_units
         } else {
-            fallback = content_reader_script::sub_units::sub_units(layers)?;
+            fallback = crate::unit_leader::sub_units(layers)?;
             &fallback
         };
         let (modifiers, _) = modifier_definitions::read(layers)?;
@@ -301,25 +301,25 @@ mod tests {
         let lookup = &*product.names;
         assert!(lookup.at(content_reader_script::key_names::Point::IdeaTags).effects.equipment.is_empty());
         assert_eq!(
-            content_reader_script::modifiers::registered(b"ACTIVE_UNIT_MODIFIER", Some(&lookup)),
+            content_reader_script::modifiers::registered(b"ACTIVE_UNIT_MODIFIER", Some(lookup)),
             Some(true)
         );
         assert_eq!(
-            content_reader_script::modifiers::registered(b"Active_Script_Modifier", Some(&lookup)),
+            content_reader_script::modifiers::registered(b"Active_Script_Modifier", Some(lookup)),
             Some(true)
         );
         assert_eq!(
-            content_reader_script::modifiers::registered(b"ARMY_ATTACK_FACTOR", Some(&lookup)),
+            content_reader_script::modifiers::registered(b"ARMY_ATTACK_FACTOR", Some(lookup)),
             Some(true)
         );
         assert_eq!(
-            content_reader_script::modifiers::registered(b"absent_modifier", Some(&lookup)),
+            content_reader_script::modifiers::registered(b"absent_modifier", Some(lookup)),
             Some(false)
         );
         assert_eq!(
             content_reader_script::modifiers::registered(
                 b"ACTIVE_UNIT_MODIFIER",
-                Some(&lookup.at(super::super::Point::IdeaTags))
+                Some(&lookup.at(content_reader_script::key_names::Point::IdeaTags))
             ),
             Some(false)
         );

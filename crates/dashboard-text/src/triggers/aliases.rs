@@ -1,4 +1,4 @@
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 
 use content_reader_key_names::tag_aliases::{TagAlias, VariableKey};
 use std::{cell::RefCell, rc::Rc};
@@ -180,7 +180,7 @@ impl Evaluator<'_, '_> {
                 .collect());
         }
         if alias.original_tag_assignments > 1 {
-            return Err(content_reader_script::triggers::refusal::refused(format!(
+            return Err(crate::triggers::refusal::refused(format!(
                 "it assigns original_tag {} times, and the country specifier's state across assignments is not replayed",
                 alias.original_tag_assignments
             )));

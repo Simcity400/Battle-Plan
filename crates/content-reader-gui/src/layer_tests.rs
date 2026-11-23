@@ -1,6 +1,12 @@
-use std::{fs, collections::BTreeSet};
-use content_reader_layers::{ResolvedLayers, content::fixtures::{raw_zip, archive_layer, folder_of}};
-use content_reader_layers::content::visual::{apply, fixtures::{Machine, pick, never}};
+use content_reader_layers::content::visual::{
+    apply,
+    fixtures::{Machine, never, pick},
+};
+use content_reader_layers::{
+    ResolvedLayers,
+    content::fixtures::{archive_layer, folder_of, raw_zip},
+};
+use std::{collections::BTreeSet, fs};
 
 #[test]
 fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
@@ -33,7 +39,8 @@ fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
         ]),
     )
     .unwrap();
-    let layers = ResolvedLayers::from_test_layers(vec![archive_layer("mod", &archive, &[])]).unwrap();
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("mod", &archive, &[])]).unwrap();
     let listed = layers.listed_layer_paths(b"interface/").unwrap();
     assert!(listed.contains(b"interface/\xE9t\xE9.gui".as_slice()));
     assert!(listed.contains(b"interface/sub/\x80.gfx".as_slice()));
@@ -88,7 +95,8 @@ fn bootstrap_files_open_by_their_literal_paths() {
         ]),
     )
     .unwrap();
-    let archived = ResolvedLayers::from_test_layers(vec![archive_layer("mod", &archive, &[])]).unwrap();
+    let archived =
+        ResolvedLayers::from_test_layers(vec![archive_layer("mod", &archive, &[])]).unwrap();
     let foldered = ResolvedLayers::from_test_layers(vec![folder_of("mod", &folder, &[])]).unwrap();
     let labels = |layers: &ResolvedLayers| -> Vec<String> {
         crate::gui::native::read_layers(layers)

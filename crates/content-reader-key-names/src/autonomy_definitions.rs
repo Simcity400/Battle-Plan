@@ -1,6 +1,11 @@
-use std::io;
 use content_reader_parser::{fields::invalid, parser::Item};
-use content_reader_script::{idea_fields, key_names::KeyNames, modifiers, native::{self, Shape}};
+use content_reader_script::{
+    idea_fields,
+    key_names::KeyNames,
+    modifiers,
+    native::{self, Shape},
+};
+use std::io;
 
 pub fn read_definitions(input: &[u8], names: &KeyNames) -> (Vec<Item>, Option<String>) {
     #[derive(Clone, Copy)]

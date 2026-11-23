@@ -1,5 +1,5 @@
 use super::super::*;
-use content_reader_script::triggers::Scope;
+use crate::triggers::Scope;
 
 #[cfg(test)]
 mod tests;

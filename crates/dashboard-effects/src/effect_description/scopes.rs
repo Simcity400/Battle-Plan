@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::{Eval, Scope};
+use crate::triggers::{Eval, Scope};
 use content_reader_script::scope::{self, Scope as Parsed};
 use replay_data::rows::{
     CountryCounterInputRow, CountryRow, DivisionRow, DivisionStatusRow, FactionMemberRow,
@@ -244,7 +244,7 @@ impl Renderer<'_, '_, '_> {
             ));
             at
         };
-        content_reader_script::triggers::event_scopes::project(&self.graph.borrow(), at)
+        crate::triggers::event_scopes::project(&self.graph.borrow(), at)
             .map_err(|why| why.to_string())
     }
 
@@ -402,7 +402,7 @@ impl Renderer<'_, '_, '_> {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => {
                 Ok((country > 0).then_some(country))
             }
-            Scope::State(state) if state != 0 && state != content_reader_script::triggers::NULL_STATE => {
+            Scope::State(state) if state != 0 && state != crate::triggers::NULL_STATE => {
                 let state = self
                     .context
                     .world()?

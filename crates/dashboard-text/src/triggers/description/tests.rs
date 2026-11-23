@@ -1,6 +1,8 @@
 use super::*;
-use crate::catalogue::tests::folder_catalogue;
-use content_reader_script::triggers::{Combat, ContentFacts, Eval, World};
+use crate::{
+    catalogue::tests::folder_catalogue,
+    triggers::{Combat, ContentFacts, Eval, World},
+};
 use content_reader_script::trigger_keys::TriggerNames;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
@@ -15,7 +17,7 @@ struct Side {
 }
 
 impl Combat for Side {
-    fn country(&self) -> Result<u32, content_reader_script::triggers::Failure> {
+    fn country(&self) -> Result<u32, crate::triggers::Failure> {
         Ok(0)
     }
 
@@ -45,7 +47,7 @@ impl Combat for Side {
         }
     }
 
-    fn category_share(&self, _: u64) -> Result<i64, content_reader_script::triggers::Failure> {
+    fn category_share(&self, _: u64) -> Result<i64, crate::triggers::Failure> {
         Err("no category operand in fixture".into())
     }
 }
@@ -85,7 +87,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
     ]);
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
-    let mut frame = content_reader_script::scope::tests::frame();
+    let mut frame = crate::scope::tests::frame();
     for id in TableId::ALL {
         if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
             *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
@@ -97,7 +99,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
-    let roles = content_reader_script::triggers::LeaderRoles::new(
+    let roles = crate::triggers::LeaderRoles::new(
         content_reader_key_names::characters::leader_templates(&content.layers.layers).unwrap(),
     );
     let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
@@ -321,7 +323,7 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
     let content = crate::scripted_text::ScriptedContent::read(Arc::new(resolved), String::new())
         .unwrap();
     content.set_synthetic_environment(Default::default());
-    let mut frame = content_reader_script::scope::tests::frame();
+    let mut frame = crate::scope::tests::frame();
     for id in TableId::ALL {
         if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
             *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
@@ -342,7 +344,7 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
-    let roles = content_reader_script::triggers::LeaderRoles::new(Default::default());
+    let roles = crate::triggers::LeaderRoles::new(Default::default());
     let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
     facts.leader_roles = Ok(&roles);
     let world = World::read(&frame, facts);

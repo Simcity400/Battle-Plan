@@ -2,10 +2,15 @@ use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{collections::BTreeMap, io};
 
-use content_reader_layers::{ResolvedLayers, script_files};
-use content_reader_military::combat_tactics;
-use content_reader_script::{key_names::KeyNames, native::{self, Kind, Misread, Shape}};
-use content_reader_parser::parser::{self, Item};
+use content_reader_script::native::{self, Kind, Misread, Shape};
+use crate::{
+    ResolvedLayers,
+    key_names::KeyNames,
+    parser::{
+        self, Item,
+    },
+    script_files,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
@@ -72,7 +77,7 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                     (
                         entries - 1,
                         Misread {
-                            kind: content_reader_parser::DiagnosticKind::Unsettled,
+                            kind: crate::DiagnosticKind::Unsettled,
                             count: None,
                             line: field.key.line,
                             what: "a random list member's `localization_key` block, whose bound localisation reader is unsupported".into(),
@@ -131,7 +136,7 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Text {
     pub value: Option<TextValue>,
-    pub trigger: content_reader_script::triggers::Triggers,
+    pub trigger: crate::triggers::Triggers,
     pub trigger_present: bool,
 }
 
@@ -167,7 +172,7 @@ fn random_list(item: &Item) -> RandomList {
         {
             let fields = field.value.items().unwrap_or_default();
             list.members.push(RandomMember {
-                weight: i64::from(content_reader_parser::fixed5::decimal_i32(field.key.as_deref().unwrap()))
+                weight: i64::from(crate::fixed5::decimal_i32(field.key.as_deref().unwrap()))
                     * 100_000,
                 modifiers: fields
                     .iter()
@@ -197,7 +202,7 @@ fn entry(item: &Item) -> Entry {
         .filter(|f| f.keyword_is("text"))
     {
         let mut value = None;
-        let mut trigger = content_reader_script::triggers::Triggers::default();
+        let mut trigger = crate::triggers::Triggers::default();
         let mut trigger_present = false;
         for field in text.value.items().unwrap_or_default() {
             if field.keyword_is("localization_key") && value.is_none() {
@@ -208,7 +213,7 @@ fn entry(item: &Item) -> Entry {
                 value = Some(TextValue::RandomList(random_list(field)));
             } else if field.keyword_is("trigger") {
                 trigger_present = true;
-                trigger = content_reader_script::triggers::body(&field.value).unwrap_or_default();
+                trigger = crate::triggers::body(&field.value).unwrap_or_default();
             }
         }
         texts.push(Text {
@@ -224,7 +229,7 @@ fn entry(item: &Item) -> Entry {
 pub struct Names {
     pub entries: BTreeMap<Vec<u8>, Entry>,
     pub unknown: Vec<String>,
-    pub warnings: Vec<content_reader_parser::Diagnostic>,
+    pub warnings: Vec<crate::Diagnostic>,
     defined_in: BTreeMap<Vec<u8>, usize>,
     unknown_in: Vec<usize>,
 }
@@ -263,7 +268,7 @@ fn read_files<B: AsRef<[u8]>>(files: &[(B, String)], key_names: &KeyNames) -> Na
         }));
         if let Some(unknown) = &file.unknown {
             let unknown = format!("{path} is unknown from {unknown}");
-            names.warnings.push((content_reader_parser::DiagnosticKind::Unsettled, format!(
+            names.warnings.push((crate::DiagnosticKind::Unsettled, format!(
                 "Scripted localisation in {unknown}; a name defined in the rest of it is unknown."
             )));
             names.unknown.push(unknown);
@@ -293,7 +298,7 @@ mod tests {
             names
                 .warnings
                 .iter()
-                .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Unsettled),
+                .any(|(kind, _)| *kind == crate::DiagnosticKind::Unsettled),
             "{:?}",
             names.warnings
         );

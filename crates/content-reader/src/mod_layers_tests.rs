@@ -1,5 +1,5 @@
 
-use content_reader_layers::test_support::Stack;
+use crate::test_support::Stack;
 
 #[test]
 fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
@@ -46,7 +46,7 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
         "idea_categories = { nested_category = { slot = nested_slot } }",
     );
     let layers = stack.layers(&[]);
-    let (content, _, warnings) = content_reader_politics::ideas::read(&layers, &[]).unwrap();
+    let (content, _, warnings) = crate::ideas::read(&layers, &[]).unwrap();
     let names: Vec<_> = content
         .tags
         .categories()
@@ -109,7 +109,7 @@ fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() 
         "ideologies = { technocracy = { types = { futurism = { } } color = { 12 200 180 } } \
          mystic = { color = 16711680 } }",
     );
-    let (added, warnings) = content_reader_key_names::ideologies::read(&stack.layers(&[])).unwrap();
+    let (added, warnings) = crate::ideologies::read(&stack.layers(&[])).unwrap();
     assert_eq!(
         added
             .groups()
@@ -134,7 +134,7 @@ fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() 
         "technocracy"
     );
     assert!(warnings.is_empty(), "{warnings:?}");
-    let (replaced, _) = content_reader_key_names::ideologies::read(&stack.layers(&["common/ideologies"])).unwrap();
+    let (replaced, _) = crate::ideologies::read(&stack.layers(&["common/ideologies"])).unwrap();
     assert!(replaced.get("democratic").unwrap().is_none());
     assert!(replaced.get("technocracy").unwrap().is_some());
 }
@@ -153,7 +153,7 @@ fn every_portrait_role_the_engine_accepts_is_read_and_others_are_refused_by_name
            MOD_adviser = { advisor = { slot = political_advisor } } }",
     );
     let (characters, warnings) =
-        content_reader_key_names::characters::read(&stack.layers(&[]), Default::default()).unwrap();
+        crate::characters::read(&stack.layers(&[]), Default::default()).unwrap();
     let small = |token: &str, role: &str| {
         characters
             .portraits(token)
@@ -164,15 +164,15 @@ fn every_portrait_role_the_engine_accepts_is_read_and_others_are_refused_by_name
     };
     assert_eq!(
         small("MOD_pilot", "air"),
-        Some(content_reader_key_names::characters::Authored::Asset("GFX_pilot_small".into()))
+        Some(crate::characters::Authored::Asset("GFX_pilot_small".into()))
     );
     assert_eq!(
         small("MOD_spy", "operative"),
-        Some(content_reader_key_names::characters::Authored::Asset("GFX_spy_small".into()))
+        Some(crate::characters::Authored::Asset("GFX_spy_small".into()))
     );
     assert_eq!(
         small("MOD_scholar", "scientist"),
-        Some(content_reader_key_names::characters::Authored::Asset(
+        Some(crate::characters::Authored::Asset(
             "GFX_scholar_small".into()
         ))
     );
@@ -274,7 +274,7 @@ fn a_tree_unreadable_sprite_file_keeps_its_native_prefix_and_later_replacements(
     let broken = "spriteTypes = { spriteType = { name = GFX_idea_x texturefile = gfx/interface/mod_x.dds } \
                   spriteType = { name = \"GFX_idea_z\" texturefile = gfx/interface/mod_z.dds } } } \
                   spriteTypes = { spriteType = { name = GFX_other } }";
-    assert!(content_reader_parser::parser::parse(broken.as_bytes()).is_err());
+    assert!(crate::parser::parse(broken.as_bytes()).is_err());
     stack.write(&addon, "interface/mod.gfx", broken);
     stack.write(
         &addon,
@@ -311,7 +311,7 @@ fn a_mod_resource_takes_its_frame_through_a_file_variable() {
         "common/resources/mod_resources.txt",
         "@ore_frame = 7 resources = { mod_ore = { icon_frame = @ore_frame } mod_gas = { icon_frame = @missing } }",
     );
-    let (resources, warnings) = content_reader_key_names::resources::read(&stack.layers(&[])).unwrap();
+    let (resources, warnings) = crate::resources::read(&stack.layers(&[])).unwrap();
     assert_eq!(
         resources
             .declarations
@@ -330,8 +330,8 @@ fn a_mod_resource_takes_its_frame_through_a_file_variable() {
 
 fn resource_icon(stack: &Stack) -> (std::io::Result<String>, Vec<String>) {
     let mut warnings = Vec::new();
-    let sprite = content_reader_gui::gui::native::window_button_sprite(
-        &content_reader_gui::gui::native::read_layers(&stack.layers(&[])).unwrap(),
+    let sprite = crate::gui::native::window_button_sprite(
+        &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
         "resources_info_entry",
         "resources_icon",
         &mut warnings,
@@ -376,7 +376,7 @@ fn a_gui_window_is_found_in_whichever_file_declares_it_and_a_later_file_replaces
          buttonType = { name = resources_icon spriteType = GFX_load_screen } } }",
     );
     assert_eq!(
-        content_reader_gui::gui::native::read_layers(&stack.layers(&[]))
+        crate::gui::native::read_layers(&stack.layers(&[]))
             .unwrap()
             .files[0]
             .0,
@@ -499,8 +499,8 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
     );
     let flag = |stack: &Stack| {
         let mut warnings = Vec::new();
-        let sprite = content_reader_gui::gui::native::window_button_sprite(
-            &content_reader_gui::gui::native::read_layers(&stack.layers(&[])).unwrap(),
+        let sprite = crate::gui::native::window_button_sprite(
+            &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
             "topbar",
             "player_flag",
             &mut warnings,
@@ -516,7 +516,7 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
     assert_eq!(flag(&stack).0.unwrap(), "GFX_mod_shield");
     let broken = "guiTypes = { containerWindowType = { name = topbar } } } \
                   guiTypes = { containerWindowType = { name = other } }";
-    assert!(content_reader_parser::parser::parse(broken.as_bytes()).is_err());
+    assert!(crate::parser::parse(broken.as_bytes()).is_err());
     stack.write(&stack.addon(), "interface/zz_mod.gui", broken);
     let (sprite, warnings) = flag(&stack);
     let error = sprite.unwrap_err().to_string();
@@ -571,8 +571,8 @@ fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
          iconType = { name = player_flag spriteType = GFX_mod_icon } }",
     );
     let flag = |stack: &Stack| {
-        content_reader_gui::gui::native::window_button_sprite(
-            &content_reader_gui::gui::native::read_layers(&stack.layers(&[])).unwrap(),
+        crate::gui::native::window_button_sprite(
+            &crate::gui::native::read_layers(&stack.layers(&[])).unwrap(),
             "topbar",
             "player_flag",
             &mut Vec::new(),
@@ -667,13 +667,13 @@ fn unrelated_gui_refusals_do_not_reach_a_window_lookup() {
         "guiTypes = { containerWindowType = { name = other \
          extendedScrollbarType = { name = scroll background = { parent = missing } } } }",
     );
-    let guis = content_reader_gui::gui::native::read_layers(&stack.layers(&[])).unwrap();
+    let guis = crate::gui::native::read_layers(&stack.layers(&[])).unwrap();
     let unrelated = guis.template("other").unwrap().subtree_refusals();
     assert!(!unrelated.is_empty());
     assert!(
         unrelated
             .iter()
-            .all(|refusal| refusal.cause != content_reader_gui::gui::native::Cause::Unaligned)
+            .all(|refusal| refusal.cause != crate::gui::native::Cause::Unaligned)
     );
     let (sprite, warnings) = resource_icon(&stack);
     assert_eq!(sprite.unwrap(), "GFX_kept");
@@ -696,8 +696,8 @@ fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
         stack.write(&stack.addon(), path, &text);
     }
     let layers = stack.layers(&[]);
-    let (_, resource_notes) = content_reader_key_names::resources::read(&layers).unwrap();
-    let (_, definition_notes) = content_reader_key_names::modifier_definitions::read(&layers).unwrap();
+    let (_, resource_notes) = crate::resources::read(&layers).unwrap();
+    let (_, definition_notes) = crate::modifier_definitions::read(&layers).unwrap();
     for notes in [resource_notes, definition_notes] {
         assert!(!notes.is_empty());
         assert!(
@@ -718,8 +718,8 @@ fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
     )
     .unwrap();
     let layers = stack.layers(&[]);
-    let (_, resource_notes) = content_reader_key_names::resources::read(&layers).unwrap();
-    let (_, definition_notes) = content_reader_key_names::modifier_definitions::read(&layers).unwrap();
+    let (_, resource_notes) = crate::resources::read(&layers).unwrap();
+    let (_, definition_notes) = crate::modifier_definitions::read(&layers).unwrap();
     for (notes, key) in [
         (resource_notes, "icon_frame"),
         (definition_notes, "precision"),
@@ -748,11 +748,11 @@ fn a_mod_may_blank_a_base_building_file() {
         "buildings = { mod_removed = { max_level = 1 } }",
     );
     stack.write(&stack.addon(), "common/buildings/01_extra.txt", "");
-    let buildings = content_reader_key_names::buildings::read(&stack.layers(&[])).unwrap();
+    let buildings = crate::buildings::read(&stack.layers(&[])).unwrap();
     assert!(buildings.types.contains_key("infrastructure"));
     assert!(!buildings.types.contains_key("mod_removed"));
     assert!(
-        content_reader_key_names::buildings::parse(b"", &content_reader_script::key_names::KeyNames::default())
+        crate::buildings::parse(b"", &crate::key_names::KeyNames::default())
             .unwrap()
             .types
             .is_empty()
@@ -827,7 +827,7 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     );
     let layers = stack.layers(&[]);
 
-    let (ideas, _, warnings) = content_reader_politics::ideas::read(&layers, &[]).unwrap();
+    let (ideas, _, warnings) = crate::ideas::read(&layers, &[]).unwrap();
     assert_eq!(
         ideas.tags.resolve("economy").unwrap().unwrap().slots,
         ["economy"]
@@ -835,7 +835,7 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     assert!(ideas.tags.resolve("kept").unwrap().is_some());
     assert!(!warnings.is_empty(), "{warnings:?}");
 
-    let (ideologies, warnings) = content_reader_key_names::ideologies::read(&layers).unwrap();
+    let (ideologies, warnings) = crate::ideologies::read(&layers).unwrap();
     assert_eq!(
         ideologies.get("democratic").unwrap().unwrap().color,
         Ok([0.0, 0.0, 1.0, 1.0])
@@ -843,26 +843,26 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     assert!(ideologies.get("kept").unwrap().is_some());
     assert!(!warnings.is_empty(), "{warnings:?}");
 
-    let (traits, warnings) = content_reader_military::leader_traits::read(&layers).unwrap();
+    let (traits, warnings) = crate::leader_traits::read(&layers).unwrap();
     assert_eq!(
         traits.get("tough").unwrap().unwrap().modifiers.values[0].value,
         10_000
     );
     assert!(!warnings.is_empty(), "{warnings:?}");
 
-    let (definitions, warnings) = content_reader_key_names::modifier_definitions::read(&layers).unwrap();
+    let (definitions, warnings) = crate::modifier_definitions::read(&layers).unwrap();
     assert_eq!(definitions.get("mod_speed").unwrap().precision, 1);
     assert!(!warnings.is_empty(), "{warnings:?}");
 
-    let (characters, warnings) = content_reader_key_names::characters::read(&layers, Default::default()).unwrap();
+    let (characters, warnings) = crate::characters::read(&layers, Default::default()).unwrap();
     assert!(matches!(
         characters.portraits("MOD_hero").unwrap().unwrap()
             [&("civilian".to_owned(), "small".to_owned())],
-        content_reader_key_names::characters::Authored::Ambiguous(_)
+        crate::characters::Authored::Ambiguous(_)
     ));
     assert!(!warnings.is_empty(), "{warnings:?}");
 
-    let (resources, warnings) = content_reader_key_names::resources::read(&layers).unwrap();
+    let (resources, warnings) = crate::resources::read(&layers).unwrap();
     assert_eq!(
         resources
             .declarations
@@ -877,7 +877,7 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
         "common/resources/zzz_later.txt",
         "resources = { oil = { icon_frame = 5 } }",
     );
-    let (resources, _) = content_reader_key_names::resources::read(&stack.layers(&[])).unwrap();
+    let (resources, _) = crate::resources::read(&stack.layers(&[])).unwrap();
     assert_eq!(
         resources
             .declarations
@@ -902,18 +902,18 @@ fn name_reader_kinds_follow_logged_fields() {
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Logged)
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Logged)
     );
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Misread)
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread)
     );
     let groups = crate::raids::names::Groups::read(&layers).unwrap();
     assert!(
         groups
             .warnings
             .iter()
-            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Logged)
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Logged)
     );
 }

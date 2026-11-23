@@ -1,7 +1,13 @@
-use std::{fs, io, sync::Arc};
+use content_reader_layers::content::visual::{
+    apply,
+    fixtures::{Machine, never, pick},
+};
+use content_reader_layers::{
+    ResolvedLayers,
+    content::{Generation, LayerPath, ReadOutcome, fixtures::overlay_folders},
+};
 use sha2::{Digest, Sha256};
-use content_reader_layers::{ResolvedLayers, content::{Generation, LayerPath, ReadOutcome, fixtures::overlay_folders}};
-use content_reader_layers::content::visual::{apply, fixtures::{Machine, pick, never}};
+use std::{fs, io, sync::Arc};
 
 #[test]
 fn warm_recorded_projection_replays_reads_to_new_traced_readers_and_parent_products() {
@@ -249,8 +255,8 @@ fn unscoped_defines_match_scoped_error_and_trace_order() {
     };
     let warm_log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let kept_warm = Arc::clone(&warm_log);
-    let warm_traced = build_stack()
-        .with_read_trace(Arc::new(move |read| kept_warm.lock().unwrap().push(read)));
+    let warm_traced =
+        build_stack().with_read_trace(Arc::new(move |read| kept_warm.lock().unwrap().push(read)));
     assert_eq!(
         crate::defines::read(&warm_traced)
             .unwrap()
@@ -278,7 +284,10 @@ fn unscoped_defines_match_scoped_error_and_trace_order() {
         .collect();
     assert_eq!(cold_err, scoped_err);
     assert_eq!(warm_err, scoped_err);
-    assert!(scoped_err.contains("common/defines/00_first.lua"), "{scoped_err}");
+    assert!(
+        scoped_err.contains("common/defines/00_first.lua"),
+        "{scoped_err}"
+    );
     assert_eq!(scoped_paths, vec![b"common/defines/00_first.lua".to_vec()]);
     assert_eq!(cold_paths, scoped_paths);
     assert_eq!(warm_paths, scoped_paths);

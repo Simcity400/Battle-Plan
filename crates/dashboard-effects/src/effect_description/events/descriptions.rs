@@ -80,7 +80,7 @@ impl Renderer<'_, '_, '_> {
             .map(|operand| self.scoped_value(operand, scopes))
             .transpose()?
             .unwrap_or(0);
-        let days = content_reader_script::triggers::fixed_round(amount) as i32;
+        let days = crate::triggers::fixed_round(amount) as i32;
         if days == 0 {
             return Ok(String::new());
         }

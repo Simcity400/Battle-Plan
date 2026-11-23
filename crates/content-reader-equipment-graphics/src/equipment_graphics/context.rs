@@ -1,14 +1,17 @@
+use content_reader_script::native::{self, Shape};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
 
-use content_reader_layers::ResolvedLayers;
-use content_reader_map::map::ProvinceDefinition;
-use content_reader_script::native::{self, Shape};
-use crate::states;
-use content_reader_key_names::terrain::DefaultMap;
+use crate::{
+    ResolvedLayers,
+    map::ProvinceDefinition,
+
+    states,
+    terrain::DefaultMap,
+};
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -45,13 +48,13 @@ impl Content {
         layers: &ResolvedLayers,
         default_map: &DefaultMap,
         provinces: &BTreeMap<u32, ProvinceDefinition>,
-        defines: &content_reader_defines::defines::Defines,
+        defines: &crate::defines::Defines,
     ) -> io::Result<Self> {
         let continents = continent_names(&layers.read(&default_map.file("continent")?)?)?;
         let coastal: BTreeSet<u32> =
-            content_reader_map::map::definition_rows(&layers.read(&default_map.file("definitions")?)?)?
+            crate::map::definition_rows(&layers.read(&default_map.file("definitions")?)?)?
                 .into_iter()
-                .filter(|row| row.coastal && row.kind() != Some(content_reader_map::map::ProvinceKind::Sea))
+                .filter(|row| row.coastal && row.kind() != Some(crate::map::ProvinceKind::Sea))
                 .map(|row| u32::from(row.id))
                 .collect();
         Ok(Self {
@@ -431,12 +434,12 @@ mod tests {
             std::fs::write(file, text).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let default_map = content_reader_key_names::terrain::read_default_map(&layers).unwrap();
-        let provinces = content_reader_map::map::parse_definitions(
+        let default_map = crate::terrain::read_default_map(&layers).unwrap();
+        let provinces = crate::map::parse_definitions(
             &layers.read(&default_map.file("definitions").unwrap()).unwrap(),
         )
         .unwrap();
-        let defines = content_reader_defines::defines::read(&layers).unwrap();
+        let defines = crate::defines::read(&layers).unwrap();
         let loaded = Content::load(&layers, &default_map, &provinces, &defines).unwrap();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(

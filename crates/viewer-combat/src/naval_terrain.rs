@@ -87,7 +87,7 @@ impl Content {
         defines: &Defines,
         terrain: Arc<TerrainDefinitions>,
     ) -> io::Result<Self> {
-        let sub_units = content_reader_script::sub_units::sub_units(layers)?;
+        let sub_units = content_reader_key_names::unit_leader::sub_units(layers)?;
         let mut ship_classes = Vec::new();
         for index in 1.. {
             let Some(name) = sub_units.name(index) else {

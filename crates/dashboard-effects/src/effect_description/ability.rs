@@ -23,7 +23,7 @@ pub fn ability_description(
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let selected = content_reader_script::triggers::event_scopes::project(scopes, 0);
+    let selected = crate::triggers::event_scopes::project(scopes, 0);
     let mut text = String::new();
     for (label, modifiers) in ["country", "leader", "unit"]
         .into_iter()

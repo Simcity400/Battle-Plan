@@ -1,6 +1,6 @@
 
 use super::{ActivityDefines, CounterDefines, IntelDefines, OperationState};
-use content_reader_map::map::raids::tooltips::intel as counter;
+use crate::map::raids::tooltips::intel as counter;
 use replay_data::{rows::OperationRow, rows::RaidIntelInputRow};
 use viewer_native_gui::native_text::COLOR;
 

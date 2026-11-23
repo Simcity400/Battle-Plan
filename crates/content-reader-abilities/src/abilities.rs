@@ -1,11 +1,16 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
-use content_reader_script::key_names::KeyNames;
+use crate::key_names::KeyNames;
 use std::{collections::BTreeMap, io};
 
-use content_reader_layers::ResolvedLayers;
-use content_reader_parser::{fields::{block, invalid}, parser::Item};
-use content_reader_script::{modifiers::{self, Modifiers}, native::{self, Shape}, scope::ScopeKind};
+use content_reader_script::native::{self, Shape};
+use crate::{
+    ResolvedLayers,
+    fields::{block, invalid},
+    modifiers::{self, Modifiers},
+    parser::Item,
+    scope::ScopeKind,
+};
 
 const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 
@@ -13,7 +18,7 @@ const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 pub struct AbilitySprites {
     pub by_token: BTreeMap<Vec<u8>, String>,
     pub definitions: BTreeMap<Vec<u8>, Definition>,
-    pub warnings: Vec<content_reader_parser::Diagnostic>,
+    pub warnings: Vec<crate::Diagnostic>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -21,7 +26,7 @@ pub struct Definition {
     pub name: Vec<u8>,
     pub description: Vec<u8>,
     pub modifiers: [Modifiers; 3],
-    pub adjusters: Vec<content_reader_key_names::unit_leader::Adjuster>,
+    pub adjusters: Vec<crate::unit_leader::Adjuster>,
     pub effects: [Vec<Item>; 3],
 }
 
@@ -48,7 +53,7 @@ fn apply_with_terrain(
     sprites: &mut AbilitySprites,
     terrains: &BTreeMap<Vec<u8>, Vec<u8>>,
     names: &KeyNames,
-) -> io::Result<Vec<content_reader_parser::Diagnostic>> {
+) -> io::Result<Vec<crate::Diagnostic>> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -152,7 +157,7 @@ fn apply_with_terrain(
         .filter(|item| item.keyword_is("ability"))
     {
         for item in block(&root.value, "ability")? {
-            let token = content_reader_parser::parser::c_string(
+            let token = crate::parser::c_string(
                 item.key
                     .as_deref()
                     .ok_or_else(|| invalid("ability has no token"))?,
@@ -213,7 +218,7 @@ fn apply_with_terrain(
                                     .iter()
                                     .position(|old| old.key == key)
                                     .unwrap_or_else(|| {
-                                        definition.adjusters.push(content_reader_key_names::unit_leader::Adjuster {
+                                        definition.adjusters.push(crate::unit_leader::Adjuster {
                                             key,
                                             ..Default::default()
                                         });
@@ -267,7 +272,7 @@ fn apply_with_terrain(
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
     let paths = content_reader_layers::script_files::database_paths(layers, "common/abilities/")?;
-    let terrains = content_reader_key_names::terrain::read_definitions(layers)?
+    let terrains = crate::terrain::read_definitions(layers)?
         .categories
         .into_iter()
         .map(|category| (category.name.to_ascii_lowercase(), category.name))
@@ -301,7 +306,7 @@ mod tests {
         assert!(
             notes
                 .iter()
-                .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Misread),
+                .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
             "{notes:?}"
         );
     }
@@ -464,7 +469,7 @@ mod tests {
         assert_eq!(definition.modifiers[2].values[0].value, 60_000);
         assert_eq!(
             definition.adjusters,
-            [content_reader_key_names::unit_leader::Adjuster {
+            [crate::unit_leader::Adjuster {
                 key: "SYNTHETIC".into(),
                 attack: 40_000,
                 defence: 50_000,

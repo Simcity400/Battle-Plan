@@ -1,6 +1,6 @@
 use crate::gpu_contract::device_descriptor;
 #[cfg(test)]
-use content_reader_layers::test_support::serial;
+use crate::test_support::serial;
 use content_reader_map::map::{CountryColors, ProvinceDefinition};
 
 use super::*;

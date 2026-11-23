@@ -411,8 +411,7 @@ fn observer_hit_rectangle_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_gui::lifecycle::Instance;
-    use content_reader_layers::test_support::gui;
+    use crate::{native_gui::lifecycle::Instance, test_support::gui};
 
     #[test]
     fn separated_container_backgrounds_return_individual_hit_rectangles() {

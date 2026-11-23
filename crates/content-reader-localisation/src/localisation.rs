@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use content_reader_layers::{ResolvedLayers, content::normalize_path};
+use crate::{ResolvedLayers, content::normalize_path};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -199,7 +199,7 @@ impl Localisation {
         arguments: &[(&str, Argument<'_>)],
         collect_fallbacks: bool,
     ) -> (Result<String, Unlocalised>, Vec<String>) {
-        let key = content_reader_parser::parser::c_string(key);
+        let key = crate::parser::c_string(key);
         if key.is_empty() {
             return (Ok(String::new()), Vec::new());
         }
@@ -223,7 +223,7 @@ impl Localisation {
         key: &[u8],
         arguments: &[(&str, Argument<'_>)],
     ) -> Result<Vec<u8>, Unlocalised> {
-        let key = content_reader_parser::parser::c_string(key);
+        let key = crate::parser::c_string(key);
         let output = self.output(key, arguments, false);
         match output.cause {
             Some(cause) => Err(Unlocalised {
@@ -235,7 +235,7 @@ impl Localisation {
     }
 
     pub fn requires_arguments(&self, key: &[u8], names: &[&str]) -> bool {
-        let key = content_reader_parser::parser::c_string(key);
+        let key = crate::parser::c_string(key);
         if key.is_empty() {
             return false;
         }
@@ -250,7 +250,7 @@ impl Localisation {
         arguments: &[(&str, Argument<'_>)],
         deferred: &[&str],
     ) -> Result<Result<String, Unlocalised>, usize> {
-        let key = content_reader_parser::parser::c_string(key);
+        let key = crate::parser::c_string(key);
         if key.is_empty() {
             return Ok(Ok(String::new()));
         }
@@ -343,7 +343,7 @@ impl Localisation {
             }
             return;
         };
-        let text = content_reader_parser::parser::c_string(text.as_bytes());
+        let text = crate::parser::c_string(text.as_bytes());
         let mut rest = text;
         while !rest.is_empty() {
             let Some(open) = rest.iter().position(|&byte| byte == b'$') else {
@@ -507,7 +507,7 @@ pub fn format_scripted_variable(value: i64, format: Option<&[u8]>) -> String {
             return out.finish().expect("fixed5 formatter writes only ASCII");
         }
     }
-    content_reader_parser::fixed5::fixed5_to_string(value, -1)
+    crate::fixed5::fixed5_to_string(value, -1)
 }
 
 fn argument(operand: &[u8], arguments: &[(&str, Argument<'_>)], out: &mut Output) -> bool {
@@ -670,7 +670,7 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                 Some(suffixes) => {
                     let whole = (value / 100_000) as i32;
                     if whole.wrapping_abs() < 1000 {
-                        content_reader_parser::fixed5::format_fixed5(value, false, read.precision)
+                        crate::fixed5::format_fixed5(value, false, read.precision)
                     } else {
                         scaled(whole, suffixes, read.precision)
                     }
@@ -681,7 +681,7 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                     } else {
                         value
                     };
-                    content_reader_parser::fixed5::format_fixed5(shown, read.trim, read.precision)
+                    crate::fixed5::format_fixed5(shown, read.trim, read.precision)
                 }
             };
             (Some(shown), value > 0, value < 0)

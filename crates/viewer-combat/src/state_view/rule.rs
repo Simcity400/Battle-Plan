@@ -1,7 +1,7 @@
 use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 use super::{loc, paths_named};
 use crate::binding::Bindings;
-use content_reader_layers::content::Content;
+use crate::content::Content;
 use crate::tooltips::{hover_text, set_hover};
 use content_reader_map::adjacency_rules::{AdjacencyRule, Verdict};
 use content_reader_country_names::country_names::CountryNames;

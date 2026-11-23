@@ -1,6 +1,6 @@
 use super::{entry, paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
-use content_reader_layers::content::Content;
+use crate::content::Content;
 use crate::tooltips::{hover_text, refuse_hovers, set_hover};
 use content_reader_localisation::localisation::Argument;
 use dashboard_text::table_access::TokenNames;
@@ -656,7 +656,7 @@ fn facility_scale(content: &Content) -> Result<f32, String> {
         .native_windows
         .gui_type(entry::LANDMARK.as_bytes())
         .ok_or_else(|| format!("the entry template {} is absent from the content stack", entry::LANDMARK))?;
-    let place = content_reader_gui::gui::elements(template)
+    let place = crate::gui::elements(template)
         .into_iter()
         .find(|(path, _)| path.rsplit('/').next() == Some("facility_building_button_scale"))
         .and_then(|(_, element)| element.position_type())

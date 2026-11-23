@@ -1,5 +1,9 @@
-use content_reader_gui::flags::{BackgroundPriority, FlagContent, FlagImage};
-use crate::{panel, snapshot::{self, OmissionReason, OmittedLoads, Phase, Problem, Snapshot}, targets, tray};
+use crate::{
+    flags::{BackgroundPriority, FlagContent, FlagImage},
+    panel,
+    snapshot::{self, OmissionReason, OmittedLoads, Phase, Problem, Snapshot},
+    targets, tray,
+};
 use recorder::controller::{
     self, CaptureOutcome, Control, Discovery, GameProcess, LoadedCampaign, Omission, Probe,
     Recording, Refusal, SetAside, Stage, Waiting,

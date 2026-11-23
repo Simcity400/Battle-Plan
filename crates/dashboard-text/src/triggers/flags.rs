@@ -1,4 +1,4 @@
-use content_reader_script::triggers::{Failure, refusal::refused};
+use crate::triggers::{Failure, refusal::refused};
 
 use content_reader_parser::parser::{Item, Operator};
 use std::borrow::Cow;

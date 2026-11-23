@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_map::map::division_eta::test_support::put_modifier_definitions;
+use crate::map::division_eta::test_support::put_modifier_definitions;
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
     rows::CountryRow, rows::LexicalTokenRow, rows::MovementDefines,

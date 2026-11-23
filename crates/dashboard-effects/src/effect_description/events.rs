@@ -1,7 +1,9 @@
 
 use super::*;
-use crate::scripted_text::{EventObject, EventScope, Link, random};
-use content_reader_script::triggers::{NULL_STATE, Scope};
+use crate::{
+    scripted_text::{EventObject, EventScope, Link, random},
+    triggers::{NULL_STATE, Scope},
+};
 use content_reader_politics::decisions::Decision;
 use replay_data::rows::{
     ClockRow, CountryAppearanceRow, DecisionRandomItemRow, DecisionRow, PoliticalPartyRow,
@@ -113,7 +115,7 @@ fn name_key(
 
 pub fn decision_name_key_at<'f>(
     frame: impl Into<HourFrame<'f>>,
-    recorded: &content_reader_script::scope::RecordedScopes<'_>,
+    recorded: &crate::scope::RecordedScopes<'_>,
     localisation: &Localisation,
     definition: &Decision,
     country: u32,

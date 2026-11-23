@@ -695,7 +695,7 @@ fn navy_classes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u12
     let tokens: BTreeSet<u32> = parts.iter().map(|&part| part as u32).collect();
     let spelled = literals(recording, run, hour, &tokens)?;
     let units: Option<Arc<SubUnits>> = content.catalogue.as_ref().and_then(|catalogue| {
-        match catalogue.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_script::sub_units::sub_units(&catalogue.content.layers)) {
+        match catalogue.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers)) {
             Ok(units) => {
                 warnings.extend(units.warnings().iter().cloned());
                 Some(units)

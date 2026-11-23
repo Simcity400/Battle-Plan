@@ -6,8 +6,10 @@ use std::{
 
 use content_reader_layers::kept::{Input, Table, put_bytes, put_texts};
 
-use content_reader_layers::ResolvedLayers;
-use content_reader_gui::gui::native::sprites::{self, SpriteFacts, SpriteKind, Sprites};
+use crate::{
+    ResolvedLayers,
+    gui::native::sprites::{self, SpriteFacts, SpriteKind, Sprites},
+};
 
 pub fn content_path(raw: &str) -> String {
     let mut path = String::with_capacity(raw.len());
@@ -301,7 +303,7 @@ pub fn read(layers: &ResolvedLayers) -> std::io::Result<SpriteSet> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_gui::gui::native::sprites::read_sprites;
+    use crate::gui::native::sprites::read_sprites;
 
     fn set(files: &[(&str, &[u8])]) -> SpriteSet {
         SpriteSet::new(

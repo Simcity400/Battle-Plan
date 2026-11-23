@@ -733,7 +733,7 @@ impl Product for IntelDetails {
         let subunits = catalogue
             .as_ref()
             .map_err(Clone::clone)
-            .and_then(|catalogue| content_reader_script::sub_units::sub_units(&catalogue.content.layers).map_err(|e| e.to_string()));
+            .and_then(|catalogue| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|e| e.to_string()));
         let fuel = fuel_frame(recording, stretch.run, &frame);
         project(
             &frame,

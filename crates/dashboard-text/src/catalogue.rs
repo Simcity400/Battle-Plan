@@ -2311,7 +2311,7 @@ pub mod tests {
                 "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
             ),
         ]);
-        let frame = content_reader_script::scope::tests::positive_frame();
+        let frame = crate::scope::tests::positive_frame();
         let scripted = crate::scripted_text::ScriptedText::new(
             &frame,
             &catalogue.localisation,

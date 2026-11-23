@@ -334,7 +334,7 @@ impl IconContent {
                 .as_ref()
                 .map_err(Clone::clone)?
                 .unrecorded_trigger_world()?
-                .evaluate(limit, content_reader_script::triggers::Scopes::empty())
+                .evaluate(limit, crate::triggers::Scopes::empty())
                 .decided()
         })?;
         let pools = equipment_graphics::Content::load(&layers, &names)?;
@@ -395,7 +395,7 @@ impl IconContent {
                                 })
                                 .as_ref()
                                 .map_err(Clone::clone)?
-                                .evaluate(limit, content_reader_script::triggers::Scopes::empty())
+                                .evaluate(limit, crate::triggers::Scopes::empty())
                                 .decided()
                         })
                     }))

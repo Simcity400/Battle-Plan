@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use content_reader_script::triggers::{Failure, refusal::refused};
+use crate::triggers::{Failure, refusal::refused};
 
 use content_reader_military::mio_traits::{Catalog, TraitName};
 use content_reader_parser::parser::{Item, Operator, read_bool, read_bool_field};

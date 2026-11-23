@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn a_take_over_withholds_a_changed_mod_and_keeps_facts_already_packed() {
-        let root = content_reader_layers::test_support::allocation_test_directory("take-over-changed-mod-facts");
+        let root = crate::test_support::allocation_test_directory("take-over-changed-mod-facts");
         let write = |path: &str, text: &str| {
             let path = root.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();

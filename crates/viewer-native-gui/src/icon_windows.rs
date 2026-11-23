@@ -1349,7 +1349,7 @@ fn add_notes(notes: &mut BTreeMap<String, usize>, laid: &BTreeMap<String, usize>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_layers::test_support::gui::{fixture, windows};
+    use crate::test_support::gui::{fixture, windows};
     use native_gui::Resources;
 
     const GUI: &[u8] = br#"guiTypes = { containerWindowType = { name = test_icon

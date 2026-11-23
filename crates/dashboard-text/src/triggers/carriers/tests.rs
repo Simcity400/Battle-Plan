@@ -719,21 +719,21 @@ fn named_organisations_read_their_own_size() {
     });
 }
 
-struct DetailsChanged<'a>(content_reader_script::triggers::inputs::TableChange<'a>);
+struct DetailsChanged<'a>(crate::triggers::inputs::TableChange<'a>);
 
-impl content_reader_script::triggers::inputs::TableChanges for DetailsChanged<'_> {
-    fn table(&self, table: TableId) -> content_reader_script::triggers::inputs::TableChange<'_> {
+impl crate::triggers::inputs::TableChanges for DetailsChanged<'_> {
+    fn table(&self, table: TableId) -> crate::triggers::inputs::TableChange<'_> {
         if table == TableId::IndustrialOrganisationDetails {
             self.0
         } else {
-            content_reader_script::triggers::inputs::TableChange::Same
+            crate::triggers::inputs::TableChange::Same
         }
     }
 }
 
 #[test]
 fn organisation_size_inputs_follow_that_organisation_s_size() {
-    use content_reader_script::triggers::inputs::{Key, Since, TableChange, TableRead, capture};
+    use crate::triggers::inputs::{Key, Since, TableChange, TableRead, capture};
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let size = (0..64)
@@ -761,7 +761,7 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
     );
     assert_eq!(reads[0].fields, 1 << size);
     fn confirm(
-        inputs: &content_reader_script::triggers::inputs::Inputs,
+        inputs: &crate::triggers::inputs::Inputs,
         frame: &DecodedFrame,
         change: TableChange<'_>,
     ) -> (bool, bool, usize) {
@@ -769,7 +769,7 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
         let since = Since::hour_before(frame, &changes).unwrap();
         let unchanged = inputs.unchanged(&since);
         let mut rereads = 0;
-        let confirmed = content_reader_script::triggers::inputs::reusing(|| {
+        let confirmed = crate::triggers::inputs::reusing(|| {
             with_world(frame, "", Err("none"), |world| {
                 inputs
                     .clone()
@@ -777,7 +777,7 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
                         Key::World(query) => {
                             if matches!(
                                 query,
-                                content_reader_script::triggers::world::Query::IndustrialOrganisationSize(_)
+                                crate::triggers::world::Query::IndustrialOrganisationSize(_)
                             ) {
                                 rereads += 1;
                             }

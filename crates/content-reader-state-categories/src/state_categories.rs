@@ -1,9 +1,17 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
-use content_reader_layers::{ResolvedLayers, script_files};
-use content_reader_parser::{fields::invalid, parser::c_string};
-use content_reader_script::{key_names::KeyNames, modifiers, native::{self, Shape}};
-use content_reader_key_names::ideologies::ColorReads;
+use content_reader_script::native::{self, Shape};
+use crate::{
+    ResolvedLayers,
+    fields::invalid,
+    key_names::KeyNames,
+    modifiers,
+    parser::{
+        c_string,
+    },
+    script_files,
+};
+use content_reader_script::color_reads::ColorReads;
 use std::io;
 
 #[derive(Default)]
@@ -58,7 +66,7 @@ impl Database {
         }
     }
 
-    fn read_colors(&mut self, index: usize, body: &[content_reader_parser::parser::Item]) {
+    fn read_colors(&mut self, index: usize, body: &[crate::parser::Item]) {
         for field in body.iter().filter(|field| field.keyword_is("color")) {
             self.colors[index].get_or_insert_default().read(field);
         }
@@ -77,7 +85,7 @@ impl Database {
 
 struct Parsed {
     database: Database,
-    bodies: Vec<Vec<Vec<content_reader_parser::parser::Item>>>,
+    bodies: Vec<Vec<Vec<crate::parser::Item>>>,
 }
 
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
@@ -134,7 +142,7 @@ fn parse_file(input: &[u8], names: &KeyNames) -> io::Result<Parsed> {
         return Err(invalid(format!("state categories: {cause}")));
     }
     let mut database = Database::default();
-    let mut bodies: Vec<Vec<Vec<content_reader_parser::parser::Item>>> = Vec::new();
+    let mut bodies: Vec<Vec<Vec<crate::parser::Item>>> = Vec::new();
     database
         .notes
         .extend(read.misreads.iter().map(ToString::to_string));

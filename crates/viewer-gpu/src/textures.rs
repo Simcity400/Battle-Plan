@@ -3,7 +3,7 @@ use crate::gpu_contract::device_descriptor;
 #[cfg(test)]
 use crate::gpu_contract::select_adapter;
 #[cfg(test)]
-use content_reader_layers::test_support::GPU_TESTS;
+use crate::test_support::GPU_TESTS;
 use std::io;
 
 use eframe::wgpu;

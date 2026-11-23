@@ -115,7 +115,7 @@ fn format99_country_rosters_preserve_stored_order() {
 fn state_divisions_follow_native_province_and_mixed_unit_order() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use content_reader_script::triggers::ContentFacts;
+    use crate::triggers::ContentFacts;
     let mut fixture = Fixture::new();
     let first = 39 | 1_u64 << 32;
     let second = 4713 | 1_u64 << 32;

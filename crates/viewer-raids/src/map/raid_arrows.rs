@@ -33,9 +33,9 @@ use replay_data::{rows::RaidRow, rows::RaidTargetRow, rows::TaskForceRow, rows::
 use replay_frame::frame::DecodedFrame;
 
 use {
-    content_reader_map::map::raids::RaidAssets, content_reader_map::map::raids::TypeToken,
-    content_reader_map::map::raids::category_admits, content_reader_map::map::raids::eligibility::launch_triggers,
-    content_reader_map::map::raids::script::Eval, content_reader_map::map::raids::unit_inputs::*,
+    crate::map::raids::RaidAssets, crate::map::raids::TypeToken,
+    crate::map::raids::category_admits, crate::map::raids::eligibility::launch_triggers,
+    crate::map::raids::script::Eval, crate::map::raids::unit_inputs::*,
     dashboard_text::triggers::World,
 };
 use viewer_gpu::{province_map::HeightField, ribbon_content::{ArrowType, OrderAssets, OrderField}};
@@ -458,7 +458,7 @@ fn place_unit(
     arrow_kind: RaidArrowKind,
     target: &RaidTargetRow,
     geometry: &Geometry,
-    held: &mut Vec<content_reader_map::map::raids::paths::Held>,
+    held: &mut Vec<crate::map::raids::paths::Held>,
 ) -> Result<UnitPlacement, String> {
     let frame = world.frame();
     let (travelled, speed_inputs) = plane_inputs(frame, raid)?;
@@ -604,7 +604,7 @@ fn can_execute(
         .and(|| match raid_pool(world.frame(), raid) {
             Err(reason) => Eval::unknown(reason),
             Ok(pool) => match pool_meets(kind, &pool, &|token| {
-                content_reader_map::map::raids::spelling(world, token, "equipment archetype").map(str::to_owned)
+                crate::map::raids::spelling(world, token, "equipment archetype").map(str::to_owned)
             }) {
                 Ok(met) => Eval::from_bool(met),
                 Err(reason) => Eval::unknown(reason),

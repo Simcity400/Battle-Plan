@@ -241,7 +241,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok(format!("Air parts group recorded variants under their equipment's archetype through the equipment database ({} types); totals and parts require the recorded air force tables.", units.equipment.len()))
         }
         forces::NavySize::KEY => {
-            content_reader_script::sub_units::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
+            content_reader_key_names::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
         volunteers::VolunteersExpeditionaries::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
@@ -433,7 +433,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         naval::losses::NavalLosses::KEY => Ok("No content dependency: counts are the recorded naval loss totals.".into()),
         naval::sunk::ShipsSunk::KEY | naval::sunk::ShipsSunkManifest::KEY | naval::battles::NavalBattleDetails::KEY => {
             let catalogue = content.catalogue()?;
-            content_reader_script::sub_units::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
+            content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }

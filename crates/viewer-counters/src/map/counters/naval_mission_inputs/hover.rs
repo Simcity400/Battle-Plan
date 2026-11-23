@@ -7,13 +7,13 @@ pub(super) mod patrol;
 mod source;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(in content_reader_map::map::counters) enum Control {
+pub(in crate::map::counters) enum Control {
     Button,
     Status,
     Pride,
 }
 
-pub(in content_reader_map::map::counters) type Hovers = BTreeMap<(u32, u32, Control), Prepared>;
+pub(in crate::map::counters) type Hovers = BTreeMap<(u32, u32, Control), Prepared>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Value {
@@ -37,7 +37,7 @@ enum Op {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in content_reader_map::map::counters) struct Prepared(Vec<Op>);
+pub(in crate::map::counters) struct Prepared(Vec<Op>);
 
 impl Prepared {
     pub(super) fn line(
@@ -61,7 +61,7 @@ impl Prepared {
     fn gap(&mut self, body: bool, count: usize) {
         self.0.push(Op::Gap(body, count));
     }
-    pub(in content_reader_map::map::counters) fn render(
+    pub(in crate::map::counters) fn render(
         &self,
         loc: &Localisation,
         recorded: &str,

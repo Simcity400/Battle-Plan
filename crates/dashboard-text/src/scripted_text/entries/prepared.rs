@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_script::triggers::{AuthoredStates, PreparedContent};
+use crate::triggers::{AuthoredStates, PreparedContent};
 use content_reader_layers::content::diagnostics::Once as OnceLock;
 
 #[derive(Default)]

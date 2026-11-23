@@ -6,7 +6,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
     content_reader_script::test_game::enter();
-    use content_reader_parser::DiagnosticKind;
+    use crate::DiagnosticKind;
     struct Folder(std::path::PathBuf);
     impl Drop for Folder {
         fn drop(&mut self) {
@@ -92,7 +92,7 @@ fn state_reading_note_keeps_misread_kind() {
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Misread),
+            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
         "{notes:?}"
     );
 }
@@ -126,7 +126,7 @@ fn state_field_recovery_causes_keep_offline_notes() {
         parsed
             .diagnostics
             .iter()
-            .all(|note| note.kind == content_reader_parser::DiagnosticKind::Misread)
+            .all(|note| note.kind == crate::DiagnosticKind::Misread)
     );
     assert!(parsed.diagnostics.iter().any(|note| note.cause.is_none()));
     let (_, offline) = parse_states(
@@ -896,7 +896,7 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
             b"NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 10 } }",
         )
         .unwrap();
-    let map = content_reader_map::map::load(&layers).unwrap();
+    let map = crate::map::load(&layers).unwrap();
     let (states, notes) = read(&layers, &defines, &map.definitions).unwrap();
     let state = states.get(1).unwrap();
     assert_eq!(states.source(1), Some(&script_files::ScriptPath::from("history/states/1-a.txt")));

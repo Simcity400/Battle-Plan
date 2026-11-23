@@ -75,7 +75,7 @@ fn any_original_recipient_assignment_gates_the_option_and_a_failed_read_keeps_th
 #[test]
 fn title_candidates_evaluate_all_blocks_and_refuse_only_different_eligible_keys() {
     let event = |titles: &[u8]| Event {
-        titles: content_reader_parser::parser::parse(titles).unwrap().items,
+        titles: crate::parser::parse(titles).unwrap().items,
         ..Default::default()
     };
     let settled = |key: &'static [u8]| {
@@ -121,7 +121,7 @@ fn title_candidates_evaluate_all_blocks_and_refuse_only_different_eligible_keys(
 #[test]
 fn identical_title_keys_survive_a_trigger_that_cannot_be_decided() {
     let event = Event {
-        titles: content_reader_parser::parser::parse(
+        titles: crate::parser::parse(
             b"title={key=SAME trigger={always=yes}} title={text=SAME trigger={always=no}} title={key=SAME trigger={always=yes}}",
         )
         .unwrap()
@@ -149,22 +149,22 @@ fn identical_title_keys_survive_a_trigger_that_cannot_be_decided() {
 #[test]
 fn sole_event_title_preserves_c_string_last_field_and_trigger_bypass() {
     let mut event = Event {
-        titles: content_reader_parser::parser::parse(b"title={text=FIRST text=LAST trigger={always=no}}")
+        titles: crate::parser::parse(b"title={text=FIRST text=LAST trigger={always=no}}")
             .unwrap()
             .items,
         ..Default::default()
     };
-    let content_reader_parser::parser::Value::Block(fields) = &mut event.titles[0].value else {
+    let crate::parser::Value::Block(fields) = &mut event.titles[0].value else {
         unreachable!()
     };
-    fields[1].value = content_reader_parser::parser::Value::Scalar(b"LAST\0ignored".to_vec());
+    fields[1].value = crate::parser::Value::Scalar(b"LAST\0ignored".to_vec());
     assert_eq!(event.sole_title_key(), Ok(Some(b"LAST".as_slice())));
-    event.titles = content_reader_parser::parser::parse(b"title=EMPTY").unwrap().items;
-    event.titles[0].value = content_reader_parser::parser::Value::Scalar(b"\0ignored".to_vec());
+    event.titles = crate::parser::parse(b"title=EMPTY").unwrap().items;
+    event.titles[0].value = crate::parser::Value::Scalar(b"\0ignored".to_vec());
     assert_eq!(event.sole_title_key(), Ok(None));
     event.titles.push(event.titles[0].clone());
     assert_eq!(event.sole_title_key(), Ok(None));
-    event.titles[1].value = content_reader_parser::parser::Value::Scalar(b"DIFFERENT".to_vec());
+    event.titles[1].value = crate::parser::Value::Scalar(b"DIFFERENT".to_vec());
     assert!(
         event
             .sole_title_key()

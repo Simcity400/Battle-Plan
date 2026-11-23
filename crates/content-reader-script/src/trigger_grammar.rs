@@ -1,9 +1,11 @@
-
-
 mod body_keys;
 pub mod own;
 
-use crate::{key_names::{self, KeyNames, Load}, native::{Field, Shape}, trigger_keys::{self, KeyReader, Reader}};
+use crate::{
+    key_names::{self, KeyNames, Load},
+    native::{Field, Shape},
+    trigger_keys::{self, KeyReader, Reader},
+};
 use content_reader_parser::parser::{Item, Value, c_string};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,8 +270,6 @@ pub fn normalise_trigger_body(
         }
     }
 }
-
-
 
 pub fn effect_slot(keyword: &[u8]) -> Option<usize> {
     match keyword {

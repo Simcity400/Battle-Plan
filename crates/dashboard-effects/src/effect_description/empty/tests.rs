@@ -97,7 +97,7 @@ fn empty_containers_describe_and_probe_children_once() {
         assert!(out.refusals.is_empty(), "{effect_key}: {:?}", out.refusals);
         fixture.with_renderer(&mut scopes, content, |renderer| {
             let selected =
-                content_reader_script::triggers::event_scopes::project(&renderer.graph.borrow(), 0).unwrap();
+                crate::triggers::event_scopes::project(&renderer.graph.borrow(), 0).unwrap();
             assert!(renderer.multiple(&items, selected), "{effect_key}");
             assert!(renderer.out.refusals.is_empty());
         });

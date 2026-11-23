@@ -33,8 +33,8 @@ impl Shaper<'_> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn register_non_damaged_building_level() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn register_non_damaged_building_level() {
     crate::test_game::with(|game| {
         game.trigger_at(
             0x3BE4,

@@ -237,7 +237,7 @@ impl AtHour for NavalManagement {
 }
 
 fn content_units(cat: &Catalogue, warnings: &mut Vec<String>) -> Option<Arc<SubUnits>> {
-    match cat.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_script::sub_units::sub_units(&cat.content.layers)) {
+    match cat.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_key_names::unit_leader::sub_units(&cat.content.layers)) {
         Ok(units) => {
             warnings.extend(units.warnings().iter().cloned());
             Some(units)

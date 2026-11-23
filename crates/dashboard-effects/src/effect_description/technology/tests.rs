@@ -2,7 +2,7 @@ use super::*;
 use crate::fixtures::{Folder, folder_catalogue};
 use crate::effect_description::tests::{Fixture, fresh};
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
-use content_reader_script::triggers::ContentFacts;
+use crate::triggers::ContentFacts;
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
 

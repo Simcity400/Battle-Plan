@@ -1,7 +1,5 @@
 
-use std::io;
 
-use content_reader_layers::ResolvedLayers;
 use crate::{key_names::KeyNames, native};
 use content_reader_parser::parser::{Item, Value};
 
@@ -20,13 +18,6 @@ pub fn read(text: &[u8], names: &KeyNames) -> native::Read {
         Some(names),
         &mut |node, field| shaper.shape(node, field),
     )
-}
-
-pub fn folder_files(
-    layers: &ResolvedLayers,
-    folder: &str,
-) -> io::Result<Vec<content_reader_layers::script_files::ScriptPath>> {
-    layers.directory_files(folder, ".txt")
 }
 
 #[cfg(test)]

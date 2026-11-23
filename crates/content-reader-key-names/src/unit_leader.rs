@@ -17,7 +17,7 @@ pub use sub_units::{AirWings, SubUnit, SubUnits, sub_unit_files, sub_units};
 
 use content_reader_script::sub_units::identity;
 #[cfg(test)]
-use content_reader_script::sub_units::SUB_UNIT_DIRECTORIES;
+use sub_units::SUB_UNIT_DIRECTORIES;
 
 const DIRECTORY: &str = "common/unit_leader/";
 

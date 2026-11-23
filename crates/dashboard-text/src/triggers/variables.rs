@@ -1,4 +1,4 @@
-use content_reader_script::triggers::Failure;
+use crate::triggers::Failure;
 
 fn localisation_status(
     frame: replay_frame::frame::HourFrame<'_>,
@@ -664,7 +664,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 if let Some(value) = self.builtin_variable(store, operand, scopes, index)? {
                     return Ok(Value::Raw(value));
                 }
-                return Err(content_reader_script::triggers::refusal::refused(format!(
+                return Err(crate::triggers::refusal::refused(format!(
                     "{} is a built-in game variable of {}, which the game computes before the stored keys; it is not reproduced",
                     String::from_utf8_lossy(&operand.name),
                     self.describe_store(store)

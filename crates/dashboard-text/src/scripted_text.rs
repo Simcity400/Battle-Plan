@@ -4,7 +4,7 @@ use job_priority::SpawnCarried as _;
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
 
-use content_reader_script::scope::{RecordedScopes, table_in as rows};
+use crate::scope::{RecordedScopes, table_in as rows};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::{localisation::Localisation, localisation::crt_case_text};
 use replay_data::rows::{
@@ -93,7 +93,7 @@ pub fn spelled<'r>(
         .map_err(built)
 }
 
-pub const TABLES: &[replay_data::rows::TableId] = content_reader_script::triggers::RECORDED_TABLES;
+pub const TABLES: &[replay_data::rows::TableId] = crate::triggers::RECORDED_TABLES;
 
 mod balance;
 #[cfg(any(test, feature = "test-support"))]
@@ -197,7 +197,7 @@ impl EventScope {
 
     pub(crate) fn require_random_seed(&self) -> Result<u32, String> {
         if let Some(seed) = &self.clock_seed {
-            content_reader_script::triggers::inputs::read(content_reader_script::triggers::inputs::Key::ClockSeed, seed);
+            crate::triggers::inputs::read(crate::triggers::inputs::Key::ClockSeed, seed);
         }
         match self.random_seed_refusal {
             Some(why) => Err(why.into()),
@@ -278,31 +278,31 @@ pub struct ExpansionScopes<'e, 'a> {
     scopes: std::cell::RefCell<Vec<EventScope>>,
     variables: std::cell::Cell<ScopeVariables>,
     targets: std::cell::RefCell<EventScopes>,
-    session: std::cell::RefCell<Option<content_reader_script::triggers::VariableSession>>,
+    session: std::cell::RefCell<Option<crate::triggers::VariableSession>>,
     active: std::cell::RefCell<Vec<entries::ActiveEntry>>,
     prev_distance: std::cell::RefCell<Vec<Option<usize>>>,
     valid_links: std::cell::Cell<bool>,
     fresh_depth: std::cell::Cell<usize>,
     on_large_stack: bool,
-    pub(crate) world: Option<&'e content_reader_script::triggers::World<'a>>,
-    pub(crate) combat: Option<&'e dyn content_reader_script::triggers::Combat>,
+    pub(crate) world: Option<&'e crate::triggers::World<'a>>,
+    pub(crate) combat: Option<&'e dyn crate::triggers::Combat>,
     recording: Option<std::sync::Arc<std::sync::Mutex<operands::Recording>>>,
 }
 
 impl<'e, 'a> ExpansionScopes<'e, 'a> {
-    pub fn world(&self) -> Option<&'e content_reader_script::triggers::World<'a>> {
+    pub fn world(&self) -> Option<&'e crate::triggers::World<'a>> {
         self.world
     }
 
-    pub fn combat(&self) -> Option<&'e dyn content_reader_script::triggers::Combat> {
+    pub fn combat(&self) -> Option<&'e dyn crate::triggers::Combat> {
         self.combat
     }
 
-    pub fn variable_session(&self) -> Option<content_reader_script::triggers::VariableSession> {
+    pub fn variable_session(&self) -> Option<crate::triggers::VariableSession> {
         self.session.borrow().clone()
     }
 
-    pub fn replace_variable_session(&self, session: Option<content_reader_script::triggers::VariableSession>) {
+    pub fn replace_variable_session(&self, session: Option<crate::triggers::VariableSession>) {
         self.session.replace(session);
     }
 
@@ -424,8 +424,8 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
     fn evaluator<'s>(
         &'s self,
         text: &'s ScriptedText<'a>,
-        temps: content_reader_script::triggers::Temps,
-    ) -> Result<content_reader_script::triggers::Evaluator<'s, 'a>, String> {
+        temps: crate::triggers::Temps,
+    ) -> Result<crate::triggers::Evaluator<'s, 'a>, String> {
         let world = match self.world {
             Some(world) => world,
             None => text.world()?,
@@ -433,7 +433,7 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
         let mut graph = self.targets.borrow().clone();
         graph.scopes = self.scopes.borrow().clone();
         graph.variables = self.variables.get();
-        let evaluator = content_reader_script::triggers::Evaluator::new(world, self.combat)
+        let evaluator = crate::triggers::Evaluator::new(world, self.combat)
             .with_temps(temps)
             .with_event_scopes(std::rc::Rc::new(std::cell::RefCell::new(graph)));
         Ok(match self.session.borrow().as_ref() {
@@ -630,7 +630,7 @@ pub struct ScriptedText<'a> {
     root: u32,
     viewer: Option<u32>,
     pub(crate) nato_counters: bool,
-    world: std::sync::OnceLock<Result<content_reader_script::triggers::World<'a>, String>>,
+    world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
 
 fn named(segment: &str, name: &str) -> bool {
@@ -684,97 +684,97 @@ impl ScriptedText<'_> {
     pub fn reread_text(&self, query: &TextQuery) -> u64 {
         match query {
             TextQuery::CountryName(country, definite) => {
-                content_reader_script::triggers::inputs::digest(&self.country_name_unrecorded(*country, *definite))
+                crate::triggers::inputs::digest(&self.country_name_unrecorded(*country, *definite))
             }
             TextQuery::CountryTag(country) => {
-                content_reader_script::triggers::inputs::digest(&self.country_tag_unrecorded(*country))
+                crate::triggers::inputs::digest(&self.country_tag_unrecorded(*country))
             }
             TextQuery::CharacterProperty(id, name) => {
-                content_reader_script::triggers::inputs::digest(&self.character_property_unrecorded(*id, name))
+                crate::triggers::inputs::digest(&self.character_property_unrecorded(*id, name))
             }
             TextQuery::CharacterName(id) => {
-                content_reader_script::triggers::inputs::digest(&self.character_name_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.character_name_unrecorded(*id))
             }
             TextQuery::Capital(slot, original) => {
-                content_reader_script::triggers::inputs::digest_debug(&self.capital_unrecorded(*slot, *original))
+                crate::triggers::inputs::digest_debug(&self.capital_unrecorded(*slot, *original))
             }
             TextQuery::Overlord(slot) => {
-                content_reader_script::triggers::inputs::digest(&self.overlord_unrecorded(*slot))
+                crate::triggers::inputs::digest(&self.overlord_unrecorded(*slot))
             }
             TextQuery::StateRecord(id) => {
-                content_reader_script::triggers::inputs::digest(&self.state_record_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.state_record_unrecorded(*id))
             }
             TextQuery::StateCountry(id, owner) => {
-                content_reader_script::triggers::inputs::digest_debug(&self.state_country_unrecorded(*id, *owner))
+                crate::triggers::inputs::digest_debug(&self.state_country_unrecorded(*id, *owner))
             }
             TextQuery::CharacterCountry(id) => {
-                content_reader_script::triggers::inputs::digest_debug(&self.character_country_unrecorded(*id))
+                crate::triggers::inputs::digest_debug(&self.character_country_unrecorded(*id))
             }
             TextQuery::EventObject(object, name) => {
-                content_reader_script::triggers::inputs::digest_debug(&self.event_object_unrecorded(*object, name))
+                crate::triggers::inputs::digest_debug(&self.event_object_unrecorded(*object, name))
             }
             TextQuery::LocalPlayer => {
-                content_reader_script::triggers::inputs::digest(&self.local_player_unrecorded())
+                crate::triggers::inputs::digest(&self.local_player_unrecorded())
             }
             TextQuery::RulingParty(slot, tag, long) => {
-                content_reader_script::triggers::inputs::digest(&self.ruling_party_unrecorded(*slot, tag, *long))
+                crate::triggers::inputs::digest(&self.ruling_party_unrecorded(*slot, tag, *long))
             }
             TextQuery::FactionName(slot) => {
-                content_reader_script::triggers::inputs::digest(&self.faction_name_unrecorded(*slot))
+                crate::triggers::inputs::digest(&self.faction_name_unrecorded(*slot))
             }
             TextQuery::FactionNameById(id) => {
-                content_reader_script::triggers::inputs::digest(&self.faction_name_by_id_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.faction_name_by_id_unrecorded(*id))
             }
-            TextQuery::CharacterNamed(object, segment, event) => content_reader_script::triggers::inputs::digest(
+            TextQuery::CharacterNamed(object, segment, event) => crate::triggers::inputs::digest(
                 &self.character_named_unrecorded(*object, segment, *event),
             ),
             TextQuery::StateNameFor(id, plain) => {
-                content_reader_script::triggers::inputs::digest(&self.state_name_for_unrecorded(*id, *plain))
+                crate::triggers::inputs::digest(&self.state_name_for_unrecorded(*id, *plain))
             }
             TextQuery::ProvinceDisplayNamePrimary(id) => {
-                content_reader_script::triggers::inputs::digest(&self.province_display_name_primary_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.province_display_name_primary_unrecorded(*id))
             }
             TextQuery::ProvinceDisplayName(id) => {
-                content_reader_script::triggers::inputs::digest(&self.province_display_name_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.province_display_name_unrecorded(*id))
             }
             TextQuery::ProvinceNameOverride(id) => {
-                content_reader_script::triggers::inputs::digest(&self.province_name_override_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.province_name_override_unrecorded(*id))
             }
             TextQuery::ProvinceVictoryPointName(id) => {
-                content_reader_script::triggers::inputs::digest(&self.province_victory_point_name_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.province_victory_point_name_unrecorded(*id))
             }
             TextQuery::PartySupport(slot) => {
-                content_reader_script::triggers::inputs::digest(&self.party_support_unrecorded(*slot))
+                crate::triggers::inputs::digest(&self.party_support_unrecorded(*slot))
             }
-            TextQuery::PartyLeader(slot, group) => content_reader_script::triggers::inputs::digest(
+            TextQuery::PartyLeader(slot, group) => crate::triggers::inputs::digest(
                 &self.party_leader_unrecorded(*slot, group.as_deref()),
             ),
-            TextQuery::NamedPartyName(slot, group, tag) => content_reader_script::triggers::inputs::digest(
+            TextQuery::NamedPartyName(slot, group, tag) => crate::triggers::inputs::digest(
                 &self.named_party_name_unrecorded(*slot, group, tag),
             ),
             TextQuery::LastElection(slot) => {
-                content_reader_script::triggers::inputs::digest(&self.last_election_unrecorded(*slot))
+                crate::triggers::inputs::digest(&self.last_election_unrecorded(*slot))
             }
             TextQuery::Manpower(slot) => {
-                content_reader_script::triggers::inputs::digest(&self.manpower_unrecorded(*slot))
+                crate::triggers::inputs::digest(&self.manpower_unrecorded(*slot))
             }
             TextQuery::Agency(slot) => {
-                content_reader_script::triggers::inputs::digest(&self.agency_unrecorded(*slot))
+                crate::triggers::inputs::digest(&self.agency_unrecorded(*slot))
             }
             TextQuery::OldName(slot, entry, suffix) => {
-                content_reader_script::triggers::inputs::digest(&self.old_name_unrecorded(*slot, entry, suffix))
+                crate::triggers::inputs::digest(&self.old_name_unrecorded(*slot, entry, suffix))
             }
             TextQuery::CharacterGender(id) => {
-                content_reader_script::triggers::inputs::digest(&self.character_gender_unrecorded(*id))
+                crate::triggers::inputs::digest(&self.character_gender_unrecorded(*id))
             }
             TextQuery::CountryPronoun(slot, name) => {
-                content_reader_script::triggers::inputs::digest(&self.country_pronoun_unrecorded(*slot, name))
+                crate::triggers::inputs::digest(&self.country_pronoun_unrecorded(*slot, name))
             }
             TextQuery::DateProperty(name) => {
-                content_reader_script::triggers::inputs::digest(&self.date_property_unrecorded(name))
+                crate::triggers::inputs::digest(&self.date_property_unrecorded(name))
             }
             TextQuery::CountriesGap => {
-                content_reader_script::triggers::inputs::digest(&self.countries_gap_unrecorded())
+                crate::triggers::inputs::digest(&self.countries_gap_unrecorded())
             }
         }
     }
@@ -782,8 +782,8 @@ impl ScriptedText<'_> {
 
 impl ScriptedText<'_> {
     pub(crate) fn countries_gap(&self) -> Option<String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CountriesGap),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountriesGap),
             || self.countries_gap_unrecorded(),
         )
     }
@@ -866,7 +866,7 @@ impl<'a> ScriptedText<'a> {
             nato_counters: content_reader_settings::settings::MapOptions::DEFAULT.nato_counters,
             world: std::sync::OnceLock::new(),
         };
-        if content_reader_script::triggers::inputs::recording() {
+        if crate::triggers::inputs::recording() {
             text.names
                 .get_or_init(|| recorded_names::RecordedNames(CountryNames::read(&frame, localisation)));
             text.lexical_names
@@ -877,7 +877,7 @@ impl<'a> ScriptedText<'a> {
 
     fn names(&self) -> &recorded_names::RecordedNames<'a> {
         self.names.get_or_init(|| {
-            content_reader_script::triggers::inputs::unrecorded(|| {
+            crate::triggers::inputs::unrecorded(|| {
                 recorded_names::RecordedNames(CountryNames::read(&self.frame, self.localisation))
             })
         })
@@ -885,7 +885,7 @@ impl<'a> ScriptedText<'a> {
 
     fn lexical_names(&self) -> &crate::faction_names::LexicalNames<'a> {
         self.lexical_names.get_or_init(|| {
-            content_reader_script::triggers::inputs::unrecorded(|| {
+            crate::triggers::inputs::unrecorded(|| {
                 crate::faction_names::LexicalNames::from_tables(self.frame)
             })
         })
@@ -1090,7 +1090,7 @@ impl<'a> ScriptedText<'a> {
         text: &str,
         scopes: &EventScopes,
         at: usize,
-        evaluator: &content_reader_script::triggers::Evaluator<'_, 'a>,
+        evaluator: &crate::triggers::Evaluator<'_, 'a>,
     ) -> Result<String, String> {
         let mut expanded = ExpansionScopes::new(&EventScopes::new(Vec::new()));
         expanded.world = Some(evaluator.world());
@@ -1114,12 +1114,12 @@ impl<'a> ScriptedText<'a> {
         text: &str,
         scopes: &EventScopes,
         at: usize,
-        session: Option<content_reader_script::triggers::VariableSession>,
+        session: Option<crate::triggers::VariableSession>,
         parent: Option<&ExpansionScopes<'_, 'a>>,
         faction_environment: Option<Option<u64>>,
     ) -> (
         Result<String, String>,
-        Option<content_reader_script::triggers::VariableSession>,
+        Option<crate::triggers::VariableSession>,
     ) {
         if at >= scopes.scopes.len() {
             return (
@@ -1165,11 +1165,11 @@ impl<'a> ScriptedText<'a> {
         self.content
     }
 
-    pub fn reread(&self, key: &content_reader_script::triggers::inputs::Key) -> Option<u64> {
-        use content_reader_script::triggers::inputs::Key;
+    pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
+        use crate::triggers::inputs::Key;
         match key {
             Key::Table(_) | Key::Fields(..) | Key::FocusTag(_) => None,
-            Key::ClockSeed => Some(content_reader_script::triggers::inputs::digest(&clock_seed_in(self.frame))),
+            Key::ClockSeed => Some(crate::triggers::inputs::digest(&clock_seed_in(self.frame))),
             Key::World(query) => self.trigger_world().ok().map(|world| world.reread(query)),
             Key::Scopes(query) => Some(self.scopes.reread(query)),
             Key::Names(query) => Some(self.names().reread(query)),
@@ -1193,12 +1193,12 @@ impl<'a> ScriptedText<'a> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_synthetic_world(&self, world: content_reader_script::triggers::World<'a>) {
+    pub fn set_synthetic_world(&self, world: crate::triggers::World<'a>) {
         assert!(self.world.set(Ok(world)).is_ok());
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_synthetic_world_with_template_names(&self, world: content_reader_script::triggers::World<'a>) {
+    pub fn set_synthetic_world_with_template_names(&self, world: crate::triggers::World<'a>) {
         self.set_synthetic_world(world.with_template_names(
             &self.content.template_names,
             &self.content.layers.layers,
@@ -1212,8 +1212,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CountryName(country, definite)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountryName(country, definite)),
             || self.country_name_unrecorded(country, definite),
         )
     }
@@ -1231,8 +1231,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub fn country_tag(&self, country: u32) -> Result<&str, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CountryTag(country)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountryTag(country)),
             || self.country_tag_unrecorded(country),
         )
     }
@@ -1292,7 +1292,7 @@ impl<'a> ScriptedText<'a> {
         let mut expanded = scopes.clone();
         expanded.on_large_stack = true;
         let caller = job_priority::Caller::current();
-        let reads = content_reader_script::triggers::inputs::handoff();
+        let reads = crate::triggers::inputs::handoff();
         let memory = engine_allocation::labels::current();
         let (((result, session), noted), carried) = std::thread::scope(|thread_scope| {
             let cpu = replay_frame::cpu::Context::capture();
@@ -1569,12 +1569,12 @@ impl<'a> ScriptedText<'a> {
             let local = self
                 .local_player()
                 .map_err(|why| format!("tag alias {segment}: {why}"))?;
-            let root = content_reader_script::triggers::Scope::Country(local);
-            let scopes = content_reader_script::triggers::Scopes {
+            let root = crate::triggers::Scope::Country(local);
+            let scopes = crate::triggers::Scopes {
                 prev: Some(root),
                 from: Some(root),
                 bare: true,
-                ..content_reader_script::triggers::Scopes::of(root)
+                ..crate::triggers::Scopes::of(root)
             };
             return self
                 .world()
@@ -1628,12 +1628,12 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<Object, String> {
         let mut graph = scopes.targets.borrow().clone();
         graph.scopes = scopes.scopes.borrow().clone();
-        if let Some(target) = content_reader_script::triggers::event_tooltip_target(&graph, active, name.as_bytes())
+        if let Some(target) = crate::triggers::event_tooltip_target(&graph, active, name.as_bytes())
             .map_err(|why| why.to_string())?
         {
             return self.event_object(target, name);
         }
-        use content_reader_script::triggers::saved_event_targets::{Reader, Selected};
+        use crate::triggers::saved_event_targets::{Reader, Selected};
         let selected = self
             .scopes
             .saved_selection(name.as_bytes(), Reader::Text)
@@ -1772,9 +1772,9 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn character_property(&self, id: u32, name: &str) -> Result<Option<String>, String> {
-        content_reader_script::triggers::inputs::query(
+        crate::triggers::inputs::query(
             || {
-                content_reader_script::triggers::inputs::Key::Text(TextQuery::CharacterProperty(
+                crate::triggers::inputs::Key::Text(TextQuery::CharacterProperty(
                     id,
                     name.to_owned(),
                 ))
@@ -1809,8 +1809,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn character_name(&self, id: u32) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CharacterName(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CharacterName(id)),
             || self.character_name_unrecorded(id),
         )
     }
@@ -1840,8 +1840,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn capital(&self, slot: u32, original: bool) -> Result<Object, String> {
-        content_reader_script::triggers::inputs::query_debug(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::Capital(slot, original)),
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::Capital(slot, original)),
             || self.capital_unrecorded(slot, original),
         )
     }
@@ -1863,8 +1863,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn overlord(&self, slot: u32) -> Result<Option<u32>, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::Overlord(slot)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::Overlord(slot)),
             || self.overlord_unrecorded(slot),
         )
     }
@@ -1912,8 +1912,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn state_record(&self, id: u32) -> (bool, bool, String) {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::StateRecord(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::StateRecord(id)),
             || self.state_record_unrecorded(id),
         )
     }
@@ -1928,8 +1928,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn state_country(&self, id: u32, owner: bool) -> Result<Object, String> {
-        content_reader_script::triggers::inputs::query_debug(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::StateCountry(id, owner)),
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::StateCountry(id, owner)),
             || self.state_country_unrecorded(id, owner),
         )
     }
@@ -1946,8 +1946,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn character_country(&self, id: u32) -> Result<Object, String> {
-        content_reader_script::triggers::inputs::query_debug(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CharacterCountry(id)),
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::CharacterCountry(id)),
             || self.character_country_unrecorded(id),
         )
     }
@@ -1968,8 +1968,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn event_object(&self, object: EventObject, name: &str) -> Result<Object, String> {
-        content_reader_script::triggers::inputs::query_debug(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::EventObject(object, name.to_owned())),
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::EventObject(object, name.to_owned())),
             || self.event_object_unrecorded(object, name),
         )
     }
@@ -2015,8 +2015,8 @@ impl<'a> ScriptedText<'a> {
         if let Some(viewer) = self.viewer {
             return Ok(viewer);
         }
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::LocalPlayer),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::LocalPlayer),
             || self.local_player_unrecorded(),
         )
     }
@@ -2057,9 +2057,9 @@ impl<'a> ScriptedText<'a> {
         segment: &str,
         event: EventObject,
     ) -> Result<Option<u32>, String> {
-        content_reader_script::triggers::inputs::query(
+        crate::triggers::inputs::query(
             || {
-                content_reader_script::triggers::inputs::Key::Text(TextQuery::CharacterNamed(
+                crate::triggers::inputs::Key::Text(TextQuery::CharacterNamed(
                     object,
                     segment.to_owned(),
                     event,
@@ -2180,9 +2180,9 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn ruling_party(&self, slot: u32, tag: &str, long: bool) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
+        crate::triggers::inputs::query(
             || {
-                content_reader_script::triggers::inputs::Key::Text(TextQuery::RulingParty(
+                crate::triggers::inputs::Key::Text(TextQuery::RulingParty(
                     slot,
                     tag.to_owned(),
                     long,
@@ -2265,8 +2265,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn faction_name(&self, slot: u32) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::FactionName(slot)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::FactionName(slot)),
             || self.faction_name_unrecorded(slot),
         )
     }
@@ -2279,8 +2279,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub fn faction_name_by_id(&self, id: u64) -> Result<String, String> {
-        content_reader_script::triggers::inputs::query(
-            || content_reader_script::triggers::inputs::Key::Text(TextQuery::FactionNameById(id)),
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::FactionNameById(id)),
             || self.faction_name_by_id_unrecorded(id),
         )
     }
@@ -2351,7 +2351,7 @@ const OLD_NAMES: [(&str, &str, bool); 5] = [
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn complete_test_frame() -> DecodedFrame {
-    let mut frame = content_reader_script::scope::tests::positive_frame();
+    let mut frame = crate::scope::tests::positive_frame();
     use replay_data::rows::{TableId, TableRows};
     for id in TableId::ALL {
         if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {

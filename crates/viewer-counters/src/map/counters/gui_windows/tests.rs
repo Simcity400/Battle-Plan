@@ -87,7 +87,7 @@ fn the_native_windows_load_and_lay_out_without_the_legacy_readers() {
     assert_eq!(layout.size, [82, 45]);
 }
 
-pub(in content_reader_map::map::counters) fn windows() -> NativeWindows {
+pub(in crate::map::counters) fn windows() -> NativeWindows {
     NativeWindows::read(
         format!("{SYNTHETIC_NAVY_GUI}\n{SYNTHETIC_NAVAL_GUI}").as_bytes(),
         VIEWPORT,
@@ -103,7 +103,7 @@ fn drawn(layout: &Layout) -> Vec<&str> {
         .collect()
 }
 
-pub(in content_reader_map::map::counters) fn sprite_frame(layout: &Layout, name: &str) -> u32 {
+pub(in crate::map::counters) fn sprite_frame(layout: &Layout, name: &str) -> u32 {
     match part(layout, name).unwrap().kind {
         PartKind::Sprite { uv, offsets, .. } => (offsets[0] / uv[2]).round() as u32,
         _ => panic!("{name} draws no sprite frame"),
@@ -164,7 +164,7 @@ fn item_layout(window: &native::Element, calls: &[(String, Call)], fixture: &Fix
     )
 }
 
-pub(in content_reader_map::map::counters) fn navy_fixture() -> Fixture {
+pub(in crate::map::counters) fn navy_fixture() -> Fixture {
     Fixture::new(
         &[
             ("GFX_fixture_navy_plate", 3, [246, 45]),
@@ -238,7 +238,7 @@ fn countries() -> Countries {
     }
 }
 
-pub(in content_reader_map::map::counters) fn at_sea_flotilla(coarse: bool) -> naval::Flotilla {
+pub(in crate::map::counters) fn at_sea_flotilla(coarse: bool) -> naval::Flotilla {
     naval::Flotilla {
         source: 7,
         members: Arc::from([7]),
@@ -274,7 +274,7 @@ pub(in content_reader_map::map::counters) fn at_sea_flotilla(coarse: bool) -> na
     }
 }
 
-pub(in content_reader_map::map::counters) fn port_flotilla() -> naval::Flotilla {
+pub(in crate::map::counters) fn port_flotilla() -> naval::Flotilla {
     naval::Flotilla {
         port: true,
         mission: Some(2),
@@ -288,9 +288,9 @@ pub(in content_reader_map::map::counters) fn port_flotilla() -> naval::Flotilla 
     }
 }
 
-pub(in content_reader_map::map::counters) type Production = (Update, BTreeMap<Cow<'static, str>, usize>);
+pub(in crate::map::counters) type Production = (Update, BTreeMap<Cow<'static, str>, usize>);
 
-pub(in content_reader_map::map::counters) fn production(
+pub(in crate::map::counters) fn production(
     window: &native::Element,
     flotilla: &naval::Flotilla,
     settings: CounterSettings,

@@ -97,6 +97,7 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
@@ -108,6 +109,7 @@ test-unify = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
 unify-once_cell = { workspace = true }
+unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }

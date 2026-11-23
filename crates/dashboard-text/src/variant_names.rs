@@ -288,16 +288,16 @@ impl<'a> Tags<'a> {
 
     pub fn tag_of(&self, raw: u32) -> Option<String> {
         let slot = link_slot_in(&self.links, raw)?;
-        content_reader_script::triggers::refusal::reference(
+        crate::triggers::refusal::reference(
             self.tags
                 .get(&slot)
                 .and_then(|tag| tag.as_ref().ok())
                 .cloned(),
             raw != 0,
             || {
-                content_reader_script::triggers::refusal::missing_reference(
+                crate::triggers::refusal::missing_reference(
                     replay_data::rows::TableId::Countries,
-                    Some(content_reader_script::triggers::Store::Country(slot)),
+                    Some(crate::triggers::Store::Country(slot)),
                 )
             },
         )
@@ -327,13 +327,13 @@ impl<'a> Tags<'a> {
                 }
             }
         }
-        match content_reader_script::triggers::refusal::reference(
+        match crate::triggers::refusal::reference(
             self.tags.get(&slot),
             raw != 0,
             || {
-                content_reader_script::triggers::refusal::missing_reference(
+                crate::triggers::refusal::missing_reference(
                     replay_data::rows::TableId::Countries,
-                    Some(content_reader_script::triggers::Store::Country(slot)),
+                    Some(crate::triggers::Store::Country(slot)),
                 )
             },
         ) {
@@ -385,11 +385,11 @@ pub fn raw_variant_spelled(
             String::new()
         }
     };
-    let token = content_reader_script::triggers::refusal::reference(
+    let token = crate::triggers::refusal::reference(
         literal,
         definition.equipment_token != 0,
         || {
-            content_reader_script::triggers::refusal::missing_reference(
+            crate::triggers::refusal::missing_reference(
                 replay_data::rows::TableId::LexicalTokens,
                 None,
             )

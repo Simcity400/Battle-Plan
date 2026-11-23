@@ -1,7 +1,10 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use super::*;
-use crate::{catalogue::{Catalogue, tests::Folder}, scripted_text::{EventObject, EventScope, Link}};
-use content_reader_script::triggers::ContentFacts;
+use crate::{
+    catalogue::{Catalogue, tests::Folder},
+    scripted_text::{EventObject, EventScope, Link},
+    triggers::ContentFacts,
+};
 use replay_data::rows::*;
 use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use std::{collections::BTreeSet, sync::Arc};
@@ -228,7 +231,7 @@ fn effect_catalogues_remain_available_without_map_inputs() {
                 &content_reader_script::key_names::KeyNames::default(),
             )
             .items,
-            content_reader_script::triggers::Scopes::of(content_reader_script::triggers::Scope::State(64)),
+            crate::triggers::Scopes::of(crate::triggers::Scope::State(64)),
         )
         .decided()
         .unwrap_err();

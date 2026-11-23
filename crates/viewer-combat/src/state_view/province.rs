@@ -1,7 +1,7 @@
 use dashboard_effects::ScriptedEffects;
 use super::{loc, paths_named, withhold_named};
 use crate::binding::{self, Bindings, Flags};
-use content_reader_layers::content::Content;
+use crate::content::Content;
 use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{ProvinceRow, Recorded, StateRow, tables};

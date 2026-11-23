@@ -1,11 +1,11 @@
 
 use std::{collections::BTreeMap, io};
 
+use content_reader_script::native::{self, Shape};
 use crate::{
     ResolvedLayers,
     crt::{Scanned, scan_i32},
     fields::{block, invalid},
-    parser::native::{self, Shape},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

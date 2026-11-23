@@ -1,4 +1,3 @@
-use content_reader_mesh::mesh::MeshProducts as _;
 use super::*;
 
 #[test]
@@ -355,7 +354,7 @@ fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
     )
     .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    let notes = content_reader_politics::static_modifiers::read_identifiers(&layers, &TEMPERATURE_MODIFIERS)
+    let notes = crate::static_modifiers::read_identifiers(&layers, &TEMPERATURE_MODIFIERS)
         .unwrap()
         .notes;
     assert!(!notes.is_empty());

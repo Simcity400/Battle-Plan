@@ -3,36 +3,8 @@ use std::{
     io,
 };
 
-use content_reader_layers::{ResolvedLayers, script_files};
 use crate::{equipment_stats, native::{self, Kind, Shape}};
 use content_reader_parser::parser::c_string;
-
-pub fn sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
-    layers.recorded_product("sub-unit database", 1, &[], read_sub_units).map(|units| units.as_ref().clone())
-}
-
-fn read_sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
-    let mut indices = SubUnits::default();
-    for path in sub_unit_files(layers)? {
-        indices.read(&path.read(layers)?, &path.text());
-    }
-    Ok(indices)
-}
-
-pub fn sub_unit_files(layers: &ResolvedLayers) -> io::Result<Vec<script_files::ScriptPath>> {
-    let mut files = Vec::new();
-    for directory in SUB_UNIT_DIRECTORIES {
-        files.extend(script_files::paths(layers, directory, Some(".txt"))?);
-    }
-    Ok(files)
-}
-
-pub const SUB_UNIT_DIRECTORIES: [&str; 4] = [
-    "common/units/unit_modifiers/",
-    "common/unit_tags/",
-    "common/units/critical_parts/",
-    "common/units/",
-];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubUnit<'a> {

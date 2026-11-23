@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use crate::native::{Field, Shape};
+use std::collections::BTreeSet;
 
 pub enum StatKey {
     Scalar,

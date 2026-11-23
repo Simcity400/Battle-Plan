@@ -1,5 +1,5 @@
 use content_reader_mesh::mesh::MeshProducts as _;
-use content_reader_layers::test_support::{MESHES_GFX, PLANE_ASSET, library_with_one_mesh, triangle_mesh, visual_stack};
+use crate::test_support::{MESHES_GFX, PLANE_ASSET, library_with_one_mesh, triangle_mesh, visual_stack};
 use crate::*;
 use std::collections::BTreeSet;
 use viewer_gpu::camera::MapDefines;

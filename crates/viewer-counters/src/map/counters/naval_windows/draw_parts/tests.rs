@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_map::map::counters::gui_windows;
+use crate::map::counters::gui_windows;
 use content_reader_gui::gui::native;
 use std::sync::Arc;
 use viewer_native_gui::{
