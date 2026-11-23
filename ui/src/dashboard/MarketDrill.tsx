@@ -30,7 +30,7 @@ export default function MarketDrill({ runtime, widget, time, tags, selected, act
   const data = { ...head.data, hour: head.at };
   const following = time.kind === 'follow' || time.kind === 'spec' && widget.time.mode === 'follow';
   return <div ref={head.root} style={{ display: 'contents' }}><TradeMarketView data={data} selected={selected} values={head.live.read()}
-    deliveries={<MarketOccurrences runtime={runtime} track={track} kinds={DELIVERY_KINDS} tags={tags} span={gate.span(track.branch.firstHour, track.branch.lastHour)}
+    deliveries={<MarketOccurrences runtime={runtime} track={track} gate={gate} kinds={DELIVERY_KINDS} tags={tags} span={gate.span(track.branch.firstHour, track.branch.lastHour)}
       cut={following ? { follow: true, offset: track.axisOffset } : { follow: false, hour: data.hour }} active={active} label="Deliveries"
       density="compact" months={false} animate={false} />} /></div>;
 }

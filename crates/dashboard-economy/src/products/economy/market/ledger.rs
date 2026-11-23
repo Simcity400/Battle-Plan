@@ -1,14 +1,14 @@
 
-use dashboard_base::{Source, products::{LoadContext, Product, log_page::{self as logs, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel}}, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::Catalogue, products::{LoadContext, Product, log_page::{self as logs, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel}}, queries::country_ids::Names};
 use dashboard_follow::panel::Panel;
 use dashboard_world::products::equipment_names as names;
 use dashboard_query::{Query, log::{Cell, FacetFilter}};
 use replay_data::rows::{MarketEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -157,10 +157,72 @@ fn links_by_run(source: &Source, query: &Query<'_>) -> io::Result<BTreeMap<u32, 
     Ok(out)
 }
 
+#[derive(Default)]
+struct VariantNameCache {
+    entries: Option<(Arc<Catalogue>, HashMap<(u32, i32, u64), Option<String>>)>,
+}
+
+impl VariantNameCache {
+    fn clear(cache: &Mutex<Self>) {
+        cache.lock().unwrap_or_else(PoisonError::into_inner).entries = None;
+    }
+
+    fn resolve(
+        cache: &Mutex<Self>,
+        recording: &replay_recording::columnar_frames::Recording,
+        run: u32,
+        hour: i32,
+        variants: &[u64],
+        content: &names::Content,
+        context: &names::Context,
+    ) -> io::Result<BTreeMap<u64, Option<String>>> {
+        let mut out = BTreeMap::new();
+        let mut missing = Vec::new();
+        {
+            let guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((cat, map)) = guard.entries.as_ref()
+                && Arc::ptr_eq(cat, &content.catalogue)
+            {
+                for &variant in variants {
+                    if let Some(found) = map.get(&(run, hour, variant)) {
+                        out.insert(variant, found.clone());
+                    } else {
+                        missing.push(variant);
+                    }
+                }
+            } else {
+                missing.extend_from_slice(variants);
+            }
+        }
+        if !missing.is_empty() {
+            let resolved = plain_names(recording, run, hour, &missing, context)?;
+            {
+                let mut guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
+                let reuse = guard.entries.as_ref().is_some_and(|(cat, _)| Arc::ptr_eq(cat, &content.catalogue));
+                if !reuse {
+                    guard.entries = Some((Arc::clone(&content.catalogue), HashMap::new()));
+                }
+                let (_, map) = guard.entries.as_mut().unwrap();
+                for &variant in &missing {
+                    let value = resolved.get(&variant).cloned().flatten();
+                    map.insert((run, hour, variant), value.clone());
+                    out.insert(variant, value);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+pub(crate) fn forget(source: &Source) {
+    VariantNameCache::clear(&source.state::<VariantNameCache>());
+}
+
 fn enrich_rows(
     query: &Query<'_>,
     links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
-    context: &Result<names::Context, String>,
+    context: &names::Context,
+    name_cache: Option<&Mutex<VariantNameCache>>,
     rows: Vec<(dashboard_query::log::Row, u64, u64, Option<dashboard_query::identity::Country>)>,
     tagged: bool,
     cancelled: &AtomicBool,
@@ -189,7 +251,7 @@ fn enrich_rows(
             }
             warnings.push(why.clone());
         }
-        Ok(_) => {
+        Ok(content) => {
             let recording = query.replay.recording();
             for (run, ats) in by_run {
                 let variants: BTreeSet<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect();
@@ -203,7 +265,11 @@ fn enrich_rows(
                     if wanted.is_empty() {
                         break;
                     }
-                    resolved.extend(plain_names(recording, run, *hour, &wanted, context)?.into_iter().filter_map(|(id, name)| Some((id, name?))));
+                    let batch = match name_cache {
+                        Some(cache) => VariantNameCache::resolve(cache, recording, run, *hour, &wanted, content, context)?,
+                        None => plain_names(recording, run, *hour, &wanted, context)?,
+                    };
+                    resolved.extend(batch.into_iter().filter_map(|(id, name)| Some((id, name?))));
                 }
                 for &at in &ats {
                     let row = &mut mapped[at];
@@ -273,7 +339,8 @@ impl Product for MarketLedger {
         let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let links = links_by_run(source, &query)?;
         let context = names::context(source, load)?;
-        let (reply_rows, warnings) = enrich_rows(&query, &links, &context, rows, tagged, cancelled)?;
+        let cache = source.state::<VariantNameCache>();
+        let (reply_rows, warnings) = enrich_rows(&query, &links, &context, Some(&cache), rows, tagged, cancelled)?;
         Ok(LogPageReply {
             branch_id: params.branch_id.clone(),
             log: LOG.to_owned(),
@@ -308,7 +375,8 @@ pub struct MarketLedgerTailParams {
 fn load_tail_at(
     query: &Query<'_>,
     links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
-    context: &Result<names::Context, String>,
+    context: &names::Context,
+    name_cache: Option<&Mutex<VariantNameCache>>,
     params: &MarketLedgerTailParams,
     hour: i32,
     cancelled: &AtomicBool,
@@ -318,7 +386,7 @@ fn load_tail_at(
     let (page, rows, facet_totals, missing) = logs::tail(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| {
         (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())
     })?;
-    let (reply_rows, warnings) = enrich_rows(query, links, context, rows, tagged, cancelled)?;
+    let (reply_rows, warnings) = enrich_rows(query, links, context, name_cache, rows, tagged, cancelled)?;
     Ok(LogTailReply {
         branch_id: params.branch_id.clone(),
         log: LOG.to_owned(),
@@ -370,7 +438,8 @@ impl Product for MarketLedgerTail {
         let hour = params.hour.unwrap_or(query.timeline.last);
         let links = links_by_run(source, &query)?;
         let context = names::context(source, load)?;
-        load_tail_at(&query, &links, &context, params, hour, cancelled)
+        let cache = source.state::<VariantNameCache>();
+        load_tail_at(&query, &links, &context, Some(&cache), params, hour, cancelled)
     }
 }
 
@@ -383,19 +452,24 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let links = Arc::new(links_by_run(source, &query).map_err(|error| error.to_string())?);
     let context = Arc::new(names::context(source, load).map_err(|error| error.to_string())?);
+    let cache = source.state::<VariantNameCache>();
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
     Ok(dated_tail_panel(executable, move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        load_tail_at(&query, &links, &context, &params, hour, cancelled)
+        load_tail_at(&query, &links, &context, Some(&cache), &params, hour, cancelled)
     }))
 }
 
 fn plain_names(recording: &replay_recording::columnar_frames::Recording, run: u32, hour: i32, variants: &[u64], context: &names::Context) -> io::Result<BTreeMap<u64, Option<String>>> {
     let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
-    let mut reads: Vec<replay_lanes::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens].into_iter().map(replay_lanes::at::Read::all).collect();
+    let mut reads: Vec<replay_lanes::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance].into_iter().map(replay_lanes::at::Read::all).collect();
     reads.push(replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: replay_lanes::at::Keys::These(&keys) });
-    let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
+    let mut frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
+    let tokens: Vec<u128> = names::variant_tokens(&frame).collect::<BTreeSet<_>>().into_iter().map(u128::from).collect();
+    let token_read = [replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&tokens) }];
+    let lexical = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &token_read))?;
+    frame.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
     Ok(names::plain_names(&frame, variants, context))
 }
 
@@ -500,6 +574,16 @@ mod tests {
             let stepped = (exact.advance)(hour, true, &AtomicBool::new(false), None);
             let cold = (exact.cold)(hour, &AtomicBool::new(false));
             assert_eq!(*stepped.value, cold, "stepped vs cold at {hour}");
+        }
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let links = links_by_run(&source, &query).unwrap();
+        let context = names::context(&source, &load).unwrap();
+        let cache = source.state::<VariantNameCache>();
+        let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets, from: None, hour: None, limit: 64, count_facets: Vec::new() };
+        for hour in [110, 104, 112, 110] {
+            let cached = load_tail_at(&query, &links, &context, Some(&cache), &tail_params, hour, &AtomicBool::new(false)).unwrap();
+            let uncached = load_tail_at(&query, &links, &context, None, &tail_params, hour, &AtomicBool::new(false)).unwrap();
+            assert_eq!(cached, uncached, "cached vs uncached at {hour}");
         }
     }
 }

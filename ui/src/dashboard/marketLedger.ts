@@ -6,6 +6,7 @@ import { FUEL_QUANTITY, fixedText } from './market.ts';
 
 export const MARKET_LOG = 'market-events';
 export const MARKET_LEDGER = 'market-ledger';
+export const MARKET_LEDGER_TAIL = 'market-ledger-tail';
 
 export const KINDS = [
   { kind: 11, key: 'contracts', label: 'New contracts' },
@@ -20,12 +21,12 @@ export const DELIVERY_KINDS = [3, 4, 5, 6, 20, 21, 34] as const;
 
 export interface LedgerItem {
   id: string;
-  kind: number;
+  kind: number | null;
   mode: number | null;
-  contract: string;
+  contract: string | null;
   seller: string | null;
   buyer: string | null;
-  variant: string;
+  variant: string | null;
   equipment: string | null;
   equipmentMissing: string | null;
   amountRaw: string | null;
@@ -41,8 +42,8 @@ const raw = (cell: LogCell | undefined) => cell?.kind === 'number' ? cell.value 
 export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
   const cells = row.cells;
   return { key: row.key, hour: row.hour, item: {
-    id: text(cells.id) ?? row.key, kind: number(cells.kind) ?? 0, mode: number(cells.mode), contract: text(cells.contract) ?? '0',
-    seller: text(cells.seller), buyer: text(cells.buyer), variant: text(cells.variant) ?? '0', equipment: text(cells.equipment),
+    id: text(cells.id) ?? row.key, kind: number(cells.kind), mode: number(cells.mode), contract: text(cells.contract),
+    seller: text(cells.seller), buyer: text(cells.buyer), variant: text(cells.variant), equipment: text(cells.equipment),
     equipmentMissing: text(cells.equipmentMissing), amountRaw: raw(cells.amountRaw), auxiliaryRaw: raw(cells.auxiliaryRaw),
     totalRaw: raw(cells.totalRaw), reason: text(cells.reason),
   } };
@@ -60,10 +61,11 @@ export function shownKinds(enabled: (key: KindKey) => boolean): number[] {
   return kinds.sort((a, b) => a - b);
 }
 
-const lease = (item: LedgerItem) => item.kind <= 6 || item.kind === 34 && item.mode !== 20;
+const lease = (item: LedgerItem) => item.kind !== null && (item.kind <= 6 || (item.kind === 34 && item.mode !== 20));
 
 export function ledgerTitle(item: LedgerItem, name: (tag: string | null) => string): string {
   switch (item.kind) {
+    case null: return 'Event kind not recorded';
     case 3: return `Lend-lease delivered to ${name(item.buyer)}`;
     case 4: return `Lend-lease lost on the way to ${name(item.buyer)}`;
     case 5: return `Fuel lent to ${name(item.buyer)}`;
@@ -78,6 +80,7 @@ export function ledgerTitle(item: LedgerItem, name: (tag: string | null) => stri
 }
 
 export function ledgerFigure(item: LedgerItem): { text: string; negative: boolean } | null {
+  if (item.kind === null) return null;
   if (item.kind === 34 || (item.amountRaw === null && item.reason !== null)) return { text: 'Amount unavailable', negative: false };
   if (item.amountRaw === null) return null;
   const amount = BigInt(item.amountRaw);
@@ -87,9 +90,10 @@ export function ledgerFigure(item: LedgerItem): { text: string; negative: boolea
   return null;
 }
 
-export const ledgerIcon = (kind: number) => kind === 21 ? 'chart-bars' : kind === 3 || kind === 4 || kind === 5 || kind === 20 || kind === 34 ? 'anchor'
+export const ledgerIcon = (kind: number | null) => kind === null ? 'history' : kind === 21 ? 'chart-bars' : kind === 3 || kind === 4 || kind === 5 || kind === 20 || kind === 34 ? 'anchor'
   : kind === 6 || kind === 12 ? 'close' : kind === 10 ? 'search' : 'handshake';
 
-export const ledgerSelection = (item: LedgerItem) => lease(item) ? `agreement:${item.contract}` : `contract:${item.kind === 10}:${item.contract}`;
+export const ledgerSelection = (item: LedgerItem) => item.contract === null ? null
+  : lease(item) ? `agreement:${item.contract}` : `contract:${item.kind === 10}:${item.contract}`;
 
 export const LEDGER_EMPTY = 'No market activity matches these settings.';

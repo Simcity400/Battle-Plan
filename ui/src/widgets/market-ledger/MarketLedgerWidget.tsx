@@ -1,9 +1,5 @@
-import { useGate } from '../../dashboard/regionGate';
-import { SPEC } from '../../dashboard/regionTime';
-import { coverageOf } from '../../dashboard/widgetTime';
-import { useMemo,  useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { ChipSet } from '../../components/ChipSet';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
@@ -18,18 +14,18 @@ import type { KindKey, LedgerItem } from '../../dashboard/marketLedger';
 import MarketOccurrences from '../../dashboard/MarketOccurrences';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { LogCut } from '../../dashboard/useLogPages';
-import { trackHourOf } from '../../dashboard/settledHour';
-import { useShownEachFrame } from '../../dashboard/widgetPerf';
+import { coverageOf, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import type { LogControlsSpec } from '../../families/log/declaration.ts';
 import { DETAILS, OPTIONS } from './definition';
 import './marketLedger.css';
-import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
-export default function MarketLedgerWidget({ widget, runtime, active, setOption }: WidgetProps) {
+export default function MarketLedgerWidget({ widget, runtime, active, setOption, headerSlot, onDiagnostics }: WidgetProps) {
   const [drillShown, setDrillShown] = useState<number | undefined>();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const follow = widget.time.mode === 'follow';
@@ -68,21 +64,48 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
   const drillDay = drillShown ?? drillAt;
   const pickedTags = picked ? partyTags(picked.seller, picked.buyer) : null;
-  const chips = KINDS.map(kind => ({ value: kind.key, label: kind.label }));
+  const controls = useMemo<LogControlsSpec | null>(() => {
+    if (!log.chips) return null;
+    return {
+      chipGroups: [{
+        key: 'market-kinds',
+        label: 'Market occurrences',
+        chips: KINDS.map(kind => ({ value: kind.key, label: kind.label })),
+        selected: KINDS.filter(kind => options[kind.key] !== false).map(kind => kind.key),
+        max: KINDS.length,
+        onToggle: key => setOption?.(key, !(options[key as KindKey] !== false)),
+      }],
+    };
+  }, [log.chips, options, setOption]);
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
   const parent = gate.outside ? <WidgetState kind="outside" read={coverageOf(gate.outside)} />
     : needsGroups && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : tags !== null && tags !== undefined && !tags.length ? <WidgetState kind="unavailable" message={needsGroups ? 'This group has no members in this campaign.' : 'Choose a country in the widget settings.'} /> : null;
   if (parent && !drillOpen) return parent;
-  const main = parent ?? <div className="log-widget market-ledger">
-    {log.chips && <div className="log-chips"><ChipSet label="Market occurrences" chips={chips}
-      selected={KINDS.filter(kind => enabled(kind.key)).map(kind => kind.key)} max={KINDS.length} onToggle={key => setOption?.(key, !enabled(key as KindKey))} /></div>}
-    {tags === undefined ? <WidgetState kind="loading" label="Loading market activity…" />
-      : !stableKinds.length ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
-        : <MarketOccurrences runtime={runtime} track={track} kinds={stableKinds} tags={tags} span={track ? gate.span(firstHour, track.branch.lastHour) : null} cut={cut} active={active} label="Market ledger"
-          density={log.density} months={log.months} animate={log.animate} onOpen={open} />}
-  </div>;
+  const main = parent ?? (tags === undefined
+    ? <WidgetState kind="loading" label="Loading market activity…" />
+    : !stableKinds.length
+      ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
+      : <MarketOccurrences
+        runtime={runtime}
+        track={track}
+        gate={gate}
+        kinds={stableKinds}
+        tags={tags}
+        span={gate.span(firstHour, track.branch.lastHour)}
+        cut={cut}
+        active={active}
+        label="Market ledger"
+        density={log.density}
+        months={log.months}
+        animate={log.animate}
+        onOpen={open}
+        widget={widget}
+        headerSlot={headerSlot}
+        controls={controls}
+        onDiagnostics={onDiagnostics}
+      />);
   return <div ref={anchor} className="market-ledger-host">
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}

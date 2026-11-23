@@ -28,3 +28,14 @@ test('an unavailable amount is named, never zero; amounts read in their units; a
   assert.deepEqual(ledgerFigure(payment.item), { text: '-1.5 CIC', negative: true });
   assert.equal(ledgerFigure(row({ kind: number('12') }).item), null);
 });
+
+test('missing or unrecorded market cells stay null instead of defaulting to zero or string zero', () => {
+  const unrecorded = row({
+    kind: { kind: 'notRecorded' },
+    contract: { kind: 'notRecorded' },
+    variant: { kind: 'notRecorded' },
+  });
+  assert.equal(unrecorded.item.kind, null);
+  assert.equal(unrecorded.item.contract, null);
+  assert.equal(unrecorded.item.variant, null);
+});

@@ -440,7 +440,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       : !market.data || market.at === null || (widget.countries.kind === 'group' && !groups.data) ? loadingMarket : null;
     if (parent && !drillOpen) return <>{groupFailure}{parent}</>;
     if (pinnedView && !pickedMarket) return <>{groupFailure}<WidgetState kind="unavailable" message="This market selection is unavailable. Select it again." /></>;
-    const deliveriesAt = (hour: number, follows: boolean, tags: readonly string[], at: Gate) => <MarketOccurrences runtime={runtime} track={track} kinds={DELIVERY_KINDS}
+    const deliveriesAt = (hour: number, follows: boolean, tags: readonly string[], at: Gate) => <MarketOccurrences runtime={runtime} track={track} gate={at} kinds={DELIVERY_KINDS}
       tags={all ? null : tags} span={at.span(track.branch.firstHour, track.branch.lastHour)} cut={follows ? { follow: true, offset: track.axisOffset } : { follow: false, hour }} active={active}
       label="Market deliveries" density="compact" months={false} animate={false} />;
     const marketData = market.data && market.at !== null ? { ...market.data, hour: market.at } : null;

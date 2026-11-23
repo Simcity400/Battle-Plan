@@ -1,5 +1,7 @@
 import '../../families/table/registerAll.ts';
+import '../../families/log/registerAll.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
+import { familyLogLaneView } from '../../families/log/laneView.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
 import { ArsenalPicture, arsenalNext, type ArsenalModel } from '../arsenal.ts';
 import { validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
@@ -87,5 +89,6 @@ export function drawnViews(kind: string, wake: (widget: number) => void): LaneVi
   if (kind === 'panel') return panelTexts();
   if (kind === 'table') return tableView(readingStructure, wake);
   if (kind === 'race') return race(wake);
+  if (kind === 'log') return familyLogLaneView(wake);
   return undefined;
 }

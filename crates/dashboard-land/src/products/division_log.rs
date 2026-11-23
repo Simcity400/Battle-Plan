@@ -259,16 +259,16 @@ impl Refused {
 
 #[derive(Default)]
 struct PlaceCache {
-    entries: Mutex<Option<(Arc<Catalogue>, HashMap<(u64, u32, i32), PlaceName>)>>,
+    entries: Option<(Arc<Catalogue>, HashMap<(u64, u32, i32), PlaceName>)>,
 }
 
 impl PlaceCache {
-    fn clear(&self) {
-        *self.entries.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    fn clear(cache: &Mutex<Self>) {
+        cache.lock().unwrap_or_else(PoisonError::into_inner).entries = None;
     }
 
     fn resolve(
-        &self,
+        cache: &Mutex<Self>,
         query: &Query<'_>,
         content: &PlaceContent,
         asks: &[(u32, i32)],
@@ -278,8 +278,8 @@ impl PlaceCache {
         let mut out = HashMap::with_capacity(asks.len());
         let mut missing = Vec::new();
         {
-            let guard = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((cat, map)) = guard.as_ref()
+            let guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((cat, map)) = guard.entries.as_ref()
                 && Arc::ptr_eq(cat, &content.cat)
             {
                 for &ask in asks {
@@ -298,14 +298,12 @@ impl PlaceCache {
             missing.dedup();
             let resolved = place_names::resolve_provinces(query, content, &missing, true, cancelled)?;
             {
-                let mut guard = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-                let map = match guard.as_mut() {
-                    Some((cat, map)) if Arc::ptr_eq(cat, &content.cat) => map,
-                    slot => {
-                        *slot = Some((Arc::clone(&content.cat), HashMap::new()));
-                        &mut slot.as_mut().unwrap().1
-                    }
-                };
+                let mut guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
+                let reuse = guard.entries.as_ref().is_some_and(|(cat, _)| Arc::ptr_eq(cat, &content.cat));
+                if !reuse {
+                    guard.entries = Some((Arc::clone(&content.cat), HashMap::new()));
+                }
+                let (_, map) = guard.entries.as_mut().unwrap();
                 for (&ask, name) in &resolved {
                     map.insert((branch_id, ask.0, ask.1), name.clone());
                 }
@@ -331,7 +329,7 @@ fn enrich_rows(
     links: &HashMap<u32, Arc<RunLinks>>,
     art: &Content,
     places: Result<&PlaceContent, &str>,
-    place_cache: Option<&PlaceCache>,
+    place_cache: Option<&Mutex<PlaceCache>>,
     rows: Vec<(Row, u64, u64, Option<dashboard_query::identity::Country>)>,
     tagged: bool,
     cancelled: &AtomicBool,
@@ -356,7 +354,7 @@ fn enrich_rows(
         match places {
             Ok(content) => {
                 let resolved = match place_cache {
-                    Some(cache) => cache.resolve(query, content, &place_asks, cancelled)?,
+                    Some(cache) => PlaceCache::resolve(cache, query, content, &place_asks, cancelled)?,
                     None => place_names::resolve_provinces(query, content, &place_asks, true, cancelled)?,
                 };
                 for (_, _, _, _, _, mapped) in &mut mapped_rows {
@@ -488,7 +486,7 @@ fn load_tail_at(
     links: &HashMap<u32, Arc<RunLinks>>,
     art: &Content,
     places: Result<&PlaceContent, &str>,
-    place_cache: Option<&PlaceCache>,
+    place_cache: Option<&Mutex<PlaceCache>>,
     params: &DivisionLogTailParams,
     hour: i32,
     cancelled: &AtomicBool,
@@ -777,7 +775,7 @@ type Runs = dashboard_base::queries::RunCache<RunKey, Vec<SeenTemplate>>;
 
 pub(crate) fn forget(source: &dashboard_base::Source) {
     Runs::forget(source);
-    source.state::<PlaceCache>().clear();
+    PlaceCache::clear(&source.state::<PlaceCache>());
 }
 
 pub fn cached_division_templates(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<Vec<SeenTemplate>>> {

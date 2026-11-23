@@ -1,34 +1,28 @@
-import { useCallback, useMemo, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
-import { CountryFlagUrl } from '../components/CountryFlag';
-import { Icon } from '../components/Icons';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import WidgetState from '../components/WidgetState';
-import { dayLabel } from '../charts/draw';
 import { jumpItem } from '../charts/jump';
-import LogList from '../charts/log/LogList';
-import { useRevealClock } from '../charts/reveal';
-import { logCountryRequests } from '../charts/log/logData';
-import type { LogRow } from '../charts/log/logData';
 import type { LogDensity } from '../charts/log/logData';
-import { useChartTokens } from '../charts/useChartTokens';
-import { useCountryLabelsAt } from './countryFlagsAt';
 import type { WidgetRuntime } from './definitions';
-import type { BoundTrack } from './model';
-import { useLogPages } from './useLogPages';
-import type { LogCut, LogSpec } from './useLogPages';
-import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerTitle, MARKET_LEDGER, MARKET_LOG } from './marketLedger.ts';
-import type { LedgerItem } from './marketLedger';
-import '../widgets/event-feed/eventFeed.css';
-import './market.css';
+import type { BoundTrack, WidgetSpec } from './model';
+import { loadProduct, useProduct } from './products';
+import type { Gate } from './regionGate';
 import type { BoundWindow } from './regionTime';
-
-const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
-const PALETTE: Record<number, number> = { 3: 1, 4: 5, 5: 4, 6: 5, 10: 0, 11: 2, 12: 5, 20: 1, 21: 3, 34: 1 };
-const NO_ROWS: readonly LogRow<LedgerItem>[] = [];
+import { forwardRequest } from './request.ts';
+import type { LogCut } from './useLogPages';
+import { ledgerFacets, MARKET_LEDGER, MARKET_LEDGER_TAIL, type LedgerItem } from './marketLedger.ts';
+import type { FamilySources } from '../families/contract.ts';
+import FamilyLogHost from '../families/log/FamilyLogHost.tsx';
+import type { LogControlsSpec, LogSourceSubscription } from '../families/log/declaration.ts';
+import { LOG_MIN_TAIL_LIMIT } from '../families/log/layout.ts';
+import { isLogTailReply, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from '../families/log/tailReply.ts';
+import { useLogLooks } from '../families/log/useLogLooks.ts';
+import { marketLedgerProjection, type MarketLedgerProjectionOptions } from '../widgets/market-ledger/marketLedgerProjection.ts';
+import type { LogPageReply } from '../generated/dashboard';
 
 export interface MarketOccurrencesProps {
   runtime: WidgetRuntime;
   track: BoundTrack;
+  gate: Gate;
   kinds: readonly number[];
   tags: readonly string[] | null;
   span: BoundWindow | null;
@@ -40,51 +34,206 @@ export interface MarketOccurrencesProps {
   animate: boolean;
   onOpen?: (item: LedgerItem, hour: number) => void;
   empty?: ReactNode;
+  widget?: WidgetSpec;
+  headerSlot?: HTMLElement | null;
+  controls?: LogControlsSpec | null;
+  onDiagnostics?: (warnings: string[]) => void;
 }
 
-export default function MarketOccurrences({ runtime, track, kinds, tags, span, cut, active, label, density, months, animate, onOpen, empty }: MarketOccurrencesProps) {
-  const tokens = useChartTokens();
+export default function MarketOccurrences({
+  runtime,
+  track,
+  gate,
+  kinds,
+  tags,
+  span,
+  cut,
+  active,
+  label,
+  density,
+  months,
+  onOpen,
+  empty,
+  widget,
+  headerSlot = null,
+  controls = null,
+  onDiagnostics,
+}: MarketOccurrencesProps) {
   const facets = useMemo(() => ledgerFacets(kinds, tags), [kinds, tags]);
-  const spec = useMemo<LogSpec | null>(() => kinds.length && span ? { source: track.source, branchId: track.branch.id, log: MARKET_LOG, product: MARKET_LEDGER, facets,
-    firstHour: span.firstHour, lastHour: span.lastHour } : null, [track.source, track.branch.id, kinds.length, facets, span?.firstHour, span?.lastHour]);
-  const list = useLogPages<LedgerItem>(runtime.client, runtime.clock, spec, cut, active, ledgerEntry);
-  const offset = cut.follow ? cut.offset : 0;
-  const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
-  const reveal = useRevealClock(runtime.clock, cut.follow, trackHour);
-  const [visible, setVisible] = useState<readonly LogRow<LedgerItem>[]>(NO_ROWS);
-  const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.hour, tags: [row.item.seller, row.item.buyer] })), [visible]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null) => tag === null ? 'Country not recorded' : labelAt(row.hour)(tag).name, [labelAt]);
-  if (list.error) return <WidgetState kind="error" failure={list.error} onRetry={list.retry} />;
-  const describe = (row: LogRow<LedgerItem>) => {
-    const named = name(row), figure = ledgerFigure(row.item);
-    return [dayLabel(row.hour), ledgerTitle(row.item, named), `${named(row.item.seller)} → ${named(row.item.buyer)}`, row.item.equipment, figure?.text].filter(Boolean).join(' · ');
-  };
-  return <LogList pages={list.pages} onWantedPages={list.onWantedPages} label={label} density={density} months={months}
-    animate={animate && cut.follow} playhead={cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : null} reveal={reveal} columns={COLUMNS} onVisible={setVisible}
-    renderRow={row => {
-      const named = name(row), figure = ledgerFigure(row.item), seller = row.item.seller === null ? null : labelAt(row.hour)(row.item.seller);
-      const open = onOpen ? () => onOpen(row.item, row.hour) : undefined;
-      return <>
-        <span className="log-art" aria-hidden="true"><span className="event-feed-icon" style={{ '--event-colour': tokens.categories[PALETTE[row.item.kind] ?? 0] } as CSSProperties}>
-          <Icon name={ledgerIcon(row.item.kind)} /></span></span>
-        <span className="log-text market-ledger-text" onClick={open}><b>{ledgerTitle(row.item, named)}</b>
-          <small>{seller && <CountryFlagUrl className="log-flag" url={seller.flag} detail={seller.flagDetail} reason={seller.flagReason} pending={seller.flagPending} />}
-            {named(row.item.seller)} → {named(row.item.buyer)}{row.item.variant !== '0' ? ` · ${row.item.equipment ?? row.item.equipmentMissing ?? 'Equipment name unavailable'}` : ''}</small></span>
-        {figure ? <span className={`market-ledger-figure${figure.negative ? ' is-negative' : ''}`} onClick={open}>{figure.text}</span> : <span />}
-      </>;
-    }}
-    describe={describe}
-    tooltip={row => {
-      const named = name(row), figure = ledgerFigure(row.item);
-      return [{ title: ledgerTitle(row.item, named), subtitle: dayLabel(row.hour), rows: [
-        { label: 'Seller', value: named(row.item.seller) }, { label: 'Buyer', value: named(row.item.buyer) },
-        ...row.item.variant !== '0' ? [{ label: 'Equipment', value: row.item.equipment ?? row.item.equipmentMissing ?? 'Equipment name unavailable' }] : [],
-        ...figure ? [{ label: 'Amount', value: figure.text }] : [],
-        ...row.item.reason ? [{ label: row.item.reason, tone: 'muted' as const }] : [],
-        { label: 'Contract', value: row.item.contract, tone: 'muted' as const },
-      ] }];
-    }}
-    menu={row => [...onOpen ? [{ label: 'Show contract', run: () => onOpen(row.item, row.hour) }] : [], jumpItem(runtime, track.id, row.hour)]}
-    empty={list.counts ? empty ?? 'No market activity matches these settings.' : <WidgetState kind="loading" label="Loading market activity…" />} />;
+  const [limit, setLimit] = useState(LOG_MIN_TAIL_LIMIT);
+  const follow = cut.follow;
+  const followOffset = cut.follow ? cut.offset : 0;
+  const cutHour = cut.follow ? null : cut.hour;
+  const spanFirst = span?.firstHour ?? null;
+  const spanLast = span?.lastHour ?? null;
+  const pinHour = follow ? null : (cutHour ?? spanLast ?? track.branch.lastHour);
+  const fromParam = spanFirst !== null && spanFirst > track.branch.firstHour ? spanFirst : null;
+
+  const looks = useLogLooks(runtime, track, track.branch.firstHour, track.branch.lastHour, active && kinds.length > 0);
+
+  const syntheticWidget = useMemo<WidgetSpec>(() => widget ?? ({
+    id: `market-occurrences:${track.id}:${label}`,
+    kind: 'market-ledger',
+    configVersion: 1,
+    title: label,
+    trackIds: [track.id],
+    countries: { kind: 'all' },
+    time: follow ? { mode: 'follow' } : { mode: 'campaign' },
+    options: {},
+    layout: { x: 0, y: 0, w: 6, h: 12 },
+  }), [widget, track.id, label, follow]);
+
+  const tailParams = useMemo(() => {
+    if (!kinds.length || spanFirst === null || spanLast === null) return null;
+    return {
+      branchId: track.branch.id,
+      facets,
+      ...(fromParam !== null ? { from: fromParam } : {}),
+      limit,
+      countFacets: [],
+    };
+  }, [kinds.length, spanFirst, spanLast, track.branch.id, facets, fromParam, limit]);
+
+  const followPlan = useMemo(() => {
+    if (!follow || !tailParams || !active) {
+      return { subs: [] as LogSourceSubscription[], refused: null as string | null };
+    }
+    const checked = gate.checkFollow({ panel: MARKET_LEDGER_TAIL, ...tailParams });
+    if (checked.refused) return { subs: [], refused: checked.refused };
+    if (!checked.query) return { subs: [], refused: null };
+    return {
+      subs: [{
+        name: 'tail',
+        source: track.source,
+        branch: track.branch.id,
+        offset: followOffset,
+        query: checked.query,
+        channel: 'panel' as const,
+        product: MARKET_LEDGER_TAIL,
+      }],
+      refused: null,
+    };
+  }, [follow, followOffset, tailParams, active, gate.checkFollow, track.source, track.branch.id]);
+
+  const staticReq = useMemo(() => {
+    if (follow || !tailParams || pinHour === null) return null;
+    const clamped = gate.recorded(pinHour);
+    if (clamped === null) return null;
+    return forwardRequest(track.source, MARKET_LEDGER_TAIL, { ...tailParams, hour: clamped });
+  }, [follow, tailParams, pinHour, gate.recorded, track.source]);
+
+  const staticReply = useProduct<LogTailReplyWire>(
+    runtime.client,
+    staticReq,
+    active && !follow && !!staticReq,
+    value => {
+      if (!isLogTailReply(value)) throw new Error('The market ledger tail reply is malformed.');
+      return value;
+    },
+    track.source,
+  );
+
+  const staticSources = useMemo(() => {
+    if (follow || !staticReply.data || pinHour === null) return null;
+    return {
+      sources: { answers: new Map(), panels: new Map<string, unknown>([['tail', staticReply.data]]), live: new Map() },
+      hour: pinHour,
+    };
+  }, [follow, staticReply.data, pinHour]);
+
+  const exactSources = useCallback(async (hour: number, askLimit: number): Promise<FamilySources | null> => {
+    if (!tailParams) return null;
+    const clamped = gate.recorded(hour);
+    if (clamped === null) return null;
+    const controller = new AbortController();
+    const reply = await loadProduct<LogTailReplyWire>(
+      runtime.client,
+      forwardRequest(track.source, MARKET_LEDGER_TAIL, { ...tailParams, hour: clamped, limit: askLimit }),
+      controller.signal,
+      value => {
+        if (!isLogTailReply(value)) throw new Error('The market ledger tail reply is malformed.');
+        return value;
+      },
+      track.source,
+    );
+    return { answers: new Map(), panels: new Map<string, unknown>([['tail', reply]]), live: new Map() };
+  }, [tailParams, gate.recorded, runtime.client, track.source]);
+
+  const onLoadScrollPage = useCallback(async (frozenHour: number, offset: number, pageSize: number, baseOrdinal: number, total: number) => {
+    if (!tailParams) return null;
+    const range = scrollPageOrdinalRange(baseOrdinal, total, offset, pageSize);
+    if (!range) return null;
+    const clamped = gate.recorded(frozenHour);
+    if (clamped === null) return null;
+    const controller = new AbortController();
+    const page = await loadProduct<LogPageReply>(
+      runtime.client,
+      forwardRequest(track.source, MARKET_LEDGER, {
+        branchId: track.branch.id,
+        facets,
+        ...(fromParam !== null ? { from: fromParam } : {}),
+        to: clamped,
+        cursor: range.cursor,
+        pageSize: range.pageSize,
+      }),
+      controller.signal,
+      undefined,
+      track.source,
+    );
+    return pageReplyToTail(page, baseOrdinal, total);
+  }, [tailParams, gate.recorded, runtime.client, track.source, track.branch.id, facets, fromParam]);
+
+  const projectionOptions = useMemo<MarketLedgerProjectionOptions>(() => ({
+    looks,
+    ...(typeof empty === 'string' ? { emptyMessage: empty } : {}),
+  }), [looks, empty]);
+
+  const onActivate = useCallback((_key: string, meta?: unknown, hour?: number) => {
+    if (onOpen && meta && hour !== undefined) onOpen(meta as LedgerItem, hour);
+  }, [onOpen]);
+
+  const contextMenuItems = useCallback((_key: string, hour: number, meta?: unknown) => [
+    ...(onOpen && meta ? [{ label: 'Show contract', run: () => onOpen(meta as LedgerItem, hour) }] : []),
+    jumpItem(runtime, track.id, hour),
+  ], [onOpen, runtime, track.id]);
+
+  const blockedState = followPlan.refused
+    ? <WidgetState kind="unavailable" message={followPlan.refused} />
+    : !follow && staticReply.error
+      ? <WidgetState kind="error" failure={staticReply.error} onRetry={staticReply.retry} />
+      : null;
+
+  const bounds = useMemo(
+    () => (spanFirst !== null && spanLast !== null ? [spanFirst, spanLast] as const : null),
+    [spanFirst, spanLast],
+  );
+
+  return (
+    <FamilyLogHost
+      projection={marketLedgerProjection}
+      options={projectionOptions}
+      label={label}
+      subject="market activity"
+      widget={syntheticWidget}
+      runtime={runtime}
+      active={active}
+      density={density}
+      months={months}
+      twoLine
+      subscriptions={followPlan.subs}
+      staticSources={staticSources}
+      exactSources={exactSources}
+      onLoadScrollPage={onLoadScrollPage}
+      onLimitChange={setLimit}
+      offset={followOffset}
+      pin={pinHour}
+      bounds={bounds}
+      controls={controls}
+      onActivate={onOpen ? onActivate : undefined}
+      contextMenuItems={contextMenuItems}
+      headerSlot={headerSlot}
+      onDiagnostics={onDiagnostics}
+      blockedState={blockedState}
+    />
+  );
 }

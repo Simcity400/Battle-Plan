@@ -14,5 +14,5 @@ export const definition = {
   description: 'Division creations, losses and transfers, with templates, locations and attackers.',
   timeModes: ['campaign', 'follow', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
-  availability: { product: 'division-log-manifest', params: {} }, options: OPTIONS,
+  availability: { product: 'division-log-manifest', params: {} }, options: OPTIONS, playsBackDated: true,
 } as const satisfies WidgetMeta;

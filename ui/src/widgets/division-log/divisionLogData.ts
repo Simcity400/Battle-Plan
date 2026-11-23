@@ -14,31 +14,38 @@ import type { CountryRef, DivisionLogManifestReply, LogCell, PlaceName } from '.
 
 export const KINDS = { created: 0, lost: 1, transfer: 2 } as const;
 export type DivisionKind = keyof typeof KINDS;
-const KIND_NAMES: readonly DivisionKind[] = ['created', 'lost', 'transfer'];
+export const KIND_NAMES: readonly DivisionKind[] = ['created', 'lost', 'transfer'];
+export const VANISHED_KIND = 3;
 
 export interface DivisionLogEntry {
-  division: string; kind: DivisionKind; status: string;
+  division: string; kind: DivisionKind | null; status: string | null;
   readHour: number;
   hour: number; by: boolean; afterHour: number | null;
   tag: string | null; name: string | null; nameMissing: string | null; icon: string | null; iconMissing: string | null;
   presentationHour: number | null; template: string | null; templateName: string | null; templateMissing: string | null;
   province: number | null; placeHour: number | null; placeAtEvent: boolean;
+  placeName: string | null; placeMissing: string | null;
   killerTag: string | null; killerDivision: string | null; matchedDeaths: number | null;
 }
 
 const number = (cell: LogCell | undefined) => cell?.kind === 'number' ? Number(cell.value) : null;
 const text = (cell: LogCell | undefined) => cell?.kind === 'text' ? cell.value : null;
 
+export function divisionKindFromNumber(raw: number | null): DivisionKind | null {
+  return raw !== null && raw >= 0 && raw < KIND_NAMES.length ? KIND_NAMES[raw]! : null;
+}
+
 export function divisionEntry(row: LogReplyRow): LogRow<DivisionLogEntry> {
   const cells = row.cells;
   const readHour = number(cells.readHour) ?? row.hour;
   const item: DivisionLogEntry = {
-    division: text(cells.division) ?? row.key, kind: KIND_NAMES[number(cells.kind) ?? 1] ?? 'lost', status: text(cells.status) ?? 'unknown',
-    readHour, hour: number(cells.hour) ?? readHour, by: number(cells.by) !== 0, afterHour: number(cells.afterHour),
+    division: text(cells.division) ?? row.key, kind: divisionKindFromNumber(number(cells.kind)), status: text(cells.status),
+    readHour, hour: number(cells.hour) ?? readHour, by: number(cells.by) === 1, afterHour: number(cells.afterHour),
     tag: text(cells.tag), name: text(cells.name), nameMissing: text(cells.nameMissing), icon: text(cells.icon), iconMissing: text(cells.iconMissing),
     presentationHour: number(cells.presentationHour), template: text(cells.template), templateName: text(cells.templateName),
     templateMissing: text(cells.templateMissing), province: number(cells.province), placeHour: number(cells.placeHour),
-    placeAtEvent: number(cells.placeAtEvent) === 1, killerTag: text(cells.killerTag), killerDivision: text(cells.killerDivision),
+    placeAtEvent: number(cells.placeAtEvent) === 1, placeName: text(cells.placeName), placeMissing: text(cells.placeMissing),
+    killerTag: text(cells.killerTag), killerDivision: text(cells.killerDivision),
     matchedDeaths: number(cells.matchedDeaths),
   };
   return { key: row.key, hour: readHour, by: false, item };
@@ -92,7 +99,7 @@ export function kindTotals(list: LogCounts, kinds: ReadonlyMap<DivisionKind, Log
     const row = page?.rows?.[at - page.start];
     if (!row) return null;
     const kind = row.item.kind;
-    if (out.has(kind)) out.set(kind, out.get(kind)! + 1);
+    if (kind !== null && out.has(kind)) out.set(kind, out.get(kind)! + 1);
   }
   return out;
 }
@@ -102,7 +109,8 @@ export function gapWarnings(manifest: DivisionLogManifestReply, first: number, l
     .map(gap => `${gap.reason}: ${formatDateTime(Math.max(first, gap.firstHour))} – ${formatDateTime(Math.min(last, gap.lastHour))}`);
 }
 
-export function divisionStatus(row: DivisionLogEntry): string {
+export function divisionStatus(row: Pick<DivisionLogEntry, 'status'>): string {
+  if (row.status === null) return 'Status not recorded';
   const names: Record<string, string> = {
     first_observed: 'First seen', division_destroyed: 'Destroyed', division_overrun: 'Overrun',
     division_deleted: 'Removed', division_disbanded: 'Disbanded', division_capitulation: 'Removed at capitulation',
