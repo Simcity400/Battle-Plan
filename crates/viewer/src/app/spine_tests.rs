@@ -1,8 +1,6 @@
 use super::{Config, Options, Playhead, Viewer};
-use crate::{
-    layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
-    playhead_host::{MapSide, mirror::Mirrors, open, views::tests::hourly_steps},
-};
+use viewer_layer_core::{layers::{Carried, Settling, Inputs, Layer, Published, View}, test_support::recorded::record};
+use crate::playhead_host::{MapSide, mirror::Mirrors, open, views::tests::hourly_steps};
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::{BranchId, Hour, rows::TableId};
@@ -78,23 +76,23 @@ fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
     let entry = open(units, hourly_steps()).unwrap();
     let gate = Arc::new(AtomicBool::new(true));
     let layer = Gated { open: Arc::clone(&gate), next: None, published: None, viewed: false };
-    let mut side = MapSide::new(entry, vec![Box::new(layer)], View::default()).unwrap();
+    let mut side = MapSide::with_products(entry, vec![Box::new(layer)], View::default()).unwrap();
     side.set_branch(BRANCH);
     (side, gate)
 }
 
-fn map(viewer: &mut Viewer) -> &mut crate::playhead_host::side::SideThread {
+fn map(viewer: &mut Viewer) -> &mut viewer_playback::side::SideThread {
     viewer.playhead_map.as_mut().expect("the window's reader")
 }
 
-fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
+fn frames_at(side: &mut viewer_playback::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
     side.with_side_mut(|side| {
-        crate::layers::recorded::frames_at(side, hour, &format!("hour {hour}"), |side, _| done(side));
+        viewer_layer_core::test_support::recorded::frames_at(side, hour, &format!("hour {hour}"), |side, _| done(side));
     });
     side.driven(|_| ());
 }
 
-fn shown(side: &mut crate::playhead_host::side::SideThread, hour: Hour) {
+fn shown(side: &mut viewer_playback::side::SideThread, hour: Hour) {
     frames_at(side, hour, |side| !side.composing() && side.last_frame().drawn == Some(hour));
 }
 
@@ -103,7 +101,7 @@ fn viewer(side: MapSide, hour: Hour) -> Viewer {
     viewer.playhead = Some(at(hour));
     viewer.rendered_sequence = 1;
     viewer.playhead_opened = true;
-    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     viewer
