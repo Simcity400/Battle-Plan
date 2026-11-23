@@ -506,6 +506,7 @@ impl Store {
         self.entry_capacity_demand()
             .max(self.decisions.demand)
             .max(self.decisions.capacity())
+            .max(self.staged_demand)
     }
 
     pub(crate) fn prepare_staged(&mut self, capacity: usize) -> io::Result<()> {

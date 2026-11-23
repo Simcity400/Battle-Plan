@@ -58,14 +58,17 @@ pub fn read_batch(
     countries: &ccountry::Reader<'_, impl Memory>,
     batch: &[engine_native_memory::country_identity::Country],
     out: &mut [BatchedStatus; BATCH],
-) -> Result<usize, &'static str> {
+) -> (usize, Option<&'static str>) {
     let n = batch.len();
     if n == 0 {
-        return Ok(0);
+        return (0, None);
     }
-    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
-    let secondary =
-        engine_sites::at(base, SECONDARY_VTABLE_RVA).ok_or("module address overflow")? as u64;
+    let Some(expected) = engine_sites::at(base, VTABLE_RVA).map(|v| v as u64) else {
+        return (0, Some("module address overflow"));
+    };
+    let Some(secondary) = engine_sites::at(base, SECONDARY_VTABLE_RVA).map(|v| v as u64) else {
+        return (0, Some("module address overflow"));
+    };
     let mut country_ptrs = [0_usize; BATCH];
     let mut ptr_bytes = [0_u8; BATCH * 8];
     let mut safe_count = 0;
@@ -88,14 +91,21 @@ pub fn read_batch(
     let mut block_ptrs = [0_usize; BATCH];
     let mut block_slots = [0_usize; BATCH];
     let mut block_count = 0_usize;
+    let mut limit = n;
+    let mut ptr_err = None;
     for (i, &_country) in batch.iter().enumerate() {
         let status = if i < ptrs_copied {
-            let p = usize::try_from(u64::from_le_bytes(
+            let Ok(p) = usize::try_from(u64::from_le_bytes(
                 ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
-            ))
-            .map_err(|_| "project status pointer unreadable")?;
+            )) else {
+                limit = i;
+                ptr_err = Some("project status pointer unreadable");
+                break;
+            };
             if p == 0 {
-                return Err("project status pointer is null");
+                limit = i;
+                ptr_err = Some("project status pointer is null");
+                break;
             }
             p
         } else {
@@ -122,18 +132,20 @@ pub fn read_batch(
     for k in 0..blocks_copied {
         block_index[block_slots[k]] = k;
     }
-    for (i, &country) in batch.iter().enumerate() {
+    for (i, &country) in batch[..limit].iter().enumerate() {
         let k = block_index[i];
         if k != usize::MAX {
             let slice = &blocks[k * BLOCK_LEN..(k + 1) * BLOCK_LEN];
             if u64::from_le_bytes(slice[..8].try_into().unwrap()) != expected
                 || u64::from_le_bytes(slice[8..16].try_into().unwrap()) != secondary
             {
-                return Err("project status vtable mismatch");
+                return (i, Some("project status vtable mismatch"));
             }
             let owner = u32::from_le_bytes(slice[16..20].try_into().unwrap());
-            if countries.resolve(owner)?.pointer != country.pointer {
-                return Err("project status owner mismatch");
+            match countries.resolve(owner) {
+                Ok(resolved) if resolved.pointer == country.pointer => {}
+                Ok(_) => return (i, Some("project status owner mismatch")),
+                Err(err) => return (i, Some(err)),
             }
             let mut block = [0_u8; BLOCK_LEN];
             block.copy_from_slice(slice);
@@ -143,7 +155,10 @@ pub fn read_batch(
                 block: Some(block),
             };
         } else {
-            let status = from_country(memory, base, country, countries)?;
+            let status = match from_country(memory, base, country, countries) {
+                Ok(status) => status,
+                Err(err) => return (i, Some(err)),
+            };
             out[i] = BatchedStatus {
                 country,
                 status,
@@ -151,7 +166,7 @@ pub fn read_batch(
             };
         }
     }
-    Ok(n)
+    (limit, ptr_err)
 }
 
 pub fn programs_from_block(block: &[u8; BLOCK_LEN]) -> Result<Array, &'static str> {

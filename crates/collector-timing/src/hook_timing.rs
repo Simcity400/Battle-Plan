@@ -427,7 +427,7 @@ impl Table {
     }
     fn claim(&self) -> usize {
         self.claimed
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |claimed| {
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |claimed| {
                 claimed.checked_add(1)
             })
             .map_or(SHARED_SLOT, |claimed| claimed.min(SHARED_SLOT))

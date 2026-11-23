@@ -151,11 +151,17 @@ fn for_each_pool<M: Memory>(
     let mut slot = 1_u32;
     while slot < countries.count() {
         let mut n = 0_usize;
+        let mut batch_err = None;
         while slot < countries.count() && n < nproject_cprogram_status::BATCH {
             let cur = slot;
             slot += 1;
-            let Some(country) = countries.at(cur)? else {
-                continue;
+            let country = match countries.at(cur) {
+                Ok(Some(country)) => country,
+                Ok(None) => continue,
+                Err(err) => {
+                    batch_err = Some(err);
+                    break;
+                }
             };
             found_country = true;
             if !select(country.id) {
@@ -164,61 +170,66 @@ fn for_each_pool<M: Memory>(
             batch_countries[n] = country;
             n += 1;
         }
-        if n == 0 {
-            continue;
-        }
-        nproject_cprogram_status::read_batch(
-            memory,
-            base,
-            &countries,
-            &batch_countries[..n],
-            &mut statuses,
-        )?;
-        let mut pool_count = 0_usize;
-        for (i, entry) in statuses[..n].iter().enumerate() {
-            if let Some(block) = &entry.block
-                && let Ok(pool) = nproject_cprogram_status::pool_from_block(block)
-                && pool
-                    .checked_add(nproject_cproject_pool::PROJECTS + 16)
-                    .is_some()
-            {
-                pool_ptrs[pool_count] = pool;
-                pool_slots[pool_count] = i;
-                pool_count += 1;
+        if n > 0 {
+            let (ok_len, status_err) = nproject_cprogram_status::read_batch(
+                memory,
+                base,
+                &countries,
+                &batch_countries[..n],
+                &mut statuses,
+            );
+            let mut pool_count = 0_usize;
+            for (i, entry) in statuses[..ok_len].iter().enumerate() {
+                if let Some(block) = &entry.block
+                    && let Ok(pool) = nproject_cprogram_status::pool_from_block(block)
+                    && pool
+                        .checked_add(nproject_cproject_pool::PROJECTS + 16)
+                        .is_some()
+                {
+                    pool_ptrs[pool_count] = pool;
+                    pool_slots[pool_count] = i;
+                    pool_count += 1;
+                }
+            }
+            let head_len = nproject_cproject_pool::PROJECTS + 16;
+            let pools_copied = if pool_count > 0 {
+                memory.copy_records(
+                    RecordSources::Pointers(&pool_ptrs[..pool_count]),
+                    &POOL_HEAD_LAYOUT,
+                    &mut pool_bytes[..pool_count * head_len],
+                )
+            } else {
+                0
+            };
+            let mut pool_index = [usize::MAX; nproject_cprogram_status::BATCH];
+            for k in 0..pools_copied {
+                pool_index[pool_slots[k]] = k;
+            }
+            for (i, entry) in statuses[..ok_len].iter().enumerate() {
+                let projects = if pool_index[i] != usize::MAX {
+                    let k = pool_index[i];
+                    let slice = &pool_bytes[k * head_len..(k + 1) * head_len];
+                    if u64::from_le_bytes(slice[..8].try_into().unwrap()) != pool_vtable {
+                        return Err("project pool vtable mismatch");
+                    }
+                    Array::from_header(
+                        slice[nproject_cproject_pool::PROJECTS..head_len]
+                            .try_into()
+                            .unwrap(),
+                        POOL_STRIDE,
+                    )
+                    .ok_or("project pool array unreadable or invalid")?
+                } else {
+                    nproject_cproject_pool::from_status(memory, base, entry.status)?
+                };
+                visit(&countries, entry.country, projects)?;
+            }
+            if let Some(err) = status_err {
+                return Err(err);
             }
         }
-        let head_len = nproject_cproject_pool::PROJECTS + 16;
-        let pools_copied = if pool_count > 0 {
-            memory.copy_records(
-                RecordSources::Pointers(&pool_ptrs[..pool_count]),
-                &POOL_HEAD_LAYOUT,
-                &mut pool_bytes[..pool_count * head_len],
-            )
-        } else {
-            0
-        };
-        let mut pool_index = [usize::MAX; nproject_cprogram_status::BATCH];
-        for k in 0..pools_copied {
-            pool_index[pool_slots[k]] = k;
-        }
-        for (i, entry) in statuses[..n].iter().enumerate() {
-            let projects = if pool_index[i] != usize::MAX {
-                let k = pool_index[i];
-                let slice = &pool_bytes[k * head_len..(k + 1) * head_len];
-                if u64::from_le_bytes(slice[..8].try_into().unwrap()) != pool_vtable {
-                    return Err("project pool vtable mismatch");
-                }
-                Array::from_header(
-                    slice[nproject_cproject_pool::PROJECTS..head_len]
-                        .try_into()
-                        .unwrap(),
-                    POOL_STRIDE,
-                )
-                .ok_or("project pool array unreadable or invalid")?
-            } else {
-                nproject_cproject_pool::from_status(memory, base, entry.status)?
-            };
-            visit(&countries, entry.country, projects)?;
+        if let Some(err) = batch_err {
+            return Err(err);
         }
     }
     if !found_country {

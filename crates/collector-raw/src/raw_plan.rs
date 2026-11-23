@@ -412,16 +412,11 @@ impl<const N: usize> CapturePlan<N> {
             self.compiled = None;
             self.retire = false;
         }
-        if self.compiled.is_some() {
-            self.requests = Vec::new();
-            observations.release_buffers();
-        } else {
-            if observations.after_reads > self.requests.capacity() {
-                let additional = observations.after_reads - self.requests.len();
-                engine_allocation::reserve_exact(&mut self.requests, additional)?;
-            }
-            observations.grow_for_next();
+        if observations.after_reads > self.requests.capacity() {
+            let additional = observations.after_reads - self.requests.len();
+            engine_allocation::reserve_exact(&mut self.requests, additional)?;
         }
+        observations.grow_for_next();
         self.sealed = false;
         PREPARE_NS.fetch_add(
             started.elapsed().as_nanos().min(u64::MAX as u128) as u64,

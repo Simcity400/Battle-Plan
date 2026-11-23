@@ -2490,11 +2490,12 @@ mod tests {
             struct StopAt<'a>(&'a World, usize, bool);
             impl Memory for StopAt<'_> {
                 fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                    if address == self.1 && !self.2 {
+                    let hit = (address..address.saturating_add(output.len())).contains(&self.1);
+                    if hit && !self.2 {
                         return false;
                     }
                     let copied = self.0.copy(address, output);
-                    if address == self.1 {
+                    if hit {
                         PROOF.fetch_add(2, std::sync::atomic::Ordering::SeqCst);
                     }
                     copied

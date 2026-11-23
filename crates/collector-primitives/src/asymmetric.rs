@@ -146,20 +146,15 @@ impl Drop for CaptureQuiescence {
 }
 
 pub fn begin_capture_quiescence(mut all_other_hooks_quiet: impl FnMut() -> bool) -> CaptureQuiescence {
-    let claimed = CLAIMED.load(Acquire);
-    if claimed > 1 || (claimed == 1 && SLOT.get() != 0) {
-        // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
-        unsafe { FlushProcessWriteBuffers() };
-    }
+    // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
+    unsafe { FlushProcessWriteBuffers() };
     let mut quiet = all_other_hooks_quiet();
     if !quiet {
         for _ in 0..64 {
             std::hint::spin_loop();
             if all_other_hooks_quiet() {
-                if CLAIMED.load(Acquire) != 0 {
-                    // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
-                    unsafe { FlushProcessWriteBuffers() };
-                }
+                // SAFETY: `FlushProcessWriteBuffers` is a stateless kernel32 synchronization barrier.
+                unsafe { FlushProcessWriteBuffers() };
                 quiet = all_other_hooks_quiet();
                 break;
             }
@@ -383,7 +378,12 @@ impl FlightGuard<'_> {
 
     pub fn leak_and_retain(mut self) {
         if let Some((slot_idx, entry_idx)) = self.slot.take() {
-            self.gate.overflow.fetch_or(RETAIN_BIT | 1, SeqCst);
+            let _ = self.gate.overflow.fetch_update(SeqCst, SeqCst, |current| {
+                let count = (current & !RETAIN_BIT)
+                    .saturating_add(1)
+                    .min(!RETAIN_BIT);
+                Some(RETAIN_BIT | count)
+            });
             leave_slot(slot_idx, entry_idx);
         } else {
             self.gate.overflow.fetch_or(RETAIN_BIT, SeqCst);
@@ -464,6 +464,21 @@ mod tests {
         let extra = gate.enter(false);
         drop(extra);
         assert_eq!(gate.active() & !RETAIN_BIT, 1);
+
+        let concurrent = FlightGate::new(0);
+        let slot_guard = concurrent.enter(false);
+        let fillers: Vec<_> = (1..SLOT_DEPTH).map(|_| concurrent.enter(false)).collect();
+        let overflow_guard = concurrent.enter(false);
+        assert!(slot_guard.slot.is_some());
+        assert!(overflow_guard.slot.is_none());
+        drop(fillers);
+        assert_eq!(concurrent.active(), 2);
+        slot_guard.leak_and_retain();
+        assert_eq!(concurrent.active(), RETAIN_BIT | 2);
+        drop(overflow_guard);
+        assert!(concurrent.is_retained());
+        assert_eq!(concurrent.active(), RETAIN_BIT | 1);
+        assert_eq!(concurrent.quiet_epoch(), None);
     }
 
     #[test]

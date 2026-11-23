@@ -1611,27 +1611,18 @@ impl Shared {
         Ok(())
     }
 
-    fn parked_and_retired_bytes(&self) -> u64 {
-        self.parked_total_bytes.load(Ordering::Relaxed)
-    }
-
     pub fn parked_bytes(&self) -> u64 {
         self.parked_total_bytes.load(Ordering::Relaxed)
     }
 
     fn at_frame_limit(&self) -> bool {
-        self.frames.at_limit_with_extra(
-            crate::frame_pool::MAX_LIVE_FRAMES,
-            crate::frame_pool::MAX_LIVE_BYTES,
-            self.parked_and_retired_bytes(),
-        )
+        self.frames.at_limit()
     }
 
     fn try_claim_frame_growth(&self) -> Option<crate::frame_pool::GrowthClaim<'_>> {
         self.frames.try_claim_growth(
             crate::frame_pool::MAX_LIVE_FRAMES,
             crate::frame_pool::MAX_LIVE_BYTES,
-            self.parked_and_retired_bytes(),
         )
     }
 
@@ -1755,7 +1746,10 @@ impl Shared {
                     self.return_frame(index, Return::Idle);
                     return None;
                 }
-                self.ensure_parked_packs(index);
+                if !self.ensure_parked_packs(index) {
+                    self.return_frame(index, Return::Idle);
+                    return None;
+                }
                 return Some(index);
             }
             HourFrame::DropStalled => {
@@ -1775,12 +1769,30 @@ impl Shared {
         self.wake_builder();
         let started = qpc();
         let index = self.frames.vacant().ok()?;
-        match self.new_frame_parked() {
-            Ok(frame) => self.frames.install_claimed(index, frame, claim),
-            Err(_) => {
-                self.frames.abandon(index);
-                return None;
-            }
+        let built = match self.take_parked_pack() {
+            Some((parked, bytes)) => match self.new_frame_parked() {
+                Ok(mut frame) => {
+                    frame.extended.install_parked_packs(parked);
+                    self.frames.install_claimed(index, frame, claim);
+                    self.adjust_parked_bytes(bytes, 0);
+                    Ok(())
+                }
+                Err(err) => {
+                    self.park_pack_with_prior(parked, bytes);
+                    Err(err)
+                }
+            },
+            None => match self.new_frame() {
+                Ok(frame) => {
+                    self.frames.install_claimed(index, frame, claim);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            },
+        };
+        if built.is_err() {
+            self.frames.abandon(index);
+            return None;
         }
         let elapsed = self.ns(qpc() - started);
         self.frames.grew(elapsed);
@@ -1791,7 +1803,6 @@ impl Shared {
         *grow_ns = elapsed;
         // SAFETY: This stage owns the installed frame slot.
         unsafe { self.frame_stage(index, FrameStage::Callback) };
-        self.ensure_parked_packs(index);
         self.frame_priority.refresh();
         Some(index)
     }
@@ -1800,6 +1811,7 @@ impl Shared {
         if after != before {
             let delta = after.wrapping_sub(before);
             self.parked_total_bytes.fetch_add(delta, Ordering::Relaxed);
+            self.frames.adjust_live_bytes(before, after);
             self.pool_bytes.fetch_add(delta, Ordering::Relaxed);
         }
     }
@@ -1876,27 +1888,32 @@ impl Shared {
         true
     }
 
-    fn ensure_parked_packs(&self, index: usize) {
-        // SAFETY: caller exclusively owns the frame slot just taken for capture.
-        let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
-        if !frame.extended.is_parked() {
-            return;
-        }
-        let taken = self.parked_packs.lock().ok().and_then(|mut slots| {
+    fn take_parked_pack(&self) -> Option<(Box<extended::ParkedPacks>, u64)> {
+        self.parked_packs.lock().ok().and_then(|mut slots| {
             let parked = slots.pop()?;
             let bytes = parked.allocated_bytes() as u64;
             Some((parked, bytes))
-        });
-        if let Some((parked, bytes)) = taken {
+        })
+    }
+
+    fn ensure_parked_packs(&self, index: usize) -> bool {
+        // SAFETY: caller exclusively owns the frame slot just taken for capture.
+        let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        if !frame.extended.is_parked() {
+            return true;
+        }
+        if let Some((parked, bytes)) = self.take_parked_pack() {
             frame.extended.install_parked_packs(parked);
             self.set_frame_bytes(index, frame.allocated_bytes() as u64);
             self.adjust_parked_bytes(bytes, 0);
+            true
         } else {
             let capacities = self.frame_capacities.published();
             frame.extended.hydrate_parked_packs(&capacities.extended);
             frame.extended.share_country_intel(&self.country_intel);
             frame.extended.share_template_home(&self.template_home);
             self.set_frame_bytes(index, frame.allocated_bytes() as u64);
+            !collector_memory::terminal::failed()
         }
     }
 

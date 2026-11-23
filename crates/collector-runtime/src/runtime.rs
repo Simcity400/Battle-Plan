@@ -6364,7 +6364,9 @@ mod tests {
         assert_eq!(quiet["buffer_wait_calls"], 0);
         assert!(quiet["waits"]["allocator"]["hold"]["heap"]["calls"].is_u64());
         assert!(quiet["waits"]["allocator"]["other"]["heap"]["calls"].is_u64());
-        let hours = 2 * collector_capture::frame_pool::STEADY + 1;
+        let hours = (2 * collector_capture::frame_pool::STEADY + 1).min(
+            collector_capture::frame_pool::MAX_LIVE_FRAMES - collector_capture::frame_pool::AHEAD,
+        );
         let taken: Vec<_> = (0..hours)
             .map(|_| {
                 let index =
@@ -8092,7 +8094,7 @@ mod tests {
         assert_eq!(
             // SAFETY: Sizing and the test use only the home associated with these session frames.
             unsafe { shared.country_intel() }.allocated_bytes(),
-            shared_after_idle
+            0
         );
         let allocated_after_second = allocated_bytes();
         let pool_after_second = shared.pool_owned();
@@ -8101,6 +8103,32 @@ mod tests {
             (allocated_after_second as u64).wrapping_sub(allocated_before as u64)
         );
         assert_idle_war_and_faction_capacities(&shared, sizing);
+
+        let mut loan = collector_intel::daily_intel::Loan::new(
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.clone(),
+        );
+        assert!(matches!(
+            loan.borrow(true),
+            collector_intel::daily_intel::Walk::Ready(_)
+        ));
+        drop(loan);
+        let rehydrated =
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes();
+        assert!(rehydrated >= shared_after_idle);
+        sizing.account_homes(&shared);
+        sizing.account_homes(&shared);
+        let allocated_after_rehydrate = allocated_bytes();
+        let pool_after_rehydrate = shared.pool_owned();
+        assert_eq!(
+            pool_after_rehydrate.wrapping_sub(pool_after_second),
+            rehydrated as u64
+        );
+        assert_eq!(
+            pool_after_rehydrate.wrapping_sub(pool_before),
+            (allocated_after_rehydrate as u64).wrapping_sub(allocated_before as u64)
+        );
     }
 
     #[test]

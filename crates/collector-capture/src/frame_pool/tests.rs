@@ -271,11 +271,10 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     pool.set_slot_bytes(0, 1);
     assert!(!pool.at_limit());
     let claim_a = pool
-        .try_claim_growth(STEADY + 1, MAX_LIVE_BYTES, 0)
+        .try_claim_growth(STEADY + 1, MAX_LIVE_BYTES)
         .expect("one growth claim up to the cap");
     assert!(
-        pool.try_claim_growth(STEADY + 1, MAX_LIVE_BYTES, 0)
-            .is_none(),
+        pool.try_claim_growth(STEADY + 1, MAX_LIVE_BYTES).is_none(),
         "second concurrent claim at the cap is refused"
     );
     drop(claim_a);
@@ -287,9 +286,18 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
         unsafe { shared.recycle_frame_prepared(slot) };
     }
     assert_eq!(pool.live(), STEADY);
-    assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
     assert!(shared.has_retired_parked());
+    let before_drain = pool.live_bytes();
     assert!(shared.drain_retired_parked());
+    assert!(pool.live_bytes() < before_drain);
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
     assert!(!shared.has_retired_parked());
     assert!(!shared.drain_retired_parked());
 }

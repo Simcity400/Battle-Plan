@@ -55,9 +55,9 @@ const REST_NS: u64 = 1_000_000;
 const RETRY: Duration = Duration::from_millis(1);
 
 fn level(free: usize) -> u32 {
-    if free <= 1 {
+    if free == 0 {
         2
-    } else if free == 2 {
+    } else if free == 1 {
         1
     } else {
         0

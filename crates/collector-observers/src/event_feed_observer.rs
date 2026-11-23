@@ -1595,7 +1595,9 @@ fn presize_storage(slots: usize) {
             .max(SCRIPT_CAPACITY[2].load(Ordering::Acquire))
             .max(SCRIPT_GRAPH_DEMAND.load(Ordering::Relaxed)),
     ];
-    let witness_demand = WITNESS_DEMAND.load(Ordering::Relaxed);
+    let witness_demand = WITNESS_DEMAND
+        .load(Ordering::Relaxed)
+        .max(WITNESS_CAPACITY.load(Ordering::Acquire));
     if capacity <= CAPACITY.load(Ordering::Acquire)
         && decision_capacity <= DECISION_CAPACITY.load(Ordering::Acquire)
         && owner_capacity <= DECISION_OWNER_CAPACITY.load(Ordering::Acquire)

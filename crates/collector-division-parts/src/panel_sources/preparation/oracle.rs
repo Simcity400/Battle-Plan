@@ -348,10 +348,29 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
         let mut current = NativeReads::default();
         old.begin(seeds.len()).unwrap();
         current.begin(seeds.len()).unwrap();
+        let province_context = selection.province.ok().and_then(|province| {
+            store
+                .provinces
+                .get(&province)
+                .copied()
+                .map(Ok)
+                .or(selection.context)
+                .and_then(Result::ok)
+                .flatten()
+        });
         let capture = || {
             for seed in &seeds {
                 old.capture(&old_memory, 0, 0, &store, seed, selection, None);
-                current.capture(&memory, 0, 0, &store, seed, selection, None, None);
+                current.capture(
+                    &memory,
+                    0,
+                    0,
+                    &store,
+                    seed,
+                    selection,
+                    None,
+                    province_context,
+                );
             }
         };
         if case.denied {

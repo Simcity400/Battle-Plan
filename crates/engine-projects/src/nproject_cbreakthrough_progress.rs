@@ -68,87 +68,98 @@ pub fn walk_buffer(
         let mut slot = 1_u32;
         while slot < countries.count() {
             let mut n = 0_usize;
+            let mut batch_err = None;
             while slot < countries.count() && n < nproject_cprogram_status::BATCH {
                 let cur = slot;
                 slot += 1;
-                let Some(country) = countries.at(cur)? else {
-                    continue;
+                let country = match countries.at(cur) {
+                    Ok(Some(country)) => country,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        batch_err = Some(err);
+                        break;
+                    }
                 };
                 found_country = true;
                 batch_countries[n] = country;
                 n += 1;
             }
-            if n == 0 {
-                break;
-            }
-            nproject_cprogram_status::read_batch(
-                memory,
-                base,
-                &countries,
-                &batch_countries[..n],
-                &mut statuses,
-            )?;
-            let mut header_count = 0_usize;
-            let mut parsed = [None; nproject_cprogram_status::BATCH];
-            for (i, entry) in statuses[..n].iter().enumerate() {
-                if let Some(block) = &entry.block {
-                    let bt = &block[nproject_cprogram_status::BREAKTHROUGH..];
-                    if u64::from_le_bytes(bt[..8].try_into().unwrap()) == expected_bt {
-                        let header = usize::try_from(u64::from_le_bytes(
-                            bt[TREE_HEADER..TREE_HEADER + 8].try_into().unwrap(),
-                        ))
-                        .ok();
-                        let count = u32::try_from(u64::from_le_bytes(
-                            bt[TREE_SIZE..TREE_SIZE + 8].try_into().unwrap(),
-                        ))
-                        .ok();
-                        if let (Some(header), Some(count)) = (header, count)
-                            && header != 0
-                            && header.checked_add(SENTINEL_LEN).is_some()
-                        {
-                            parsed[i] = Some((header, count));
-                            header_ptrs[header_count] = header;
-                            header_slots[header_count] = i;
-                            header_count += 1;
+            if n > 0 {
+                let (ok_len, status_err) = nproject_cprogram_status::read_batch(
+                    memory,
+                    base,
+                    &countries,
+                    &batch_countries[..n],
+                    &mut statuses,
+                );
+                let mut header_count = 0_usize;
+                let mut parsed = [None; nproject_cprogram_status::BATCH];
+                for (i, entry) in statuses[..ok_len].iter().enumerate() {
+                    if let Some(block) = &entry.block {
+                        let bt = &block[nproject_cprogram_status::BREAKTHROUGH..];
+                        if u64::from_le_bytes(bt[..8].try_into().unwrap()) == expected_bt {
+                            let header = usize::try_from(u64::from_le_bytes(
+                                bt[TREE_HEADER..TREE_HEADER + 8].try_into().unwrap(),
+                            ))
+                            .ok();
+                            let count = u32::try_from(u64::from_le_bytes(
+                                bt[TREE_SIZE..TREE_SIZE + 8].try_into().unwrap(),
+                            ))
+                            .ok();
+                            if let (Some(header), Some(count)) = (header, count)
+                                && header != 0
+                                && header.checked_add(SENTINEL_LEN).is_some()
+                            {
+                                parsed[i] = Some((header, count));
+                                header_ptrs[header_count] = header;
+                                header_slots[header_count] = i;
+                                header_count += 1;
+                            }
                         }
                     }
                 }
-            }
-            let sentinels_copied = if header_count > 0 {
-                memory.copy_records(
-                    RecordSources::Pointers(&header_ptrs[..header_count]),
-                    &SENTINEL_LAYOUT,
-                    &mut sentinel_bytes[..header_count * SENTINEL_LEN],
-                )
-            } else {
-                0
-            };
-            let mut sentinel_index = [usize::MAX; nproject_cprogram_status::BATCH];
-            for k in 0..sentinels_copied {
-                sentinel_index[header_slots[k]] = k;
-            }
-            for (i, entry) in statuses[..n].iter().enumerate() {
-                let outcome = if let (Some((header, count)), k) = (parsed[i], sentinel_index[i])
-                    && k != usize::MAX
-                {
-                    let raw = &sentinel_bytes[k * SENTINEL_LEN..(k + 1) * SENTINEL_LEN];
-                    walk_with_sentinel(memory, header, count, raw, entry.country.id, output.suffix(len))
+                let sentinels_copied = if header_count > 0 {
+                    memory.copy_records(
+                        RecordSources::Pointers(&header_ptrs[..header_count]),
+                        &SENTINEL_LAYOUT,
+                        &mut sentinel_bytes[..header_count * SENTINEL_LEN],
+                    )
                 } else {
-                    walk_status_buffer(memory, base, entry.status, entry.country.id, output.suffix(len))
+                    0
                 };
-                match outcome {
-                    Outcome::Rows { len: count } => len += count,
-                    Outcome::Truncated {
-                        len: count,
-                        unread_rows: omitted,
-                    } => {
-                        len += count;
-                        unread_rows = unread_rows
-                            .checked_add(omitted)
-                            .ok_or("breakthrough omitted count overflow")?;
-                    }
-                    Outcome::Unavailable { reason } => return Err(reason),
+                let mut sentinel_index = [usize::MAX; nproject_cprogram_status::BATCH];
+                for k in 0..sentinels_copied {
+                    sentinel_index[header_slots[k]] = k;
                 }
+                for (i, entry) in statuses[..ok_len].iter().enumerate() {
+                    let outcome = if let (Some((header, count)), k) = (parsed[i], sentinel_index[i])
+                        && k != usize::MAX
+                    {
+                        let raw = &sentinel_bytes[k * SENTINEL_LEN..(k + 1) * SENTINEL_LEN];
+                        walk_with_sentinel(memory, header, count, raw, entry.country.id, output.suffix(len))
+                    } else {
+                        walk_status_buffer(memory, base, entry.status, entry.country.id, output.suffix(len))
+                    };
+                    match outcome {
+                        Outcome::Rows { len: count } => len += count,
+                        Outcome::Truncated {
+                            len: count,
+                            unread_rows: omitted,
+                        } => {
+                            len += count;
+                            unread_rows = unread_rows
+                                .checked_add(omitted)
+                                .ok_or("breakthrough omitted count overflow")?;
+                        }
+                        Outcome::Unavailable { reason } => return Err(reason),
+                    }
+                }
+                if let Some(err) = status_err {
+                    return Err(err);
+                }
+            }
+            if let Some(err) = batch_err {
+                return Err(err);
             }
         }
         if !found_country {

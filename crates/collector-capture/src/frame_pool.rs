@@ -262,40 +262,36 @@ impl FramePool {
     }
 
     pub fn at_limit(&self) -> bool {
-        self.at_limit_with_extra(MAX_LIVE_FRAMES, MAX_LIVE_BYTES, 0)
+        self.at_limit_with(MAX_LIVE_FRAMES, MAX_LIVE_BYTES)
     }
 
     pub(crate) fn at_limit_with(&self, max_frames: usize, max_bytes: u64) -> bool {
-        self.at_limit_with_extra(max_frames, max_bytes, 0)
-    }
-
-    pub(crate) fn at_limit_with_extra(
-        &self,
-        max_frames: usize,
-        max_bytes: u64,
-        extra_bytes: u64,
-    ) -> bool {
         let claims = self.claims.load(Ordering::Acquire);
         if claims >= max_frames {
             return true;
         }
-        claims >= STEADY && self.live_bytes().saturating_add(extra_bytes) >= max_bytes
+        claims >= STEADY && self.live_bytes() >= max_bytes
     }
 
     pub(crate) fn try_claim_growth(
         &self,
         max_frames: usize,
         max_bytes: u64,
-        extra_bytes: u64,
     ) -> Option<GrowthClaim<'_>> {
         self.claims
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |claims| {
-                let bytes_ok =
-                    claims < STEADY || self.live_bytes().saturating_add(extra_bytes) < max_bytes;
+                let bytes_ok = claims < STEADY || self.live_bytes() < max_bytes;
                 (claims < max_frames && bytes_ok).then(|| claims + 1)
             })
             .ok()?;
         Some(GrowthClaim { pool: self })
+    }
+
+    pub(crate) fn adjust_live_bytes(&self, before: u64, after: u64) {
+        if after != before {
+            self.live_bytes
+                .fetch_add(after.wrapping_sub(before), Ordering::Release);
+        }
     }
 
     pub(crate) fn set_slot_bytes(&self, index: usize, bytes: u64) {

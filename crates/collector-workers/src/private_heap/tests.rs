@@ -721,7 +721,7 @@ fn detach_forgets_cached_blocks_and_releases_every_reservation() {
 fn reusing_a_large_reservation_off_hold_trims_excess_committed_tail() {
     let heap = Heap::new();
     let heap = &heap.0;
-    let big = Layout::from_size_align(1024 * 1024, 16).unwrap();
+    let big = Layout::from_size_align(900 * 1024, 16).unwrap();
     let small = Layout::from_size_align(600 * 1024, 16).unwrap();
     std::thread::scope(|scope| {
         scope.spawn(move || {

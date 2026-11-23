@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(stages[2]["worker"], 3);
         assert_eq!(stages[2]["begin_ns"], 3_000);
         assert_eq!(stages[2]["wall_ns"], 1_000);
-        assert_eq!(PARTS.len(), Part::VariantsSetup as usize + 1);
+        assert_eq!(PARTS.len(), Part::PresentationSpeedTermsWait as usize + 1);
         assert_eq!(status["template_fallback"], serde_json::Value::Null);
         assert_eq!(FALLBACKS.len(), TemplateFallback::Redecided as usize + 1);
         log.template_fallback

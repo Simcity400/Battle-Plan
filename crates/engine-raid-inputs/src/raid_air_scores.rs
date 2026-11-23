@@ -611,9 +611,7 @@ fn read_entries<'a>(
             }
             _ => {
                 menu_ok[at] = true;
-                scales[at] = address_at(at)?
-                    .checked_add(AIR_SPOTTING_SCALE)
-                    .and_then(|addr| read::<i64>(memory, addr));
+                scales[at] = None;
             }
         }
         at += 1;
@@ -1228,7 +1226,7 @@ mod tests {
         }
         impl Memory for Fault<'_> {
             fn copy(&self, at: usize, to: &mut [u8]) -> bool {
-                if at == self.at {
+                if (at..at.saturating_add(to.len())).contains(&self.at) {
                     self.attempts.set(self.attempts.get() + 1);
                     return false;
                 }
@@ -1284,7 +1282,7 @@ mod tests {
         }
         impl Memory for OneShot<'_> {
             fn copy(&self, at: usize, to: &mut [u8]) -> bool {
-                if at == self.at {
+                if (at..at.saturating_add(to.len())).contains(&self.at) {
                     self.attempts.set(self.attempts.get() + 1);
                     if self.attempts.get() == 1 {
                         return false;

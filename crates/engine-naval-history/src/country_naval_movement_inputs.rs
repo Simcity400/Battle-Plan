@@ -123,18 +123,12 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.manager = Err("naval movement pass cleared");
     }
 
-    pub fn observe_navy(&self, slot: u32) -> Result<NavyInputs, &'static str> {
-        let Some(manager) = self.manager? else {
-            return Ok(NavyInputs::absent(slot));
-        };
-        if manager.navies.count == 0 {
-            return Ok(NavyInputs::absent(slot));
-        }
-        let entry = manager
-            .navies
-            .element(slot, 8)
-            .ok_or("naval movement physical navy slot outside manager")?;
-        let navy = pointer(self.memory, entry)?;
+    fn observe_navy_ptr(
+        &self,
+        slot: u32,
+        manager: Manager,
+        navy: usize,
+    ) -> Result<NavyInputs, &'static str> {
         if navy == 0 {
             return Ok(NavyInputs::absent(slot));
         }
@@ -176,11 +170,29 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
+    pub fn observe_navy(&self, slot: u32) -> Result<NavyInputs, &'static str> {
+        let Some(manager) = self.manager? else {
+            return Ok(NavyInputs::absent(slot));
+        };
+        if manager.navies.count == 0 {
+            return Ok(NavyInputs::absent(slot));
+        }
+        let entry = manager
+            .navies
+            .element(slot, 8)
+            .ok_or("naval movement physical navy slot outside manager")?;
+        let navy = pointer(self.memory, entry)?;
+        self.observe_navy_ptr(slot, manager, navy)
+    }
+
     pub fn observe_navies_range(
         &self,
         count: usize,
         mut each: impl FnMut(u32, Result<NavyInputs, &'static str>),
     ) {
+        if count == 0 {
+            return;
+        }
         let Ok(Some(manager)) = self.manager else {
             for index in 0..count {
                 if let Ok(slot) = u32::try_from(index) {
@@ -208,10 +220,11 @@ impl<'a, M: Memory> Reader<'a, M> {
             }
             return;
         };
+        each(0, self.observe_navy(0));
         let mut ptr_bytes = [0_u8; NAVY_BATCH * 8];
         let mut pointers = [0_usize; NAVY_BATCH];
         let mut records = [0_u8; NAVY_BATCH * NAVY_BYTES];
-        let mut first = 0_usize;
+        let mut first = 1_usize;
         while first < count {
             let n = (count - first).min(NAVY_BATCH);
             let contiguous = u32::try_from(first)
@@ -256,6 +269,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 0
             };
             let complete = copied / NAVY_FIELDS.len();
+            let partial = copied % NAVY_FIELDS.len();
             for offset in 0..n {
                 let slot = (first + offset) as u32;
                 let navy = raw_ptrs[offset];
@@ -291,8 +305,34 @@ impl<'a, M: Memory> Reader<'a, M> {
                             }),
                         );
                     }
+                } else if at == complete {
+                    if partial < 3 {
+                        each(slot, Err("naval movement navy identity unreadable"));
+                    } else {
+                        let rec = &records[at * NAVY_BYTES..(at + 1) * NAVY_BYTES];
+                        let primary = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+                        let secondary = u64::from_le_bytes(rec[8..16].try_into().unwrap());
+                        let backlink = u64::from_le_bytes(rec[16..24].try_into().unwrap());
+                        if primary != expected
+                            || secondary != secondary_expected
+                            || backlink != manager.pointer as u64
+                        {
+                            each(slot, Err("naval movement navy identity or manager mismatch"));
+                        } else {
+                            each(
+                                slot,
+                                Ok(NavyInputs {
+                                    slot,
+                                    present: true,
+                                    launch_navy: Some(navy),
+                                    ledger_navy: Some(navy),
+                                    ledgers: Some(Err("naval movement array unreadable or invalid")),
+                                }),
+                            );
+                        }
+                    }
                 } else {
-                    each(slot, self.observe_navy(slot));
+                    each(slot, self.observe_navy_ptr(slot, manager, navy));
                 }
             }
             first += n;

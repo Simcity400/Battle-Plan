@@ -1233,8 +1233,8 @@ fn partial_drain_reclaims_only_consumed_root_slots_under_out_of_order_reservatio
         &spill,
         &buffer,
         None,
-        engine_native_memory::walk::Buffer::Fixed(&mut one),
-        engine_native_memory::walk::Buffer::Fixed(&mut names),
+        engine_native_memory::walk::Buffer::Exact(&mut one),
+        engine_native_memory::walk::Buffer::Exact(&mut names),
         None,
     )
     .unwrap();
@@ -1266,9 +1266,9 @@ fn partial_drain_reclaims_only_consumed_root_slots_under_out_of_order_reservatio
         &spill,
         &buffer,
         None,
-        engine_native_memory::walk::Buffer::Fixed(&mut compact_out),
+        engine_native_memory::walk::Buffer::Exact(&mut compact_out),
         &mut compact_roots,
-        engine_native_memory::walk::Buffer::Fixed(&mut names),
+        engine_native_memory::walk::Buffer::Exact(&mut names),
         None,
     )
     .unwrap();

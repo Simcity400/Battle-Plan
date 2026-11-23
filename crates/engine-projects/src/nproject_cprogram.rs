@@ -150,52 +150,63 @@ pub fn walk_buffer(
         let mut slot = 1_u32;
         while slot < countries.count() {
             let mut n = 0_usize;
+            let mut batch_err = None;
             while slot < countries.count() && n < nproject_cprogram_status::BATCH {
                 let cur = slot;
                 slot += 1;
-                let Some(country) = countries.at(cur)? else {
-                    continue;
+                let country = match countries.at(cur) {
+                    Ok(Some(country)) => country,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        batch_err = Some(err);
+                        break;
+                    }
                 };
                 found_country = true;
                 batch_countries[n] = country;
                 n += 1;
             }
-            if n == 0 {
-                break;
-            }
-            nproject_cprogram_status::read_batch(
-                memory,
-                base,
-                &countries,
-                &batch_countries[..n],
-                &mut statuses,
-            )?;
-            for entry in &statuses[..n] {
-                let programs = match &entry.block {
-                    Some(block) => nproject_cprogram_status::programs_from_block(block)?,
-                    None => nproject_cprogram_status::programs(memory, entry.status)?,
-                };
-                candidates.ensure(
-                    result
-                        .required_candidates
-                        .checked_add(programs.count as usize)
-                        .ok_or("program candidate count overflow")?,
-                )?;
-                for index in 0..programs.count {
-                    if result.required_candidates < candidates.len() {
-                        let pointer = programs
-                            .element(index, 8)
-                            .and_then(|p| read::<u64>(memory, p))
-                            .and_then(|p| usize::try_from(p).ok())
-                            .filter(|&p| p != 0)
-                            .ok_or("program pointer unreadable or null")?;
-                        candidates[result.required_candidates] = pointer;
+            if n > 0 {
+                let (ok_len, status_err) = nproject_cprogram_status::read_batch(
+                    memory,
+                    base,
+                    &countries,
+                    &batch_countries[..n],
+                    &mut statuses,
+                );
+                for entry in &statuses[..ok_len] {
+                    let programs = match &entry.block {
+                        Some(block) => nproject_cprogram_status::programs_from_block(block)?,
+                        None => nproject_cprogram_status::programs(memory, entry.status)?,
+                    };
+                    candidates.ensure(
+                        result
+                            .required_candidates
+                            .checked_add(programs.count as usize)
+                            .ok_or("program candidate count overflow")?,
+                    )?;
+                    for index in 0..programs.count {
+                        if result.required_candidates < candidates.len() {
+                            let pointer = programs
+                                .element(index, 8)
+                                .and_then(|p| read::<u64>(memory, p))
+                                .and_then(|p| usize::try_from(p).ok())
+                                .filter(|&p| p != 0)
+                                .ok_or("program pointer unreadable or null")?;
+                            candidates[result.required_candidates] = pointer;
+                        }
+                        result.required_candidates = result
+                            .required_candidates
+                            .checked_add(1)
+                            .ok_or("program candidate count overflow")?;
                     }
-                    result.required_candidates = result
-                        .required_candidates
-                        .checked_add(1)
-                        .ok_or("program candidate count overflow")?;
                 }
+                if let Some(err) = status_err {
+                    return Err(err);
+                }
+            }
+            if let Some(err) = batch_err {
+                return Err(err);
             }
         }
         if !found_country {
