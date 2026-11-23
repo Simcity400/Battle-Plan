@@ -322,7 +322,9 @@ fn evaluate(panels: &mut Panels) {
         let same = shown.frame.as_ref().is_some_and(|f| Arc::ptr_eq(f, &frame));
         let data;
         let mut updates = Vec::new();
-        if !same {
+        if !same && shown.data.is_some() && shown.panel.unchanged(&frame) {
+            shown.frame = Some(Arc::clone(&frame));
+        } else if !same {
             let made = catch_unwind(AssertUnwindSafe(|| shown.panel.data(&frame)))
                 .unwrap_or_else(|p| Err(format!("This panel could not be made at hour {} ({})", frame.hour, panicked(&*p))));
             data = with_cells(&frame, &made, shown.panel.live(), &mut shown.cells, panels.cells.as_ref(), shown.class);

@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import type { DashboardClient } from './client';
+import type { BoundTrack } from './model';
 import { dayLabel } from '../charts/draw.ts';
 
 export interface MioPolicySelection {
@@ -21,6 +22,8 @@ export interface GameWindowProps<S extends GameWindowSelection = GameWindowSelec
 }
 
 export interface ShownWindow { hour: number; readHour: number | null }
+
+export const openedOn = (track: Pick<BoundTrack, 'source' | 'branch'>, tag: string) => JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]);
 
 export function windowReadNote(shown: ShownWindow): string | null {
   return shown.readHour === null || shown.readHour === Math.floor(shown.hour) ? null : `Recorded ${dayLabel(shown.readHour)}`;

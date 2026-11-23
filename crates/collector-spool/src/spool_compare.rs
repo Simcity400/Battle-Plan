@@ -185,6 +185,7 @@ compared_tables!(
     OrdersGroupMembers,
     DivisionEquipmentDeletions,
     BuildingBombingDamage,
+    CombatEngagementRefreshes,
     NuclearStrikes,
     RaidPlayerAllowedTypes,
     CountryExperienceGains,

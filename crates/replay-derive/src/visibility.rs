@@ -262,6 +262,213 @@ pub fn reserved_faction(row: &ReservedCountryNamingRow) -> Result<u64, &'static 
     }
 }
 
+fn reserved_tables<F: Tables + ?Sized>(
+    frame: &F,
+) -> Result<(Result<u64, &'static str>, Result<crate::rows::ReservedReverseVisibilityInputs, &'static str>), &'static str> {
+    let mut found = None;
+    each::<tables::ReservedCountryNaming, F>(frame, "ReservedCountryNaming", |row| {
+        if found.is_some() {
+            return Err("ReservedCountryNaming singleton");
+        }
+        let faction = reserved_faction(row);
+        let reverse = match &row.reverse_visibility {
+            Recorded::NotRecorded => Err("ReservedCountryNaming.reverse_visibility not recorded"),
+            Recorded::Value(None) => Err("ReservedCountryNaming.reverse_visibility capture refused"),
+            Recorded::Value(Some(packet)) => {
+                if !packet.sample_hour.fresh_at(frame.at_hour()) {
+                    Err("ReservedCountryNaming.reverse_visibility sample hour mismatch")
+                } else {
+                    Ok(packet.clone())
+                }
+            }
+        };
+        found = Some((faction, reverse));
+        Ok(())
+    })?;
+    found.ok_or("ReservedCountryNaming singleton")
+}
+
+fn map_intel_factions_tables<F: Tables + ?Sized>(
+    frame: &F,
+    links: &BTreeMap<u32, u32>,
+) -> Result<BTreeMap<u32, Result<u64, &'static str>>, &'static str> {
+    let mut out: BTreeMap<u32, Result<u64, &'static str>> = BTreeMap::new();
+    each::<tables::FactionMembers, F>(frame, "FactionMembers", |row| {
+        let country = map_intel_slot(links, row.country)?;
+        if row.faction == 0 {
+            return Err("FactionMembers has null faction identity");
+        }
+        match out.entry(country) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Ok(row.faction));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if *entry.get() != Ok(row.faction) {
+                    *entry.get_mut() = Err("FactionMembers has inconsistent faction identity");
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+#[derive(Clone)]
+pub struct ZeroVisibility {
+    forward: Result<BTreeMap<u32, Result<bool, &'static str>>, &'static str>,
+    reverse: Result<Vec<Result<bool, &'static str>>, &'static str>,
+    reverse_sample_hour: Option<crate::rows::PacketHour>,
+}
+
+impl ZeroVisibility {
+    pub fn unavailable(reason: &'static str) -> Self {
+        Self {
+            forward: Err(reason),
+            reverse: Err(reason),
+            reverse_sample_hour: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests(forward: impl IntoIterator<Item = (u32, Result<bool, &'static str>)>) -> Self {
+        Self {
+            forward: Ok(forward.into_iter().collect()),
+            reverse: Err("ReservedCountryNaming"),
+            reverse_sample_hour: None,
+        }
+    }
+
+    pub fn read_tables<F: Tables + ?Sized>(
+        frame: &F,
+        links: &BTreeMap<u32, u32>,
+    ) -> Self {
+        let factions = map_intel_factions_tables(frame, links);
+        let reserved_row = reserved_tables(frame);
+        let reserved_faction = match &reserved_row {
+            Ok((faction, _)) => *faction,
+            Err(reason) => Err(*reason),
+        };
+        let mut forward_map = BTreeMap::new();
+        let forward = each::<tables::CountryCounterInputs, F>(
+            frame,
+            "CountryCounterInputs",
+            |row| {
+                let Some(&owner) = links.get(&row.country) else {
+                    return Ok(());
+                };
+                let result = forward_zero_shared_of(
+                    links,
+                    &row.forward_visibility,
+                    &row.zero_war,
+                    &row.zero_subject,
+                    || match &factions {
+                        Ok(map) => match map.get(&owner) {
+                            Some(&Ok(faction)) => Ok(Some(faction)),
+                            Some(&Err(reason)) => Err(reason),
+                            None => Ok(None),
+                        },
+                        Err(reason) => Err(reason),
+                    },
+                    || reserved_faction,
+                );
+                match forward_map.entry(owner) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(result);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        *entry.get_mut() = Err("CountryCounterInputs visibility owner duplicated");
+                    }
+                }
+                Ok(())
+            },
+        )
+        .map(|()| forward_map);
+
+        let (reverse, reverse_sample_hour) = match reserved_row {
+            Ok((_, Ok(packet))) => {
+                let sample_hour = packet.sample_hour;
+                let cells = packet
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .map(|(target, cell)| {
+                        let target = target as u32;
+                        let cell = cell
+                            .as_ref()
+                            .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused")?;
+                        if active_war(
+                            cell.war
+                                .ok_or("ReservedCountryNaming.reverse_visibility war capture refused")?,
+                        )? {
+                            return Ok(false);
+                        }
+                        let faction = (|| {
+                            let faction = reserved_faction?;
+                            if faction == 0 {
+                                return Ok(false);
+                            }
+                            if target == 0 {
+                                return Ok(true);
+                            }
+                            match &factions {
+                                Ok(map) => match map.get(&target) {
+                                    Some(&Ok(f)) => Ok(f == faction),
+                                    Some(&Err(reason)) => Err(reason),
+                                    None => Ok(false),
+                                },
+                                Err(reason) => Err(reason),
+                            }
+                        })();
+                        event_or(faction, || {
+                            let cell_target = cell.target.ok_or(
+                                "ReservedCountryNaming.reverse_visibility target capture refused",
+                            );
+                            let subject = cell.subject.as_ref().ok_or(
+                                "ReservedCountryNaming.reverse_visibility subject capture refused",
+                            )?;
+                            map_intel_subject(subject, links, cell_target)
+                        })
+                    })
+                    .collect();
+                (Ok(cells), Some(sample_hour))
+            }
+            Ok((_, Err(reason))) => (Err(reason), None),
+            Err(reason) => (Err(reason), None),
+        };
+
+        Self {
+            forward,
+            reverse,
+            reverse_sample_hour,
+        }
+    }
+
+    pub fn reverse_stale_at(&self, hour: crate::Hour) -> bool {
+        self.reverse_sample_hour
+            .is_some_and(|sample_hour| !sample_hour.fresh_at(hour))
+    }
+
+    pub fn forward_shared(&self, owner: u32) -> Result<bool, &'static str> {
+        self.forward
+            .as_ref()
+            .map_err(|reason| *reason)?
+            .get(&owner)
+            .copied()
+            .unwrap_or(Err("CountryCounterInputs visibility owner missing"))
+    }
+
+    pub fn reverse_shared(&self, target: u32) -> Result<bool, &'static str> {
+        self.reverse
+            .as_ref()
+            .map_err(|reason| *reason)?
+            .get(target as usize)
+            .copied()
+            .unwrap_or(Err(
+                "ReservedCountryNaming.reverse_visibility cell capture refused",
+            ))
+    }
+}
+
 fn reverse_cell<'a>(
     frame: &dyn DecodedSource,
     row: &'a ReservedCountryNamingRow,

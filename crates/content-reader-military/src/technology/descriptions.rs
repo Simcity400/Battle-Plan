@@ -48,6 +48,23 @@ impl Catalog {
             equipment: content_reader_key_names::equipment::Database::load_complete(layers)?,
             ..Self::default()
         };
+        for path in layers.directory_files("common/technology_tags", ".txt")? {
+            let read = native::read_in_effect_scope(
+                &path.read(layers)?,
+                native::Mode::KeepMark,
+                native::Top::File(Node::File),
+                Some(names),
+                ScopeKind::Country.bit(),
+                &mut |_, field| match field.keyword().as_deref() {
+                    Some(b"technology_categories") => Shape::RawList,
+                    _ => Shape::Skip,
+                },
+            );
+            if let Some(why) = &read.unsettled {
+                catalog.refusal = Some(format!("{path}: technology categories unread: {why}"));
+            }
+            catalog.append(&read.items, &registry, names);
+        }
         for path in layers.directory_files("common/technologies", ".txt")? {
             let (read, undecided, refused) = read_templates(&path.read(layers)?, &registry, names);
             catalog
@@ -279,14 +296,26 @@ mod tests {
             "common/technologies/nested/ignored.txt",
             "technologies={ignored={}}",
         );
+        stack.write(
+            &stack.addon(),
+            "common/technology_tags/tags.txt",
+            "technology_categories={armor Mod_Rockets} technology_folders={armor_folder={ledger=army}}",
+        );
         let layers = stack.layers(&["common/technologies"]);
         let names = content_reader_key_names::key_name_products::KeyNameProducts::read(&layers).unwrap().names;
         let catalog = Catalog::read(&layers, &names).unwrap();
         assert!(catalog.refusal.is_none(), "{:?}", catalog.refusal);
+        assert!(catalog.effect_refusal.is_none(), "{:?}", catalog.effect_refusal);
+        assert_eq!(catalog.category(b"armor").unwrap(), Some(&b"armor"[..]));
+        assert_eq!(catalog.category(b"Mod_Rockets").unwrap(), Some(&b"Mod_Rockets"[..]));
+        assert_eq!(catalog.category(b"armor_folder").unwrap(), None);
         assert_eq!(catalog.definitions.len(), 3);
         assert_eq!(catalog.get(b"RePeAt").unwrap().unwrap().parent, b"first");
         assert_eq!(catalog.definitions[1].parent, b"second");
         assert_eq!(catalog.definitions[2].parent, b"third");
+        assert_eq!(catalog.template(3, b"repeat").unwrap().unwrap().parent, b"third", "a recorded template names its own definition of a shared token");
+        assert!(catalog.template(2, b"other").is_err(), "a template whose content names another technology is refused, never read");
+        assert!(catalog.template(4, b"repeat").unwrap().is_none());
         assert!(catalog.get(b"hidden").unwrap().is_none());
         assert!(catalog.get(b"ignored").unwrap().is_none());
     }

@@ -517,3 +517,4 @@
 516 StrategicRegionWeights 32 weight:I32
 517 StateBuildingInputs 32 owner:U32,controller:U32,extra_shared_slots:I32,local_building_slots:OptionalI64,local_building_slots_factor:OptionalI64,global_building_slots:OptionalI64,global_building_slots_factor:OptionalI64,local_factories:OptionalI64,local_factory_energy_consumption:OptionalI64,local_factory_energy_consumption_per_infrastructure:OptionalI64,factory_energy_consumption:OptionalI64,factory_energy_factor:OptionalI64
 518 PowerSpendDays 104 ordinal:U32,day:I32,days:I64,payments:I64,charge:I64,unknown:I64,uncovered:I64,realized_gained:I64,realized_lost:I64,realized_unknown:I64,credits:I64
+519 CombatEngagementRefreshes 99 triggers:U8

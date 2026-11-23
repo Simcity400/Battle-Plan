@@ -42,6 +42,7 @@ replay_rows::row_ops! {
     DivisionRetreatBans => DivisionRetreatBanRow,
     InvasionPreparations => InvasionPreparationRow,
     LandCombatSides => LandCombatSideRow,
+    CombatEngagementRefreshes => CombatEngagementRefreshRow,
     NavalCombatAirBaseWingHandles => NavalCombatAirBaseWingHandlesRow,
     DivisionCensus => DivisionCensusRow,
     DivisionLandInputs => DivisionLandInputsRow,

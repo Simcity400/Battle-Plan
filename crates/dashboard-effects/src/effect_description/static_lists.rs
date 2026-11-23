@@ -13,6 +13,7 @@ pub fn scaled_static_modifiers(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let (_, modifiers) = renderer.static_modifier(token)?;
     renderer.modifier_description_with(

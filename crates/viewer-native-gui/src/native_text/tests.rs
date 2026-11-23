@@ -233,20 +233,6 @@ fn special_sequences_have_their_widths() {
 }
 
 #[test]
-fn icon_names_split_at_the_first_bar() {
-    assert_eq!(
-        icon_lookup("flag_x|12|3"),
-        ([b"GFX_flag_x".to_vec(), b"flag_x".to_vec()], Some(0))
-    );
-    assert_eq!(icon_lookup("a|12").1, Some(11));
-    assert_eq!(icon_lookup("a|").1, Some(-1));
-    assert_eq!(icon_lookup("a|0").1, Some(-1));
-    assert_eq!(icon_lookup("a|4294967299").1, Some(2));
-    assert_eq!(icon_lookup("a|2147483648").1, Some(0));
-    assert_eq!(icon_lookup("a").1, None);
-}
-
-#[test]
 fn kerning_reads_the_original_codepoint() {
     struct Kerned;
     impl Glyphs for Kerned {

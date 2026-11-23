@@ -1606,6 +1606,7 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
         unsafe {
             collector_observers::air_losses::lost_drain();
             collector_observers::building_bombing::lost_drain();
+            collector_observers::combat_engagement_refreshes::lost_drain();
             collector_observers::nuclear_strikes::lost_drain();
             collector_land_events::land_events::fail();
         }
@@ -1641,6 +1642,7 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
         unsafe {
             collector_observers::air_losses::lost_drain();
             collector_observers::building_bombing::lost_drain();
+            collector_observers::combat_engagement_refreshes::lost_drain();
             collector_observers::nuclear_strikes::lost_drain();
             collector_land_events::land_events::fail();
         }

@@ -153,7 +153,7 @@ fn mode_recording(capture_mode: u8) -> Vec<u8> {
 #[test]
 fn a_cursor_reads_format_and_capture_mode_from_the_recording_metadata() {
     let format = CAPTURE_ADDITIONS_FORMAT - 1;
-    let added = [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs];
+    let added = [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::CombatEngagementRefreshes];
     let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, format, b"cursor format 141", &[(1, 100, 1)], &[TableId::States, TableId::Divisions], |synthetic, _, ordinal| {
         let states = [StateRowAt141 { id: 4, owner: 7 + ordinal, controller: 9, custom_name: b"Bohemia".to_vec(), continent: Some(2).into(), ..Default::default() }];
         let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, roster_owner: 7, province: 11 + ordinal, hit_points: 500_000, organisation: 250_000, ..Default::default() }];

@@ -68,6 +68,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .get(index)
             .ok_or("bound localisation node is absent")?;
         let mut arguments = Vec::with_capacity(node.arguments.len());
+        let mut linked = Vec::new();
         for argument in &node.arguments {
             let value = match &argument.value {
                 BoundValue::Localization(value) => {
@@ -77,9 +78,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             };
             let name = std::str::from_utf8(&argument.name)
                 .map_err(|_| "bound argument name is not UTF-8")?;
+            if let (BoundResult::Text(text), BoundValue::Localization(FormattedLocalization::Key(key))) = (&value, &argument.value)
+                && let Some(token) = self.bound_technology(key)?
+            {
+                linked.push((arguments.len(), crate::effect_description::entity_links::mark(EntityKind::Technology, token, text)));
+            }
             arguments.push((name, value));
         }
-        let arguments = arguments
+        let plain = arguments
             .iter()
             .map(|(name, value)| {
                 (
@@ -91,7 +97,46 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 )
             })
             .collect::<Vec<_>>();
-        self.bound_formatted(&node.key, &arguments, scopes, scoped)
+        if linked.is_empty() {
+            return self.bound_formatted(&node.key, &plain, scopes, scoped);
+        }
+        let unmarked: Vec<Option<String>> = arguments
+            .iter()
+            .map(|(_, value)| match value {
+                BoundResult::Text(text) => Some(crate::effect_description::entity_links::unmark(text)),
+                BoundResult::Token(_) => None,
+            })
+            .collect();
+        let unmarked: Vec<(&str, Argument<'_>)> = plain
+            .iter()
+            .zip(&unmarked)
+            .map(|((name, argument), text)| (*name, text.as_deref().map_or(*argument, Argument::Text)))
+            .collect();
+        let text = self.bound_formatted(&node.key, &unmarked, scopes, scoped)?;
+        let mut marked = plain.clone();
+        for (at, name) in &linked {
+            marked[*at].1 = Argument::Text(name);
+        }
+        match (self.bound_formatted(&node.key, &marked, scopes, scoped)?, &text) {
+            (BoundResult::Text(with), BoundResult::Text(without))
+                if crate::effect_description::entity_links::unmark(&with) == *without =>
+            {
+                Ok(BoundResult::Text(with))
+            }
+            _ => Err(
+                "the game's formatting changes the linked technology names in this text, so their links are not reproduced"
+                    .into(),
+            ),
+        }
+    }
+
+    fn bound_technology<'k>(&self, key: &'k [u8]) -> Result<Option<&'k str>, String> {
+        if !self.context.entity_links || self.technology_catalog()?.get(key)?.is_none() {
+            return Ok(None);
+        }
+        std::str::from_utf8(content_reader_parser::parser::c_string(key))
+            .map(Some)
+            .map_err(|_| "the bound technology key is not UTF-8".into())
     }
 
     fn bound_formatted(
@@ -122,7 +167,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     std::str::from_utf8(token).map_err(|_| "bound formatter token is not UTF-8")?;
                 let text = match formatter.as_slice() {
                     b"idea_desc" if scoped => self.bound_idea_description(token, scopes)?,
-                    b"tech_effect" if scoped => self.bound_technology_effect(token, scopes)?,
+                    b"tech_effect" if scoped => self.bound_technology_effect(token, None, scopes)?,
                     b"idea_desc" | b"tech_effect" => "NULL".to_owned(),
                     _ => {
                         return Err(format!(

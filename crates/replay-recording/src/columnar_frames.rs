@@ -632,3 +632,7 @@ fn hour_edits(reader: &TableReader) -> Edits {
 pub fn available(status: Status) -> bool {
     matches!(status, Status::Complete | Status::Truncated { .. })
 }
+
+pub fn complete(status: Status) -> bool {
+    status == Status::Complete
+}

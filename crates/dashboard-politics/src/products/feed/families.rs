@@ -166,9 +166,9 @@ pub(crate) fn read_notices(read: &FeedEvent, losses: &[(i32, i32)], notices: &mu
     }
 }
 
-fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, tags: Vec<String>, item: Option<EventFeedItem>) -> EventFeedRow {
+fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, tags: Vec<String>, subject: Option<String>, item: Option<EventFeedItem>) -> EventFeedRow {
     EventFeedRow {
-        id: format!("{kind:?}:{hour}:{}", tags.join(",")),
+        id: format!("{kind:?}:{hour}:{}:{}", tags.join(","), subject.unwrap_or_default()),
         hour,
         read_hour,
         name_hour,
@@ -199,8 +199,8 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     let within = |hour: i32| from <= hour && hour <= to;
     let mut rows = Vec::new();
     if wanted(EventFeedKind::WarStarted) {
-        rows.extend(reply.war_starts.iter().filter(|start| within(start.hour)).map(|start| family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, vec![start.attacking.clone(), start.defending.clone()], None)));
-        rows.extend(reply.capitulations.iter().filter(|capitulation| within(capitulation.hour)).map(|capitulation| family_row(EventFeedKind::Capitulated, capitulation.hour, capitulation.hour, capitulation.hour, vec![capitulation.tag.clone()], None)));
+        rows.extend(reply.war_starts.iter().filter(|start| within(start.hour)).map(|start| family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, vec![start.attacking.clone(), start.defending.clone()], None, None)));
+        rows.extend(reply.capitulations.iter().filter(|capitulation| within(capitulation.hour)).map(|capitulation| family_row(EventFeedKind::Capitulated, capitulation.hour, capitulation.hour, capitulation.hour, vec![capitulation.tag.clone()], None, None)));
         let mut ends: Vec<(i32, String, String)> = Vec::new();
         for war in &reply.wars {
             let ended = war.last_hour + 1;
@@ -214,7 +214,7 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
             if native.contains(&pair(hour)) || native.contains(&pair(hour - 1)) {
                 continue;
             }
-            rows.push(family_row(EventFeedKind::Peace, hour, hour, hour - 1, vec![first, second], None));
+            rows.push(family_row(EventFeedKind::Peace, hour, hour, hour - 1, vec![first, second], None, None));
         }
     }
     if wanted(EventFeedKind::FactionJoined) {
@@ -225,11 +225,11 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
             };
             for member in &faction.members {
                 if within(member.first_hour) && follows_observed(query, &reply.unobserved.factions, member.first_hour) {
-                    rows.push(family_row(EventFeedKind::FactionJoined, member.first_hour, member.first_hour, member.first_hour, vec![member.tag.clone()], name(member.first_hour)));
+                    rows.push(family_row(EventFeedKind::FactionJoined, member.first_hour, member.first_hour, member.first_hour, vec![member.tag.clone()], Some(faction.id.clone()), name(member.first_hour)));
                 }
                 let left = member.last_hour + 1;
                 if within(left) && follows_observed(query, &reply.unobserved.factions, left) {
-                    rows.push(family_row(EventFeedKind::FactionLeft, left, left, member.last_hour, vec![member.tag.clone()], name(member.last_hour)));
+                    rows.push(family_row(EventFeedKind::FactionLeft, left, left, member.last_hour, vec![member.tag.clone()], Some(faction.id.clone()), name(member.last_hour)));
                 }
             }
         }
@@ -288,7 +288,7 @@ pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i3
         if start < query.timeline.first || start < from || start > to || !seen.insert((run.overlord.clone(), run.subject.clone(), start)) {
             continue;
         }
-        rows.push(family_row(EventFeedKind::BecameSubject, start, run.first_hour.max(start), start, vec![run.subject, run.overlord], None));
+        rows.push(family_row(EventFeedKind::BecameSubject, start, run.first_hour.max(start), start, vec![run.subject, run.overlord], None, None));
     }
     Ok(rows)
 }
@@ -299,16 +299,15 @@ pub(crate) fn project_rows(source: &Source, query: &Query<'_>, context: &LoadCon
         let hours: i64 = found.unrecorded.iter().map(|span| i64::from(span.last_hour) - i64::from(span.first_hour) + 1).sum();
         notices.unavailable("projectFinished", "Special projects", format!("Project histories were not recorded for {hours} hours of this span; a completion dated then is not listed."), None);
     }
-    let rows = found
-        .events
-        .into_iter()
-        .filter_map(|event| {
-            let tag = event.tag?;
-            let item = EventFeedItem { token: None, name: event.name, icon: event.icon, ..Default::default() };
-            Some(family_row(EventFeedKind::ProjectFinished, event.date, event.observed_hour, event.observed_hour, vec![tag], Some(item)))
-        })
-        .collect();
+    let rows = found.events.into_iter().filter_map(completion_row).collect();
     Ok((rows, found.warnings))
+}
+
+pub(super) fn completion_row(event: special_projects::ProjectCompletion) -> Option<EventFeedRow> {
+    let tag = event.tag?;
+    let item = EventFeedItem { token: None, name: event.name, icon: event.icon, ..Default::default() };
+    let subject = format!("{}:{}:{}", event.owner, event.project, event.ordinal);
+    Some(family_row(EventFeedKind::ProjectFinished, event.date, event.observed_hour, event.observed_hour, vec![tag], Some(subject), Some(item)))
 }
 
 pub(crate) fn unread(categories: &[EventFeedCategory], notices: &mut Notices) {

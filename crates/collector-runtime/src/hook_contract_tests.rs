@@ -69,6 +69,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
         Family::NavalResultSources => &[NavalResultSources],
         Family::AirLosses => &[AirLossEvents],
         Family::BuildingBombing => &[BuildingBombingDamage],
+        Family::CombatEngagementRefreshes => &[CombatEngagementRefreshes],
         Family::NuclearStrikes => &[NuclearStrikes],
         Family::MapEvents => &[MapEvents],
         Family::EventFeed => &[EventFeedHistory],
@@ -253,6 +254,9 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
         Family::NavalResultSources => sites!(naval_result_sources::SITES, s => s.rva),
         Family::AirLosses => sites!(air_loss_sites::SITES, s => s.rva),
         Family::BuildingBombing => vec![building_damage_sites::APPLY_DAMAGE_RVA],
+        Family::CombatEngagementRefreshes => {
+            sites!(engine_mutations::combat_engagement_mutations::MUTATIONS, s => s.rva)
+        }
         Family::NuclearStrikes => sites!(nuclear_strike_sites::SITES, s => s.rva),
         Family::MapEvents => vec![
             map_event_sites::FAKE_REVEAL_VISIBILITY_CALL_RVA,
@@ -1009,6 +1013,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
     producer!(collector_naval_history::extended::naval_history; [NavalSupremacy,SunkConvoys,LandTheatres,LandTheatreGroups,LandTheatreMembers,AirTheatres,AirTheatreGroups,AirTheatreMembers,NavalResults,NavalResultMembers,NavalResultCountries,SunkShips,OrdersGroups,OrdersGroupMembers,ArmyGroupMembers]);
     producer!(collector_naval_missions::extended::naval_mission_inputs; [NavalMissionTaskForces,NavalMissionLedgers,NavalPatrolMissionInputs,NavalDominanceTaskForceRanges]);
     producer!(collector_naval_results::extended::naval_result_sources; []);
+    producer!(collector_ledger_tables::combat_engagement_refreshes; []);
     producer!(collector_ledger_tables::nuclear_strikes; []);
     producer!(collector_capture::extended::map_events; []);
     producer!(collector_operation_outcomes::extended::operation_outcomes; []);

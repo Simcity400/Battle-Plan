@@ -840,3 +840,36 @@ fn project_built_in_variables_are_refused() {
         }
     });
 }
+
+#[test]
+fn a_completed_project_is_known_only_from_the_countrys_accepted_project_rows() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut f = fixture();
+    let TableView::Complete(TableRows::Projects(rows)) = &mut *f.tables[TableId::Projects.index()] else { unreachable!() };
+    rows[0].completed = 1;
+    let completed = rows[0].clone();
+    let reward = "if = { limit = { is_special_project_completed = sp:synthetic_project } add_political_power = 5 } else = { add_political_power = 7 }";
+    let limit = |world: &World| world.evaluate(&items("is_special_project_completed = sp:synthetic_project"), Scopes::of(Scope::Country(1)));
+    let accepted = |rows: Vec<ProjectRow>, slots: &[u32]| AcceptedProjects {
+        owners: rows.iter().map(|row| row.owner).collect(),
+        rows: rows.into_iter().map(|row| ((row.owner, row.local_id), row)).collect(),
+        slots: slots.iter().copied().collect(),
+    };
+    with_world_accepted(&f, accepted(vec![completed.clone()], &[1]), |world| {
+        assert_eq!(limit(world), Eval::True, "the accepted completed row proves the if branch");
+    });
+    with_world_accepted(&f, accepted(Vec::new(), &[1]), |world| {
+        assert_eq!(limit(world), Eval::False, "every owner read and none completed proves the else branch");
+        assert!(
+            matches!(world.evaluate(&items("is_special_project_completed = sp:never_spelled"), Scopes::of(Scope::Country(1))), Eval::Unknown(_)),
+            "a project with no recorded spelling is unknown, never false"
+        );
+    });
+    with_world_accepted(&f, accepted(Vec::new(), &[]), |world| {
+        assert!(
+            matches!(limit(world), Eval::Unknown(_)),
+            "O-S1: the second owner's completed row was read before it joined the country, so neither branch of `{reward}` is known and the reward is withheld"
+        );
+    });
+}

@@ -21,7 +21,8 @@ fn fixture() -> (Fixture, Folder) {
                 "mod_tech={parent=mod_parent enable_equipments={mod_equipment}} mod_small={parent=mod_parent force_use_small_tech_layout=yes enable_equipments={mod_equipment}} ",
                 "mod_callback={mod_unit={soft_attack=0.17} enable_equipments={missing_equipment mod_equipment} enable_equipment_modules={mod_module mod_module mod_second_module mod_denied_module} max_level=5 enable_building={building=mod_lab} enable_subunits={limit={always=yes} mod_unit} enable_tactic=mod_tactic enable_tactic=MOD_TACTIC on_research_complete_limit={always=yes} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} modifier={custom_modifier_tooltip=TECH_MODIFIER}} ",
                 "mod_conditional={on_research_complete_limit={always=no} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}} ",
-                "mod_repeated={enable_building={building=mod_lab} enable_building={building=mod_lab level=2} enable_building={building=mod_store level=3} enable_building={building=MOD_LAB level=4} enable_tactic=mod_tactic enable_tactic=mod_tactic enable_tactic=mod_other_tactic enable_tactic=mod_tactic}}"
+                "mod_repeated={enable_building={building=mod_lab} enable_building={building=mod_lab level=2} enable_building={building=mod_store level=3} enable_building={building=MOD_LAB level=4} enable_tactic=mod_tactic enable_tactic=mod_tactic enable_tactic=mod_other_tactic enable_tactic=mod_tactic} ",
+                "MOD_TECH={parent=mod_other}}"
             ),
         ),
         ("common/units/synthetic.txt", "sub_units={mod_unit={}}"),
@@ -73,6 +74,7 @@ fn fixture() -> (Fixture, Folder) {
                 " FACTION_ACCESS_TAB_REASEARCH:0 \"Research [Root.GetTag]\"\n FACTION_ACCESS_TAB_UNLOCK:0 \"Unlock $NAME$\"\n FACTION_ACCESS_TAB_LOCK:0 \"Lock $NAME$\"\n",
                 " mod_category:0 \"Category\"\n AAA_mod_category:0 \"Alpha category [Root.GetTag]\"\n mod_other:0 \"Other\"\n mod_parent:0 \"Parent\"\n AAA_mod_parent:0 \"Alpha parent\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n",
                 " EFFECT_GIVE_TECHNOLOGY:0 \"Give $NAME$\"\n AND:0 \"plus \"\n EFFECT_TECH_BONUS_USES:0 \"$USES|0$ uses\"\n",
+                " MOD_UNLOCK_TECH:0 \"Unlocks $TECH|H$.\"\n MOD_UNLOCK_LOWER:0 \"Unlocks $TECH|l$.\"\n MOD_UNLOCK_BOTH:0 \"Unlocks $TECH|H$; $OTHER$\"\n mod_tech:0 \"Mod technology\"\n",
                 " EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"Bonus $BONUS|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS_AHEAD_ONLY:0 \"Ahead $AHEAD|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS:0 \"Both $AHEAD|2$/$BONUS|2$/$USES|0$:$LIST$\"\n",
                 " mod_folder_name:0 \"Folder\"\n mod_track_name:0 \"Track\"\n mod_grand_name:0 \"Grand\"\n mod_sub_name:0 \"Sub\"\n",
                 " SET_SUB_DOCTRINE_EFFECT:0 \"Set sub $NAME$\"\n SET_GRAND_DOCTRINE_EFFECT:0 \"Set grand $NAME$\"\n ADD_DAILY_MASTERY_EFFECT:0 \"Daily $AMOUNT|2$/$DAYS|0$\"\n ADD_MASTERY_BONUS_EFFECT:0 \"Mastery bonus $BONUS|2$/$DAYS|0$\"\n",
@@ -139,8 +141,14 @@ fn fixture() -> (Fixture, Folder) {
         TableView::Complete(TableRows::TechnologyDefinitions(vec![
             TechnologyDefinitionRow {
                 technology_handle: 42,
-                database_index: 7,
+                database_index: 1,
                 id: b"mod_tech".to_vec(),
+                ..Default::default()
+            },
+            TechnologyDefinitionRow {
+                technology_handle: 43,
+                database_index: 6,
+                id: b"MOD_TECH".to_vec(),
                 ..Default::default()
             },
             TechnologyDefinitionRow {
@@ -208,6 +216,10 @@ fn fixture() -> (Fixture, Folder) {
                 ScriptVariableEntry {
                     name: b"mod_handle".to_vec(),
                     value_raw: 4_200_000,
+                },
+                ScriptVariableEntry {
+                    name: b"mod_second_handle".to_vec(),
+                    value_raw: 4_300_000,
                 },
             ],
             ..Default::default()
@@ -337,6 +349,11 @@ fn technology_description_cases() {
             "technology_handle_uses_handle_not_database_index",
             "set_technology={var:mod_handle=0}",
             "Give Alpha parent\n",
+        ),
+        (
+            "technology_handle_keeps_its_recorded_template",
+            "set_technology={var:mod_second_handle=0}",
+            "Give Other\n",
         ),
         (
             "technology_bonus_runtime_equipment_name",
@@ -603,6 +620,158 @@ fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
 }
 
 #[test]
+fn bound_technology_entity_links_mark_every_unlock_only_when_asked() {
+    use crate::effect_description::{EntityKind, Span, spans};
+    use content_reader_localisation::localisation::Piece;
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let render = |links| {
+        fixture.with_context_linking(content.view(None), links, |context| {
+            technology_description("mod_callback", None, context, 1)
+        })
+    };
+    let (plain, linked) = (render(false), render(true));
+    assert!(plain.refusals.is_empty(), "{:?}", plain.refusals);
+    assert_eq!(plain.refusals, linked.refusals);
+    assert!(!plain.text.contains(['\u{1}', '\u{2}', '\u{3}']), "{:?}", plain.text);
+    let mut unmarked = String::new();
+    let mut links = Vec::new();
+    let mut open = None;
+    for span in spans(&linked.text).unwrap() {
+        match span {
+            Span::Open { kind, token, .. } => open = Some((kind, token, String::new())),
+            Span::Close => links.push(open.take().unwrap()),
+            Span::Piece(piece) => {
+                let text = match piece {
+                    Piece::Text(text) => text.to_owned(),
+                    Piece::Colour(code) => format!("\u{11}{code}"),
+                    Piece::Icon(name) => format!("\u{13}{name} "),
+                    other => panic!("unexpected {other:?}"),
+                };
+                if let Some((_, _, name)) = &mut open {
+                    name.push_str(&text);
+                }
+                unmarked.push_str(&text);
+            }
+        }
+    }
+    assert_eq!(unmarked, plain.text);
+    assert_eq!(
+        links,
+        [
+            (EntityKind::Equipment, "mod_equipment", "Alpha equipment".to_owned()),
+            (EntityKind::Module, "mod_module", "Zero module".to_owned()),
+            (EntityKind::Module, "mod_second_module", "Zero second".to_owned()),
+            (EntityKind::Building, "mod_lab", "Lab".to_owned()),
+            (EntityKind::SubUnit, "mod_unit", "Alpha unit".to_owned()),
+            (EntityKind::Tactic, "mod_tactic", "Alpha tactic".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn technology_names_link_to_their_technology_only_when_asked() {
+    use crate::effect_description::entity_links::unmark;
+    use crate::effect_description::{EntityKind, Span, spans};
+    use content_reader_localisation::localisation::Piece;
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    for (body, expected, token, index, name) in [
+        ("set_technology={mod_tech=1}", "Give Alpha parent\n", "mod_tech", None, "Alpha parent"),
+        ("set_technology={var:mod_second_handle=0}", "Give Other\n", "MOD_TECH", Some(6), "Other"),
+        (
+            "add_tech_bonus={technology=mod_tech bonus=0.5 uses=2}",
+            "Bonus 0.50/2 uses:Alpha equipment\n",
+            "mod_tech",
+            None,
+            "Alpha equipment",
+        ),
+        (
+            "custom_effect_tooltip={localization_key=MOD_UNLOCK_TECH TECH=mod_tech}",
+            "Unlocks \u{11}HMod technology\u{11}!.",
+            "mod_tech",
+            None,
+            "Mod technology",
+        ),
+    ] {
+        let items = content_reader_script::effect_keys::read_body(
+            body.as_bytes(),
+            content.view(None).key_names.unwrap(),
+        )
+        .unwrap();
+        let render = |links| {
+            fixture.with_context_linking(content.view(None), links, |context| {
+                describe(&items, context, &mut fresh())
+            })
+        };
+        let (plain, linked) = (render(false), render(true));
+        assert_eq!(plain.text, expected, "{body}: {:?}", plain.refusals);
+        assert!(plain.refusals.is_empty(), "{body}: {:?}", plain.refusals);
+        assert_eq!(plain.refusals, linked.refusals);
+        assert_eq!(unmark(&linked.text), plain.text, "{body}");
+        let spans = spans(&linked.text).unwrap();
+        let links: Vec<_> = spans
+            .windows(3)
+            .filter_map(|window| match window {
+                [Span::Open { kind, token, index }, Span::Piece(Piece::Text(text)), Span::Close] => {
+                    Some((*kind, *token, *index, *text))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(links, [(EntityKind::Technology, token, index, name)], "{body}");
+    }
+    let items = content_reader_script::effect_keys::read_body(
+        b"custom_effect_tooltip={localization_key=MOD_UNLOCK_LOWER TECH=mod_tech}",
+        content.view(None).key_names.unwrap(),
+    )
+    .unwrap();
+    let render = |links| {
+        fixture.with_context_linking(content.view(None), links, |context| {
+            describe(&items, context, &mut fresh())
+        })
+    };
+    let (plain, linked) = (render(false), render(true));
+    assert_eq!(plain.text, "Unlocks mod technology.");
+    assert!(plain.refusals.is_empty(), "{:?}", plain.refusals);
+    assert!(!linked.text.contains("Mod technology"), "{linked:?}");
+    assert!(
+        linked
+            .refusals
+            .keys()
+            .any(|why| why.contains("the game's formatting changes the linked technology names")),
+        "a case directive on a linked name withholds the text by name instead of dropping the link: {linked:?}"
+    );
+    let items = content_reader_script::effect_keys::read_body(
+        b"custom_effect_tooltip={localization_key=MOD_UNLOCK_BOTH TECH=mod_tech OTHER={localization_key=MOD_UNLOCK_TECH TECH=mod_tech}}",
+        content.view(None).key_names.unwrap(),
+    )
+    .unwrap();
+    let render = |links| {
+        fixture.with_context_linking(content.view(None), links, |context| {
+            describe(&items, context, &mut fresh())
+        })
+    };
+    let (plain, linked) = (render(false), render(true));
+    assert!(linked.refusals.is_empty(), "O-S5: a nested argument's own link does not make the outer comparison fail: {linked:?}");
+    assert_eq!(unmark(&linked.text), plain.text);
+}
+
+#[test]
 fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -675,7 +844,7 @@ fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refus
     ] {
         let text = fixture
             .with_renderer(&mut fresh(), content.view(None), |renderer| {
-                renderer.bound_technology_effect("mod_callback", scope)
+                renderer.bound_technology_effect("mod_callback", None, scope)
             })
             .unwrap();
         assert_eq!(text, "");

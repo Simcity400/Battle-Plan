@@ -17,7 +17,6 @@ export interface PanelGeometry {
   extraFields?: string;
   meters?: string;
   knob?: (field: HTMLElement) => boolean;
-  owns?: (field: HTMLElement) => boolean;
   extendInline?: string;
   barVariable?: { host: string; name: string };
 }

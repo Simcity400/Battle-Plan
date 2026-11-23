@@ -2118,6 +2118,7 @@ fn lost_observer_interval() {
         collector_land_events::land_events::fail();
         collector_observers::air_losses::lost_drain();
         collector_observers::building_bombing::lost_drain();
+        collector_observers::combat_engagement_refreshes::lost_drain();
         collector_observers::nuclear_strikes::lost_drain();
         collector_observers::market_changes::lost_drain();
         collector_map_events::interval::lost_output();
@@ -2402,9 +2403,12 @@ unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, f
         );
     }
     collector_fuel_awards::fuel_awards::boundary();
-    // SAFETY: Admitted hourly capture boundary advances air-loss, bombing, and nuclear ledgers.
+    // SAFETY: Admitted hourly capture boundary advances bombing, engagement-refresh, and nuclear ledgers.
     unsafe {
         collector_observers::building_bombing::boundary(
+            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+        );
+        collector_observers::combat_engagement_refreshes::boundary(
             entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
         );
         collector_observers::nuclear_strikes::boundary(

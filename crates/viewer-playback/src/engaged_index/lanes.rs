@@ -34,9 +34,24 @@ const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::NavalCombatParticipants, Some(&["ship"])),
     (TableId::NavalCombatShips, Some(&["ship", "member_source", "group_index", "live_ship", "live_convoy", "formation_flags"])),
     (TableId::TaskForces, Some(&["roster_owner", "logical_owner"])),
+    (TableId::CountryCounterInputs, Some(&["forward_visibility", "zero_war", "zero_subject"])),
+    (TableId::ReservedCountryNaming, Some(&["faction", "reverse_visibility"])),
+    (TableId::CombatEngagementRefreshes, None),
 ];
 
-const VIEWER: [TableId; 8] = [TableId::CountryLinks, TableId::Countries, TableId::LocalPlayer, TableId::Players, TableId::HumanControllers, TableId::FactionMembers, TableId::WarRelations, TableId::Subjects];
+const VIEWER: [TableId; 11] = [
+    TableId::CountryLinks,
+    TableId::Countries,
+    TableId::LocalPlayer,
+    TableId::Players,
+    TableId::HumanControllers,
+    TableId::FactionMembers,
+    TableId::WarRelations,
+    TableId::Subjects,
+    TableId::CountryCounterInputs,
+    TableId::ReservedCountryNaming,
+    TableId::CombatEngagementRefreshes,
+];
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -58,10 +73,58 @@ macro_rules! open {
     };
 }
 
+fn open_optional<T: TableSchema + 'static>(
+    pages: &Arc<dyn Pages>,
+    run: usize,
+    held: &mut [Option<Box<dyn Kept>>],
+) -> io::Result<()>
+where
+    T::Row: Send + Default,
+{
+    let Some(kinds) = pages.kinds(T::ID.index()) else {
+        return Ok(());
+    };
+    let requested = READ
+        .iter()
+        .find(|(id, _)| *id == T::ID)
+        .and_then(|(_, fields)| *fields);
+    match requested {
+        None => {
+            held[T::ID.index()] = Some(Box::new(Table::<T>::open(
+                pages,
+                run,
+                None,
+                "The engaged index",
+            )?));
+        }
+        Some(fields) => {
+            let present: Vec<&str> = fields
+                .iter()
+                .copied()
+                .filter(|&name| {
+                    (0..kinds.len()).any(|column| T::ID.field_name(column) == Some(name))
+                })
+                .collect();
+            if !present.is_empty() {
+                held[T::ID.index()] = Some(Box::new(Table::<T>::open(
+                    pages,
+                    run,
+                    Some(&present),
+                    "The engaged index",
+                )?));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     fn open(pages: &Arc<dyn Pages>, run: usize, branch: BranchId) -> io::Result<Self> {
         let mut held: Vec<Option<Box<dyn Kept>>> = (0..TableId::ALL.len()).map(|_| None).collect();
         open!(pages, run, held, Campaign, CountryLinks, Countries, LocalPlayer, Players, HumanControllers, FactionMembers, WarRelations, Subjects, LandCombats, LandCombatSides, NavalCombats, NavalCombatDetails, NavalCombatParticipants, NavalCombatShips, TaskForces);
+        open_optional::<tables::CountryCounterInputs>(pages, run, &mut held)?;
+        open_optional::<tables::ReservedCountryNaming>(pages, run, &mut held)?;
+        open_optional::<tables::CombatEngagementRefreshes>(pages, run, &mut held)?;
         Ok(Self { tables: held, branch, hour: 0, metrics: Metrics::default() })
     }
 

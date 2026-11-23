@@ -3,7 +3,8 @@ use content_reader_parser::{fixed5::script_fixed5, parser::Item};
 
 use content_reader_script::equipment_stats::{RELIABILITY_STAT, CARRIER_SIZE_STAT};
 
-pub type ResourcePool = Vec<(Vec<u8>, i64)>;
+pub type Amount = Result<i64, String>;
+pub type ResourcePool = Vec<(Vec<u8>, Amount)>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UpgradeCurrency {
@@ -15,7 +16,7 @@ pub enum UpgradeCurrency {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpgradeDesign {
     pub currency: UpgradeCurrency,
-    pub linear: Option<[i64; 2]>,
+    pub linear: Option<[Amount; 2]>,
     pub resource_thresholds: Vec<(u8, ResourcePool)>,
 }
 impl UpgradeDesign {
@@ -56,7 +57,7 @@ impl UpgradeDesign {
                     }
                 }
             } else if field.keyword_is("linear_cost") {
-                let costs = result.linear.get_or_insert([0; 2]);
+                let costs = result.linear.get_or_insert([Ok(0), Ok(0)]);
                 for entry in field.value.items().unwrap_or_default() {
                     if entry.keyword_is("cost_by_level") {
                         costs[0] = number(entry);
@@ -100,9 +101,9 @@ impl UpgradeXpRules {
         source: u8,
         target: u8,
         licensed: bool,
-    ) -> i64 {
-        if let Some(linear) = definition.linear {
-            return i64::from(source.abs_diff(target)).wrapping_mul(linear[usize::from(licensed)]);
+    ) -> Amount {
+        if let Some(linear) = &definition.linear {
+            return linear[usize::from(licensed)].clone().map(|cost| i64::from(source.abs_diff(target)).wrapping_mul(cost));
         }
         let currency = match definition.currency {
             UpgradeCurrency::Land => 0,
@@ -120,7 +121,7 @@ impl UpgradeXpRules {
             cost = cost.wrapping_add(i64::from(value).wrapping_mul(100_000));
             level += step;
         }
-        cost
+        Ok(cost)
     }
     pub fn finish(
         &self,
@@ -172,8 +173,8 @@ pub fn module_save_xp(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModuleDesign {
     pub category: Vec<u8>,
-    pub xp_cost: Option<i64>,
-    pub dismantle_cost_ic: Option<i64>,
+    pub xp_cost: Option<Amount>,
+    pub dismantle_cost_ic: Option<Amount>,
     pub build_resources: ResourcePool,
     pub dismantle_resources: ResourcePool,
     pub conversions: Vec<ModuleConversion>,
@@ -184,24 +185,32 @@ pub struct ModuleDesign {
     pub allowed_module_categories: Vec<(Vec<u8>, Vec<u8>)>,
     pub forbidden_categories: Vec<Vec<u8>>,
     pub mission_terms: Vec<(Vec<Vec<u8>>, StatGroup)>,
+    pub manpower: Option<Amount>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleConversion {
     pub module: Vec<u8>,
     pub category: Vec<u8>,
-    pub cost_ic: i64,
+    pub cost_ic: Amount,
     pub resources: ResourcePool,
 }
 
 fn token(field: &Item) -> Vec<u8> {
     content_reader_parser::parser::c_string(field.value.scalar().unwrap_or_default()).to_ascii_lowercase()
 }
-fn number(field: &Item) -> i64 {
-    field.value.scalar().and_then(script_fixed5).unwrap_or(0)
+pub(super) fn number(field: &Item) -> Amount {
+    let scalar = field.value.scalar();
+    scalar.and_then(script_fixed5).ok_or_else(|| {
+        let key = String::from_utf8_lossy(content_reader_parser::parser::c_string(field.key.as_deref().unwrap_or_default()));
+        match scalar {
+            Some(text) => format!("{key} = {} is not a number", String::from_utf8_lossy(content_reader_parser::parser::c_string(text))),
+            None => format!("{key} is not a number"),
+        }
+    })
 }
 
-fn read_resources(pool: &mut ResourcePool, fields: &[Item]) {
+pub(super) fn read_resources(pool: &mut ResourcePool, fields: &[Item]) {
     for field in fields {
         let Some(name) = field.key.as_deref() else {
             continue;
@@ -265,13 +274,16 @@ impl ModuleDesign {
                 let fields = field.value.items().unwrap_or_default();
                 let mut missions = Vec::new();
                 for limit in fields.iter().filter(|field| field.keyword_is("limit")) {
-                    for mission in limit.value.items().unwrap_or_default() {
-                        missions.push(token(mission));
+                    match limit.value.items() {
+                        Some(items) => missions.extend(items.iter().map(token)),
+                        None => missions.push(token(limit)),
                     }
                 }
                 result
                     .mission_terms
                     .push((missions, StatGroup::read(fields, false)));
+            } else if field.keyword_is("manpower") {
+                result.manpower = Some(number(field));
             } else if field.keyword_is("category") {
                 result.category = token(field);
             } else if field.keyword_is("xp_cost") {
@@ -289,7 +301,7 @@ impl ModuleDesign {
                     field.value.items().unwrap_or_default(),
                 );
             } else if field.keyword_is("can_convert_from") {
-                let mut conversion = ModuleConversion::default();
+                let mut conversion = ModuleConversion { module: Vec::new(), category: Vec::new(), cost_ic: Ok(0), resources: Vec::new() };
                 for value in field.value.items().unwrap_or_default() {
                     if value.keyword_is("module") {
                         conversion.module = token(value);
@@ -353,11 +365,11 @@ impl ModuleXpRules {
         source: Option<(&[u8], &ModuleDesign)>,
         source_active: bool,
         module_modifier: i64,
-    ) -> i64 {
+    ) -> Amount {
         let (module, default) = match target {
             None => {
                 let Some((_, module)) = source else {
-                    return 0;
+                    return Ok(0);
                 };
                 (module, self.remove)
             }
@@ -365,7 +377,7 @@ impl ModuleXpRules {
                 let default = if let Some((source_name, source)) = source.filter(|_| source_active)
                 {
                     if target_name.eq_ignore_ascii_case(source_name) {
-                        return 0;
+                        return Ok(0);
                     }
                     if module.conversion_from(source_name, source).is_some() {
                         self.convert
@@ -378,10 +390,8 @@ impl ModuleXpRules {
                 (module, default)
             }
         };
-        module_modifier
-            .wrapping_add(100_000)
-            .wrapping_mul(module.xp_cost.unwrap_or(default))
-            / 100_000
+        let cost = module.xp_cost.clone().unwrap_or(Ok(default))?;
+        Ok(module_modifier.wrapping_add(100_000).wrapping_mul(cost) / 100_000)
     }
 }
 
@@ -396,6 +406,7 @@ pub struct StatGroup {
     pub add: Vec<StatValue>,
     pub average: Vec<StatValue>,
     pub multiply: Vec<StatValue>,
+    pub unread: Vec<(usize, String)>,
 }
 impl StatGroup {
     pub(super) fn read(fields: &[Item], direct: bool) -> Self {
@@ -410,31 +421,32 @@ impl StatGroup {
             } else {
                 None
             };
-            if let Some(target) = target {
-                for entry in field.value.items().unwrap_or_default() {
-                    Self::term(target, entry);
-                }
+            let unread = if let Some(target) = target {
+                Self::read_entries(target, field.value.items().unwrap_or_default())
             } else if direct {
-                Self::term(&mut result.multiply, field);
-            }
+                Self::read_entries(&mut result.multiply, std::slice::from_ref(field))
+            } else {
+                Vec::new()
+            };
+            result.unread.extend(unread);
         }
         result
     }
-    pub(super) fn read_entries(target: &mut Vec<StatValue>, fields: &[Item]) {
-        for entry in fields {
-            Self::term(target, entry);
+    pub(super) fn read_entries(target: &mut Vec<StatValue>, fields: &[Item]) -> Vec<(usize, String)> {
+        let mut unread = Vec::new();
+        for field in fields {
+            let Some(index) = field.keyword().and_then(|key| stat_index(&key.folded())) else {
+                continue;
+            };
+            match number(field) {
+                Ok(value) => match target.iter_mut().find(|held| held.index == index) {
+                    Some(held) => held.value = held.value.wrapping_add(value),
+                    None => target.push(StatValue { index, value }),
+                },
+                Err(why) => unread.push((index, why)),
+            }
         }
-    }
-    fn term(target: &mut Vec<StatValue>, field: &Item) {
-        let Some(index) = field.keyword().and_then(|key| stat_index(&key.folded())) else {
-            return;
-        };
-        let value = field.value.scalar().and_then(script_fixed5).unwrap_or(0);
-        if let Some(held) = target.iter_mut().find(|held| held.index == index) {
-            held.value = held.value.wrapping_add(value);
-        } else {
-            target.push(StatValue { index, value });
-        }
+        unread
     }
 }
 
@@ -648,21 +660,21 @@ mod tests {
         assert_eq!(
             module.build_resources,
             [
-                (b"alpha".to_vec(), 0),
-                (b"beta".to_vec(), 300_000),
-                (b"gamma".to_vec(), -50_000)
+                (b"alpha".to_vec(), Ok(0)),
+                (b"beta".to_vec(), Ok(300_000)),
+                (b"gamma".to_vec(), Ok(-50_000))
             ]
         );
-        assert_eq!(module.dismantle_resources, [(b"beta".to_vec(), 0)]);
+        assert_eq!(module.dismantle_resources, [(b"beta".to_vec(), Ok(0))]);
         assert_eq!(
             module.conversions[0].resources,
-            [(b"beta".to_vec(), 0), (b"alpha".to_vec(), 200_000)]
+            [(b"beta".to_vec(), Ok(0)), (b"alpha".to_vec(), Ok(200_000))]
         );
         assert_eq!(
             db.upgrade_design(b"custom").unwrap().resource_thresholds,
             [
-                (3, vec![(b"alpha".to_vec(), 200_000)]),
-                (7, vec![(b"gamma".to_vec(), 0)])
+                (3, vec![(b"alpha".to_vec(), Ok(200_000))]),
+                (7, vec![(b"gamma".to_vec(), Ok(0))])
             ]
         );
     }
@@ -678,11 +690,11 @@ mod tests {
         };
         let mixed = db.upgrade_design(b"MIXED").unwrap();
         assert_eq!(mixed.currency, UpgradeCurrency::Air);
-        assert_eq!(rules.change(mixed, 2, 4, false), 7_500_000);
-        assert_eq!(rules.change(mixed, 4, 2, false), 8_100_000);
+        assert_eq!(rules.change(mixed, 2, 4, false), Ok(7_500_000));
+        assert_eq!(rules.change(mixed, 4, 2, false), Ok(8_100_000));
         let free = db.upgrade_design(b"free").unwrap();
-        assert_eq!(rules.change(free, 0, 7, false), 0);
-        assert_eq!(rules.change(free, 7, 0, true), 864_199);
+        assert_eq!(rules.change(free, 0, 7, false), Ok(0));
+        assert_eq!(rules.change(free, 7, 0, true), Ok(864_199));
         assert_eq!(rules.finish(123_459, -12_345, 2_345, 0, true), 137_176);
         assert_eq!(
             module_save_xp(0, 123_459, true, 123_457, -12_345, 2_345, 0, 12_345),
@@ -703,7 +715,7 @@ mod tests {
         };
         assert_eq!(
             wrapping.change(&UpgradeDesign::default(), 1, 2, false),
-            -200_000
+            Ok(-200_000)
         );
     }
     #[test]
@@ -727,6 +739,7 @@ mod tests {
                         index: 77,
                         value: 10_000,
                     }],
+                    unread: Vec::new(),
                 },
                 100_000,
             )
@@ -799,18 +812,18 @@ mod tests {
         let old = db.module_design(b"old").unwrap();
         let next = db.module_design(b"next").unwrap();
         let conversion = next.conversion_from(b"OLD", old).unwrap();
-        assert_eq!(conversion.cost_ic, 325_000);
+        assert_eq!(conversion.cost_ic, Ok(325_000));
         assert_eq!(
             conversion.resources,
-            [(b"synthetic_resource".to_vec(), 50_000)]
+            [(b"synthetic_resource".to_vec(), Ok(50_000))]
         );
         assert_eq!(
             next.conversion_from(b"other_same_category", old)
                 .unwrap()
                 .cost_ic,
-            2_000_000
+            Ok(2_000_000)
         );
-        assert_eq!(next.dismantle_cost_ic, Some(125_000));
+        assert_eq!(next.dismantle_cost_ic, Some(Ok(125_000)));
         let rules = ModuleXpRules {
             add: 300_001,
             replace: 700_001,
@@ -819,15 +832,15 @@ mod tests {
         };
         assert_eq!(
             rules.slot(Some((b"next", next)), None, false, -12_345),
-            262_965
+            Ok(262_965)
         );
         assert_eq!(
             rules.slot(Some((b"next", next)), Some((b"old", old)), true, 0),
-            200_001
+            Ok(200_001)
         );
         assert_eq!(
             rules.slot(Some((b"next", next)), Some((b"next", next)), true, i64::MAX),
-            0
+            Ok(0)
         );
         assert_eq!(
             rules.slot(
@@ -836,7 +849,7 @@ mod tests {
                 true,
                 0
             ),
-            700_001
+            Ok(700_001)
         );
         assert_eq!(
             rules.slot(
@@ -845,17 +858,48 @@ mod tests {
                 false,
                 0
             ),
-            0
+            Ok(0)
         );
-        assert_eq!(rules.slot(None, Some((b"old", old)), true, 0), 100_001);
+        assert_eq!(rules.slot(None, Some((b"old", old)), true, 0), Ok(100_001));
         assert_eq!(
             db.module_design(b"implicit")
                 .unwrap()
                 .conversion_from(b"ungrouped", db.module_design(b"ungrouped").unwrap())
                 .unwrap()
                 .cost_ic,
-            700_000
+            Ok(700_000)
         );
+    }
+
+    #[test]
+    fn an_unreadable_amount_is_withheld_by_its_field_never_a_zero() {
+        content_reader_script::test_game::enter();
+        let mut db = super::super::Database::default();
+        db.read_file(br#"equipment_modules = { custom = {
+            manpower = unknown_amount
+            xp_cost = unknown_amount
+            build_cost_resources = { steel = unknown_amount chromium = 2 }
+            add_stats = { air_attack = unknown_amount air_defence = 1 }
+        } }"#, "common/units/equipment/modules/synthetic.txt", &content_reader_script::key_names::KeyNames::default());
+        let module = db.module_design(b"custom").unwrap();
+        let unread = |field: &str| Err(format!("{field} = unknown_amount is not a number"));
+        assert_eq!(module.manpower, Some(unread("manpower")));
+        assert_eq!(module.build_resources, [(b"steel".to_vec(), unread("steel")), (b"chromium".to_vec(), Ok(200_000))]);
+        let rules = ModuleXpRules { add: 1, replace: 1, convert: 1, remove: 1 };
+        assert_eq!(rules.slot(Some((b"custom", module)), None, false, 0), unread("xp_cost"));
+        let stats = db.module_stats(b"custom").unwrap();
+        let air_attack = super::super::stat_index(b"air_attack").unwrap();
+        assert_eq!(stats.unread, [(air_attack, unread("air_attack").unwrap_err())]);
+        assert!(stats.add.iter().all(|term| term.index != air_attack), "an unreadable term adds nothing that could be shown as its value");
+    }
+
+    #[test]
+    fn a_scalar_mission_limit_is_that_mission() {
+        content_reader_script::test_game::enter();
+        let mut db = super::super::Database::default();
+        db.read_file(b"equipment_modules = { custom = { mission_type_stats = { limit = cas add_stats = { air_attack = 1 } } } }", "common/units/equipment/modules/synthetic.txt", &content_reader_script::key_names::KeyNames::default());
+        let module = db.module_design(b"custom").unwrap();
+        assert_eq!(module.mission_terms.iter().map(|(missions, _)| missions.clone()).collect::<Vec<_>>(), [vec![b"cas".to_vec()]]);
     }
 
     #[test]

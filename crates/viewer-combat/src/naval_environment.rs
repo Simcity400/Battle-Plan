@@ -371,6 +371,7 @@ pub(super) fn convoy_weapon_bound_from_database(
             .chain(&group.average)
             .chain(&group.multiply)
             .any(|term| stats.contains(&term.index))
+            || group.unread.iter().any(|(index, _)| stats.contains(index))
     };
     let stat_term = |values: &[StatValue], index: usize| {
         values
@@ -400,6 +401,33 @@ pub(super) fn convoy_weapon_bound_from_database(
                 .archetype
                 .filter(|&at| seen_archetypes.insert(at))
                 .map(|at| &database.equipment[at]);
+        }
+        let feeding = bound_inputs(&stats, equipment);
+        let unread_default = equipment
+            .default_modules
+            .iter()
+            .filter_map(|(_, module)| database.module_stats(module))
+            .flat_map(|group| &group.unread);
+        let lineage = match database.lineage(equipment) {
+            Ok(lineage) => lineage,
+            Err(why) => return (Err(why), misreads),
+        };
+        let unread_upgrades = lineage
+            .into_iter()
+            .flat_map(|held| &held.upgrades)
+            .filter_map(|upgrade| database.upgrade_stats(upgrade))
+            .flat_map(|group| &group.unread);
+        let unread_scaling = equipment
+            .default_modules
+            .iter()
+            .filter_map(|(_, module)| database.module_stats(module))
+            .flat_map(|group| equipment.unread_multipliers_for(group));
+        let unread = equipment.unread_terms.iter().chain(unread_default).chain(unread_upgrades).map(|(index, why)| (*index, why.as_str())).chain(unread_scaling);
+        if let Some((_, why)) = unread.into_iter().find(|(index, _)| feeding.contains(index)) {
+            return (
+                Err(format!("convoy equipment {}: {why}", String::from_utf8_lossy(&equipment.name))),
+                misreads,
+            );
         }
         if upgrade_touches_weapons {
             return (
@@ -1494,7 +1522,7 @@ fn convoy_weapon_bound_for_frame(
     frame: &DecodedFrame,
 ) -> io::Result<Result<[i64; 2], String>> {
     use content_reader_script::equipment_stats::{STAT_COUNT, stat_index};
-    use content_reader_key_names::equipment::StatComponents;
+    use content_reader_key_names::equipment::{StatComponents, StatGroup};
     use content_reader_parser::parser::c_string;
 
     let mut range = match static_bound {
@@ -1549,6 +1577,10 @@ fn convoy_weapon_bound_for_frame(
         if !is_convoy {
             continue;
         }
+        let feeding = bound_inputs(&stats, kind);
+        let unread_weapon_term = |group: &StatGroup| {
+            group.unread.iter().find(|(index, _)| feeding.contains(index)).map(|(_, why)| why.clone())
+        };
         let state = match definition.design.require("VariantDefinitions.design") {
             Ok(state) => state,
             Err(error) => {
@@ -1584,6 +1616,9 @@ fn convoy_weapon_bound_for_frame(
                 range = [range[0].min(cached[stat]), range[1].max(cached[stat])];
             }
             continue;
+        }
+        if let Some((_, why)) = kind.unread_terms.iter().find(|(index, _)| feeding.contains(index)) {
+            return Ok(Err(format!("convoy variant {}: {why}", definition.id)));
         }
         if upgrades_by_variant.is_none() {
             let upgrades = rows::<tables::VariantUpgrades>(frame)?;
@@ -1701,6 +1736,13 @@ fn convoy_weapon_bound_for_frame(
                         String::from_utf8_lossy(name)
                     )));
                 };
+                if let Some(why) = unread_weapon_term(group) {
+                    return Ok(Err(format!(
+                        "convoy variant {} upgrade {}: {why}",
+                        definition.id,
+                        String::from_utf8_lossy(name)
+                    )));
+                }
                 if let Err(error) = components.apply(group, i64::from(upgrade.level) * ONE) {
                     return Ok(Err(format!(
                         "convoy variant {} upgrade {}: {error}",
@@ -1732,6 +1774,13 @@ fn convoy_weapon_bound_for_frame(
                         String::from_utf8_lossy(name)
                     )));
                 };
+                if let Some(why) = unread_weapon_term(group).or_else(|| kind.unread_multipliers_for(group).find(|(index, _)| feeding.contains(index)).map(|(_, why)| why.to_owned())) {
+                    return Ok(Err(format!(
+                        "convoy variant {} module {}: {why}",
+                        definition.id,
+                        String::from_utf8_lossy(name)
+                    )));
+                }
                 if let Err(error) = components.apply_module(group, kind) {
                     return Ok(Err(format!(
                         "convoy variant {} module {}: {error}",
@@ -1755,6 +1804,14 @@ fn convoy_weapon_bound_for_frame(
         }
     }
     Ok(Ok(range))
+}
+
+fn bound_inputs(stats: &[usize], equipment: &content_reader_key_names::equipment::Equipment) -> Vec<usize> {
+    let mut inputs = stats.to_vec();
+    if equipment.scaled_by_reliability.iter().any(|term| stats.contains(&term.index)) {
+        inputs.push(content_reader_script::equipment_stats::RELIABILITY_STAT);
+    }
+    inputs
 }
 
 fn bounded_total(ships: i64, convoys: i64, bound: Result<[i64; 2], &str>) -> Option<i64> {

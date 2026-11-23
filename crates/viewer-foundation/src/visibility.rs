@@ -11,7 +11,9 @@ pub use replay_derive::visibility::{event_shared, forward_zero_shared_of};
 pub(crate) use replay_derive::visibility::owner_rows;
 #[cfg(test)]
 use replay_derive::visibility::*;
-pub use replay_derive::visibility::{AccessLinks, Families, ProvinceAccess, Relations};
+pub use replay_derive::visibility::{
+    AccessLinks, Families, ProvinceAccess, Relations, ZeroVisibility,
+};
 use replay_derive::visibility::{
     Intel, forward_zero_shared, intel_fraction, map_intel_equal, map_intel_slot, raw_references,
     reverse_zero_shared,

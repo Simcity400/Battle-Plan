@@ -352,6 +352,7 @@ impl EnvironmentInputs {
     ) -> World<'a> {
         World::read_in(frame, self.facts(environment))
             .with_geography(self.geography(content, environment))
+            .with_prepared_special_projects(content)
             .with_template_names(
                 &content.template_names,
                 &content.layers.layers,
@@ -453,7 +454,7 @@ impl<'a> ScriptedText<'a> {
         self.world
             .get_or_init(|| {
                 crate::triggers::inputs::unrecorded(|| {
-                    self.content.lazy_world(self.frame)
+                    self.content.lazy_world(self.frame).map(|world| world.with_accepted_projects(self.accepted_projects.clone()))
                 })
             })
             .as_ref()
@@ -989,6 +990,13 @@ impl EnvironmentInputs {
             constants: Ok(Default::default()),
             traits: Ok(Default::default()),
         }
+    }
+
+    pub(super) fn with_constants(
+        self,
+        constants: Result<content_reader_politics::script_constants::Constants, String>,
+    ) -> Self {
+        Self { constants, ..self }
     }
 
     #[cfg(test)]

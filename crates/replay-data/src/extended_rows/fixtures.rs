@@ -2427,6 +2427,38 @@ impl Fixture for LandCombatDivisionModifierRow {
         row
     }
 }
+impl Fixture for CombatEngagementRefreshRow {
+    fn smallest_key() -> u128 {
+        1_u128 << 33
+    }
+    fn largest_key() -> u128 {
+        (u128::from(Self::LOCAL_ALL_SIDES) << 97) | (u128::from(i32::MAX as u64) << 33)
+    }
+    fn fixture(key: u128, tick: usize) -> Self {
+        let kind = ((key >> 97) & 3) as u8;
+        let target = (key >> 33) as u64;
+        let side = ((key >> 32) & 1) as u8;
+        let viewer = key as u32;
+        let triggers = if kind == Self::LOCAL_ALL_SIDES {
+            if tick.is_multiple_of(2) {
+                Self::TRIGGER_RECORDED
+            } else {
+                Self::TRIGGER_RECORDED | Self::TRIGGER_CACHE_WRITE
+            }
+        } else if kind == Self::CONTROLLER_TARGET {
+            Self::TRIGGER_RECORDED
+        } else {
+            ((tick % 3) + 1) as u8
+        };
+        Self {
+            kind,
+            target,
+            side,
+            viewer,
+            triggers,
+        }
+    }
+}
 impl Fixture for LandCombatSideRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let positive = |offset: usize| {
@@ -4290,6 +4322,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
             TableRows::LandCombatProgress(rows::<LandCombatProgressRow>(tick))
         }
         TableId::LandCombatSides => TableRows::LandCombatSides(rows::<LandCombatSideRow>(tick)),
+        TableId::CombatEngagementRefreshes => {
+            TableRows::CombatEngagementRefreshes(rows::<CombatEngagementRefreshRow>(tick))
+        }
         TableId::ThreatSources => TableRows::ThreatSources(rows::<ThreatSourceRow>(tick)),
         TableId::ThreatCountryAggregates => {
             TableRows::ThreatCountryAggregates(rows::<ThreatCountryAggregateRow>(tick))
@@ -6503,6 +6538,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<DivisionEtaInputsRow>(TableId::DivisionEtaInputs);
     check_table::<LandCombatProgressRow>(TableId::LandCombatProgress);
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);
+    check_table::<CombatEngagementRefreshRow>(TableId::CombatEngagementRefreshes);
     check_table::<ThreatSourceRow>(TableId::ThreatSources);
     check_table::<ThreatCountryAggregateRow>(TableId::ThreatCountryAggregates);
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);

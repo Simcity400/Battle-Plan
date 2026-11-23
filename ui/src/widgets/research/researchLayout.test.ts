@@ -15,7 +15,7 @@ const entry = (token: string, first: number, end: number | null, outcome: Resear
 const slot = (index: number, availability: { firstHour: number; lastHour: number }[], entries: ResearchEntry[], states: ResearchSlotState[] = []): ResearchSlotHistory => ({
   index, availability, entries, states, progress: [],
 });
-const read = (token: string, firstHour: number, lastHour: number, entryFirstObservedHour: number): ResearchSlotState => ({ firstHour, lastHour, token,
+const read = (token: string, firstHour: number, lastHour: number, entryFirstObservedHour: number): ResearchSlotState => ({ firstHour, lastHour, token, databaseIndex: token.charCodeAt(0),
   entryFirstObservedHour, speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null });
 const lanesAt = (history: ResearchHistory, hour: number) => researchLanes(researchAt(history, hour), coverageAt(history.coverage, hour), hour);
 const kinds = (history: ResearchHistory, hour: number) => lanesAt(history, hour).map(lane => lane.items.map(item => item.kind));

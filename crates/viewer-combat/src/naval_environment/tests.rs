@@ -1136,6 +1136,7 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
             global_gun = { lg_attack = 1.0 }
             avg_first = { add_stats = { lg_attack = 2 } add_average_stats = { lg_attack = -2 } }
             avg_zero = { add_average_stats = { lg_attack = -2 } }
+            broken_gun = { add_stats = { lg_attack = unknown_amount } }
          }
          equipments = {
             convoy_1 = { type = convoy lg_attack = 0.6 }
@@ -1184,6 +1185,10 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
                 LexicalTokenRow {
                     token: 16,
                     literal: b"avg_zero".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 17,
+                    literal: b"broken_gun".to_vec(),
                 },
             ]),
         );
@@ -1276,6 +1281,12 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     )
     .unwrap();
     assert_eq!(unresolved_bound, Ok([0, 120_000]));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "equipments = { convoy_1 = { type = convoy lg_attack = 0.6 scaled_by_reliability = { lg_attack = unknown_amount } } }").unwrap();
+    let unread = content_reader_key_names::equipment::Database::load(&content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let cached = convoy_weapon_bound_for_frame(static_bound.as_ref().copied().map_err(String::as_str), Some(&unread), &unresolved_frame).unwrap();
+    assert_eq!(cached, Ok([0, 120_000]), "O-S6: a variant's recorded final stats stand though the equipment's own terms are unreadable");
 
     let upgrade_frame = base_frame(
         Recorded::Value(VariantDesignState::default()),
@@ -1294,6 +1305,26 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     )
     .unwrap();
     assert_eq!(upgrade_bound, Ok([0, 120_000]));
+    let broken_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        vec![VariantUpgradeRow {
+            variant: 70,
+            source_ordinal: 0,
+            definition_token: 17,
+            level: 1,
+        }],
+        Vec::new(),
+    );
+    let broken_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &broken_frame,
+    )
+    .unwrap();
+    assert!(
+        broken_bound.as_ref().is_err_and(|why| why.contains("lg_attack = unknown_amount is not a number")),
+        "a recorded upgrade whose weapon term is unreadable gives no bound: {broken_bound:?}"
+    );
 
     let unrecorded_frame = base_frame(Recorded::NotRecorded, Vec::new(), Vec::new());
     assert!(
@@ -1431,4 +1462,66 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
         bounded_total(0, 1, cached_bound.as_ref().copied().map_err(String::as_str)),
         Some(0)
     );
+}
+
+#[test]
+fn an_unreadable_weapon_term_of_an_explicit_default_module_withholds_the_convoy_bound() {
+    content_reader_script::test_game::enter();
+    let (bound, _) = bound_of(
+        "equipment_modules = { gun = { add_stats = { lg_attack = unknown_amount } } }
+         equipments = { convoy_1 = { type = convoy default_modules = { main = gun } } }",
+    );
+    assert!(bound.as_ref().is_err_and(|why| why.contains("lg_attack = unknown_amount is not a number")), "{bound:?}");
+}
+
+#[test]
+fn an_unreadable_reliability_term_withholds_the_bound_of_a_convoy_whose_attack_scales_with_reliability() {
+    use replay_data::rows::{LexicalTokenRow, Recorded, TableRows, VariantDefinitionRow, VariantDesignState, VariantUpgradeRow};
+    use std::fs;
+    use viewer_foundation::test_support::{test_frame, test_put as put};
+
+    content_reader_script::test_game::enter();
+    let root = std::env::temp_dir().join(format!("hoi4_viewer_convoy_reliability_{}_{:?}", std::process::id(), std::thread::current().id()));
+    let _ = fs::remove_dir_all(&root);
+    let path = root.join("common/units/equipment/convoys.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "upgrades = {
+            global_gun = { add_stats = { lg_attack = 1 reliability = unknown_amount } }
+            global_armour = { add_stats = { build_cost_ic = unknown_amount } }
+         }
+         equipments = {
+            scaled_convoy = { type = convoy reliability = 0.5 scaled_by_reliability = { lg_attack = 1 } }
+            escort = { module_add_stats_multiplier = { lg_attack = unknown_amount } }
+         }",
+    )
+    .unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let database = content_reader_key_names::equipment::Database::load(&layers).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let frame = |upgrade| {
+        let mut frame = test_frame(1);
+        put(
+            &mut frame,
+            TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 10, literal: b"scaled_convoy".to_vec() },
+                LexicalTokenRow { token: 11, literal: b"escort".to_vec() },
+                LexicalTokenRow { token: 12, literal: b"global_gun".to_vec() },
+                LexicalTokenRow { token: 13, literal: b"global_armour".to_vec() },
+            ]),
+        );
+        put(&mut frame, TableRows::VariantDefinitions(vec![
+            VariantDefinitionRow { id: 70, equipment_token: 10, design: Recorded::Value(VariantDesignState::default()), ..Default::default() },
+            VariantDefinitionRow { id: 71, equipment_token: 11, design: Recorded::Value(VariantDesignState::default()), ..Default::default() },
+        ]));
+        put(&mut frame, TableRows::VariantUpgrades(vec![VariantUpgradeRow { variant: 70, source_ordinal: 0, definition_token: upgrade, level: 1 }]));
+        put(&mut frame, TableRows::VariantModules(Vec::new()));
+        put(&mut frame, TableRows::VariantBonusSnapshots(Vec::new()));
+        frame
+    };
+    let bound = convoy_weapon_bound_for_frame(Ok([0, 0]), Some(&database), &frame(12)).unwrap();
+    assert!(bound.as_ref().is_err_and(|why| why.contains("reliability = unknown_amount is not a number")), "the reliability the attack scales with is unknown, so no bound is published: {bound:?}");
+    let unrelated = convoy_weapon_bound_for_frame(Ok([0, 0]), Some(&database), &frame(13)).unwrap();
+    assert!(unrelated.is_ok(), "an unreadable term no bound depends on, here a recorded non-convoy's own multiplier, withholds nothing: {unrelated:?}");
 }
