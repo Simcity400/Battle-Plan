@@ -9,6 +9,7 @@ import {
   leaveApp,
   openReplay,
   selectNativeView,
+  onMapPressed,
   setMapHoles,
 } from './api.ts';
 import { Icon } from '../components/Icons';
@@ -41,7 +42,7 @@ import './shell.css';
 import { useReplayLibrary } from '../dashboard/replayLibrary';
 import { contentRevision } from '../dashboard/contentRevision';
 import type { ContentFolders, ReplayMetadata } from './api';
-import { mapHoles } from './mapOverlays';
+import { dismissForMapPress, mapHoles } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
 import { RecordingNotice } from './recordingNotice';
 import { commitZone } from './commitCount';
@@ -296,7 +297,13 @@ export default function App() {
     return next;
   }), []);
   const actionError = Object.values(mapFailures)[0] ?? null;
-  useEffect(() => desktopAvailable ? mapHoles.start(setMapHoles) : undefined, []);
+  useEffect(() => {
+    if (!desktopAvailable) return;
+    const stopHoles = mapHoles.start(setMapHoles);
+    let stopPresses: (() => void) | null = null, live = true;
+    void onMapPressed(dismissForMapPress).then(stop => { if (live) stopPresses = stop; else stop(); });
+    return () => { live = false; stopHoles(); stopPresses?.(); };
+  }, []);
   const pendingPath = useRef<string | null>(null);
   const defaultRequest = useRef(0);
   const lastNativePath = useRef<string | null>(null);

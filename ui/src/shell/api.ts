@@ -81,6 +81,11 @@ export function setMapHoles(holes: MapBounds[]): Promise<void> {
   return invoke<void>('set_map_holes', { holes });
 }
 
+export function onMapPressed(pressed: () => void): Promise<() => void> {
+  requireDesktop();
+  return listen('map-pressed', pressed);
+}
+
 export function selectNativeView(dashboard: boolean): Promise<void> {
   if (!desktopAvailable) return Promise.resolve();
   return invoke<void>('select_native_view', { dashboard });

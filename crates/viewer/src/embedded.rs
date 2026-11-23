@@ -1050,11 +1050,8 @@ impl NativeWindow {
     }
 
     fn visibility(&self, visible: bool) {
-        self.show(visible, true);
-    }
-
-    fn show(&self, visible: bool, focus: bool) {
         let placement = Placement { visible, ..self.placement.get() };
+        let focus = self.holes.borrow().is_empty();
         self.placement.set(placement);
         // SAFETY: asynchronous calls on the map's window; its own thread applies them.
         unsafe {
@@ -1132,7 +1129,7 @@ impl NativeWindow {
             self.drawn.set(drawn);
         }
         if self.views.borrow().is_some() && self.placement.get().visible != self.drawn.get() {
-            self.show(self.drawn.get(), self.holes.borrow().is_empty());
+            self.visibility(self.drawn.get());
         }
         Ok(())
     }

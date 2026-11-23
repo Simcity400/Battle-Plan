@@ -62,14 +62,12 @@ class MapHoles {
     document.addEventListener('toggle', this.schedule, true);
     window.addEventListener('resize', this.moved);
     window.addEventListener('scroll', this.moved, true);
-    window.addEventListener('blur', this.left);
     this.schedule();
     return () => {
       document.removeEventListener('beforetoggle', this.toggling, true);
       document.removeEventListener('toggle', this.schedule, true);
       window.removeEventListener('resize', this.moved);
       window.removeEventListener('scroll', this.moved, true);
-      window.removeEventListener('blur', this.left);
       this.frame?.();
       this.frame = null;
       for (const element of [...this.tracked]) this.drop(element);
@@ -105,10 +103,6 @@ class MapHoles {
   }
 
   private moved = (): void => { if (this.tracked.size) this.schedule(); };
-
-  private left = (): void => {
-    for (const element of document.querySelectorAll<HTMLElement>('[popover="auto"]:popover-open')) element.hidePopover();
-  };
 
   private schedule = (): void => {
     if (this.frame) return;
@@ -154,20 +148,28 @@ class MapHoles {
         this.queued = null;
         if (next.key !== this.sent) {
           try { await this.send(next.holes); this.sent = next.key; }
-          catch { this.sent = ''; }
+          catch { this.sent = ''; this.reveal(next.measured, null); continue; }
         }
-        this.reveal(next.measured);
+        this.reveal(next.measured, next.holes);
       }
     } finally { this.sending = false; }
   }
 
-  private reveal(measured: number): void {
+  private reveal(measured: number, holes: readonly MapBounds[] | null): void {
+    const dpr = window.devicePixelRatio || 1;
+    const page = { left: 0, top: 0, right: document.documentElement.clientWidth, bottom: document.documentElement.clientHeight };
     for (const [element, seen] of this.waiting) {
       if (seen === 0 || seen > measured) continue;
+      if (holes && !coveredBy(physicalRect(intersectRects(element.getBoundingClientRect(), page), dpr), holes)) { this.schedule(); continue; }
       element.removeAttribute(PENDING);
       this.waiting.delete(element);
     }
   }
+}
+
+export function dismissForMapPress(): void {
+  for (const element of document.querySelectorAll<HTMLElement>('[popover="auto"]:popover-open')) element.hidePopover();
+  document.documentElement.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
 }
 
 export const mapHoles = {

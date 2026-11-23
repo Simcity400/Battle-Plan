@@ -87,9 +87,11 @@ test('a popover stays transparent until the map has cut the hole it is shown in,
     moved(); await frame();
     assert.deepEqual(sent[0].holes, [{ x: 600, y: 200, width: 200, height: 200 }]);
     assert.equal(pending(menu), true, 'it waits for the map to apply the hole');
+    menu.place(300, 100, 150, 100);
+    sent.shift()!.done(); await settle();
+    assert.equal(pending(menu), true, 'a popover that grew before the next measurement is not revealed by the smaller hole');
     menu.place(300, 100, 200, 100);
     moved(); await frame();
-    sent.shift()!.done(); await settle();
     assert.equal(pending(menu), true, 'a popover that grew while its hole was on the way waits for the larger hole');
     assert.deepEqual(sent[0].holes, [{ x: 600, y: 200, width: 400, height: 200 }]);
     sent.shift()!.done(); await settle();
