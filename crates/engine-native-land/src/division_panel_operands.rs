@@ -86,12 +86,16 @@ pub fn held_variants(
             );
             for slot in 0..live {
                 let variant_handle = if slot < copied {
-                    cequipment_variant::identity_from_header(
+                    engine_native_parts::equipment_variant_identity::identity_from_header(
                         expected,
                         headers[slot * 16..slot * 16 + 16].try_into().unwrap(),
                     )?
                 } else {
-                    cequipment_variant::identity(memory, base, pointers[slot])?
+                    engine_native_parts::equipment_variant_identity::identity(
+                        memory,
+                        base,
+                        pointers[slot],
+                    )?
                 };
                 visit(equipment_entry::Row {
                     source_ordinal: ordinals[slot],

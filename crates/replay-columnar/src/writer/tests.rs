@@ -1427,3 +1427,86 @@ fn a_list_behind_a_changed_count_keeps_its_records() {
     assert!(hunks(&held, &new, 1, |item| varint_len(item.into()), &mut edits).unwrap());
     assert_eq!(patched(&held, &edits, &new), new);
 }
+
+#[test]
+fn dictionary_interns_and_reads_strings_across_table_growth() {
+    let mut dict = Dictionary::new();
+    let mut ids = Vec::new();
+    for i in 0..200_u32 {
+        let value = format!("entry-{i:04}");
+        let id = dict.intern(value.as_bytes()).unwrap();
+        assert_eq!(id, i);
+        assert_eq!(dict.intern(value.as_bytes()).unwrap(), id);
+        ids.push((id, value));
+    }
+    assert_eq!(dict.len(), 200);
+    assert_eq!(dict.take_appended().len(), 200);
+    for (id, value) in &ids {
+        assert_eq!(dict.get(*id), Some(value.as_bytes()));
+        let mut reading = Strings::Reading(&dict);
+        assert_eq!(reading.intern(value.as_bytes()).unwrap(), *id);
+    }
+    let mut reading = Strings::Reading(&dict);
+    assert!(reading.intern(b"absent").is_err());
+}
+
+#[test]
+fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
+    let kinds = [Kind::U64, Kind::Bytes];
+    let mut dict = Dictionary::new();
+    let mut writer = TableWriter::new(&kinds).unwrap();
+    let mut hour = writer.begin(&mut dict, Coverage::Complete).unwrap();
+    for key in 1..=2000_u128 {
+        let name = format!("row-{key}");
+        hour.row(
+            key,
+            &[
+                Input::Value(Cell::U64(key as u64)),
+                Input::Text(name.as_bytes()),
+            ],
+        )
+        .unwrap();
+    }
+    let prepared = hour.finish().unwrap();
+    assert!(writer.inserts[0].words.capacity() >= 2000);
+    assert!(writer.insert_outs[0].u64s.capacity() >= 2000);
+    assert!(writer.parts.sorted_keys.capacity() >= 2000);
+    writer
+        .commit(
+            Some(prepared),
+            Evidence {
+                status: Status::Complete,
+                read: true,
+                sample: Sample::FromReadBit,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(writer.inserts[0].words.capacity(), 0);
+    assert_eq!(writer.insert_outs[0].u64s.capacity(), 0);
+    assert_eq!(writer.parts.sorted_keys.capacity(), 0);
+    assert_eq!(writer.table().live().count(), 2000);
+
+    let mut next = writer
+        .begin(&mut dict, Coverage::Changes { removed: &[] })
+        .unwrap();
+    next.row(
+        1,
+        &[Input::Value(Cell::U64(999)), Input::Text(b"row-1")],
+    )
+    .unwrap();
+    let prepared = next.finish().unwrap();
+    writer
+        .commit(
+            Some(prepared),
+            Evidence {
+                status: Status::Complete,
+                read: true,
+                sample: Sample::FromReadBit,
+            },
+            1,
+        )
+        .unwrap();
+    let slot = writer.table().slot(1).unwrap();
+    assert_eq!(writer.table().cell(0, slot), Some(Cell::U64(999)));
+}

@@ -425,6 +425,8 @@ impl Captured {
         self.wars_result = unavailable;
         self.wars_snapshot_sampled = false;
         self.factions_result = unavailable;
+        self.faction_goals = Default::default();
+        self.faction_companions = Default::default();
         self.faction_names_len = 0;
         self.faction_names_required = 0;
         self.faction_members_result = unavailable;
@@ -1589,6 +1591,9 @@ impl Shared {
     /// Only the session frame builder or isolated fixture may prepare a spare. Ensure the observer
     /// stores remain live throughout its preparation.
     pub unsafe fn build_frame_ahead(&self) -> std::io::Result<()> {
+        if self.frames.spool_stalled() || self.frames.at_limit() {
+            return Ok(());
+        }
         let frame = self.new_frame()?;
         self.publish_frame(frame, true)
     }
@@ -1619,7 +1624,10 @@ impl Shared {
             if stop.load(Ordering::Acquire) || self.acquisition_failed() {
                 return Ok(());
             }
-            if crate::frame_pool::builds_ahead(self.frames.len(), self.frames.spool_stalled()) {
+            if crate::frame_pool::builds_ahead(
+                self.frames.len(),
+                self.frames.spool_stalled() || self.frames.at_limit(),
+            ) {
                 observe(BuildAhead::Starting);
                 // SAFETY: The dedicated builder or owning fixture prepares a spare while observers
                 // remain live.
@@ -1644,14 +1652,14 @@ impl Shared {
         match crate::frame_pool::hour_frame(
             // SAFETY: This consumer owns the queue removal for the named pool.
             unsafe { self.frames.pop() },
-            self.frames.spool_stalled(),
+            self.frames.spool_stalled() || self.frames.at_limit(),
         ) {
             HourFrame::Free(index) => {
                 self.frames.taken(index);
                 self.frame_priority.claim();
                 // SAFETY: This stage owns the installed frame slot.
                 unsafe { self.frame_stage(index, FrameStage::Callback) };
-                if self.frames.len() < crate::frame_pool::AHEAD {
+                if self.frames.len() < crate::frame_pool::AHEAD && !self.frames.at_limit() {
                     self.wake_builder();
                 }
                 if !self.hold_clock(index) {
@@ -1745,12 +1753,10 @@ impl Shared {
         collector_memory::terminal::failed() || self.acquisition_panics.load(Ordering::Acquire) != 0
     }
 
-    pub(crate) fn measure_frame(&self, index: usize) {
+    pub fn measure_frame(&self, index: usize) {
         let frame = unsafe { &*self.frames[index].load(Ordering::Acquire) };
         self.frames
-            .slot(index)
-            .bytes
-            .store(frame.allocated_bytes() as u64, Ordering::Relaxed);
+            .set_slot_bytes(index, frame.allocated_bytes() as u64);
     }
 
     pub fn pool_owned(&self) -> u64 {

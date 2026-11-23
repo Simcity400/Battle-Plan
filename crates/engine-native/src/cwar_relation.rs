@@ -94,8 +94,8 @@ const COUNTRY_DIP_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COUNTRY_DIP_FIELDS, 8).unwrap();
 const DIP_OWNED_FIELDS: [RecordField; 3] = packed_fields([
     (0, 8),
-    (cdiplomacy_status::COUNTRY, 8),
-    (cdiplomacy_status::OWNED_RELATIONS, 16),
+    (engine_native_parts::cdiplomacy_status_layout::COUNTRY, 8),
+    (engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 16),
 ]);
 const DIP_OWNED_LAYOUT: RecordLayout<'static> = RecordLayout::new(&DIP_OWNED_FIELDS, 32).unwrap();
 
@@ -107,9 +107,9 @@ pub fn row_demand(
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let fields = Fields { memory, base };
     let expected_diplomacy =
-        engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).map(|v| v as u64);
+        engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).map(|v| v as u64);
     let mut required = 0_usize;
-    let mut country_slots = [ccountry::Country {
+    let mut country_slots = [engine_native_memory::country_identity::Country {
         pointer: 0,
         canonical_slot: 0,
         id: 0,
@@ -193,16 +193,16 @@ pub fn row_demand(
                 } else {
                     fields.vtable(
                         diplomacy,
-                        cdiplomacy_status::VTABLE_RVA,
+                        engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
                         "war demand diplomacy vtable mismatch",
                     )?;
-                    if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)?
+                    if fields.field::<u64>(diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?
                         != country.pointer as u64
                     {
                         return Err("war demand diplomacy country mismatch");
                     }
                     diplomacy
-                        .checked_add(cdiplomacy_status::OWNED_RELATIONS)
+                        .checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)
                         .and_then(|address| Array::read(memory, address, 8))
                         .ok_or("war demand owned vector invalid")?
                 }
@@ -213,16 +213,16 @@ pub fn row_demand(
                 }
                 fields.vtable(
                     diplomacy,
-                    cdiplomacy_status::VTABLE_RVA,
+                    engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA,
                     "war demand diplomacy vtable mismatch",
                 )?;
-                if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)?
+                if fields.field::<u64>(diplomacy, engine_native_parts::cdiplomacy_status_layout::COUNTRY)?
                     != country.pointer as u64
                 {
                     return Err("war demand diplomacy country mismatch");
                 }
                 diplomacy
-                    .checked_add(cdiplomacy_status::OWNED_RELATIONS)
+                    .checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)
                     .and_then(|address| Array::read(memory, address, 8))
                     .ok_or("war demand owned vector invalid")?
             };
@@ -703,8 +703,8 @@ fn walk_from(
         let mut unread_rows = 0_u32;
         let mut batch = RelationBatch::default();
         let expected_diplomacy =
-            engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).map(|v| v as u64);
-        let mut country_slots = [ccountry::Country {
+            engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).map(|v| v as u64);
+        let mut country_slots = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,

@@ -55,7 +55,7 @@ pub fn walk_buffer(
         let mut found_country = false;
         let mut len = 0;
         let mut unread_rows = 0_u32;
-        let mut batch_countries = [ccountry::Country {
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,
@@ -169,7 +169,7 @@ fn walk_with_sentinel(
     count: u32,
     raw: &[u8],
     owner: u32,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let nil_byte = raw[node::IS_NIL];

@@ -323,7 +323,7 @@ unsafe fn around<const SITE: usize>(
                         for ordinal in first..first + count as u32 {
                             if let Some(pointer) = roster
                                 .element(ordinal, 8)
-                                .and_then(|at| engine_native::read::<u64>(&memory, at))
+                                .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
                             {
                                 observe(&memory, base, sources::Key::Direct(pointer as usize), false);
                             } else {

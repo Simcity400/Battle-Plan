@@ -64,6 +64,27 @@ impl RowCells {
         self.staging
     }
 
+    pub fn release_scratch(&mut self) {
+        const LIMIT: usize = 32 * 1024;
+        self.batch.release_scratch();
+        self.entries.clear();
+        if self.entries.capacity().saturating_mul(size_of::<Entry>()) > LIMIT {
+            self.entries = Vec::new();
+        }
+        self.bytes.clear();
+        if self.bytes.capacity() > LIMIT {
+            self.bytes = Vec::new();
+        }
+        self.u32s.clear();
+        if self.u32s.capacity().saturating_mul(size_of::<u32>()) > LIMIT {
+            self.u32s = Vec::new();
+        }
+        self.u64s.clear();
+        if self.u64s.capacity().saturating_mul(size_of::<u64>()) > LIMIT {
+            self.u64s = Vec::new();
+        }
+    }
+
     fn batch_row<R: RowCodec>(&mut self, row: &R, kept: u64) -> io::Result<()> {
         let batch = &mut self.batch;
         batch.key(row.key())?;

@@ -35,14 +35,14 @@ const BLOCK_LAYOUT: RecordLayout<'static> =
 
 #[derive(Clone, Copy)]
 pub struct BatchedStatus {
-    pub country: ccountry::Country,
+    pub country: engine_native_memory::country_identity::Country,
     pub status: usize,
     pub block: Option<[u8; BLOCK_LEN]>,
 }
 
 impl BatchedStatus {
     pub const EMPTY: Self = Self {
-        country: ccountry::Country {
+        country: engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,
@@ -56,7 +56,7 @@ pub fn read_batch(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    batch: &[ccountry::Country],
+    batch: &[engine_native_memory::country_identity::Country],
     out: &mut [BatchedStatus; BATCH],
 ) -> Result<usize, &'static str> {
     let n = batch.len();

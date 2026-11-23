@@ -1749,7 +1749,7 @@ pub fn attack_stats(
 }
 
 pub fn attack_stats_into(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     leader: usize,
     out: &mut AttackStats,

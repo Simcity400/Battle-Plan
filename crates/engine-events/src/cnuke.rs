@@ -74,7 +74,7 @@ fn walk_rows(
     let mut found_country = false;
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
-    let mut batch_countries = [ccountry::Country {
+    let mut batch_countries = [engine_native_memory::country_identity::Country {
         id: 0,
         canonical_slot: 0,
         pointer: 0,

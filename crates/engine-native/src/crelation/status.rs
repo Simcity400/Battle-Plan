@@ -1651,7 +1651,7 @@ impl Resolver {
         Ok(diplomacy)
     }
 
-    pub(crate) fn cache_diplomacy(&mut self, country: ccountry::Country, diplomacy: usize) {
+    pub(crate) fn cache_diplomacy(&mut self, country: engine_native_memory::country_identity::Country, diplomacy: usize) {
         let generation = self.generation;
         if generation != 0
             && country.pointer != 0

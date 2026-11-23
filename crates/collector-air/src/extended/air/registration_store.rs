@@ -14,7 +14,7 @@ pub struct CarriedRaw {
 }
 
 impl CarriedRaw {
-    pub(crate) fn memory<'a, M: engine_native::Memory>(
+    pub(crate) fn memory<'a, M: engine_native_memory::Memory>(
         &'a self,
         fallback: &'a M,
     ) -> CarriedMemory<'a, M> {
@@ -30,7 +30,7 @@ pub(crate) struct CarriedMemory<'a, M> {
     fallback: &'a M,
 }
 
-impl<M: engine_native::Memory> engine_native::Memory for CarriedMemory<'_, M> {
+impl<M: engine_native_memory::Memory> engine_native_memory::Memory for CarriedMemory<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let Some(end) = address.checked_add(output.len()) else {
             return false;
@@ -53,7 +53,7 @@ impl<M: engine_native::Memory> engine_native::Memory for CarriedMemory<'_, M> {
 }
 
 fn dense_count_from_spans(pointer: usize, spans: &[Span], bytes: &[u8]) -> usize {
-    let Some(target) = pointer.checked_add(engine_native::cair_base::REGISTERED_CONTAINERS) else {
+    let Some(target) = pointer.checked_add(engine_native_air::cair_base::REGISTERED_CONTAINERS) else {
         return 0;
     };
     let Some(target_end) = target.checked_add(16) else {
@@ -69,7 +69,7 @@ fn dense_count_from_spans(pointer: usize, spans: &[Span], bytes: &[u8]) -> usize
             if let Some(slice) = bytes.get(offset..offset + 16) {
                 let mut raw = [0u8; 16];
                 raw.copy_from_slice(slice);
-                return engine_native::cpdx_array::Array::from_header(raw, 8)
+                return engine_native_memory::cpdx_array::Array::from_header(raw, 8)
                     .map_or(0, |array| array.count as usize);
             }
         }

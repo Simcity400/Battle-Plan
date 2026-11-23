@@ -1050,7 +1050,7 @@ impl Store {
         owner: CountryIdentity,
         hour: i32,
         change: DecisionChange,
-        token: engine_native::msvc_string::Descriptor,
+        token: engine_native_memory::msvc_string::Descriptor,
         root: Option<u32>,
     ) -> Result<(), &'static str> {
         let mut value = fact(memory, owner, change, None);

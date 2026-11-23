@@ -20,36 +20,36 @@ pub enum Work {
     Projects {
         part: projects::ProjectPart,
         game_state: usize,
-        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
     TemplateWalk(collector_division_templates::extended::division_templates::WalkPart),
     ProjectsRestPrimary {
         rest: Box<projects::RestPrimary>,
-        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
     ProjectsRestAux {
         rest: Box<projects::RestAux>,
-        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
     ProjectsRestPaths {
         rest: Box<projects::RestPaths>,
-        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
     Buildings(Box<super::BuildingsPart>),
     RaidStateInputs(Box<super::RaidStateInputsPart>),
     Rails(Box<super::RailsPart>),
     IntelResidualAux {
         part: Box<intel::ResidualAux>,
-        countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     },
     NaviesBegin(Box<super::NaviesBeginPart>),
     SpeedTermsEntries {
         part: Box<division_presentation::SpeedTermsEntriesWork>,
-        countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     },
     SpeedTermsAux {
         part: Box<division_presentation::SpeedTermsAuxWork>,
-        countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     },
 }
 impl Work {
@@ -296,7 +296,7 @@ impl Dispatch {
         &self,
         mut first: Work,
         mut second: Work,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         wait: collector_workers::hour_stages::Part,
         run: &mut dyn FnMut(),
@@ -401,7 +401,7 @@ impl Dispatch {
         mut first: Work,
         mut second: Work,
         mut third: Work,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         wait: collector_workers::hour_stages::Part,
         run: &mut dyn FnMut(),
@@ -553,7 +553,7 @@ impl Dispatch {
         memory: &impl engine_native_memory::Memory,
         base: usize,
         game_state: usize,
-        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     ) -> Result<Vec<projects::ProjectPart>, &'static str> {
         let parts = engine_allocation::collect_vec(parts.into_iter().map(|part| Work::Projects {
             part,

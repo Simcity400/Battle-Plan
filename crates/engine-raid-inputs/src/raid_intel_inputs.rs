@@ -195,7 +195,7 @@ impl<'b> Accumulator<'b> {
         base: usize,
         key: usize,
         carry: &mut impl Carry,
-        defs: &mut [Option<modifier_definition::Operands>; 2],
+        defs: &mut [Option<engine_native_parts::modifier_definition::Operands>; 2],
     ) -> Result<i64, &'static str> {
         let loaded = match self.loaded {
             Some(loaded) => loaded,
@@ -278,7 +278,7 @@ fn contribution(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
-    resolver: &mut crate::creference_registry::HeaderResolver,
+    resolver: &mut engine_native_parts::creference_registry::HeaderResolver,
     country: u32,
     handle: u64,
 ) -> Result<Option<Operative>, &'static str> {
@@ -563,7 +563,7 @@ fn walk_carrying(
         packed_fields([(0, 8), (strategic::OWNER, 4), (MISSIONS, 16)]);
     const STRAT_LAYOUT: RecordLayout<'static> = RecordLayout::new(&STRAT_FIELDS, 28).unwrap();
     const ACCUM_HEADER_FIELDS: [RecordField; 1] =
-        packed_fields([(ccountry::MODIFIER_ACCUMULATOR, 16)]);
+        packed_fields([(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 16)]);
     const ACCUM_HEADER_LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&ACCUM_HEADER_FIELDS, 16).unwrap();
 
@@ -579,14 +579,14 @@ fn walk_carrying(
         let mut len = 0usize;
         let mut entries = [0_u8; ACCUMULATOR_ENTRIES * STRIDE];
         let mut defs = [None; 2];
-        let mut resolver = crate::creference_registry::HeaderResolver::default();
+        let mut resolver = engine_native_parts::creference_registry::HeaderResolver::default();
         let expected_agency = engine_sites::at(base, agency::VTABLE_RVA).map(|v| v as u64);
         let expected_crypto = site(base, ccryptology::VTABLE_RVA)? as u64;
         let expected_strategic = site(base, strategic::VTABLE_RVA)? as u64;
         let mut mission_chunk = [0u8; 64 * 8];
         let mut country_slots = [(
             0_u32,
-            ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 pointer: 0,
                 canonical_slot: 0,
                 id: 0,

@@ -234,3 +234,41 @@ fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
         drop(unsafe { pool.vacate(slot) });
     }
 }
+
+#[test]
+fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
+    // SAFETY: Isolated unit test owns this `Shared` fixture and its frame slots exclusively.
+    let shared = unsafe { Shared::new(0, 0, 1) };
+    let pool = &shared.frames;
+    let initial = pool.live_bytes();
+    assert!(initial > 0);
+    assert!(!pool.at_limit_with(STEADY + 1, initial + 1));
+    assert!(pool.at_limit_with(STEADY, u64::MAX));
+    assert!(pool.at_limit_with(usize::MAX, initial));
+    assert_eq!(
+        hour_frame(None, pool.at_limit_with(usize::MAX, initial)),
+        HourFrame::Drop
+    );
+    assert!(!builds_ahead(0, pool.at_limit_with(usize::MAX, initial)));
+
+    pool.set_slot_bytes(0, MAX_LIVE_BYTES);
+    assert!(pool.at_limit());
+    let mut held: Vec<_> = (0..STEADY)
+        .map(|_| unsafe { shared.take_frame(&mut 0) }.unwrap())
+        .collect();
+    assert_eq!(unsafe { shared.take_frame(&mut 0) }, None);
+    assert_eq!(pool.stalled_drops(), 1);
+    assert_eq!(pool.live(), STEADY);
+
+    pool.set_slot_bytes(0, 1);
+    assert!(!pool.at_limit());
+    let extra = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(pool.live(), STEADY + 1);
+    held.push(extra);
+    for slot in held {
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame(slot) };
+    }
+    assert_eq!(pool.live(), STEADY);
+    assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
+}

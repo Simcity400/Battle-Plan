@@ -25,17 +25,18 @@ const HEAP_ALIGNMENT: usize = 16;
 const HEADER: usize = size_of::<*mut u8>();
 const DLL_PROCESS_DETACH: u32 = 0;
 const FINE_CLASSES: usize = 64;
-const SMALL_LIMIT: usize = 64 * 1024;
-const CLASSES: usize = FINE_CLASSES + 6;
-const CACHE_CLASS_BYTES: usize = 128 * 1024;
-const MAX_BATCH: usize = 256;
+const SMALL_LIMIT: usize = 8 * 1024;
+const CLASSES: usize = FINE_CLASSES + 3;
+const CACHE_CLASS_BYTES: usize = 16 * 1024;
+const MAX_BATCH: usize = 64;
 const _: () = assert!(SMALL_LIMIT <= CACHE_CLASS_BYTES / 2);
 const PAGE: usize = 4096;
 const GRANULARITY: usize = 64 * 1024;
 const RECORD_BYTES: usize = 64;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 1024 * 1024 * 1024;
+const KEPT_BYTES: usize = 16 * 1024 * 1024;
+const TRIM_SLACK: usize = 256 * 1024;
 
 fn class(size: usize) -> Option<usize> {
     if size <= FINE_CLASSES * 16 {
@@ -734,7 +735,17 @@ impl PrivateHeap {
             }
             self.pages.made(record);
         }
-        unsafe { (*record).committed = end.max(committed) };
+        let mut final_committed = end.max(committed);
+        if !fresh
+            && side() == OTHER
+            && committed > end.saturating_add(TRIM_SLACK)
+            && self.page_call(|| unsafe {
+                VirtualFree(base.add(end).cast(), committed - end, MEM_DECOMMIT)
+            }) != 0
+        {
+            final_committed = end;
+        }
+        unsafe { (*record).committed = final_committed };
         let body = unsafe { base.add(offset) };
         if zeroed && committed > offset {
             unsafe { body.write_bytes(0, size.min(committed - offset)) };

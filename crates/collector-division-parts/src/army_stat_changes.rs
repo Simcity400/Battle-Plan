@@ -58,14 +58,14 @@ const REFRESH_COUNTRY_NAMES: usize = 2;
 static WATCHES: Watches = Watches::new();
 
 const ROSTER_BATCH: usize = 64;
-const NAME_GROUP_MEMBER_FIELDS: [engine_native::memory::RecordField; 1] =
-    [engine_native::memory::RecordField {
+const NAME_GROUP_MEMBER_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+    [engine_native_memory::memory::RecordField {
         source_offset: engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER,
         destination_offset: 0,
         len: 8,
     }];
-const NAME_GROUP_MEMBER_LAYOUT: engine_native::memory::RecordLayout<'static> =
-    engine_native::memory::RecordLayout::new(&NAME_GROUP_MEMBER_FIELDS, 8)
+const NAME_GROUP_MEMBER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&NAME_GROUP_MEMBER_FIELDS, 8)
         .expect("valid record layout");
 
 fn roster_members(
@@ -101,7 +101,7 @@ fn roster_members(
         }
         if live != 0 {
             if memory.copy_records(
-                engine_native::memory::RecordSources::Pointers(&pointers[..live]),
+                engine_native_memory::memory::RecordSources::Pointers(&pointers[..live]),
                 &NAME_GROUP_MEMBER_LAYOUT,
                 &mut member_bytes[..live * 8],
             ) < live

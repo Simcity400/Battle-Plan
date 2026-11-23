@@ -790,20 +790,20 @@ impl Captured {
         let base = rows.as_ptr() as usize;
         let stride = std::mem::size_of::<
             ccountry::AppearanceRow<
-                engine_native::capture_text::Owned,
-                engine_native::capture_text::Owned,
-                engine_native::capture_text::Owned,
+                engine_native_memory::capture_text::Owned,
+                engine_native_memory::capture_text::Owned,
+                engine_native_memory::capture_text::Owned,
             >,
         >();
         let start_of = |r: &ccountry::AppearanceRow<
-            engine_native::capture_text::Owned,
-            engine_native::capture_text::Owned,
-            engine_native::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
         >| { starts[(r as *const _ as usize - base) / stride] };
         let original_tag_bytes = |r: &ccountry::AppearanceRow<
-            engine_native::capture_text::Owned,
-            engine_native::capture_text::Owned,
-            engine_native::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
         >| {
             r.original_tag.and_then(|name| {
                 name.start.checked_add(name.len).and_then(|end| {

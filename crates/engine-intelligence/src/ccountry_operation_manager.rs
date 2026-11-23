@@ -114,7 +114,7 @@ pub fn walk_buffer(
         let mut assigned_error = None;
         let (mut bytes_len, mut required_bytes) = (0_usize, 0_usize);
         let (mut parts_len, mut required_parts) = (0_usize, 0_usize);
-        let mut batch_countries = [ccountry::Country {
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,

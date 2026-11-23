@@ -136,7 +136,7 @@ pub fn walk_buffer(
         let (mut entries_len, mut required_entries) = (0_usize, 0_usize);
         let mut country_slots = [(
             0_u32,
-            ccountry::Country {
+            engine_native_memory::country_identity::Country {
                 pointer: 0,
                 canonical_slot: 0,
                 id: 0,
@@ -153,7 +153,7 @@ pub fn walk_buffer(
         let mut quiet_map = [u8::MAX; BATCH];
         let mut quiet_rosters = [0_u8; BATCH * ROSTER_BYTES];
         let mut single_rosters = [0_u8; ROSTER_BYTES];
-        let mut resolver = engine_native::creference_registry::ScopedResolver::new(base);
+        let mut resolver = engine_native_parts::creference_registry::ScopedResolver::new(base);
         let mut next = 1_u32;
         while next < countries.count() {
             let chunk_start = next;
@@ -451,14 +451,14 @@ pub fn walk_buffer(
                                     if field::<u64>(memory, pointer, 0)?
                                         != engine_sites::at(
                                             base,
-                                            engine_native::coperative_leader::VTABLE_RVA,
+                                            engine_native_parts::coperative_leader_layout::VTABLE_RVA,
                                         )
                                         .ok_or("strategic operative mission vtable overflow")?
                                             as u64
                                         || field::<u64>(
                                             memory,
                                             pointer,
-                                            engine_native::coperative_leader::IDENTITY,
+                                            engine_native_intelligence::coperative_leader::IDENTITY,
                                         )? != handle
                                     {
                                         return Err(

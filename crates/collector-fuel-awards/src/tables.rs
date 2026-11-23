@@ -48,7 +48,7 @@ impl Captured {
         self.entries.capacity() * size_of::<Entry>() + self.names.capacity()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        let (entries, names) = fuel_awards::capacities();
+        let (entries, names) = fuel_awards::drained_capacities();
         grow_capacity(&mut capacity.entries, entries);
         grow_capacity(&mut capacity.names, names);
         if let Some(Ok((drained, _, required))) = self.drained {

@@ -64,13 +64,16 @@ impl<R: Default> CaptureRows<R> {
     pub fn grow(&mut self, capacity: &mut usize) {
         grow_capacity(capacity, self.failed_len);
         grow_capacity(capacity, self.outcome.len());
-        if self.failed_len > 0 && self.failed_len >= capacity.saturating_sub(*capacity / 4) {
+        let margin = |cap: usize| if cap > 256 { cap / 8 } else { cap / 4 };
+        if self.failed_len > 0 && self.failed_len >= capacity.saturating_sub(margin(*capacity)) {
             let required = capacity.saturating_add(1);
             grow_capacity(capacity, required);
         }
         grow_capacity(capacity, self.failed_required);
         match self.outcome {
-            Outcome::Rows { len } if len > 0 && len >= capacity.saturating_sub(*capacity / 4) => {
+            Outcome::Rows { len }
+                if len > 0 && len >= capacity.saturating_sub(margin(*capacity)) =>
+            {
                 let required = capacity.saturating_add(1);
                 grow_capacity(capacity, required);
             }
@@ -85,9 +88,16 @@ impl<R: Default> CaptureRows<R> {
 
 pub fn grow_capacity(capacity: &mut usize, required: usize) {
     if required > *capacity {
-        *capacity = capacity
-            .saturating_mul(2)
-            .max(required.checked_next_power_of_two().unwrap_or(required));
+        if *capacity <= 256 && required <= 256 {
+            *capacity = capacity
+                .saturating_mul(2)
+                .max(required.checked_next_power_of_two().unwrap_or(required));
+        } else {
+            let target = required
+                .saturating_add(required / 4)
+                .max(capacity.saturating_add(*capacity / 4));
+            *capacity = target.checked_next_multiple_of(64).unwrap_or(target);
+        }
     }
 }
 
@@ -137,7 +147,12 @@ impl<T: Default> Arena<T> {
 
     pub fn grow(&mut self, capacity: &mut usize) {
         grow_capacity(capacity, self.required.max(self.len));
-        if self.len > 0 && self.len >= capacity.saturating_sub(*capacity / 4) {
+        let margin = if *capacity > 256 {
+            *capacity / 8
+        } else {
+            *capacity / 4
+        };
+        if self.len > 0 && self.len >= capacity.saturating_sub(margin) {
             grow_capacity(capacity, capacity.saturating_add(1));
         }
         grow_vec(&mut self.first, *capacity);
@@ -263,5 +278,30 @@ mod tests {
                 assert_eq!((actual.failed_len, actual.failed_required), (0, 0));
             }
         }
+    }
+
+    #[test]
+    fn large_rows_and_arenas_stabilize_near_quarter_headroom_without_redoubling() {
+        let mut capacity = 0;
+        let mut rows = CaptureRows::<u32>::new(0);
+        rows.outcome = Outcome::Rows { len: 200_000 };
+        rows.grow(&mut capacity);
+        let first = capacity;
+        assert!(first >= 240_000 && first <= 260_000, "capacity={first}");
+        rows.grow(&mut capacity);
+        assert_eq!(capacity, first);
+
+        let mut arena_cap = 0;
+        let mut arena = Arena::<u8>::new(0);
+        arena.len = 200_000;
+        arena.required = 200_000;
+        arena.grow(&mut arena_cap);
+        let first_arena = arena_cap;
+        assert!(
+            first_arena >= 240_000 && first_arena <= 260_000,
+            "arena_cap={first_arena}"
+        );
+        arena.grow(&mut arena_cap);
+        assert_eq!(arena_cap, first_arena);
     }
 }

@@ -615,7 +615,7 @@ pub fn lookup_requested_many_at(
     if count <= REQUESTED_SLICE_MAX && (unresolved >= 2 || count <= SINGLE_SLICE_MAX) {
         let mut bytes = [0_u8; REQUESTED_SLICE_MAX * modifier_entry::STRIDE];
         let span = &mut bytes[..count * modifier_entry::STRIDE];
-        if array.data != 0 && crate::read_slice(memory, array.data, span) {
+        if array.data != 0 && engine_native_memory::read_slice(memory, array.data, span) {
             for (index, (&key, slot)) in keys.iter().zip(output.iter_mut()).enumerate() {
                 if index < cached.len() && cached[index] {
                     continue;

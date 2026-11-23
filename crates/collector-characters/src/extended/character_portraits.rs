@@ -44,7 +44,10 @@ impl Capacities {
         let acquired = engine_native_politics::character_portraits::count_portraits(memory, base, state, Default::default());
         let count = collector_extended_support::demand::rows(acquired.outcome)?;
         collector_primitives::table_capture::grow_capacity(&mut self.rows, count.div_ceil(PARTS));
-        collector_primitives::table_capture::grow_capacity(&mut self.arena, acquired.required);
+        collector_primitives::table_capture::grow_capacity(
+            &mut self.arena,
+            acquired.required.div_ceil(PARTS),
+        );
         Ok(())
     }
 }

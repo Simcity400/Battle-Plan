@@ -1036,7 +1036,7 @@ fn run(
     sizing.extended.logistics.raise(logistics_rows);
     collector_fuel_awards::fuel_awards::presize(&memory, base);
     collector_fuel_awards::fuel_awards::install_offered();
-    let (entries, names) = collector_fuel_awards::fuel_awards::capacities();
+    let (entries, names) = collector_fuel_awards::fuel_awards::drained_capacities();
     sizing.extended.fuel_awards = collector_fuel_awards::tables::Capacities { entries, names };
     sizing.extended.game_score.enabled = config.game_score;
     if config.game_score
@@ -4291,6 +4291,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         // SAFETY: Sizing holds exclusive `&mut` access to this idle frame while session observer
         // storage stays live and teardown is excluded; shared observers synchronize concurrent growth.
         unsafe { capacities.grow_frame(idle) };
+        shared.measure_frame(idle_index);
         sizing.account_homes(shared);
         // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
         unsafe { shared.restore_idle_frame_prepared(idle_index) };
@@ -5290,6 +5291,7 @@ impl SizingShared {
                 // observer storage stays live and teardown is excluded; shared observers synchronize
                 // concurrent growth.
                 unsafe { proposal.grow_frame(frame) };
+                shared.measure_frame(index);
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     // SAFETY: This is the sizing pass for the active session's cache.
                     unsafe { shared.offer_country_cache(required_cells) };
@@ -5817,7 +5819,7 @@ fn sizing_pass(
             Err(reason) => sizing.error(reason),
         }
     }
-    let (entries, names) = collector_fuel_awards::fuel_awards::capacities();
+    let (entries, names) = collector_fuel_awards::fuel_awards::drained_capacities();
     sizing.raise(shared, |capacities| {
         let awards = &mut capacities.extended.fuel_awards;
         awards.entries = awards.entries.max(entries);

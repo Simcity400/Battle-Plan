@@ -751,7 +751,7 @@ fn push_display_diffs(
 
 fn fill_display_buffers(
     memory: &impl Memory,
-    [snow, mud]: [engine_native::cpdx_array::Array; 2],
+    [snow, mud]: [engine_native_memory::cpdx_array::Array; 2],
     provinces: u32,
     display_snow: &mut Vec<u8>,
     display_mud: &mut Vec<u8>,

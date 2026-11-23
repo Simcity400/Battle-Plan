@@ -2545,7 +2545,7 @@ fn acquire_entries_into(
                 None => country.and_then(|country| {
                     let at = country
                         .pointer
-                        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                         .ok_or("country accumulator address overflow")?;
                     let at_values = values.len();
                     let mut key_buf = [0_u32; 64];
@@ -3018,7 +3018,7 @@ fn capture_rivers_with_crossings_into(
     wanted.dedup();
     reserve(rivers, wanted.len())?;
     reserve(observed, wanted.len())?;
-    let mut owner: Option<(u32, Result<ccountry::Country, &'static str>)> = None;
+    let mut owner: Option<(u32, Result<engine_native_memory::country_identity::Country, &'static str>)> = None;
     for &(raw, controller) in wanted.iter() {
         let country = match owner {
             Some((known, country)) if known == raw => country,
@@ -3118,7 +3118,7 @@ fn capture_transport_into(
                         parts.located.push((pointer, id));
                         continue;
                     }
-                    match engine_native::cstrategic_region::id(memory, base, pointer) {
+                    match engine_native_parts::cstrategic_region::id(memory, base, pointer) {
                         Ok(Some(id)) => {
                             if engine_allocation::advisory(|| {
                                 engine_allocation::reserve_map(&mut held.regions, 1)
@@ -3140,7 +3140,7 @@ fn capture_transport_into(
             });
         } else {
             for &pointer in parts.pointers.iter() {
-                match engine_native::cstrategic_region::id(memory, base, pointer) {
+                match engine_native_parts::cstrategic_region::id(memory, base, pointer) {
                     Ok(Some(id)) => {
                         parts.regions.push(TransportRegion { id, pointer });
                         parts.located.push((pointer, id));

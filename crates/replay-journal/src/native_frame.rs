@@ -543,6 +543,17 @@ impl FrameWriter {
         self.since_restart.extend(appends);
         self.starting = false;
         self.pending = false;
+        for lane in &mut self.lanes {
+            lane.cells.release_scratch();
+            lane.removed.clear();
+            if lane.removed.capacity().saturating_mul(size_of::<u128>()) > 32 * 1024 {
+                lane.removed = Vec::new();
+            }
+            lane.pairs.clear();
+            if lane.pairs.capacity().saturating_mul(size_of::<Pair>()) > 32 * 1024 {
+                lane.pairs = Vec::new();
+            }
+        }
         Ok(())
     }
 

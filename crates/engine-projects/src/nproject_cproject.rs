@@ -137,7 +137,7 @@ fn for_each_pool<M: Memory>(
     let pool_vtable = engine_sites::at(base, nproject_cproject_pool::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let mut found_country = false;
-    let mut batch_countries = [ccountry::Country {
+    let mut batch_countries = [engine_native_memory::country_identity::Country {
         pointer: 0,
         canonical_slot: 0,
         id: 0,

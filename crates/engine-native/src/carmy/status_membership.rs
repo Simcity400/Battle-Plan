@@ -98,9 +98,9 @@ fn take_leaf(
     }
     if !*lookup_built && !leaves.is_empty() {
         *lookup_built = true;
-        let ok = crate::allocation::advisory(|| {
+        let ok = engine_allocation::advisory(|| {
             if lookup.capacity() < leaves.len() {
-                crate::allocation::reserve(lookup, leaves.len())
+                engine_allocation::reserve(lookup, leaves.len())
             } else {
                 Ok(())
             }

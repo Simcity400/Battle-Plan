@@ -188,10 +188,10 @@ fn record_registered(
         store.interests.author_changed(handle);
         let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
             .ok_or("design organisation liveness identity mismatch")?;
-        if engine_native::read::<u64>(memory, pointer) != Some(vtable as u64) {
+        if engine_native_memory::read::<u64>(memory, pointer) != Some(vtable as u64) {
             return Err("design organisation liveness identity mismatch");
         }
-        let resolved = engine_native::creference_registry::resolve(memory, base, handle)?;
+        let resolved = engine_native_parts::creference_registry::resolve(memory, base, handle)?;
         store.interests.organisation(handle, resolved)?;
         event(store, memory, base, handle, pointer, resolved.is_some())
     })();
@@ -301,7 +301,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
             *slot = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
         }
         let copied = memory.copy_records(
-            engine_native::memory::RecordSources::Pointers(&pointers[..count]),
+            engine_native_memory::memory::RecordSources::Pointers(&pointers[..count]),
             &REFERENCE_LAYOUT,
             &mut handle_bytes[..count * 8],
         );
@@ -312,7 +312,7 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
         if copied < count {
             for &pointer in &pointers[copied..count] {
                 let Some(handle) =
-                    engine_native::read::<u64>(memory, pointer + organisation::REFERENCE)
+                    engine_native_memory::read::<u64>(memory, pointer + organisation::REFERENCE)
                 else {
                     unobserved!();
                     continue;

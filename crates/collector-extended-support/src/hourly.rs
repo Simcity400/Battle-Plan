@@ -1,5 +1,5 @@
 
-pub const BUFFERS: usize = 4;
+pub const BUFFERS: usize = 3;
 std::thread_local! {
     pub static TICKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

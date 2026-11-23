@@ -868,7 +868,7 @@ impl<M: Memory> Walk<'_, M> {
         index: usize,
         list: u8,
         ordinal: u32,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         cached_owner: &mut Option<Result<u32, &'static str>>,
     ) -> Result<OriginRow, &'static str> {
         let origin = batch.origin_ptrs[index];
@@ -1640,7 +1640,7 @@ pub fn walk_region_weights(
             let start = roster
                 .element(first, 8)
                 .ok_or("strategic region roster slot unreadable")?;
-            let batch_ptrs = engine_native::read_slice(memory, start, &mut ptr_bytes[..count * 8]);
+            let batch_ptrs = engine_native_memory::read_slice(memory, start, &mut ptr_bytes[..count * 8]);
             let mut live = 0_usize;
             for offset in 0..count {
                 let pointer = if batch_ptrs {
@@ -1795,7 +1795,10 @@ pub fn walk_temporary(
                 sorted_keys.dedup();
                 allocation::reserve(&mut sorted_values, sorted_keys.len())
                     .map_err(|_| "resource temporary key allocation failed")?;
-                sorted_values.resize(sorted_keys.len(), modifier_accumulator::Value::default());
+                sorted_values.resize(
+                    sorted_keys.len(),
+                    engine_native_memory::modifier_cache::Value::default(),
+                );
                 allocation::reserve(&mut operands_cache, sorted_keys.len())
                     .map_err(|_| "resource temporary key allocation failed")?;
                 operands_cache.resize(sorted_keys.len(), None);
@@ -2043,7 +2046,7 @@ fn route_path(
         let batch = ((elements.count - first) as usize).min(BATCH);
         let copied = if let Some(start) = elements.element(first, 8)
             && start.checked_add(batch * 8).is_some()
-            && engine_native::read_slice(memory, start, &mut raw[..batch * 8])
+            && engine_native_memory::read_slice(memory, start, &mut raw[..batch * 8])
         {
             batch
         } else {

@@ -36,8 +36,8 @@ fn access(
     candidate: bool,
     observe: impl FnOnce(
         &mut Store,
-        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
-        &engine_native::memory::LiveMemory,
+        &native::provenance::World<'_, engine_native_memory::memory::LiveMemory>,
+        &engine_native_memory::memory::LiveMemory,
         usize,
         u64,
     ) -> Result<(), &'static str>,

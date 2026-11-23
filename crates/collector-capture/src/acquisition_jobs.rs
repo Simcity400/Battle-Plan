@@ -349,7 +349,7 @@ pub(crate) struct WarOverviewRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WarOverviewReport;
 pub(crate) struct RaidStateInputsPart {
-    countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     game_state: usize,
     hour: i32,
     force_full: bool,
@@ -359,7 +359,7 @@ pub(crate) struct RaidStateInputsPart {
     ticks: [u64; crate::extended::raid_state_inputs::N],
 }
 impl RaidStateInputsPart {
-    fn capture(&mut self, memory: &impl engine_native::Memory, base: usize) {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
         let _allocation_phase =
             collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
         let cached = self.countries.roster_view(memory);
@@ -389,7 +389,7 @@ pub(crate) struct RailsPart {
     store: Option<Box<naval_history::RailStore>>,
 }
 impl RailsPart {
-    fn capture(&mut self, memory: &impl engine_native::Memory, base: usize) {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
         self.rails.capture(
             memory,
             base,
@@ -400,13 +400,13 @@ impl RailsPart {
     }
 }
 pub(crate) struct NaviesBeginPart {
-    countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     game_state: usize,
     hour: i32,
     begin: crate::extended::NaviesBegin,
 }
 impl NaviesBeginPart {
-    fn capture(&mut self, memory: &impl engine_native::Memory, base: usize) {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
         let cached = self.countries.roster_view(memory);
         self.begin
             .capture(&cached, base, self.game_state, self.hour);

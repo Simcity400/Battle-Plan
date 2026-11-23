@@ -259,7 +259,7 @@ pub fn walk_captured_operatives_buffer(
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let expected_agency = engine_sites::at(base, VTABLE_RVA).map(|v| v as u64);
         let (mut len, mut unread_rows) = (0_usize, 0_u32);
-        let mut country_slots = [ccountry::Country {
+        let mut country_slots = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,
@@ -391,7 +391,10 @@ pub fn walk_captured_operatives_buffer(
                             let identity = read::<[u8; 16]>(memory, leader)
                                 .ok_or("captured operative referent unreadable")?;
                             if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                                != engine_sites::at(base, coperative_leader::VTABLE_RVA)
+                                != engine_sites::at(
+                                    base,
+                                    engine_native_parts::coperative_leader_layout::VTABLE_RVA,
+                                )
                                     .ok_or("module address overflow")?
                                     as u64
                                 || u64::from_le_bytes(identity[8..].try_into().unwrap())

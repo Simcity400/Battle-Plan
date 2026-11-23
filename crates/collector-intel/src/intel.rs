@@ -2504,7 +2504,7 @@ impl Captured {
             target_country: r.target_country,
             opinion: r.opinion,
         };
-        let country_intel_row = |r: &engine_native::country_intel_row::Row| rows::CountryIntelRow {
+        let country_intel_row = |r: &engine_native_intelligence::country_intel_row::Row| rows::CountryIntelRow {
             owner_country: r.owner_country,
             target_index: r.target_index,
             army: r.army,

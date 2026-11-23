@@ -63,6 +63,7 @@ static OFFERED_ENTRIES: AtomicUsize = AtomicUsize::new(0);
 static OFFERED_NAMES: AtomicUsize = AtomicUsize::new(0);
 static OFFERED_STRIDE: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_STRIDE: AtomicUsize = AtomicUsize::new(0);
+static PACKED_NAMES: AtomicUsize = AtomicUsize::new(0);
 static DISPOSED: AtomicPtr<Buffer> = AtomicPtr::new(std::ptr::null_mut());
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -395,8 +396,11 @@ fn offer(entries: usize, names: usize) {
     let mut name_capacity = CURRENT_NAMES
         .load(Ordering::Acquire)
         .max(OFFERED_NAMES.load(Ordering::Acquire));
+    let mut packed_names = PACKED_NAMES.load(Ordering::Acquire);
     crate::table_capture::grow_capacity(&mut entry_capacity, entries);
     crate::table_capture::grow_capacity(&mut name_capacity, names);
+    crate::table_capture::grow_capacity(&mut packed_names, names);
+    PACKED_NAMES.fetch_max(packed_names, Ordering::Release);
     let Ok(buffer) = Buffer::with_stride(entry_capacity, name_capacity, stride, Default::default())
         .and_then(engine_allocation::boxed)
     else {
@@ -530,6 +534,7 @@ pub fn release() -> Result<(), &'static str> {
         NAME_CONSUMED.store(0, Ordering::Relaxed);
         ENTRY_DEMAND.store(0, Ordering::Release);
         NAME_DEMAND.store(0, Ordering::Release);
+        PACKED_NAMES.store(0, Ordering::Release);
         NAME_STRIDE.store(0, Ordering::Release);
         LOG.consumed
             .store(LOG.cursor.load(Ordering::SeqCst), Ordering::Relaxed);
@@ -1165,6 +1170,17 @@ pub fn capacities() -> (usize, usize) {
         CURRENT_NAMES
             .load(Ordering::Acquire)
             .max(OFFERED_NAMES.load(Ordering::Acquire)),
+    )
+}
+
+pub fn drained_capacities() -> (usize, usize) {
+    (
+        CURRENT_ENTRIES
+            .load(Ordering::Acquire)
+            .max(OFFERED_ENTRIES.load(Ordering::Acquire)),
+        PACKED_NAMES
+            .load(Ordering::Acquire)
+            .max(NAME_DEMAND.load(Ordering::Acquire)),
     )
 }
 

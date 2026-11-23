@@ -375,7 +375,7 @@ impl PreparationPart {
                 self.history_latest_pointers.len(),
                 Err("unit history province vector invalid"),
             );
-            engine_native::unit_history::province_counts(
+            engine_native_land::unit_history::province_counts(
                 memory,
                 &self.history_latest_pointers,
                 &mut self.history_latest_reads,

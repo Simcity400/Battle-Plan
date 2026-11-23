@@ -19,6 +19,10 @@ pub const STEADY: usize = BUFFERS;
 
 pub const AHEAD: usize = 2;
 
+pub const MAX_LIVE_FRAMES: usize = 32;
+
+pub const MAX_LIVE_BYTES: u64 = 256 * 1024 * 1024;
+
 const SURPLUS_CAP: usize = STEADY + 6;
 
 #[cfg(not(test))]
@@ -145,6 +149,7 @@ pub struct FramePool {
     segments: [AtomicPtr<Slot>; SEGMENTS],
     made: AtomicUsize,
     live: AtomicUsize,
+    live_bytes: AtomicU64,
     free: AtomicUsize,
     returns: AtomicU64,
     grown: AtomicU64,
@@ -189,6 +194,7 @@ impl FramePool {
             segments: [const { AtomicPtr::new(ptr::null_mut()) }; SEGMENTS],
             made: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
+            live_bytes: AtomicU64::new(0),
             free: AtomicUsize::new(0),
             returns: AtomicU64::new(0),
             grown: AtomicU64::new(0),
@@ -235,6 +241,28 @@ impl FramePool {
 
     pub fn live(&self) -> usize {
         self.live.load(Ordering::Acquire)
+    }
+
+    pub fn live_bytes(&self) -> u64 {
+        self.live_bytes.load(Ordering::Acquire)
+    }
+
+    pub fn at_limit(&self) -> bool {
+        self.at_limit_with(MAX_LIVE_FRAMES, MAX_LIVE_BYTES)
+    }
+
+    pub(crate) fn at_limit_with(&self, max_frames: usize, max_bytes: u64) -> bool {
+        let live = self.live();
+        if live >= max_frames {
+            return true;
+        }
+        live >= STEADY && self.live_bytes() >= max_bytes
+    }
+
+    pub(crate) fn set_slot_bytes(&self, index: usize, bytes: u64) {
+        let previous = self.slot(index).bytes.swap(bytes, Ordering::Relaxed);
+        self.live_bytes
+            .fetch_add(bytes.wrapping_sub(previous), Ordering::Release);
     }
 
     pub fn len(&self) -> usize {
@@ -363,8 +391,9 @@ impl FramePool {
     pub(crate) fn install(&self, index: usize, frame: Box<Captured>) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
-        slot.bytes
-            .store(frame.allocated_bytes() as u64, Ordering::Relaxed);
+        let bytes = frame.allocated_bytes() as u64;
+        slot.bytes.store(bytes, Ordering::Relaxed);
+        self.live_bytes.fetch_add(bytes, Ordering::Release);
         slot.generation.fetch_add(1, Ordering::Relaxed);
         slot.frame.store(Box::into_raw(frame), Ordering::Release);
         self.live.fetch_add(1, Ordering::AcqRel);
@@ -419,7 +448,7 @@ impl FramePool {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return false;
         }
-        if live > SURPLUS_CAP {
+        if live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return true;
         }
@@ -439,7 +468,8 @@ impl FramePool {
         let slot = self.slot(index);
         let frame = slot.frame.swap(ptr::null_mut(), Ordering::AcqRel);
         assert!(!frame.is_null(), "a vacated slot held a frame");
-        slot.bytes.store(0, Ordering::Relaxed);
+        let previous = slot.bytes.swap(0, Ordering::Relaxed);
+        self.live_bytes.fetch_sub(previous, Ordering::Release);
         slot.ahead.store(false, Ordering::Relaxed);
         self.live.fetch_sub(1, Ordering::AcqRel);
         self.freed.fetch_add(1, Ordering::Relaxed);

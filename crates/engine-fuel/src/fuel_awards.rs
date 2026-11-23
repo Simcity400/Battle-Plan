@@ -544,7 +544,7 @@ pub fn air_held_with(
     pointer: usize,
     container: usize,
     consuming: u32,
-    held: Option<&ccountry::Country>,
+    held: Option<&engine_native_memory::country_identity::Country>,
     registry: Option<&mut Registry>,
 ) -> Result<(Recipient, bool), &'static str> {
     const MISMATCH: &str = "fuel award object identity mismatch";
@@ -651,7 +651,11 @@ pub fn air_held_with(
     }
     let host = match host {
         Some(host) => host,
-        None => value(memory, pointer, cair_base::HOST_REFERENCE)?,
+        None => value(
+            memory,
+            pointer,
+            engine_native_parts::cair_base_layout::HOST_REFERENCE,
+        )?,
     };
     Ok((
         Recipient {

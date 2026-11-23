@@ -265,7 +265,7 @@ fn walk_buffer_with_injury(
         let mut sci_ptrs = [0_usize; BATCH];
         let mut sci_records = [0_u8; BATCH * SCIENTIST_STRIDE];
         let mut skill_bytes = [0_u8; 32 * scientist_skill_entry::STRIDE];
-        let mut country_slots = [ccountry::Country {
+        let mut country_slots = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,

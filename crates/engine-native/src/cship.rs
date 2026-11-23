@@ -617,8 +617,8 @@ pub(crate) const ROW_STRIDE: usize = 64;
 pub(crate) const ROW_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
     engine_native_memory::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
 
-pub(crate) const ROW_EXTENDED_FIELDS: [crate::memory::RecordField; 9] = {
-    use crate::memory::RecordField;
+pub(crate) const ROW_EXTENDED_FIELDS: [engine_native_memory::memory::RecordField; 9] = {
+    use engine_native_memory::memory::RecordField;
     [
         ROW_FIELDS[0],
         ROW_FIELDS[1],
@@ -640,8 +640,8 @@ pub(crate) const ROW_EXTENDED_FIELDS: [crate::memory::RecordField; 9] = {
     ]
 };
 pub(crate) const ROW_EXTENDED_STRIDE: usize = 80;
-pub(crate) const ROW_EXTENDED_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&ROW_EXTENDED_FIELDS, ROW_EXTENDED_STRIDE)
+pub(crate) const ROW_EXTENDED_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ROW_EXTENDED_FIELDS, ROW_EXTENDED_STRIDE)
         .expect("valid extended ship row layout");
 
 pub(crate) fn decode_row(
@@ -809,7 +809,7 @@ impl OrganisationMemo {
         self.terrain_class = Recent::default();
         self.fleet = None;
         self.leader_class = Recent::default();
-        self.doctrine_keys = crate::naval_ship_modifier_inputs::DoctrineKeys::default();
+        self.doctrine_keys = crate::cship::modifier_sources::DoctrineKeys::default();
         self.weather = None;
         self.definitions.clear();
         self.own = None;

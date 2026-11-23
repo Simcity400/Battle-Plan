@@ -2871,7 +2871,7 @@ pub fn movement_province_controllers_only(
             if failed[slot] {
                 chunk_out[slot] = chunk_pointers[slot]
                     .checked_add(CONTROLLER)
-                    .and_then(|address| crate::read::<u32>(memory, address))
+                    .and_then(|address| engine_native_memory::read::<u32>(memory, address))
                     .ok_or("movement province controller unreadable");
             } else {
                 chunk_out[slot] = Ok(u32::from_le_bytes(
@@ -2905,7 +2905,7 @@ pub fn movement_province_controller_areas(
             if failed[slot] {
                 chunk_out[slot] = chunk_pointers[slot]
                     .checked_add(CONTROLLER_AREA)
-                    .and_then(|address| crate::read::<u64>(memory, address))
+                    .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                     .map(|value| value as usize)
                     .ok_or("movement province field unreadable");
             } else {
@@ -2941,11 +2941,11 @@ pub fn movement_province_controllers(
                 let pointer = chunk_pointers[slot];
                 let controller = pointer
                     .checked_add(CONTROLLER)
-                    .and_then(|address| crate::read::<u32>(memory, address))
+                    .and_then(|address| engine_native_memory::read::<u32>(memory, address))
                     .ok_or("movement province controller unreadable");
                 let controller_area = pointer
                     .checked_add(CONTROLLER_AREA)
-                    .and_then(|address| crate::read::<u64>(memory, address))
+                    .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                     .map(|value| value as usize)
                     .ok_or("movement province field unreadable");
                 chunk_out[slot] = (controller, controller_area);

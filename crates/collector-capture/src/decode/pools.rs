@@ -6,7 +6,8 @@ use super::{
 };
 use std::sync::Mutex;
 
-pub(super) const JOB_POOL_STEADY: usize = 3;
+pub(super) const JOB_POOL_STEADY: usize = 2;
+const JOB_POOL_MAX: usize = 8;
 
 fn keep() -> usize {
     let shared = crate::sampling::SHARED.load(std::sync::atomic::Ordering::Acquire);
@@ -21,7 +22,7 @@ fn keep() -> usize {
             .live()
             .saturating_sub(crate::frame_pool::STEADY)
     };
-    JOB_POOL_STEADY + backlog
+    (JOB_POOL_STEADY + backlog).min(JOB_POOL_MAX)
 }
 
 fn retain<J>(pool: &mut Vec<J>, job: J) {

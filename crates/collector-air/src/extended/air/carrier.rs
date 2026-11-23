@@ -130,8 +130,8 @@ impl Bases {
         &mut self,
         job: &super::AirBasesJob,
         image: usize,
-        source: &[engine_native::cair_base::Row],
-        resolved: &mut [engine_native::cair_base::ResolvedLink],
+        source: &[engine_native_air::cair_base::Row],
+        resolved: &mut [engine_native_air::cair_base::ResolvedLink],
         recorded: &M,
     ) -> Result<(), &'static str> {
         let countries = engine_native::ccountry::Reader::new(recorded, image, job.game_state);

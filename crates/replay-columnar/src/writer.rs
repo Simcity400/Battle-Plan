@@ -11,7 +11,8 @@ use crate::{
 };
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap},
+    collections::BinaryHeap,
+    hash::BuildHasher,
     io,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -26,10 +27,22 @@ static WRITERS: AtomicU64 = AtomicU64::new(1);
 const FILL_MINIMUM: usize = 16;
 
 const NEW: u32 = u32::MAX;
+const EMPTY: u32 = u32::MAX;
+const INSERT_SCRATCH_LIMIT: usize = 4 * 1024;
+const HOUR_SCRATCH_LIMIT: usize = 16 * 1024;
+const SECTION_SCRATCH_LIMIT: usize = 32 * 1024;
+
+fn drop_over<T>(values: &mut Vec<T>, limit_bytes: usize) {
+    values.clear();
+    if values.capacity().saturating_mul(size_of::<T>()) > limit_bytes {
+        *values = Vec::new();
+    }
+}
 
 #[derive(Default)]
 pub struct Dictionary {
-    ids: HashMap<Box<[u8]>, u32, Hasher>,
+    table: Vec<u32>,
+    hasher: Hasher,
     len: u32,
     appended: Vec<Box<[u8]>>,
     bytes: Vec<u8>,
@@ -56,25 +69,64 @@ impl Dictionary {
         Some(&self.bytes[start..end])
     }
 
+    fn find(&self, bytes: &[u8]) -> Option<u32> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let mask = self.table.len() - 1;
+        let mut slot = self.hasher.hash_one(bytes) as usize & mask;
+        loop {
+            let id = self.table[slot];
+            if id == EMPTY {
+                return None;
+            }
+            if self.get(id) == Some(bytes) {
+                return Some(id);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn place(table: &mut [u32], hasher: &Hasher, bytes: &[u8], id: u32) {
+        let mask = table.len() - 1;
+        let mut slot = hasher.hash_one(bytes) as usize & mask;
+        while table[slot] != EMPTY {
+            slot = (slot + 1) & mask;
+        }
+        table[slot] = id;
+    }
+
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<u32> {
-        if let Some(&id) = self.ids.get(bytes) {
+        if let Some(id) = self.find(bytes) {
             return Ok(id);
         }
         let id = self.len;
         let next = id
             .checked_add(1)
             .ok_or_else(|| invalid_static("Dictionary ids exceed 32 bits"))?;
-        let mut owned = engine_allocation::vec(bytes.len())?;
-        owned.extend_from_slice(bytes);
-        let owned = engine_allocation::boxed_slice(owned)?;
+        let mut grown = if self.table.is_empty() || (next as usize).saturating_mul(2) > self.table.len()
+        {
+            let capacity = self.table.len().saturating_mul(2).max(16);
+            let mut table = engine_allocation::filled(capacity, EMPTY)?;
+            for existing in 0..self.len {
+                if let Some(entry) = self.get(existing) {
+                    Self::place(&mut table, &self.hasher, entry, existing);
+                }
+            }
+            Some(table)
+        } else {
+            None
+        };
         let mut copy = engine_allocation::vec(bytes.len())?;
         copy.extend_from_slice(bytes);
         let copy = engine_allocation::boxed_slice(copy)?;
-        engine_allocation::reserve_map(&mut self.ids, 1)?;
         engine_allocation::reserve(&mut self.appended, 1)?;
         engine_allocation::reserve(&mut self.bytes, bytes.len())?;
         engine_allocation::reserve(&mut self.ends, 1)?;
-        self.ids.insert(owned, id);
+        if let Some(table) = grown.take() {
+            self.table = table;
+        }
+        Self::place(&mut self.table, &self.hasher, bytes, id);
         self.appended.push(copy);
         self.bytes.extend_from_slice(bytes);
         self.ends.push(self.bytes.len());
@@ -97,9 +149,7 @@ impl Strings<'_> {
         match self {
             Self::Interning(dictionary) => dictionary.intern(bytes),
             Self::Reading(dictionary) => dictionary
-                .ids
-                .get(bytes)
-                .copied()
+                .find(bytes)
                 .ok_or_else(|| invalid_static("A new string is interned in table order")),
         }
     }
@@ -201,6 +251,17 @@ impl Cells {
         self.kept.clear();
     }
 
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.rows, limit_bytes);
+        drop_over(&mut self.words, limit_bytes);
+        drop_over(&mut self.present, limit_bytes);
+        drop_over(&mut self.u32s, limit_bytes);
+        drop_over(&mut self.u64s, limit_bytes);
+        drop_over(&mut self.bytes, limit_bytes);
+        drop_over(&mut self.unrecorded, limit_bytes);
+        drop_over(&mut self.kept, limit_bytes);
+    }
+
     fn end(&self, kind: Kind) -> u64 {
         (match kind {
             Kind::U32List => self.u32s.len(),
@@ -264,6 +325,15 @@ pub struct Batch {
 impl Batch {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn release_scratch(&mut self) {
+        drop_over(&mut self.keys, SECTION_SCRATCH_LIMIT);
+        for cells in &mut self.columns {
+            cells.release_scratch(SECTION_SCRATCH_LIMIT);
+        }
+        self.sparse = false;
+        self.uniform_optional_i32 = None;
     }
 
     pub fn begin(&mut self, kinds: &[Kind], rows: usize) -> io::Result<()> {
@@ -1227,6 +1297,21 @@ impl Pending {
         self.uniform = false;
     }
 
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.at, limit_bytes);
+        drop_over(&mut self.words, limit_bytes);
+        drop_over(&mut self.present, limit_bytes);
+        drop_over(&mut self.spans, limit_bytes);
+        drop_over(&mut self.u32s, limit_bytes);
+        drop_over(&mut self.u64s, limit_bytes);
+        drop_over(&mut self.bytes, limit_bytes);
+        drop_over(&mut self.ops, limit_bytes);
+        drop_over(&mut self.deltas, limit_bytes);
+        drop_over(&mut self.hunks, limit_bytes);
+        drop_over(&mut self.edits, limit_bytes);
+        self.uniform = false;
+    }
+
     fn len(&self) -> usize {
         self.at.len()
     }
@@ -1337,6 +1422,20 @@ impl Out {
         self.i64s.clear();
         self.present.clear();
         self.ends.clear();
+        self.count = 0;
+    }
+
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.u8s, limit_bytes);
+        drop_over(&mut self.i8s, limit_bytes);
+        drop_over(&mut self.u16s, limit_bytes);
+        drop_over(&mut self.i16s, limit_bytes);
+        drop_over(&mut self.u32s, limit_bytes);
+        drop_over(&mut self.i32s, limit_bytes);
+        drop_over(&mut self.u64s, limit_bytes);
+        drop_over(&mut self.i64s, limit_bytes);
+        drop_over(&mut self.present, limit_bytes);
+        drop_over(&mut self.ends, limit_bytes);
         self.count = 0;
     }
 
@@ -1508,6 +1607,20 @@ impl Runs {
         self.deltas.clear();
         self.hunks.clear();
         self.edits.clear();
+    }
+
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.order, limit_bytes);
+        self.fill = false;
+        drop_over(&mut self.except, limit_bytes);
+        drop_over(&mut self.set_positions, limit_bytes);
+        drop_over(&mut self.add_positions, limit_bytes);
+        drop_over(&mut self.patch_positions, limit_bytes);
+        drop_over(&mut self.noop_positions, limit_bytes);
+        self.values.release_scratch(limit_bytes);
+        self.deltas.release_scratch(limit_bytes);
+        drop_over(&mut self.hunks, limit_bytes);
+        drop_over(&mut self.edits, limit_bytes);
     }
 }
 
@@ -1710,6 +1823,27 @@ struct Parts {
     unrecorded_runs: Vec<(usize, &'static [u32])>,
     columns: Vec<u64>,
     section: Vec<u8>,
+}
+
+impl Parts {
+    fn release_scratch(&mut self) {
+        drop_over(&mut self.deleted, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.read, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.sorted_keys, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.by_index, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.by_slot, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.popped, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.inserted, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.keys, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.insert_order, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.changed, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.apply_slots, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.runs, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.inserts, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.unrecorded_runs, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.columns, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.section, SECTION_SCRATCH_LIMIT);
+    }
 }
 
 impl TableWriter {
@@ -2213,7 +2347,51 @@ impl TableWriter {
         if let Some(bytes) = written {
             self.parts.section = bytes;
         }
+        if sectioned
+            || !self.visited.is_empty()
+            || !self.slots.is_empty()
+            || !self.new_keys.is_empty()
+        {
+            self.release_scratch();
+        }
         Ok(())
+    }
+
+    fn release_scratch(&mut self) {
+        for &slot in &self.visited {
+            self.seen[slot as usize / 64] &= !(1 << (slot % 64));
+        }
+        drop_over(&mut self.visited, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.touched, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.removed, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.new_keys, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.slots, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.insert_rows, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.cursors, INSERT_SCRATCH_LIMIT);
+        if !self.parts.inserted.is_empty() {
+            for column in 0..self.kinds.len() {
+                self.inserts[column].release_scratch(INSERT_SCRATCH_LIMIT);
+                self.insert_outs[column].release_scratch(INSERT_SCRATCH_LIMIT);
+                drop_over(&mut self.insert_unrecorded[column], INSERT_SCRATCH_LIMIT);
+            }
+        }
+        let Self {
+            dirty,
+            updates,
+            runs,
+            unrecord,
+            noops,
+            parts,
+            ..
+        } = self;
+        for column in dirty_columns(dirty.as_slice()) {
+            updates[column].release_scratch(HOUR_SCRATCH_LIMIT);
+            runs[column].release_scratch(HOUR_SCRATCH_LIMIT);
+            drop_over(&mut unrecord[column], HOUR_SCRATCH_LIMIT);
+            drop_over(&mut noops[column], HOUR_SCRATCH_LIMIT);
+            drop_over(&mut parts.unrecorded[column], HOUR_SCRATCH_LIMIT);
+        }
+        parts.release_scratch();
     }
 }
 

@@ -1032,73 +1032,73 @@ fn copy_air_base_row(
 
 const ACE_BATCH: usize = 64;
 
-const COUNTRY_ACES_FIELDS: [engine_native::memory::RecordField; 1] = [
-    engine_native::memory::RecordField {
+const COUNTRY_ACES_FIELDS: [engine_native_memory::memory::RecordField; 1] = [
+    engine_native_memory::memory::RecordField {
         source_offset: ccountry::ACES,
         destination_offset: 0,
         len: 16,
     },
 ];
-const COUNTRY_ACES_LAYOUT: engine_native::memory::RecordLayout<'static> =
-    engine_native::memory::RecordLayout::new(&COUNTRY_ACES_FIELDS, 16)
+const COUNTRY_ACES_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&COUNTRY_ACES_FIELDS, 16)
         .expect("valid country aces record layout");
 
-const ACE_REQUIRED_FIELDS: [engine_native::memory::RecordField; 7] = [
-    engine_native::memory::RecordField {
+const ACE_REQUIRED_FIELDS: [engine_native_memory::memory::RecordField; 7] = [
+    engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 16,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::AIRCRAFT_TYPE_MASK,
         destination_offset: 16,
         len: 4,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::OWNER_COUNTRY,
         destination_offset: 20,
         len: 16,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::NAME,
         destination_offset: 36,
         len: 96,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::ALIVE,
         destination_offset: 132,
         len: 1,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::KILL_TYPE,
         destination_offset: 133,
         len: 4,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::HANDLED,
         destination_offset: 137,
         len: 1,
     },
 ];
 const ACE_REQUIRED_STRIDE: usize = 138;
-const ACE_REQUIRED_LAYOUT: engine_native::memory::RecordLayout<'static> =
-    engine_native::memory::RecordLayout::new(&ACE_REQUIRED_FIELDS, ACE_REQUIRED_STRIDE)
+const ACE_REQUIRED_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ACE_REQUIRED_FIELDS, ACE_REQUIRED_STRIDE)
         .expect("valid ace required record layout");
 
-const ACE_PRESENTATION_FIELDS: [engine_native::memory::RecordField; 2] = [
-    engine_native::memory::RecordField {
+const ACE_PRESENTATION_FIELDS: [engine_native_memory::memory::RecordField; 2] = [
+    engine_native_memory::memory::RecordField {
         source_offset: cace::PORTRAIT_GENDER,
         destination_offset: 0,
         len: 8,
     },
-    engine_native::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: cace::TYPE_DEFINITION,
         destination_offset: 8,
         len: 8,
     },
 ];
-const ACE_PRESENTATION_LAYOUT: engine_native::memory::RecordLayout<'static> =
-    engine_native::memory::RecordLayout::new(&ACE_PRESENTATION_FIELDS, 16)
+const ACE_PRESENTATION_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ACE_PRESENTATION_FIELDS, 16)
         .expect("valid ace presentation record layout");
 
 fn copy_air_aces_roster(
@@ -1146,7 +1146,7 @@ fn copy_air_aces_roster(
         if valid_ptrs != 0 {
             let Some((req_start, req_completed)) = log.take_records(
                 memory,
-                engine_native::memory::RecordSources::Pointers(&pointers[..valid_ptrs]),
+                engine_native_memory::memory::RecordSources::Pointers(&pointers[..valid_ptrs]),
                 &ACE_REQUIRED_LAYOUT,
                 AIR_ACES_MASK,
             ) else {
@@ -1173,7 +1173,7 @@ fn copy_air_aces_roster(
             let (pres_start, full_pres) = if valid_aces != 0 {
                 match log.take_records(
                     memory,
-                    engine_native::memory::RecordSources::Pointers(&pointers[..valid_aces]),
+                    engine_native_memory::memory::RecordSources::Pointers(&pointers[..valid_aces]),
                     &ACE_PRESENTATION_LAYOUT,
                     AIR_ACES_MASK,
                 ) {
@@ -1230,7 +1230,7 @@ fn copy_air_aces_roster(
 )]
 fn copy_air_ace_tail(
     log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     country_pointer: usize,
     slot: u32,
@@ -2201,7 +2201,7 @@ fn copy_air_bases_pass_with_context(
         }
         let Some((hdr_start, completed)) = job.log.take_records(
             memory,
-            engine_native::memory::RecordSources::Pointers(&country_ptrs[..chunk]),
+            engine_native_memory::memory::RecordSources::Pointers(&country_ptrs[..chunk]),
             &COUNTRY_ACES_LAYOUT,
             AIR_ACES_MASK,
         ) else {

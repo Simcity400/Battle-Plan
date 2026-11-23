@@ -193,14 +193,14 @@ fn walk_from(
             RecordLayout::new(&COUNTRY_DIP_FIELDS, 8).unwrap();
         const DIP_OWNED_FIELDS: [RecordField; 3] = packed_fields([
             (0, 8),
-            (cdiplomacy_status::COUNTRY, 8),
-            (cdiplomacy_status::OWNED_RELATIONS, 16),
+            (engine_native_parts::cdiplomacy_status_layout::COUNTRY, 8),
+            (engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 16),
         ]);
         const DIP_OWNED_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&DIP_OWNED_FIELDS, 32).unwrap();
         let expected_diplomacy =
-            engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).map(|v| v as u64);
-        let mut country_slots = [ccountry::Country {
+            engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).map(|v| v as u64);
+        let mut country_slots = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,

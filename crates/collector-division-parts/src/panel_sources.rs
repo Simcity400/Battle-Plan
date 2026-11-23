@@ -373,7 +373,7 @@ impl Preparation {
                     self.last_province = Some((province, false, ctx));
                     (Some(Ok(ctx)), ctx)
                 } else {
-                    let result = engine_native::division_panel_operands::province_state(
+                    let result = engine_native_land::division_panel_operands::province_state(
                         memory, base, province,
                     );
                     if let Ok(ctx) = result {

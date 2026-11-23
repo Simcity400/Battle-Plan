@@ -502,7 +502,7 @@ pub fn daily_unchanged(
                 }
                 let actual = read::<i64>(
                     memory,
-                    container.checked_add(crate::ccountry_air_container::CAPACITY_RAW)?,
+                    container.checked_add(engine_native_air::ccountry_air_container::CAPACITY_RAW)?,
                 )?;
                 if actual < 1 {
                     return None;

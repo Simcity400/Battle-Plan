@@ -696,3 +696,28 @@ fn detach_forgets_cached_blocks_and_releases_every_reservation() {
     assert!(unsafe { heap.0.alloc(layout) }.is_null());
     assert!(unsafe { heap.0.alloc(large) }.is_null());
 }
+
+#[test]
+fn reusing_a_large_reservation_off_hold_trims_excess_committed_tail() {
+    let heap = Heap::new();
+    let heap = &heap.0;
+    let big = Layout::from_size_align(1024 * 1024, 16).unwrap();
+    let small = Layout::from_size_align(600 * 1024, 16).unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            off_hold_path();
+            let first = unsafe { heap.alloc(big) };
+            assert!(!first.is_null());
+            unsafe { first.write_bytes(0x4a, big.size()) };
+            unsafe { heap.dealloc(first, big) };
+            let reused = unsafe { heap.alloc(small) };
+            assert_eq!(reused, first);
+            let record = PrivateHeap::record(reused);
+            let committed = unsafe { (*record).committed };
+            assert!(committed < big.size());
+            let tail = unsafe { record.cast::<u8>().add(committed) };
+            assert_eq!(region(tail).State, MEM_RESERVE);
+            unsafe { heap.dealloc(reused, small) };
+        });
+    });
+}

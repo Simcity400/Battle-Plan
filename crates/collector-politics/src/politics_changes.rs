@@ -403,16 +403,13 @@ impl Log {
     ) -> io::Result<Self> {
         let entries = entries.max(1);
         let keys = keys.max(1);
-        let shared = SharedLane::new(entries.div_ceil(lanes.max(1)).max(shared), keys)?;
+        let secondary = entries.div_ceil(lanes.max(1)).min(64);
+        let shared = SharedLane::new(secondary.max(shared), keys)?;
         let mut storage = allocation::vec(lanes)?;
         for n in 0..lanes {
             storage.push(Lane::new(
-                (if n == 0 {
-                    entries
-                } else {
-                    entries.div_ceil(lanes)
-                })
-                .max(required.get(n).copied().unwrap_or(0)),
+                (if n == 0 { entries } else { secondary })
+                    .max(required.get(n).copied().unwrap_or(0)),
                 keys,
             )?);
         }

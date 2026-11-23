@@ -175,13 +175,13 @@ pub fn province_count(memory: &impl Memory, address: usize) -> Result<u32, &'sta
         .ok_or("unit history province vector invalid")
 }
 
-const PROVINCE_HEADER_FIELDS: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+const PROVINCE_HEADER_FIELDS: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
     source_offset: PROVINCES,
     destination_offset: 0,
     len: 16,
 }];
-const PROVINCE_HEADER_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&PROVINCE_HEADER_FIELDS, 16).expect("valid record layout");
+const PROVINCE_HEADER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&PROVINCE_HEADER_FIELDS, 16).expect("valid record layout");
 
 pub fn province_counts(
     memory: &impl Memory,
@@ -195,7 +195,7 @@ pub fn province_counts(
         let mut start = 0;
         while start < addrs.len() {
             let copied = memory.copy_records(
-                crate::memory::RecordSources::Pointers(&addrs[start..]),
+                engine_native_memory::memory::RecordSources::Pointers(&addrs[start..]),
                 &PROVINCE_HEADER_LAYOUT,
                 &mut bytes[start * 16..addrs.len() * 16],
             );

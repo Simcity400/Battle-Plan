@@ -140,7 +140,7 @@ pub fn walk_buffer(
     let read_result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut found_country = false;
-        let mut batch_countries = [ccountry::Country {
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,

@@ -64,7 +64,7 @@ fn gated(hour: i32, full: bool, raw: bool, mode: replay_data::scope::CaptureMode
         Box::new(collector_certificates::slicing::SliceFingerprints::new()),
         Some(
             engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap(),
         ),

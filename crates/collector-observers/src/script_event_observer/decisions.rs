@@ -238,7 +238,7 @@ fn appended_candidates_for(
             let span = array
                 .slice(first, count as u32, runtime::CANDIDATE_STRIDE)
                 .map_err(|_| "decision candidate result ordinal differs")?;
-            if engine_native::read_slice(&memory, span.data, &mut raw[..count * runtime::CANDIDATE_STRIDE]) {
+            if engine_native_memory::read_slice(&memory, span.data, &mut raw[..count * runtime::CANDIDATE_STRIDE]) {
                 for (index, rec) in raw[..count * runtime::CANDIDATE_STRIDE]
                     .chunks_exact(runtime::CANDIDATE_STRIDE)
                     .enumerate()

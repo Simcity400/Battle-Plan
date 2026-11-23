@@ -15,7 +15,6 @@ use engine_native::{
     },
 };
 use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
-};
 
 const COUNTRY_BATCH: usize = 64;
 const DIPLO_PTR_FIELDS: [RecordField; 1] = [RecordField {
@@ -33,7 +32,6 @@ const DIPLO_AUTONOMY_FIELDS: [RecordField; 3] = packed_fields([
 const DIPLO_AUTONOMY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DIPLO_AUTONOMY_FIELDS, 24).expect("valid diplomacy autonomy layout");
 
-pub const VTABLE_RVA: Rva = Rva(0x0286_1030);
 pub const SCORE: usize = 0x08;
 pub const PREVIOUS_STATE: usize = 0x30;
 pub const LOWER_SCORE: usize = 0x38;
@@ -93,7 +91,7 @@ pub fn walk_buffer(
         let max_diplo_end = cdiplomacy_status::COUNTRY
             .max(cdiplomacy_status::CURRENT_AUTONOMY_STATUS)
             + 8;
-        let mut batch_countries = [ccountry::Country {
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
             id: 0,
             canonical_slot: 0,
             pointer: 0,

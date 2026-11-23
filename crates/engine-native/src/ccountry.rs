@@ -2505,7 +2505,7 @@ pub struct CoreSupplyAccessCache<'a, M: Memory> {
     state: usize,
     countries: &'a Reader<'a, M>,
     provinces: Result<Array, &'static str>,
-    systems: Option<Result<crate::csupply_system::Reader<'a, M>, &'static str>>,
+    systems: Option<Result<crate::ccountry_supply_system::world::Reader<'a, M>, &'static str>>,
     anchors_ptr: Option<Result<usize, &'static str>>,
     anchors_hash: Option<Result<MovementHash, &'static str>>,
     owner: Option<CachedOwnerSupply>,
@@ -2573,13 +2573,13 @@ impl<'a, M: Memory> CoreSupplyAccessCache<'a, M> {
         if area == 0 {
             return Ok(false);
         }
-        movement_auth(self.memory, self.base, area, crate::ccontroller_area::VTABLE_RVA)?;
+        movement_auth(self.memory, self.base, area, engine_native_parts::ccontroller_area::VTABLE_RVA)?;
         let memory = self.memory;
         let base = self.base;
         let state = self.state;
         let systems = self
             .systems
-            .get_or_insert_with(|| crate::csupply_system::Reader::new(memory, base, state));
+            .get_or_insert_with(|| crate::ccountry_supply_system::world::Reader::new(memory, base, state));
         let companion_ptr = *cached.companion_ptr.get_or_insert_with(|| {
             let systems = systems.as_ref().map_err(|reason| *reason)?;
             let system = systems

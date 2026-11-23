@@ -187,7 +187,7 @@ fn walk_keyed(
         ]);
         const MISSION_AGENCY_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&MISSION_AGENCY_FIELDS, 32).unwrap();
-        let mut country_slots = [ccountry::Country {
+        let mut country_slots = [engine_native_memory::country_identity::Country {
             pointer: 0,
             canonical_slot: 0,
             id: 0,
