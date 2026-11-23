@@ -14,7 +14,8 @@ acquisition_profile = []
 order_membership_oracle = ["acquisition_profile"]
 alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
 batch-fallback-test-counts = []
-test-support = ["batch-fallback-test-counts", "engine-allocation/test-support"]
+layout-fixtures = []
+test-support = ["batch-fallback-test-counts", "engine-allocation/test-support", "layout-fixtures"]
 
 [dependencies]
 game-model.workspace = true

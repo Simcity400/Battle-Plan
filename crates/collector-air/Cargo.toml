@@ -12,7 +12,7 @@ doctest = false
 [features]
 default = ["air_base_changes", "wing_changes"]
 air_base_changes = []
-test-support = ["collector-primitives/test-support", "dep:collector-test-support"]
+test-support = ["collector-primitives/test-support", "dep:collector-test-support", "engine-native/layout-fixtures"]
 wing_changes = ["collector-observers/wing_changes"]
 
 [dependencies]
