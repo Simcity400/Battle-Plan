@@ -987,3 +987,143 @@ fn lanes_fold_serves_recording_track_for_selected_tag_mapped_to_slot_zero() {
     let branches = shared.branches.lock().unwrap();
     assert!(branches[&3].recording_player(9, 0));
 }
+
+#[test]
+fn lanes_fold_remapped_observer_tag_keeps_unavailable_hour_ambiguous() {
+    use viewer_engagements::engaged::Ambiguity;
+    let mut held = HashMap::new();
+    let recording = record_runs(&[(0, 3)], &NAMES, |at, store| {
+        if at == 0 {
+            held.clear();
+        }
+        for table in EMPTY {
+            let status = if table == TableId::CombatEngagementRefreshes && at == 2 {
+                Status::Unavailable { reason: 1 }
+            } else {
+                Status::Complete
+            };
+            store
+                .status(table.index(), status, true, Some(at), true)
+                .unwrap();
+        }
+        let links = vec![
+            CountryLinkRow {
+                id: 1,
+                canonical_slot: 1,
+            },
+            CountryLinkRow {
+                id: 2,
+                canonical_slot: 2,
+            },
+            CountryLinkRow {
+                id: 3,
+                canonical_slot: 3,
+            },
+            CountryLinkRow {
+                id: 701,
+                canonical_slot: if at == 0 { 1 } else { 2 },
+            },
+            CountryLinkRow {
+                id: 202,
+                canonical_slot: 2,
+            },
+        ];
+        let countries: Vec<_> = (1..=3)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: NAMES[id as usize - 1].to_vec(),
+                ..Default::default()
+            })
+            .collect();
+        let factions = vec![
+            FactionMemberRow {
+                country: 1,
+                faction: 9,
+                ordinal: 0,
+            },
+            FactionMemberRow {
+                country: 3,
+                faction: 9,
+                ordinal: 1,
+            },
+        ];
+        let local_player = vec![LocalPlayerRow {
+            country: 0,
+            observer_country: if at == 0 { 701 } else { 202 },
+        }];
+        let combats = vec![LandCombatRow {
+            id: 101,
+            attacker_classes: vec![0],
+            defender_classes: vec![0],
+            attackers: vec![31],
+            defenders: vec![22],
+            ..Default::default()
+        }];
+        let sides = vec![LandCombatSideRow {
+            combat: 101,
+            attacker_primary: vec![3],
+            defender_primary: Vec::new(),
+            indicator: 1,
+            ..Default::default()
+        }];
+        for (table, write_fn) in [
+            (TableId::CountryLinks, 0usize),
+            (TableId::Countries, 1),
+            (TableId::LocalPlayer, 2),
+            (TableId::FactionMembers, 3),
+            (TableId::LandCombats, 4),
+            (TableId::LandCombatSides, 5),
+        ] {
+            store
+                .status(table.index(), Status::Complete, true, Some(at), true)
+                .unwrap();
+            let entry = held.entry(table).or_default();
+            match write_fn {
+                0 => write::<tables::CountryLinks>(store, &links, entry),
+                1 => write::<tables::Countries>(store, &countries, entry),
+                2 => write::<tables::LocalPlayer>(store, &local_player, entry),
+                3 => write::<tables::FactionMembers>(store, &factions, entry),
+                4 => write::<tables::LandCombats>(store, &combats, entry),
+                _ => write::<tables::LandCombatSides>(store, &sides, entry),
+            }
+        }
+        if at < 2 {
+            write::<tables::CombatEngagementRefreshes>(
+                store,
+                &[],
+                held.entry(TableId::CombatEngagementRefreshes).or_default(),
+            );
+        }
+    });
+    let units = units(recording, "engaged-remapped-observer");
+    let shared = Arc::new(History::default());
+    let started = |_: usize| PieceStart {
+        branch: 3,
+        load: true,
+        restart: false,
+    };
+    fold(
+        &units.pages,
+        &units.timeline,
+        &started,
+        None,
+        Country::Recorded,
+        Arc::clone(&shared),
+        None,
+        |_, _, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        shared.lookup(0, 3, 0, 1, &[101]).map(|flags| flags[&101]),
+        Ok(Engaged::Yes)
+    );
+    assert_eq!(
+        shared.lookup(0, 3, 1, 2, &[101]).map(|flags| flags[&101]),
+        Ok(Engaged::Yes)
+    );
+    assert_eq!(
+        shared.lookup(0, 3, 2, 2, &[101]).map(|flags| flags[&101]),
+        Ok(Engaged::Ambiguous(Ambiguity::Scope))
+    );
+}

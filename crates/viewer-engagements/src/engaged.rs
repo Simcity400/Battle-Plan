@@ -228,15 +228,46 @@ pub struct Sample<'a> {
     pub removal: Removal,
 }
 
-fn viewer_change(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewerRelation {
+    Same,
+    Different,
+    Unknown,
+}
+
+fn raw_relation_in(links: &BTreeMap<u32, u32>, a: u32, b: u32) -> ViewerRelation {
+    if a == b {
+        return ViewerRelation::Same;
+    }
+    if a == 0 || b == 0 {
+        return ViewerRelation::Different;
+    }
+    match (links.get(&a), links.get(&b)) {
+        (Some(sa), Some(sb)) if sa == sb => ViewerRelation::Same,
+        (Some(_), Some(_)) => ViewerRelation::Different,
+        _ => ViewerRelation::Unknown,
+    }
+}
+
+fn viewer_relation(
+    before_links: &BTreeMap<u32, u32>,
     before_slot: u32,
     before_raw: Option<u32>,
+    now_links: &BTreeMap<u32, u32>,
     now_slot: u32,
     now_raw: Option<u32>,
-) -> bool {
+) -> ViewerRelation {
     match (before_raw, now_raw) {
-        (Some(a), Some(b)) => !(a == b || (a != 0 && b != 0 && before_slot == now_slot)),
-        _ => before_slot != now_slot,
+        (Some(a), Some(b)) => match (
+            raw_relation_in(before_links, a, b),
+            raw_relation_in(now_links, a, b),
+        ) {
+            (ViewerRelation::Same, ViewerRelation::Same) => ViewerRelation::Same,
+            (ViewerRelation::Different, ViewerRelation::Different) => ViewerRelation::Different,
+            _ => ViewerRelation::Unknown,
+        },
+        _ if before_slot == now_slot => ViewerRelation::Same,
+        _ => ViewerRelation::Different,
     }
 }
 
@@ -248,9 +279,29 @@ impl Sample<'_> {
         }
     }
 
-    fn secondary_viewer(&self) -> Option<CandidateViewer> {
+    fn secondary_viewer(
+        &self,
+        before_links: Option<&BTreeMap<u32, u32>>,
+    ) -> Option<CandidateViewer> {
         let alt_slot = self.alternate_viewer?;
-        if !viewer_change(self.viewer, self.viewer_raw, alt_slot, self.alternate_viewer_raw) {
+        let relation = match (self.viewer_raw, self.alternate_viewer_raw) {
+            (Some(a), Some(b)) => match before_links {
+                Some(before) => match (
+                    raw_relation_in(before, a, b),
+                    raw_relation_in(self.links, a, b),
+                ) {
+                    (ViewerRelation::Same, ViewerRelation::Same) => ViewerRelation::Same,
+                    (ViewerRelation::Different, ViewerRelation::Different) => {
+                        ViewerRelation::Different
+                    }
+                    _ => ViewerRelation::Unknown,
+                },
+                None => raw_relation_in(self.links, a, b),
+            },
+            _ if self.viewer == alt_slot => ViewerRelation::Same,
+            _ => ViewerRelation::Different,
+        };
+        if relation == ViewerRelation::Same {
             return None;
         }
         Some(match self.alternate_viewer_raw {
@@ -338,26 +389,38 @@ impl Previous {
         let mut other_proven = false;
         let mut local_proven = false;
         let mut possible = false;
-        if viewer_change(self.viewer, self.viewer_raw, sample.viewer, sample.viewer_raw)
-            && !(sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }))
-        {
-            let already_refreshed = self.alternate_viewer_refreshed.is_some_and(|refreshed| {
-                match (refreshed, sample.primary_viewer()) {
-                    (CandidateViewer::RawLocal(a), CandidateViewer::RawLocal(b)) => {
-                        a == b
-                            || (a != 0
-                                && b != 0
-                                && sample.links.get(&a).copied() == Some(sample.viewer)
-                                && self.links.get(&a).copied() == Some(sample.viewer))
-                    }
-                    (CandidateViewer::Slot(a), CandidateViewer::Slot(b)) => a == b,
-                    _ => false,
+        if !(sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. })) {
+            match viewer_relation(
+                &self.links,
+                self.viewer,
+                self.viewer_raw,
+                sample.links,
+                sample.viewer,
+                sample.viewer_raw,
+            ) {
+                ViewerRelation::Same => {}
+                ViewerRelation::Unknown => {
+                    possible = true;
                 }
-            });
-            if already_refreshed {
-                possible = true;
-            } else {
-                other_proven = true;
+                ViewerRelation::Different => {
+                    let already_refreshed =
+                        self.alternate_viewer_refreshed.is_some_and(|refreshed| {
+                            match (refreshed, sample.primary_viewer()) {
+                                (CandidateViewer::RawLocal(a), CandidateViewer::RawLocal(b)) => {
+                                    raw_relation_in(&self.links, a, b) != ViewerRelation::Different
+                                        || raw_relation_in(sample.links, a, b)
+                                            != ViewerRelation::Different
+                                }
+                                (CandidateViewer::Slot(a), CandidateViewer::Slot(b)) => a == b,
+                                _ => false,
+                            }
+                        });
+                    if already_refreshed {
+                        possible = true;
+                    } else {
+                        other_proven = true;
+                    }
+                }
             }
         }
         let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
@@ -393,10 +456,27 @@ impl Previous {
                 }
             }
             RefreshWitness::Unavailable => {
+                let candidate_may_have_joined =
+                    |was: &Controllers, now: &Controllers, candidate: CandidateViewer| match candidate
+                    {
+                        CandidateViewer::Slot(slot) => now.may_have_joined(was, slot),
+                        CandidateViewer::RawLocal(0) => now.may_have_joined(was, 0),
+                        CandidateViewer::RawLocal(raw) => {
+                            match (self.links.get(&raw).copied(), sample.links.get(&raw).copied()) {
+                                (Some(a), Some(b)) => {
+                                    now.may_have_joined(was, a)
+                                        || (a != b && now.may_have_joined(was, b))
+                                }
+                                _ => true,
+                            }
+                        }
+                    };
                 possible |= match (&self.controllers, &sample.controllers) {
                     (Some(was), Some(now)) => {
-                        now.may_have_joined(was, sample.viewer)
-                            || alternate.is_some_and(|alt| now.may_have_joined(was, alt))
+                        candidate_may_have_joined(was, now, sample.primary_viewer())
+                            || sample
+                                .secondary_viewer(Some(&self.links))
+                                .is_some_and(|alt| candidate_may_have_joined(was, now, alt))
                     }
                     _ => true,
                 };
@@ -604,7 +684,7 @@ impl History {
                 RefreshWitness::Unavailable => (None, &[]),
             };
         let primary_viewer = sample.primary_viewer();
-        let secondary_viewer = sample.secondary_viewer();
+        let secondary_viewer = sample.secondary_viewer(next.map(|p| &p.links));
         let before = next.map(|p| {
             (
                 &p.links,
@@ -876,15 +956,16 @@ impl History {
             every.is_some_and(|e| e.other_proven)
                 || local_viewers.iter().any(|&raw| match alt {
                     CandidateViewer::RawLocal(alt_raw) => {
-                        raw == alt_raw
-                            || (raw != 0
-                                && alt_raw != 0
-                                && sample.links.get(&raw).is_some_and(|&slot| {
-                                    sample.links.get(&alt_raw).copied() == Some(slot)
-                                }))
+                        raw_relation_in(sample.links, raw, alt_raw) != ViewerRelation::Different
+                            || next.is_some_and(|p| {
+                                raw_relation_in(&p.links, raw, alt_raw) != ViewerRelation::Different
+                            })
                     }
                     CandidateViewer::Slot(alt_slot) => {
-                        raw != 0 && sample.links.get(&raw).copied() == Some(alt_slot)
+                        raw != 0
+                            && (sample.links.get(&raw).copied() == Some(alt_slot)
+                                || next
+                                    .is_some_and(|p| p.links.get(&raw).copied() == Some(alt_slot)))
                     }
                 })
         });

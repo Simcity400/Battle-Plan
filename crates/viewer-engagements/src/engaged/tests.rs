@@ -924,6 +924,114 @@ fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
 }
 
 #[test]
+fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
+    let links_before = BTreeMap::from([(701, 1), (202, 2), (3, 3), (5, 5)]);
+    let links_after = BTreeMap::from([(701, 2), (202, 2), (3, 3), (5, 5)]);
+    let shares_with_one = Relations::factions_for_tests(&[(1, 3)]);
+    let mut history = History::default();
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(701),
+            recording: true,
+            ..sample(&links_before, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Load,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(701),
+            alternate_viewer: Some(2),
+            alternate_viewer_raw: Some(202),
+            recording: true,
+            refreshes: complete_witness(),
+            ..sample(&links_after, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+    history.advance(
+        Sample {
+            viewer: 2,
+            viewer_raw: Some(202),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links_after, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+
+    let mut direct_remap = History::default();
+    direct_remap.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(701),
+            recording: true,
+            ..sample(&links_before, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Load,
+    );
+    assert_eq!(direct_remap.side(62, 0), Engaged::Yes);
+    direct_remap.advance(
+        Sample {
+            viewer: 2,
+            viewer_raw: Some(202),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links_after, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(
+        direct_remap.side(62, 0),
+        Engaged::Ambiguous(Ambiguity::Scope)
+    );
+
+    let same_before = BTreeMap::from([(701, 1), (202, 1), (3, 3), (5, 5)]);
+    let split_after = BTreeMap::from([(701, 2), (202, 1), (3, 3), (5, 5)]);
+    let apart = relations(false);
+    let mut reverse_remap = History::default();
+    reverse_remap.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(701),
+            recording: true,
+            ..sample(&same_before, &shares_with_one, &[7], &[3])
+        },
+        Continuity::Load,
+    );
+    assert_eq!(reverse_remap.side(62, 0), Engaged::Yes);
+    reverse_remap.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(701),
+            recording: true,
+            refreshes: complete_witness(),
+            ..sample(&same_before, &apart, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(reverse_remap.side(62, 0), Engaged::Yes);
+    reverse_remap.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(202),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&split_after, &apart, &[7], &[3])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(
+        reverse_remap.side(62, 0),
+        Engaged::Ambiguous(Ambiguity::Scope)
+    );
+}
+
+#[test]
 fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second_sweep() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
     let apart = relations(false);

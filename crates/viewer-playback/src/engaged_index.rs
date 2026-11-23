@@ -420,11 +420,21 @@ struct Fold {
     last: Option<(Hour, bool)>,
     recording: Track,
     recording_last: Option<(Hour, bool)>,
-    client_view: Option<(u32, u32)>,
+    client_view: Option<(u32, u32, Arc<Inputs>)>,
     icons: Vec<IconFold>,
     icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
     recording_icons: Vec<IconFold>,
     recording_icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
+}
+
+fn same_raw_in(links: &BTreeMap<u32, u32>, a: u32, b: u32) -> bool {
+    a == b
+        || (a != 0
+            && b != 0
+            && links
+                .get(&a)
+                .zip(links.get(&b))
+                .is_some_and(|(sa, sb)| sa == sb))
 }
 
 fn advance_icons<F: Tables + ?Sized>(
@@ -659,15 +669,22 @@ impl Pass {
             .and_then(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
         let previous_view = fold
             .client_view
+            .as_ref()
             .filter(|_| recording_continuity == Continuity::Next);
         let player = player.map(|(mut viewer, observing)| {
             let view = (viewer.slot, viewer.raw.unwrap_or(0));
-            if let Some((slot, raw)) = previous_view
+            if let Some((slot, raw, prev_inputs)) = previous_view
                 && observing
             {
-                viewer.slot = slot;
-                viewer.raw = Some(raw);
-                let same_view = raw == view.1 || (raw != 0 && view.1 != 0 && slot == view.0);
+                let prev_slot_now = if *raw == 0 {
+                    Some(0)
+                } else {
+                    viewer.inputs.links.get(raw).copied()
+                };
+                viewer.slot = prev_slot_now.unwrap_or(*slot);
+                viewer.raw = Some(*raw);
+                let same_view = same_raw_in(&prev_inputs.links, *raw, view.1)
+                    && same_raw_in(&viewer.inputs.links, *raw, view.1);
                 if !same_view {
                     viewer.alternate_slot = Some(view.0);
                     viewer.alternate_raw = Some(view.1);
@@ -695,7 +712,7 @@ impl Pass {
                 fold.recording
                     .advance(viewer, true, sides.clone(), recording_continuity);
                 fold.recording_last = Some((hour, true));
-                fold.client_view = Some(*view);
+                fold.client_view = Some((view.0, view.1, Arc::clone(&viewer.inputs)));
                 let bytes = naval_check::recorded_bytes(frame).ok();
                 advance_icons(
                     &mut fold.recording_icons,
