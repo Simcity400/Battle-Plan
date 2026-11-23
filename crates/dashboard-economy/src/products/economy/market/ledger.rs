@@ -1,13 +1,14 @@
 
-use dashboard_base::{Source, products::{LoadContext, Product, log_page::{self as logs, LogCell, LogPageParams, LogPageReply, LogPageRow}}, queries::country_ids::Names};
+use dashboard_base::{Source, products::{LoadContext, Product, log_page::{self as logs, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel}}, queries::country_ids::Names};
+use dashboard_follow::panel::Panel;
 use dashboard_world::products::equipment_names as names;
-use dashboard_query::log::{Cell, FacetFilter};
+use dashboard_query::{Query, log::{Cell, FacetFilter}};
 use replay_data::rows::{MarketEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -92,22 +93,25 @@ pub struct Mapped {
 const EQUIPMENT: usize = 8;
 
 fn map(key: u128, cells: &[Cell], columns: &Columns, tag: impl Fn(u32) -> Option<String>) -> Mapped {
-    let kind = number(cells, columns.kind).and_then(|kind| u8::try_from(kind).ok()).unwrap_or(u8::MAX);
+    let raw_kind = number(cells, columns.kind).and_then(|kind| u8::try_from(kind).ok());
+    let kind = raw_kind.unwrap_or(u8::MAX);
     let ordinal = number(cells, columns.ordinal).and_then(|ordinal| u32::try_from(ordinal).ok()).unwrap_or(0);
     let reason = MarketEventRow { kind, ordinal, ..MarketEventRow::default() }.delivery_unavailable_reason();
     let party = |column: usize| number(cells, column).and_then(|raw| u32::try_from(raw).ok()).filter(|&raw| raw != 0).and_then(&tag);
-    let variant = number(cells, columns.variant).map_or(0, |variant| variant as u64);
+    let raw_agreement = number(cells, columns.agreement);
+    let raw_variant = number(cells, columns.variant);
+    let variant = raw_variant.map_or(0, |variant| variant as u64);
     let raw = |column: usize| if reason.is_some() { LogCell::Missing } else { number_cell(number(cells, column)) };
     Mapped {
         cells: vec![
             LogCell::Text { value: key.to_string() },
             number_cell(number(cells, columns.occurrence)),
-            LogCell::Number { value: kind.to_string() },
+            raw_kind.map_or(LogCell::NotRecorded, |kind| LogCell::Number { value: kind.to_string() }),
             number_cell(number(cells, columns.mode)),
-            LogCell::Text { value: format!("{:016x}", number(cells, columns.agreement).unwrap_or(0) as u64) },
+            raw_agreement.map_or(LogCell::NotRecorded, |agreement| LogCell::Text { value: format!("{:016x}", agreement as u64) }),
             text_cell(party(columns.country)),
             text_cell(party(columns.receiver)),
-            LogCell::Text { value: variant.to_string() },
+            raw_variant.map_or(LogCell::NotRecorded, |variant| LogCell::Text { value: (variant as u64).to_string() }),
             LogCell::Missing,
             if variant == 0 { LogCell::Missing } else { LogCell::Text { value: "Equipment not named yet".into() } },
             raw(columns.amount),
@@ -135,6 +139,105 @@ pub struct MarketLedgerParams {
     pub page_size: u32,
 }
 
+fn validate_facets(facets: &[FacetFilter]) -> Result<(), &'static str> {
+    let kinds = facets.iter().find(|facet| facet.name == "kind").ok_or("A market ledger page names the occurrences it shows")?;
+    if kinds.values.is_empty() || kinds.values.iter().any(|kind| !KINDS.contains(kind)) {
+        return Err("Invalid market occurrence kind");
+    }
+    Ok(())
+}
+
+fn links_by_run(source: &Source, query: &Query<'_>) -> io::Result<BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>> {
+    let mut out = BTreeMap::new();
+    for stretch in &query.timeline.stretches {
+        if !out.contains_key(&stretch.run) {
+            out.insert(stretch.run, dashboard_base::queries::links(source, stretch.run)?);
+        }
+    }
+    Ok(out)
+}
+
+fn enrich_rows(
+    query: &Query<'_>,
+    links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
+    context: &Result<names::Context, String>,
+    rows: Vec<(dashboard_query::log::Row, u64, u64, Option<dashboard_query::identity::Country>)>,
+    tagged: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<(Vec<LogPageRow>, Vec<String>)> {
+    let columns = Columns::read()?;
+    let tags = Names::new(&query.holders);
+    let mut by_run: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    let mut mapped = Vec::with_capacity(rows.len());
+    for (at, (row, ..)) in rows.iter().enumerate() {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let Some(stretch) = query.timeline.at(row.hour) else {
+            mapped.push(map(row.key, &row.cells, &columns, |_| None));
+            continue;
+        };
+        let run_links = links.get(&stretch.run);
+        mapped.push(map(row.key, &row.cells, &columns, |raw| run_links.and_then(|held| tags.tag_at(held, raw, row.hour)).map(str::to_owned)));
+        by_run.entry(stretch.run).or_default().push(at);
+    }
+    let mut warnings = Vec::new();
+    match context {
+        Err(why) => {
+            for row in &mut mapped {
+                if row.variant != 0 {
+                    row.cells[EQUIPMENT + 1] = LogCell::Text { value: why.clone() };
+                }
+            }
+            warnings.push(why.clone());
+        }
+        Ok(_) => {
+            let recording = query.replay.recording();
+            for (run, ats) in by_run {
+                let variants: BTreeSet<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect();
+                if variants.is_empty() {
+                    continue;
+                }
+                let hours: BTreeSet<i32> = ats.iter().map(|&at| rows[at].0.hour).collect();
+                let mut resolved: BTreeMap<u64, String> = BTreeMap::new();
+                for hour in [hours.last(), hours.first()].into_iter().flatten() {
+                    let wanted: Vec<u64> = variants.iter().copied().filter(|variant| !resolved.contains_key(variant)).collect();
+                    if wanted.is_empty() {
+                        break;
+                    }
+                    resolved.extend(plain_names(recording, run, *hour, &wanted, context)?.into_iter().filter_map(|(id, name)| Some((id, name?))));
+                }
+                for &at in &ats {
+                    let row = &mut mapped[at];
+                    match resolved.get(&row.variant) {
+                        Some(name) => {
+                            row.cells[EQUIPMENT] = LogCell::Text { value: name.clone() };
+                            row.cells[EQUIPMENT + 1] = LogCell::Missing;
+                        }
+                        None if row.variant != 0 => row.cells[EQUIPMENT + 1] = LogCell::Text { value: "The recording does not name this design at the ledger's reads".into() },
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+    let unavailable = mapped.iter().filter(|row| !matches!(row.cells[14], LogCell::Missing)).count();
+    if unavailable > 0 {
+        warnings.push(format!("{unavailable} deliveries on this page have no recorded amount; each keeps its reason"));
+    }
+    let reply_rows = rows
+        .into_iter()
+        .zip(mapped)
+        .map(|((row, ordinal, own, tag), mapped)| LogPageRow {
+            hour: row.hour,
+            key: row.key.to_string(),
+            ordinal: ordinal.to_string(),
+            country: tag,
+            own_ordinal: tagged.then(|| own.to_string()),
+            cells: mapped.cells,
+        })
+        .collect();
+    Ok((reply_rows, warnings))
+}
+
 impl Product for MarketLedger {
     const KEY: &'static str = "market-ledger";
     const CONTENT_DEPENDENT: bool = true;
@@ -149,11 +252,7 @@ impl Product for MarketLedger {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        let kinds = params.facets.iter().find(|facet| facet.name == "kind").ok_or("A market ledger page names the occurrences it shows")?;
-        if kinds.values.is_empty() || kinds.values.iter().any(|kind| !KINDS.contains(kind)) {
-            return Err("Invalid market occurrence kind");
-        }
-        Ok(())
+        validate_facets(&params.facets)
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -172,65 +271,9 @@ impl Product for MarketLedger {
         };
         let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
         let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
-        let columns = Columns::read()?;
-        let tags = Names::new(&query.holders);
-        let mut by_run: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-        let mut mapped = Vec::with_capacity(rows.len());
-        for (at, (row, ..)) in rows.iter().enumerate() {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let Some(stretch) = query.timeline.at(row.hour) else {
-                mapped.push(map(row.key, &row.cells, &columns, |_| None));
-                continue;
-            };
-            let links = dashboard_base::queries::links(source, stretch.run)?;
-            mapped.push(map(row.key, &row.cells, &columns, |raw| tags.tag_at(&links, raw, row.hour).map(str::to_owned)));
-            by_run.entry(stretch.run).or_default().push(at);
-        }
-        let mut warnings = Vec::new();
+        let links = links_by_run(source, &query)?;
         let context = names::context(source, load)?;
-        match &context {
-            Err(why) => {
-                for row in &mut mapped {
-                    if row.variant != 0 {
-                        row.cells[EQUIPMENT + 1] = LogCell::Text { value: why.clone() };
-                    }
-                }
-                warnings.push(why.clone());
-            }
-            Ok(_) => {
-                let recording = query.replay.recording();
-                for (run, ats) in by_run {
-                    let variants: BTreeSet<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect();
-                    if variants.is_empty() {
-                        continue;
-                    }
-                    let hours: BTreeSet<i32> = ats.iter().map(|&at| rows[at].0.hour).collect();
-                    let mut names: BTreeMap<u64, String> = BTreeMap::new();
-                    for hour in [hours.last(), hours.first()].into_iter().flatten() {
-                        let wanted: Vec<u64> = variants.iter().copied().filter(|variant| !names.contains_key(variant)).collect();
-                        if wanted.is_empty() {
-                            break;
-                        }
-                        names.extend(plain_names(recording, run, *hour, &wanted, &context)?.into_iter().filter_map(|(id, name)| Some((id, name?))));
-                    }
-                    for &at in &ats {
-                        let row = &mut mapped[at];
-                        match names.get(&row.variant) {
-                            Some(name) => {
-                                row.cells[EQUIPMENT] = LogCell::Text { value: name.clone() };
-                                row.cells[EQUIPMENT + 1] = LogCell::Missing;
-                            }
-                            None if row.variant != 0 => row.cells[EQUIPMENT + 1] = LogCell::Text { value: "The recording does not name this design at the ledger's reads".into() },
-                            None => {}
-                        }
-                    }
-                }
-            }
-        }
-        let unavailable = mapped.iter().filter(|row| !matches!(row.cells[14], LogCell::Missing)).count();
-        if unavailable > 0 {
-            warnings.push(format!("{unavailable} deliveries on this page have no recorded amount; each keeps its reason"));
-        }
+        let (reply_rows, warnings) = enrich_rows(&query, &links, &context, rows, tagged, cancelled)?;
         Ok(LogPageReply {
             branch_id: params.branch_id.clone(),
             log: LOG.to_owned(),
@@ -238,22 +281,114 @@ impl Product for MarketLedger {
             first_ordinal: page.first.to_string(),
             total: page.total().to_string(),
             cursor: page.cursor().map(|cursor| cursor.to_string()),
-            rows: rows
-                .into_iter()
-                .zip(mapped)
-                .map(|((row, ordinal, own, tag), mapped)| LogPageRow {
-                    hour: row.hour,
-                    key: row.key.to_string(),
-                    ordinal: ordinal.to_string(),
-                    country: tag,
-                    own_ordinal: tagged.then(|| own.to_string()),
-                    cells: mapped.cells,
-                })
-                .collect(),
+            rows: reply_rows,
             missing,
             warnings,
         })
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarketLedgerTailParams {
+    pub branch_id: String,
+    #[serde(default)]
+    pub facets: Vec<FacetFilter>,
+    #[serde(default)]
+    pub from: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
+    pub limit: u32,
+    #[serde(default)]
+    pub count_facets: Vec<LogFacetCountAsk>,
+}
+
+fn load_tail_at(
+    query: &Query<'_>,
+    links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
+    context: &Result<names::Context, String>,
+    params: &MarketLedgerTailParams,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<LogTailReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+    let (page, rows, facet_totals, missing) = logs::tail(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| {
+        (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())
+    })?;
+    let (reply_rows, warnings) = enrich_rows(query, links, context, rows, tagged, cancelled)?;
+    Ok(LogTailReply {
+        branch_id: params.branch_id.clone(),
+        log: LOG.to_owned(),
+        columns: COLUMNS.iter().map(|column| (*column).to_owned()).collect(),
+        base_ordinal: page.base.to_string(),
+        first_ordinal: page.first.to_string(),
+        total: page.total().to_string(),
+        rows: reply_rows,
+        facet_totals,
+        missing,
+        warnings,
+    })
+}
+
+pub struct MarketLedgerTail;
+
+impl Product for MarketLedgerTail {
+    const KEY: &'static str = "market-ledger-tail";
+    const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
+    type Params = MarketLedgerTailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        hour: Read,
+        limit,
+        countFacets,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "countFacets[].facets[].countries[]",
+        "countFacets[].facets[].values[]"
+    ];
+    type Reply = LogTailReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![MarketLedgerTailParams::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        validate_facets(&params.facets)
+    }
+
+    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let hour = params.hour.unwrap_or(query.timeline.last);
+        let links = links_by_run(source, &query)?;
+        let context = names::context(source, load)?;
+        load_tail_at(&query, &links, &context, params, hour, cancelled)
+    }
+}
+
+pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    request.as_object_mut().ok_or("Invalid market-ledger-tail panel")?.remove("panel");
+    let params: MarketLedgerTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid market-ledger-tail panel: {error}"))?;
+    MarketLedgerTail::validate(&params)?;
+    let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
+    let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
+    let links = Arc::new(links_by_run(source, &query).map_err(|error| error.to_string())?);
+    let context = Arc::new(names::context(source, load).map_err(|error| error.to_string())?);
+    let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
+    let params = Arc::new(params);
+    Ok(dated_tail_panel(executable, move |hour, cancelled| {
+        let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+        load_tail_at(&query, &links, &context, &params, hour, cancelled)
+    }))
 }
 
 fn plain_names(recording: &replay_recording::columnar_frames::Recording, run: u32, hour: i32, variants: &[u64], context: &names::Context) -> io::Result<BTreeMap<u64, Option<String>>> {
@@ -298,5 +433,73 @@ mod tests {
         assert_eq!(cell(&mapped, "reason"), LogCell::Missing);
         assert_eq!((mapped.variant, cell(&mapped, "variant")), (6, LogCell::Text { value: "6".into() }));
         assert!(matches!(cell(&mapped, "equipmentMissing"), LogCell::Text { .. }), "a design is unnamed until the page names it, and says so");
+    }
+
+    #[test]
+    fn unrecorded_market_cells_stay_not_recorded_instead_of_defaulting_to_zero() {
+        let columns = Columns::read().unwrap();
+        let missing = vec![Cell::Unrecorded; TableId::MarketEvents.field_count()];
+        let mapped = map(99, &missing, &columns, |_| None);
+        assert_eq!(cell(&mapped, "kind"), LogCell::NotRecorded);
+        assert_eq!(cell(&mapped, "contract"), LogCell::NotRecorded);
+        assert_eq!(cell(&mapped, "variant"), LogCell::NotRecorded);
+    }
+
+    #[test]
+    fn market_ledger_tail_and_dated_panel_match_page_in_reverse() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+        use replay::campaign::Replay;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+
+        let frames = (100..=112)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let events = if hour % 2 == 0 {
+                    vec![MarketEventRow { id: hour as u64, occurrence: hour as u64, hour, country: 9001, kind: 20, agreement: hour as u64, amount_raw: 100_000, ..MarketEventRow::default() }]
+                } else {
+                    Vec::new()
+                };
+                *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "mkt-tail".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let load = LoadContext { content: None };
+        let facets = vec![FacetFilter { name: "kind".into(), values: vec![20], countries: Vec::new() }];
+        let page = MarketLedger::load(
+            &source,
+            &MarketLedgerParams { branch_id: "1".into(), facets: facets.clone(), from: None, to: 110.0, cursor: None, page_size: 64 },
+            &load,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let tail = MarketLedgerTail::load(
+            &source,
+            &MarketLedgerTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: Some(110), limit: 64, count_facets: Vec::new() },
+            &load,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(tail.total, page.total);
+        assert_eq!(tail.rows, page.rows.into_iter().rev().collect::<Vec<_>>());
+        let asked = serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "facets": facets, "limit": 64 });
+        let panel = dated_panel(&source, &load, &asked).unwrap();
+        let exact = panel.exact().unwrap();
+        for hour in [100, 106, 110, 104, 112] {
+            let stepped = (exact.advance)(hour, true, &AtomicBool::new(false), None);
+            let cold = (exact.cold)(hour, &AtomicBool::new(false));
+            assert_eq!(*stepped.value, cold, "stepped vs cold at {hour}");
+        }
     }
 }

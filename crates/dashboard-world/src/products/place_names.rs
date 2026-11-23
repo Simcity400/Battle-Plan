@@ -372,6 +372,40 @@ fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_
     Ok(frame)
 }
 
+pub fn resolve_provinces(
+    query: &dashboard_query::Query<'_>,
+    content: &Content,
+    asks: &[(u32, i32)],
+    land: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<HashMap<(u32, i32), Name>> {
+    let mut hours: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
+    for &(province_id, hour) in asks {
+        hours.entry(hour).or_default().push(province_id);
+    }
+    let mut places: HashMap<(u32, i32), Name> = HashMap::new();
+    let mut frames = at_hour::Frames::new(query)?;
+    for (&hour, provinces) in &mut hours {
+        check_cancel(cancelled)?;
+        provinces.sort_unstable();
+        provinces.dedup();
+        match read_hour(query, &mut frames, hour, provinces, &[]) {
+            Ok(frame) => {
+                let named = Places::new(&frame);
+                for &id in provinces.iter() {
+                    places.insert((id, hour), named.province(content, id, land));
+                }
+            }
+            Err(reason) => {
+                for &id in provinces.iter() {
+                    places.insert((id, hour), Name::missing(reason.clone()));
+                }
+            }
+        }
+    }
+    Ok(places)
+}
+
 impl Product for PlaceNames {
     const KEY: &'static str = "place-names";
     const CONTENT_DEPENDENT: bool = true;

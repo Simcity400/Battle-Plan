@@ -1,14 +1,18 @@
 
-pub use dashboard_base::products::log_page::{LogCell, LogPageParams, LogPageReply, LogPageRow, missing, page};
+pub use dashboard_base::products::log_page::{
+    LogCell, LogFacetCountAsk, LogFacetTotal, LogPageParams, LogPageReply, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, page, tail,
+};
 
 use dashboard_base::products::{LoadContext, Product};
 use dashboard_base::Source;
+use dashboard_follow::panel::Panel;
 use dashboard_query::{
+    Query,
     log::{self, FacetFilter},
     series::{MissingSpan, hour_of},
 };
 use serde::{Deserialize, Serialize};
-use std::{io, sync::atomic::AtomicBool};
+use std::{io, sync::{Arc, atomic::AtomicBool}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -133,6 +137,90 @@ impl Product for LogPage {
             warnings: Vec::new(),
         })
     }
+}
+
+fn load_tail_at(query: &Query<'_>, params: &LogTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<LogTailReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let log = declared(&params.log)?;
+    let all: Vec<&'static str> = (0..log.table.field_count()).filter_map(|column| log.table.field_name(column)).collect();
+    let shown: Vec<usize> = match &params.columns {
+        None => (0..all.len()).collect(),
+        Some(names) => names.iter().map(|name| dashboard_declare::field(log.table, name)).collect::<io::Result<_>>()?,
+    };
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+    let (page, rows, facet_totals, missing) = tail(query, &params.log, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| LogPageRow {
+        hour: paged.row.hour,
+        key: paged.row.key.to_string(),
+        ordinal: paged.ordinal.to_string(),
+        country: tag.cloned(),
+        own_ordinal: tagged.then(|| paged.own.to_string()),
+        cells: shown.iter().map(|&column| paged.row.cells.get(column).map_or(LogCell::NotRecorded, cell)).collect(),
+    })?;
+    Ok(LogTailReply {
+        branch_id: params.branch_id.clone(),
+        log: params.log.clone(),
+        columns: shown.iter().map(|&column| all[column].to_owned()).collect(),
+        base_ordinal: page.base.to_string(),
+        first_ordinal: page.first.to_string(),
+        total: page.total().to_string(),
+        rows,
+        facet_totals,
+        missing,
+        warnings: Vec::new(),
+    })
+}
+
+pub struct LogTail;
+
+impl Product for LogTail {
+    const KEY: &'static str = "log-tail";
+    const CONTENT_DEPENDENT: bool = false;
+    const INTERACTIVE: bool = true;
+    type Params = LogTailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        log,
+        facets,
+        from: Start,
+        hour: Read,
+        limit,
+        columns,
+        countFacets,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "countFacets[].facets[].countries[]",
+        "countFacets[].facets[].values[]"
+    ];
+    type Reply = LogTailReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![LogFacetCountAsk::decl(), LogFacetTotal::decl(), LogTailParams::decl(), LogTailReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
+    }
+
+    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
+        let hour = params.hour.unwrap_or(query.timeline.last);
+        load_tail_at(&query, params, hour, cancelled)
+    }
+}
+
+pub fn dated_panel(source: &Source, _load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    request.as_object_mut().ok_or("Invalid log-tail panel")?.remove("panel");
+    let params: LogTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid log-tail panel: {error}"))?;
+    LogTail::validate(&params)?;
+    let query = dashboard_base::queries::query(source, branch(&params.branch_id).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
+    let params = Arc::new(params);
+    Ok(dated_tail_panel(executable, move |hour, cancelled| {
+        let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+        load_tail_at(&query, &params, hour, cancelled)
+    }))
 }
 
 pub struct LogCounts;

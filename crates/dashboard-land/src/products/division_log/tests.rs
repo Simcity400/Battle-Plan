@@ -118,3 +118,71 @@ fn hours_not_read_are_the_stretch_less_its_read_runs() {
     assert_eq!(unread(&[(0, 50)], 5, 40), Vec::<(i32, i32)>::new());
     assert_eq!(unread(&[], 5, 6), vec![(5, 6)]);
 }
+
+#[test]
+fn division_log_tail_and_dated_panel_match_page_and_count_partial_tail_bin() {
+    use replay::campaign::Replay;
+    let frames = (1_000..=1_905).map(templates_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), dashboard_base::test_fixtures::CAMPAIGN.into(), &[dashboard_base::test_fixtures::records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "div-tail".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let facets = vec![FacetFilter { name: "kind".into(), values: vec![0, 1, 2], countries: Vec::new() }];
+    let page = DivisionLog::load(
+        &source,
+        &DivisionLogParams { branch_id: "1".into(), facets: facets.clone(), from: None, to: 1_901.0, cursor: None, page_size: 64 },
+        &load,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let count_facets = vec![
+        LogFacetCountAsk { key: "created".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![0], countries: Vec::new() }] },
+        LogFacetCountAsk { key: "vanished".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![3], countries: Vec::new() }] },
+    ];
+    let tail = DivisionLogTail::load(
+        &source,
+        &DivisionLogTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: Some(1_901), limit: 64, count_facets: count_facets.clone() },
+        &load,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(tail.total, page.total);
+    assert_eq!(tail.columns, page.columns);
+    assert_eq!(tail.rows, page.rows.into_iter().rev().collect::<Vec<_>>());
+    assert_eq!(tail.facet_totals[0].total, tail.total);
+    assert!(tail.rows.iter().all(|row| matches!(row.cells[PLACE_NAME], LogCell::Missing) && matches!(row.cells[PLACE_MISSING], LogCell::Text { .. })));
+
+    let asked = serde_json::json!({
+        "panel": "division-log-tail",
+        "branchId": "1",
+        "facets": facets,
+        "limit": 64,
+        "countFacets": count_facets
+    });
+    let panel = dated_panel(&source, &load, &asked).unwrap();
+    let exact = panel.exact().unwrap();
+    for hour in [1_100, 1_901, 1_500, 1_901, 1_000] {
+        let stepped = (exact.advance)(hour, true, &AtomicBool::new(false), None);
+        let cold = (exact.cold)(hour, &AtomicBool::new(false));
+        assert_eq!(*stepped.value, cold, "stepped vs cold at {hour}");
+    }
+
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let links = links_by_run(&source, &query).unwrap();
+    let art = Content::load(&source, &load);
+    let params = DivisionLogTailParams { branch_id: "1".into(), facets, from: None, hour: None, limit: 64, count_facets };
+    let cache = source.state::<PlaceCache>();
+    for hour in [1_901, 1_100, 1_500, 1_901, 1_100] {
+        let cached = load_tail_at(&query, &links, &art, Err("content unavailable"), Some(&cache), &params, hour, &AtomicBool::new(false)).unwrap();
+        let uncached = load_tail_at(&query, &links, &art, Err("content unavailable"), None, &params, hour, &AtomicBool::new(false)).unwrap();
+        assert_eq!(cached, uncached, "cached vs uncached at {hour}");
+    }
+}

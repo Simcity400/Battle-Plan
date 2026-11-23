@@ -553,7 +553,7 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    pub fn page(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, cursor: u64, size: u32) -> io::Result<Page> {
+    fn slice(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, window: impl FnOnce(u64, u64) -> (u64, u64)) -> io::Result<Page> {
         if from > to {
             return Err(invalid("Invalid log page"));
         }
@@ -573,57 +573,87 @@ impl<'q, 'a> Reader<'q, 'a> {
         }
         let base: u64 = before.iter().sum();
         let last = base + bins.values().flatten().map(|(_, count)| count).sum::<u64>();
-        let first = cursor.max(base);
-        let end = first.saturating_add(u64::from(size)).min(last);
+        let (first, end) = window(base, last);
         let mut own = before;
         let mut ordinal = base;
         let mut rows = Vec::new();
-        let six = bucket_hours(0);
-        for (&start, held) in &bins {
-            if ordinal >= end {
-                break;
-            }
-            let count: u64 = held.iter().map(|(_, count)| count).sum();
-            if ordinal + count <= first {
-                for &(at, count) in held {
-                    own[patterns[at].group] += count;
+        if first < end {
+            let six = bucket_hours(0);
+            for (&start, held) in &bins {
+                if ordinal >= end {
+                    break;
                 }
-                ordinal += count;
-                continue;
-            }
-            let range = ((start.max(i64::from(from))) as i32, ((start + bin - 1).min(i64::from(to))) as i32);
-            let held_patterns: Vec<Pattern> = held.iter().map(|&(at, _)| patterns[at]).collect();
-            let mut buckets: BTreeMap<i64, u64> = BTreeMap::new();
-            for counts in self.bins(&held_patterns, range.0, range.1, six)? {
-                for (bucket, count) in counts {
-                    *buckets.entry(bucket).or_default() += count;
+                let count: u64 = held.iter().map(|(_, count)| count).sum();
+                if ordinal + count <= first {
+                    for &(at, count) in held {
+                        own[patterns[at].group] += count;
+                    }
+                    ordinal += count;
+                    continue;
                 }
-            }
-            let (skip, reach) = page_buckets(&buckets, ordinal, first, end, range);
-            if skip > 0 {
-                for (counts, held_pattern) in self.bins(&held_patterns, range.0, reach[0].0 - 1, bin)?.into_iter().zip(&held_patterns) {
-                    own[held_pattern.group] += counts.iter().map(|(_, count)| count).sum::<u64>();
+                let range = ((start.max(i64::from(from))) as i32, ((start + bin - 1).min(i64::from(to))) as i32);
+                let held_patterns: Vec<Pattern> = held.iter().map(|&(at, _)| patterns[at]).collect();
+                let mut buckets: BTreeMap<i64, u64> = BTreeMap::new();
+                for counts in self.bins(&held_patterns, range.0, range.1, six)? {
+                    for (bucket, count) in counts {
+                        *buckets.entry(bucket).or_default() += count;
+                    }
                 }
-                ordinal += skip;
-            }
-            let mut runs: Vec<u32> = held_patterns.iter().map(|pattern| pattern.run).collect();
-            runs.sort_unstable();
-            runs.dedup();
-            let mut read = Vec::new();
-            for run in runs {
-                read.extend(self.rows(run, patterns, &reach)?);
-            }
-            read.sort_by_key(|(at, row)| (row.hour, patterns[*at].group, row.key));
-            for (at, row) in read {
-                let group = patterns[at].group;
-                if ordinal >= first && ordinal < end {
-                    rows.push(Paged { row, group, ordinal, own: own[group] });
+                let (skip, reach) = page_buckets(&buckets, ordinal, first, end, range);
+                if skip > 0 {
+                    for (counts, held_pattern) in self.bins(&held_patterns, range.0, reach[0].0 - 1, bin)?.into_iter().zip(&held_patterns) {
+                        own[held_pattern.group] += counts.iter().map(|(_, count)| count).sum::<u64>();
+                    }
+                    ordinal += skip;
                 }
-                own[group] += 1;
-                ordinal += 1;
+                let mut runs: Vec<u32> = held_patterns.iter().map(|pattern| pattern.run).collect();
+                runs.sort_unstable();
+                runs.dedup();
+                let mut read = Vec::new();
+                for run in runs {
+                    read.extend(self.rows(run, patterns, &reach)?);
+                }
+                read.sort_by_key(|(at, row)| (row.hour, patterns[*at].group, row.key));
+                for (at, row) in read {
+                    let group = patterns[at].group;
+                    if ordinal >= first && ordinal < end {
+                        rows.push(Paged { row, group, ordinal, own: own[group] });
+                    }
+                    own[group] += 1;
+                    ordinal += 1;
+                }
             }
         }
         Ok(Page { base, first, end, last, rows })
+    }
+
+    pub fn page(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, cursor: u64, size: u32) -> io::Result<Page> {
+        self.slice(patterns, groups, from, to, |base, last| {
+            let first = cursor.max(base);
+            let end = first.saturating_add(u64::from(size)).min(last);
+            (first, end)
+        })
+    }
+
+    pub fn tail(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, limit: u32) -> io::Result<Page> {
+        let mut page = self.slice(patterns, groups, from, to, |base, last| {
+            let first = last.saturating_sub(u64::from(limit)).max(base);
+            (first, last)
+        })?;
+        page.rows.reverse();
+        Ok(page)
+    }
+
+    pub fn total(&self, patterns: &[Pattern], from: i32, to: i32) -> io::Result<u64> {
+        if from > to {
+            return Ok(0);
+        }
+        let bin = bin_for(i64::from(to) - i64::from(from) + 1, 256);
+        let mut total = 0u64;
+        for held in self.bins(patterns, from, to, bin)? {
+            total += held.iter().map(|(_, count)| count).sum::<u64>();
+        }
+        Ok(total)
     }
 }
 

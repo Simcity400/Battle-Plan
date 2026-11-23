@@ -272,3 +272,53 @@ fn balance_drops_page_and_mark_as_the_values_fall() {
         }
     }
 }
+
+#[test]
+fn tail_matches_the_newest_rows_of_page_in_reverse_across_ranges_and_limits() {
+    let fixture = Fixture::campaign(Data::Market);
+    let query = fixture.query();
+    let reader = market(&query);
+    let filters = [
+        Vec::new(),
+        vec![FacetFilter { name: "kind".into(), values: vec![1, 3], countries: Vec::new() }],
+        vec![FacetFilter { name: "country".into(), values: Vec::new(), countries: vec![Country::tag("GER"), Country::tag("ITA")] }],
+    ];
+    for facets in filters {
+        for (from, to, limit) in [
+            (FIRST, LAST, 0),
+            (FIRST, LAST, 1),
+            (FIRST, LAST, 17),
+            (FIRST, LAST, 64),
+            (FIRST + 1_234, FIRST + 2_500, 13),
+            (FIRST + 1_234, FIRST + 1_237, 50),
+            (FIRST + FIRST_HOURS - 300, LAST, 500),
+        ] {
+            let selection = reader.select(&facets, query.timeline.first, to).unwrap();
+            let tail = reader.tail(&selection.patterns, selection.groups.len(), from, to, limit).unwrap();
+            let total = reader.total(&selection.patterns, from, to).unwrap();
+            assert_eq!(tail.total(), total, "tail total at {from}..={to} limit={limit}");
+            let start = tail.last.saturating_sub(u64::from(limit)).max(tail.base);
+            let page = reader.page(&selection.patterns, selection.groups.len(), from, to, start, limit).unwrap();
+            assert_eq!((tail.base, tail.first, tail.end, tail.last), (page.base, page.first, page.end, page.last));
+            let expected: Vec<_> = page.rows.iter().rev().map(|row| (row.row.hour, row.row.key, row.ordinal, row.own, row.group)).collect();
+            let got: Vec<_> = tail.rows.iter().map(|row| (row.row.hour, row.row.key, row.ordinal, row.own, row.group)).collect();
+            assert_eq!(got, expected, "tail vs page at {from}..={to} limit={limit}");
+        }
+    }
+}
+
+#[test]
+fn total_matches_exact_row_count_including_partial_tail_bucket() {
+    let fixture = Fixture::campaign(Data::Market);
+    let query = fixture.query();
+    let reader = market(&query);
+    let facets = vec![FacetFilter { name: "kind".into(), values: vec![2], countries: Vec::new() }];
+    let from = FIRST + 601;
+    for offset in 0..18 {
+        let to = from + offset;
+        let selection = reader.select(&facets, query.timeline.first, to).unwrap();
+        let got = reader.total(&selection.patterns, from, to).unwrap();
+        let expected = events(&query, from, to, |_, kind, _| kind == 2).len() as u64;
+        assert_eq!(got, expected, "exact total for partial bin at {from}..={to}");
+    }
+}

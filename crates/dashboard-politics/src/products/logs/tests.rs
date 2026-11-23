@@ -65,3 +65,37 @@ fn a_scope_on_a_log_no_scope_reads_is_refused_by_name() {
     let refused = LogCounts::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap_err();
     assert!(refused.to_string().contains("The market-events log cannot be kept to a country scope"), "{refused}");
 }
+
+#[test]
+fn log_tail_and_dated_panel_match_page_in_reverse_with_exact_facet_totals() {
+    let source = opened();
+    let params = LogTailParams {
+        branch_id: "1".into(),
+        log: "market-events".into(),
+        facets: Vec::new(),
+        from: None,
+        hour: Some(136),
+        limit: 3,
+        columns: None,
+        count_facets: vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], countries: Vec::new() }] }],
+    };
+    let reply = LogTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.total, "5");
+    assert_eq!(reply.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), [136, 132, 128]);
+    assert_eq!(reply.facet_totals, vec![LogFacetTotal { key: "kind1".into(), total: "5".into() }]);
+    assert_eq!(spans(&reply.missing), [(FIRST, UNREAD, true)]);
+
+    let asked = serde_json::json!({
+        "panel": "log-tail",
+        "branchId": "1",
+        "log": "market-events",
+        "limit": 3,
+        "countFacets": [{ "key": "kind1", "facets": [{ "name": "kind", "values": [1] }] }]
+    });
+    let panel = dated_panel(&source, &LoadContext { content: None }, &asked).unwrap();
+    let exact = panel.exact().unwrap();
+    let stepped = (exact.advance)(136, true, &AtomicBool::new(false), None);
+    let cold = (exact.cold)(136, &AtomicBool::new(false));
+    assert_eq!(*stepped.value, cold);
+    assert_eq!(stepped.value.as_ref().as_ref().unwrap(), &serde_json::to_value(&reply).unwrap());
+}

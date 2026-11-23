@@ -1,20 +1,29 @@
 
-use dashboard_base::{products::{LoadContext, Product, log_page::{self as logs, LogCell, LogPageParams, LogPageReply, LogPageRow}}, queries::country_ids::Names};
+use dashboard_base::{
+    Source,
+    catalogue::Catalogue,
+    products::{
+        LoadContext, Product,
+        log_page::{self as logs, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel},
+    },
+    queries::country_ids::{Names, RunLinks},
+};
 use super::divisions::Content;
-use dashboard_base::Source;
+use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
-    log::{Cell, FacetFilter},
+    log::{Cell, FacetFilter, Row},
 };
+use dashboard_world::products::place_names::{self, Content as PlaceContent, Name as PlaceName};
 use replay_data::{
     codec::Decoder,
     rows::{DivisionDeletionDisposition as Disposition, DivisionEventRow, EquipmentDestructionCause as Cause, NameOperands, Recorded, TableId, TagHolderRow},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -48,7 +57,7 @@ mod column {
     pub const TEMPLATE_COUNTRY: usize = 25;
 }
 
-pub const COLUMNS: [&str; 22] = [
+pub const COLUMNS: [&str; 24] = [
     "division",
     "kind",
     "status",
@@ -71,6 +80,8 @@ pub const COLUMNS: [&str; 22] = [
     "killerDivision",
     "matchedDeaths",
     "readHour",
+    "placeName",
+    "placeMissing",
 ];
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -138,12 +149,15 @@ pub struct Mapped {
     pub template: Option<(Vec<u8>, Option<Vec<u8>>, i32)>,
     pub icon: Option<(u32, i32, Vec<u8>)>,
     pub name: (Recorded<Option<Vec<u8>>>, Recorded<Option<NameOperands>>),
+    pub place: Option<(u32, i32)>,
     pub ambiguous: bool,
 }
 
 const NAME: usize = 7;
 const ICON: usize = 9;
 const TEMPLATE_NAME: usize = 13;
+const PLACE_NAME: usize = 22;
+const PLACE_MISSING: usize = 23;
 
 pub fn map(hour: i32, key: u128, cells: &[Cell], names: &Names) -> Mapped {
     let kind = (key >> 96) as u8;
@@ -159,6 +173,9 @@ pub fn map(hour: i32, key: u128, cells: &[Cell], names: &Names) -> Mapped {
         (Some(unit), Some(custom), Some(name)) => Some((unit as u32, custom as i32, name.to_vec())),
         _ => None,
     };
+    let province = number(cells, column::PROVINCE).and_then(|id| u32::try_from(id).ok());
+    let place_hour = number(cells, column::PLACE_HOUR).and_then(|at| i32::try_from(at).ok());
+    let place = province.map(|id| (id, place_hour.unwrap_or(hour)));
     let matched = number(cells, column::MATCHED_DEATHS);
     let name = (opaque(cells, column::NAME), opaque(cells, column::NAMING));
     let cells = vec![
@@ -184,12 +201,15 @@ pub fn map(hour: i32, key: u128, cells: &[Cell], names: &Names) -> Mapped {
         text_cell(number(cells, column::KILLER_DIVISION).map(|id| id as u64).filter(|&id| id != 0).map(|id| id.to_string())),
         number_cell(matched),
         LogCell::Number { value: hour.to_string() },
+        LogCell::Missing,
+        LogCell::Text { value: if place.is_some() { "Province name not resolved" } else { "Province not recorded at this observation" }.into() },
     ];
     Mapped {
         cells,
         template: literal.zip(country).map(|(literal, country)| (literal, key_text, country)),
         icon,
         name,
+        place,
         ambiguous: matched.is_some_and(|count| count > 1),
     }
 }
@@ -237,6 +257,164 @@ impl Refused {
     }
 }
 
+#[derive(Default)]
+struct PlaceCache {
+    entries: Mutex<Option<(Arc<Catalogue>, HashMap<(u64, u32, i32), PlaceName>)>>,
+}
+
+impl PlaceCache {
+    fn clear(&self) {
+        *self.entries.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn resolve(
+        &self,
+        query: &Query<'_>,
+        content: &PlaceContent,
+        asks: &[(u32, i32)],
+        cancelled: &AtomicBool,
+    ) -> io::Result<HashMap<(u32, i32), PlaceName>> {
+        let branch_id = query.timeline.id;
+        let mut out = HashMap::with_capacity(asks.len());
+        let mut missing = Vec::new();
+        {
+            let guard = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((cat, map)) = guard.as_ref()
+                && Arc::ptr_eq(cat, &content.cat)
+            {
+                for &ask in asks {
+                    if let Some(found) = map.get(&(branch_id, ask.0, ask.1)) {
+                        out.insert(ask, found.clone());
+                    } else {
+                        missing.push(ask);
+                    }
+                }
+            } else {
+                missing.extend_from_slice(asks);
+            }
+        }
+        if !missing.is_empty() {
+            missing.sort_unstable();
+            missing.dedup();
+            let resolved = place_names::resolve_provinces(query, content, &missing, true, cancelled)?;
+            {
+                let mut guard = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+                let map = match guard.as_mut() {
+                    Some((cat, map)) if Arc::ptr_eq(cat, &content.cat) => map,
+                    slot => {
+                        *slot = Some((Arc::clone(&content.cat), HashMap::new()));
+                        &mut slot.as_mut().unwrap().1
+                    }
+                };
+                for (&ask, name) in &resolved {
+                    map.insert((branch_id, ask.0, ask.1), name.clone());
+                }
+            }
+            out.extend(resolved);
+        }
+        Ok(out)
+    }
+}
+
+fn links_by_run(source: &Source, query: &Query<'_>) -> io::Result<HashMap<u32, Arc<RunLinks>>> {
+    let mut out = HashMap::new();
+    for stretch in &query.timeline.stretches {
+        if !out.contains_key(&stretch.run) {
+            out.insert(stretch.run, dashboard_base::queries::links(source, stretch.run)?);
+        }
+    }
+    Ok(out)
+}
+
+fn enrich_rows(
+    query: &Query<'_>,
+    links: &HashMap<u32, Arc<RunLinks>>,
+    art: &Content,
+    places: Result<&PlaceContent, &str>,
+    place_cache: Option<&PlaceCache>,
+    rows: Vec<(Row, u64, u64, Option<dashboard_query::identity::Country>)>,
+    tagged: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<(Vec<LogPageRow>, Vec<String>)> {
+    let names = Names::new(&query.holders);
+    let mut refused = Refused::default();
+    let mut ambiguous = 0usize;
+    let mut mapped_rows = Vec::with_capacity(rows.len());
+    let mut place_asks = Vec::new();
+    for (row, ordinal, own, tag) in rows {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let mut mapped = map(row.hour, row.key, &row.cells, &names);
+        ambiguous += usize::from(mapped.ambiguous);
+        named(art, query, links, &names, row.hour, &mut mapped, &mut refused);
+        if let Some(ask) = mapped.place {
+            place_asks.push(ask);
+        }
+        mapped_rows.push((row.hour, row.key, ordinal, own, tag, mapped));
+    }
+    let mut warnings: Vec<String> = art.unavailable().map(str::to_owned).into_iter().collect();
+    if !place_asks.is_empty() {
+        match places {
+            Ok(content) => {
+                let resolved = match place_cache {
+                    Some(cache) => cache.resolve(query, content, &place_asks, cancelled)?,
+                    None => place_names::resolve_provinces(query, content, &place_asks, true, cancelled)?,
+                };
+                for (_, _, _, _, _, mapped) in &mut mapped_rows {
+                    let Some(ask) = mapped.place else { continue };
+                    match resolved.get(&ask) {
+                        Some(PlaceName { name: Some(name), missing }) => {
+                            mapped.cells[PLACE_NAME] = LogCell::Text { value: name.clone() };
+                            mapped.cells[PLACE_MISSING] = missing.as_ref().map_or(LogCell::Missing, |reason| LogCell::Text { value: reason.clone() });
+                        }
+                        Some(PlaceName { name: None, missing }) => {
+                            let reason = missing.clone().unwrap_or_else(|| "Province name not recorded".into());
+                            mapped.cells[PLACE_NAME] = LogCell::Missing;
+                            mapped.cells[PLACE_MISSING] = LogCell::Text { value: reason };
+                        }
+                        None => {
+                            mapped.cells[PLACE_NAME] = LogCell::Missing;
+                            mapped.cells[PLACE_MISSING] = LogCell::Text { value: "Not in this recording".into() };
+                        }
+                    }
+                }
+            }
+            Err(reason) => {
+                for (_, _, _, _, _, mapped) in &mut mapped_rows {
+                    if mapped.place.is_some() {
+                        mapped.cells[PLACE_NAME] = LogCell::Missing;
+                        mapped.cells[PLACE_MISSING] = LogCell::Text { value: reason.to_owned() };
+                    }
+                }
+                warnings.push(reason.to_owned());
+            }
+        }
+    }
+    let reply_rows = mapped_rows
+        .into_iter()
+        .map(|(hour, key, ordinal, own, tag, mapped)| LogPageRow {
+            hour,
+            key: key.to_string(),
+            ordinal: ordinal.to_string(),
+            country: tag,
+            own_ordinal: tagged.then(|| own.to_string()),
+            cells: mapped.cells,
+        })
+        .collect();
+    warnings.extend(refused.lines());
+    if ambiguous > 0 {
+        warnings.push(format!("Ambiguous destroyed divisions interval; killer not attributed ({ambiguous})"));
+    }
+    Ok((reply_rows, warnings))
+}
+
+fn validate_facets(facets: &[FacetFilter]) -> Result<(), &'static str> {
+    let kinds = facets.iter().find(|facet| facet.name == "kind").ok_or("A division log page names the kinds it shows")?;
+    if kinds.values.is_empty() || kinds.values.iter().any(|&kind| !(0..=2).contains(&kind)) {
+        return Err("A division log page shows created, lost or transferred divisions");
+    }
+    Ok(())
+}
+
 impl Product for DivisionLog {
     const KEY: &'static str = "division-log";
     const CONTENT_DEPENDENT: bool = true;
@@ -251,11 +429,7 @@ impl Product for DivisionLog {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        let kinds = params.facets.iter().find(|facet| facet.name == "kind").ok_or("A division log page names the kinds it shows")?;
-        if kinds.values.is_empty() || kinds.values.iter().any(|&kind| !(0..=2).contains(&kind)) {
-            return Err("A division log page shows created, lost or transferred divisions");
-        }
-        Ok(())
+        validate_facets(&params.facets)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -271,32 +445,13 @@ impl Product for DivisionLog {
             page_size: params.page_size,
             columns: None,
         };
-        let names = Names::new(&query.holders);
         let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
         let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let art = Content::load(source, context);
-        let mut refused = Refused::default();
-        let mut ambiguous = 0usize;
-        let mut reply_rows = Vec::with_capacity(rows.len());
-        for (row, ordinal, own, tag) in rows {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let mut mapped = map(row.hour, row.key, &row.cells, &names);
-            ambiguous += usize::from(mapped.ambiguous);
-            named(&art, (&query, &names, source), row.hour, &mut mapped, &mut refused)?;
-            reply_rows.push(LogPageRow {
-                hour: row.hour,
-                key: row.key.to_string(),
-                ordinal: ordinal.to_string(),
-                country: tag,
-                own_ordinal: tagged.then(|| own.to_string()),
-                cells: mapped.cells,
-            });
-        }
-        let mut warnings: Vec<String> = art.unavailable().map(str::to_owned).into_iter().collect();
-        warnings.extend(refused.lines());
-        if ambiguous > 0 {
-            warnings.push(format!("Ambiguous destroyed divisions interval; killer not attributed ({ambiguous})"));
-        }
+        let links = links_by_run(source, &query)?;
+        let places = PlaceContent::read(source, context).map_err(|error| error.to_string());
+        let cache = source.state::<PlaceCache>();
+        let (reply_rows, warnings) = enrich_rows(&query, &links, &art, places.as_deref().map_err(String::as_str), Some(&cache), rows, tagged, cancelled)?;
         Ok(LogPageReply {
             branch_id: params.branch_id.clone(),
             log: LOG.to_owned(),
@@ -311,9 +466,116 @@ impl Product for DivisionLog {
     }
 }
 
-fn named(art: &Content, (query, names, source): (&Query<'_>, &Names, &Source), hour: i32, mapped: &mut Mapped, refused: &mut Refused) -> io::Result<()> {
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DivisionLogTailParams {
+    pub branch_id: String,
+    #[serde(default)]
+    pub facets: Vec<FacetFilter>,
+    #[serde(default)]
+    pub from: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
+    pub limit: u32,
+    #[serde(default)]
+    pub count_facets: Vec<LogFacetCountAsk>,
+}
+
+fn load_tail_at(
+    query: &Query<'_>,
+    links: &HashMap<u32, Arc<RunLinks>>,
+    art: &Content,
+    places: Result<&PlaceContent, &str>,
+    place_cache: Option<&PlaceCache>,
+    params: &DivisionLogTailParams,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<LogTailReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+    let (page, rows, facet_totals, missing) = logs::tail(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| {
+        (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())
+    })?;
+    let (reply_rows, warnings) = enrich_rows(query, links, art, places, place_cache, rows, tagged, cancelled)?;
+    Ok(LogTailReply {
+        branch_id: params.branch_id.clone(),
+        log: LOG.to_owned(),
+        columns: COLUMNS.iter().map(|column| (*column).to_owned()).collect(),
+        base_ordinal: page.base.to_string(),
+        first_ordinal: page.first.to_string(),
+        total: page.total().to_string(),
+        rows: reply_rows,
+        facet_totals,
+        missing,
+        warnings,
+    })
+}
+
+pub struct DivisionLogTail;
+
+impl Product for DivisionLogTail {
+    const KEY: &'static str = "division-log-tail";
+    const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
+    type Params = DivisionLogTailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        hour: Read,
+        limit,
+        countFacets,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "countFacets[].facets[].countries[]",
+        "countFacets[].facets[].values[]"
+    ];
+    type Reply = LogTailReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![DivisionLogTailParams::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        validate_facets(&params.facets)
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
+        let hour = params.hour.unwrap_or(query.timeline.last);
+        let art = Content::load(source, context);
+        let links = links_by_run(source, &query)?;
+        let places = PlaceContent::read(source, context).map_err(|error| error.to_string());
+        let cache = source.state::<PlaceCache>();
+        load_tail_at(&query, &links, &art, places.as_deref().map_err(String::as_str), Some(&cache), params, hour, cancelled)
+    }
+}
+
+pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    request.as_object_mut().ok_or("Invalid division-log-tail panel")?.remove("panel");
+    let params: DivisionLogTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid division-log-tail panel: {error}"))?;
+    DivisionLogTail::validate(&params)?;
+    let query = dashboard_base::queries::query(source, branch(&params.branch_id).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let links = Arc::new(links_by_run(source, &query).map_err(|error| error.to_string())?);
+    let art = Arc::new(Content::load(source, load));
+    let places = Arc::new(PlaceContent::read(source, load).map_err(|error| error.to_string()));
+    let cache = source.state::<PlaceCache>();
+    let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
+    let params = Arc::new(params);
+    Ok(dated_tail_panel(executable, move |hour, cancelled| {
+        let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+        load_tail_at(&query, &links, &art, places.as_ref().as_deref().map_err(String::as_str), Some(&cache), &params, hour, cancelled)
+    }))
+}
+
+fn named(art: &Content, query: &Query<'_>, links: &HashMap<u32, Arc<RunLinks>>, names: &Names, hour: i32, mapped: &mut Mapped, refused: &mut Refused) {
     if art.unavailable().is_some() {
-        return Ok(());
+        return;
     }
     let cells = &mut mapped.cells;
     let (name, naming) = &mapped.name;
@@ -336,16 +598,12 @@ fn named(art: &Content, (query, names, source): (&Query<'_>, &Names, &Source), h
     }
     if let Some((literal, key, country)) = &mapped.template {
         let tag = match (key, query.timeline.at(hour)) {
-            (Some(_), Some(stretch)) => {
-                let links = dashboard_base::queries::links(source, stretch.run)?;
-                names.tag_at(&links, *country as u32, hour).map(str::to_owned)
-            }
+            (Some(_), Some(stretch)) => links.get(&stretch.run).and_then(|links| names.tag_at(links, *country as u32, hour)).map(str::to_owned),
             _ => None,
         };
         let (value, rest) = cells.split_at_mut(TEMPLATE_NAME + 1);
         refused.named(art.template_name_of(literal, key.as_deref(), tag.as_deref()), &mut value[TEMPLATE_NAME], &mut rest[0]);
     }
-    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -519,6 +777,7 @@ type Runs = dashboard_base::queries::RunCache<RunKey, Vec<SeenTemplate>>;
 
 pub(crate) fn forget(source: &dashboard_base::Source) {
     Runs::forget(source);
+    source.state::<PlaceCache>().clear();
 }
 
 pub fn cached_division_templates(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<Vec<SeenTemplate>>> {
