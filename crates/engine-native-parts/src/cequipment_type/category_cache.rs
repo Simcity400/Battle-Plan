@@ -1,4 +1,6 @@
-use crate::{Memory, allocation, cequipment_type as equipment, read};
+use engine_native_memory::{Memory, read};
+use engine_allocation as allocation;
+use crate::cequipment_type as equipment;
 
 #[derive(Default)]
 pub struct CategoryCache {

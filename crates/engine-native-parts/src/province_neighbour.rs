@@ -33,7 +33,7 @@ impl Record {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GeometryFields {
+pub struct GeometryFields {
     pub id: Option<Result<u32, &'static str>>,
     pub distance: Option<Result<i64, &'static str>>,
     pub crossing: Option<Result<u8, &'static str>>,

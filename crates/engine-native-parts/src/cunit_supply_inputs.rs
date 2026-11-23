@@ -1,5 +1,10 @@
 
-use crate::{Memory, cpdx_array::Array, memory::RecordLayout, memory::RecordSources, read};
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    memory::{RecordLayout, RecordSources},
+    read,
+};
 
 pub const ASKED: usize = 0x38;
 pub const RECEIVED: usize = 0x50;
@@ -13,7 +18,7 @@ pub const DIVISION_DEMAND: usize = 0x88;
 #[cfg(test)]
 pub const AIRPLANE_COUNT: usize = 0x90;
 pub const AIRPLANE_DEMAND: usize = 0x98;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub const SHIP_COUNT: usize = 0xa0;
 pub const SHIP_DEMAND: usize = 0xa8;
 pub const DISRUPTION: usize = 0xb0;
@@ -95,15 +100,15 @@ const INPUT_SPANS: [(usize, usize); 6] = [
     (AIRPLANE_DEMAND, 12),
     (SHIP_DEMAND, 16),
 ];
-const INPUT_FIELDS: [crate::memory::RecordField; 6] = crate::memory::packed_fields(INPUT_SPANS);
-const INPUT_BYTES: usize = crate::memory::packed_stride(INPUT_SPANS);
+const INPUT_FIELDS: [engine_native_memory::memory::RecordField; 6] = engine_native_memory::memory::packed_fields(INPUT_SPANS);
+const INPUT_BYTES: usize = engine_native_memory::memory::packed_stride(INPUT_SPANS);
 const INPUT_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&INPUT_FIELDS, INPUT_BYTES) {
     Some(layout) => layout,
     None => panic!("valid supply input layout"),
 };
 
-const ORIGIN_FIELDS: [crate::memory::RecordField; 2] =
-    crate::memory::packed_fields([(ORIGIN_REQUESTED, 16), (ORIGIN_PROVINCE, 4)]);
+const ORIGIN_FIELDS: [engine_native_memory::memory::RecordField; 2] =
+    engine_native_memory::memory::packed_fields([(ORIGIN_REQUESTED, 16), (ORIGIN_PROVINCE, 4)]);
 const ORIGIN_BYTES: usize = 20;
 const ORIGIN_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&ORIGIN_FIELDS, ORIGIN_BYTES) {
     Some(layout) => layout,
@@ -113,7 +118,7 @@ const ORIGIN_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&ORIGIN_FIE
 pub fn capture_buffer(
     memory: &impl Memory,
     pointer: usize,
-    origins: crate::walk::Buffer<'_, Origin>,
+    origins: engine_native_memory::walk::Buffer<'_, Origin>,
 ) -> Result<Inputs, Failure> {
     let mut packed = [0; INPUT_BYTES];
     if pointer == 0
@@ -153,7 +158,7 @@ pub fn capture_buffer(
 fn capture_origins(
     memory: &impl Memory,
     pointer: usize,
-    mut origins: crate::walk::Buffer<'_, Origin>,
+    mut origins: engine_native_memory::walk::Buffer<'_, Origin>,
 ) -> Result<usize, Failure> {
     let address = pointer.checked_add(ORIGINS).ok_or(Failure::Unreadable)?;
     let header = read::<[u8; 16]>(memory, address).ok_or(Failure::Unreadable)?;
@@ -201,7 +206,7 @@ fn capture_origins(
 pub struct UnitCapture {
     pub inputs: Result<Inputs, Failure>,
     pub origins_start: usize,
-    pub(crate) origins_admitted: bool,
+    pub origins_admitted: bool,
     header: [u8; 16],
 }
 
@@ -232,14 +237,14 @@ const UNIT_SPANS: [(usize, usize); 7] = [
     (SHIP_DEMAND, 16),
 ];
 const UNIT_HEADER: usize = 2;
-const UNIT_FIELDS: [crate::memory::RecordField; 7] = crate::memory::packed_fields(UNIT_SPANS);
-const UNIT_BYTES: usize = crate::memory::packed_stride(UNIT_SPANS);
+const UNIT_FIELDS: [engine_native_memory::memory::RecordField; 7] = engine_native_memory::memory::packed_fields(UNIT_SPANS);
+const UNIT_BYTES: usize = engine_native_memory::memory::packed_stride(UNIT_SPANS);
 const UNIT_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&UNIT_FIELDS, UNIT_BYTES) {
     Some(layout) => layout,
     None => panic!("valid supply unit layout"),
 };
-const HEADER_FIELDS: [crate::memory::RecordField; 1] =
-    crate::memory::packed_fields([(ORIGINS, 16)]);
+const HEADER_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+    engine_native_memory::memory::packed_fields([(ORIGINS, 16)]);
 const HEADER_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&HEADER_FIELDS, 16) {
     Some(layout) => layout,
     None => panic!("valid supply origin header layout"),
@@ -371,7 +376,7 @@ pub fn capture_selected_units(
         };
         if end > origins.len() {
             let len = origins.len().saturating_mul(2).max(end);
-            if crate::allocation::resize_default(origins, len).is_err() {
+            if engine_allocation::resize_default(origins, len).is_err() {
                 inputs.origins_len = Err(Failure::Allocation);
                 continue;
             }

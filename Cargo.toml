@@ -272,6 +272,7 @@ engine-characters = { path = "crates/engine-characters" }
 engine-air-history = { path = "crates/engine-air-history" }
 engine-governance-tests = { path = "crates/engine-governance-tests" }
 engine-native = { path = "crates/engine-native" }
+engine-native-parts = { path = "crates/engine-native-parts" }
 engine-native-memory = { path = "crates/engine-native-memory" }
 game-model = { path = "crates/game-model" }
 engine-allocation = { path = "crates/engine-allocation" }

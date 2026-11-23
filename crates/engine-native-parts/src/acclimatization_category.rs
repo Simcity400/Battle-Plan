@@ -1,5 +1,5 @@
 
-use crate::{Memory, cpdx_array::Array, read, read_slice};
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
 use engine_sites::Rva;
 
 pub const REGISTRY_RVA: Rva = Rva(0x033d_e940);
@@ -14,7 +14,7 @@ pub struct Categories {
 impl Categories {
     pub fn try_with_capacity(capacity: usize) -> std::io::Result<Self> {
         Ok(Self {
-            entries: crate::allocation::vec(capacity)?,
+            entries: engine_allocation::vec(capacity)?,
         })
     }
 
@@ -56,7 +56,7 @@ impl Categories {
             Array::read(memory, registry, 8).ok_or("acclimatization category registry invalid")?;
         let count = array.count as usize;
         *required = (*required).max(count);
-        crate::allocation::reserve(&mut self.entries, count)
+        engine_allocation::reserve(&mut self.entries, count)
             .map_err(|_| "acclimatization category allocation failed")?;
         
         if count > self.entries.capacity() {

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Memory, reference_bucket as bucket};
+use engine_native_memory::Memory;
+use crate::reference_bucket as bucket;
 use std::collections::BTreeMap;
 
 pub(super) const TABLE: usize = 0x1000;

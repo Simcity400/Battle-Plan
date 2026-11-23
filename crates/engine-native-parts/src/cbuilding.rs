@@ -1,9 +1,10 @@
 
-use crate::{
-    Memory, cbuilding_template,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
 };
+use crate::cbuilding_template;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a0_65c8);
@@ -30,7 +31,7 @@ pub struct Row {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LocationBuildings {
+pub struct LocationBuildings {
     pub buildings: Array,
     pub status: usize,
     pub indices: Array,
@@ -41,7 +42,7 @@ pub(crate) struct LocationBuildings {
 }
 
 impl LocationBuildings {
-    pub(crate) const EMPTY: Self = Self {
+    pub const EMPTY: Self = Self {
         buildings: Array { data: 0, count: 0 },
         status: 0,
         indices: Array { data: 0, count: 0 },
@@ -161,7 +162,7 @@ impl<'a> ActiveBuildings<'a> {
     }
 }
 
-pub(crate) fn read_rows(
+pub fn read_rows(
     memory: &impl Memory,
     base: usize,
     locations: &[LocationBuildings],
@@ -318,7 +319,7 @@ pub(crate) fn read_rows(
                     let required = written
                         .checked_add(1)
                         .ok_or("building row count overflow")?;
-                    crate::allocation::reserve(output, required - output.len())
+                    engine_allocation::reserve(output, required - output.len())
                         .map_err(|_| "building row allocation failed")?;
                     output.resize(required, Row::default());
                 }

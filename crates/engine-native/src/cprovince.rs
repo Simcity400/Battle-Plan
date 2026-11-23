@@ -23,7 +23,7 @@ pub struct UnitOrderWalk {
     pub required: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn walk_unit_order(
     memory: &impl Memory,
     base: usize,

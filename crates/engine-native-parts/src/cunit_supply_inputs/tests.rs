@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::Cell;
 
 const BASE: usize = 0x1000;
@@ -89,7 +89,7 @@ fn complete_inputs_preserve_signed_words_and_native_origin_order() {
         bytes: &bytes,
     };
     let mut origins = vec![Origin::default(); 3];
-    let row = capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut origins)).unwrap();
+    let row = capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut origins)).unwrap();
     assert_eq!(origins, expected);
     assert_eq!((row.asked, row.received), (i64::MIN, i64::MAX));
     assert_eq!(
@@ -135,7 +135,7 @@ fn live_extent_crosses_batches_without_a_content_count_limit() {
         bytes: &bytes,
     };
     let mut origins = vec![Origin::default(); expected.len()];
-    let row = capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut origins)).unwrap();
+    let row = capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut origins)).unwrap();
     assert_eq!(row.origins_len, Ok(expected.len()));
     assert_eq!(origins, expected);
 }
@@ -178,7 +178,7 @@ fn capacity_shortage_reports_exact_demand_before_origin_payload_reads() {
         header_reads: Cell::new(0),
     };
     assert_eq!(
-        capture_buffer(&memory, UNIT, crate::walk::Buffer::Count).unwrap().origins_len,
+        capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Count).unwrap().origins_len,
         Err(Failure::OriginsCapacity { required: 3 })
     );
 }
@@ -191,7 +191,7 @@ fn malformed_empty_null_and_overflow_headers_are_distinct_from_absent_origins() 
         base: BASE,
         bytes: &bytes,
     };
-    assert_eq!(capture_buffer(&memory, UNIT, crate::walk::Buffer::Count).unwrap().origins_len, Ok(0));
+    assert_eq!(capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Count).unwrap().origins_len, Ok(0));
     for (data, capacity, count) in [
         (DATA as u64, 0_u32, 1_u32),
         (0, 1, 1),
@@ -206,7 +206,7 @@ fn malformed_empty_null_and_overflow_headers_are_distinct_from_absent_origins() 
             bytes: &bytes,
         };
         assert_eq!(
-            capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default()]))
+            capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut vec![Origin::default()]))
                 .unwrap()
                 .origins_len,
             Err(Failure::InvalidOrigins)
@@ -233,7 +233,7 @@ fn field_and_origin_faults_never_certify_a_partial_pack_and_header_drift_is_refu
             change_header: false,
             header_reads: Cell::new(0),
         };
-        let result = capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default(); 2]));
+        let result = capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut vec![Origin::default(); 2]));
         if fail < UNIT + ORIGINS || fail == UNIT + SHIP_DEMAND {
             assert_eq!(result, Err(Failure::Unreadable));
         } else {
@@ -252,7 +252,7 @@ fn field_and_origin_faults_never_certify_a_partial_pack_and_header_drift_is_refu
         header_reads: Cell::new(0),
     };
     assert_eq!(
-        capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default(); 2]))
+        capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut vec![Origin::default(); 2]))
             .unwrap()
             .origins_len,
         Err(Failure::OriginsChanged)
@@ -279,7 +279,7 @@ fn unrelated_consumer_bytes_and_origin_fields_are_not_read() {
             change_header: false,
             header_reads: Cell::new(0),
         };
-        assert!(capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut vec![Origin::default()])).is_ok());
+        assert!(capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut vec![Origin::default()])).is_ok());
     }
 }
 
@@ -300,11 +300,11 @@ fn worker_origins_grow_from_original_header_before_first_and_later_publication()
             bytes: &bytes,
         };
         assert_eq!(
-            capture_buffer(&memory, UNIT, crate::walk::Buffer::Count).unwrap().origins_len,
+            capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Count).unwrap().origins_len,
             Err(Failure::OriginsCapacity { required: count })
         );
         let inputs =
-            capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut output)).unwrap();
+            capture_buffer(&memory, UNIT, engine_native_memory::walk::Buffer::Growing(&mut output)).unwrap();
         assert_eq!(inputs.origins_len, Ok(count));
         assert_eq!(&output[..count], &expected);
     }
@@ -425,7 +425,7 @@ fn batched_units_keep_each_footer_and_native_origin_order_across_batches() {
         assert_eq!(&arena[start..start + expected.len()], expected.as_slice());
         start += expected.len();
         let mut single = vec![Origin::default(); expected.len()];
-        assert_eq!(capture_buffer(&memory, pointers[index], crate::walk::Buffer::Growing(&mut single)), unit.inputs);
+        assert_eq!(capture_buffer(&memory, pointers[index], engine_native_memory::walk::Buffer::Growing(&mut single)), unit.inputs);
         assert_eq!(&single, expected);
     }
 }

@@ -16,7 +16,7 @@ pub const TEMPLATE_MODIFIERS_CAPACITY: usize = 0x140;
 pub const TEMPLATE_MODIFIERS_COUNT: usize = 0x144;
 
 pub fn id(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> Result<Option<u32>, &'static str> {

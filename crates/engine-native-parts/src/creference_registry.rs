@@ -17,7 +17,7 @@ pub const MINIMUM_EXPONENT: u32 = 3;
 pub const MAXIMUM_EXPONENT: u32 = 30;
 
 pub fn resolve(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     handle: u64,
 ) -> Result<Option<usize>, &'static str> {
@@ -32,7 +32,7 @@ pub fn resolve(
 }
 
 pub fn entry_count(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     kind: u32,
 ) -> Result<usize, &'static str> {
@@ -64,7 +64,7 @@ impl ScopedResolver {
 
     pub fn resolve(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         handle: u64,
     ) -> Result<Option<usize>, &'static str> {
         if handle == 0 {
@@ -89,7 +89,7 @@ impl ScopedResolver {
 
     pub fn first_cell(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         handle: u64,
     ) -> Result<Option<(Header, usize)>, &'static str> {
         if handle == 0 {
@@ -114,7 +114,7 @@ impl ScopedResolver {
 
     pub fn resolve_gathered(
         &self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         header: Header,
         handle: u64,
         first: [u8; 24],
@@ -138,7 +138,7 @@ impl HeaderResolver {
 
     pub fn resolve(
         &mut self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         handle: u64,
     ) -> Result<Option<usize>, &'static str> {
@@ -175,11 +175,12 @@ fn root_address(base: usize, handle: u64) -> Result<usize, &'static str> {
 }
 
 fn read_header(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     root: usize,
 ) -> Result<Option<Header>, &'static str> {
-    use crate::{read, reference_bucket as bucket};
+    use engine_native_memory::read;
+    use crate::reference_bucket as bucket;
     let table = read::<u64>(memory, root).ok_or("reference root unreadable")? as usize;
     if table == 0 {
         return Ok(None);
@@ -242,7 +243,7 @@ fn read_header(
 }
 
 fn probe(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     header: Header,
     handle: u64,
 ) -> Result<Option<usize>, &'static str> {
@@ -270,12 +271,13 @@ fn first_cell(header: Header, handle: u64) -> Result<Option<usize>, &'static str
 }
 
 fn probe_with(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     header: Header,
     handle: u64,
     gathered: Option<[u8; 24]>,
 ) -> Result<Option<usize>, &'static str> {
-    use crate::{read, reference_bucket as bucket};
+    use engine_native_memory::read;
+    use crate::reference_bucket as bucket;
     let Header {
         entries,
         overflow,
@@ -341,7 +343,7 @@ pub(crate) mod tests {
             let mut memory = Fixture::new(kind);
             memory.put(TABLE + COUNT, &3_u32.to_le_bytes());
             memory.bytes.remove(&ENTRIES_ADDRESS);
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             assert_eq!(entry_count(&census, 0, kind), Ok(3));
             assert_eq!((census.calls(), census.bytes()), (3, 8 + 17 + 1));
             memory.put(Fixture::root(kind), &0_u64.to_le_bytes());
@@ -371,7 +373,7 @@ pub(crate) mod tests {
             memory.entry(index, 1, handle ^ (1 << 32), 0x9999);
             memory.entry(index + 1, 2, handle, 0x8888);
             memory.put(TABLE + COUNT, &2_u32.to_le_bytes());
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             assert_eq!(resolve(&census, 0, handle), Ok(Some(0x8888)));
             assert_eq!(census.calls(), 5);
             assert_eq!(census.bytes(), 8 + 17 + 1 + 2 * bucket::STRIDE);
@@ -395,7 +397,7 @@ pub(crate) mod tests {
             memory.put(Fixture::root(kind), &(TABLE as u64).to_le_bytes());
         }
         let mut retained = HeaderResolver::default();
-        let census = crate::read_census::ReadCensus::new(&memory);
+        let census = engine_native_memory::read_census::ReadCensus::new(&memory);
         for (kind, calls) in [
             (53, 4),
             (54, 4),
@@ -424,7 +426,7 @@ pub(crate) mod tests {
         memory.put(Fixture::root(MID_TYPE_LIMIT), &(TABLE as u64).to_le_bytes());
         let mut scoped = ScopedResolver::new(0);
         let handle = |kind| (42_u64 << 32) | u64::from(kind);
-        let census = crate::read_census::ReadCensus::new(&memory);
+        let census = engine_native_memory::read_census::ReadCensus::new(&memory);
         for kind in [53, 55, 56, 57, 58] {
             census.reset();
             assert_eq!(scoped.resolve(&census, handle(kind)), Ok(None));
@@ -462,7 +464,7 @@ pub(crate) mod tests {
     #[test]
     fn resolver_empty_roots_static_empty_and_robin_hood_stop_are_absence() {
         let empty = Fixture::default();
-        let census = crate::read_census::ReadCensus::new(&empty);
+        let census = engine_native_memory::read_census::ReadCensus::new(&empty);
         assert_eq!(resolve(&census, 0, 0), Ok(None));
         assert_eq!(census.calls(), 0);
         let handle = (0x7654_3210_u64 << 32) | 53;
@@ -473,7 +475,7 @@ pub(crate) mod tests {
         memory.entry(index + 1, 1, handle, 0x8888);
         assert_eq!(resolve(&memory, 0, handle), Ok(None));
         memory.put(Fixture::root(53), &0_u64.to_le_bytes());
-        let census = crate::read_census::ReadCensus::new(&memory);
+        let census = engine_native_memory::read_census::ReadCensus::new(&memory);
         assert_eq!(resolve(&census, 0, handle), Ok(None));
         assert_eq!((census.calls(), census.bytes()), (1, 8));
         memory.put(Fixture::root(53), &(TABLE as u64).to_le_bytes());
@@ -485,7 +487,7 @@ pub(crate) mod tests {
             STATIC_EMPTY_RVA.0 + bucket::STRIDE + bucket::DISTANCE,
             &[255],
         );
-        let census = crate::read_census::ReadCensus::new(&memory);
+        let census = engine_native_memory::read_census::ReadCensus::new(&memory);
         assert_eq!(resolve(&census, 0, handle), Ok(None));
         assert_eq!(
             (census.calls(), census.bytes()),
@@ -548,7 +550,7 @@ pub(crate) mod tests {
             memory.entry(Fixture::index(handle), 1, handle, 0x8888);
             memory.put(TABLE + COUNT, &1_u32.to_le_bytes());
             memory.bytes.remove(&address);
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             assert_eq!(resolve(&census, 0, handle), Err(reason));
             assert_eq!(census.calls(), calls);
             census.reset();
@@ -561,7 +563,7 @@ pub(crate) mod tests {
     }
 
     fn province_roster_fixture(kind: u32) -> (Fixture, [u64; 2]) {
-        use crate::{carmy, cgame_state as gs, cprovince as p, cunit};
+        use engine_native::{carmy, cgame_state as gs, cprovince as p, cunit};
         let mut f = Fixture::new(kind);
         f.put(0x4000, &vec![0; 0x5000]);
         f.put(0x4000 + gs::PROVINCES, &0x5000u64.to_le_bytes());
@@ -591,7 +593,8 @@ pub(crate) mod tests {
 
     #[test]
     fn province_roster_keeps_native_order_and_rejects_backlink_and_whole_row_capacity_failures() {
-        use crate::{cprovince as p, cunit, walk::Outcome};
+        use engine_native::{cprovince as p, cunit};
+        use engine_native_memory::walk::Outcome;
         let (mut f, ids) = province_roster_fixture(51);
         let mut rows = vec![p::UnitOrderRow::default(); 1];
         let mut refs = vec![0; 2];
@@ -606,7 +609,8 @@ pub(crate) mod tests {
     }
     #[test]
     fn province_roster_accepts_dynamic_reference_type_divisions() {
-        use crate::{cprovince as p, walk::Outcome};
+        use engine_native::cprovince as p;
+        use engine_native_memory::walk::Outcome;
         let (f, ids) = province_roster_fixture(4713);
         let mut rows = vec![p::UnitOrderRow::default(); 1];
         let mut refs = vec![0; 2];

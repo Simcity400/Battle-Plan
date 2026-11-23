@@ -14,10 +14,11 @@ acquisition_profile = ["engine-native-memory/acquisition_profile"]
 order_membership_oracle = ["acquisition_profile"]
 alloc-fault-injection = ["engine-native-memory/alloc-fault-injection"]
 batch-fallback-test-counts = ["engine-native-memory/batch-fallback-test-counts"]
-layout-fixtures = []
-test-support = ["batch-fallback-test-counts", "engine-native-memory/test-support", "layout-fixtures"]
+layout-fixtures = ["engine-native-parts/layout-fixtures"]
+test-support = ["batch-fallback-test-counts", "engine-native-memory/test-support", "layout-fixtures", "engine-native-parts/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
 engine-native-memory.workspace = true
 game-model.workspace = true
 engine-sites.workspace = true

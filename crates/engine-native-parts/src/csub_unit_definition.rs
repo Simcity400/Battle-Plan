@@ -14,7 +14,7 @@ pub const TRANSPORT_WEIGHT: usize = 0x2b8;
 pub const CAN_EXFILTRATE_FROM_COAST: usize = 0x5c0;
 
 pub fn division_maxima(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> Result<(i64, i64), &'static str> {
@@ -29,34 +29,34 @@ pub struct DivisionMaxima {
     pub can_exfiltrate_from_coast: u8,
 }
 
-const MAXIMA_FIELDS: [crate::memory::RecordField; 3] = [
-    crate::memory::RecordField {
+const MAXIMA_FIELDS: [engine_native_memory::memory::RecordField; 3] = [
+    engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 8,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: MAXIMUM_ORGANISATION,
         destination_offset: 8,
         len: 16,
     },
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: CAN_EXFILTRATE_FROM_COAST,
         destination_offset: 24,
         len: 1,
     },
 ];
-const MAXIMA_LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&MAXIMA_FIELDS, 25).expect("valid maxima layout");
+const MAXIMA_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&MAXIMA_FIELDS, 25).expect("valid maxima layout");
 
-pub(crate) struct MaximaBatch {
+pub struct MaximaBatch {
     bytes: [u8; 64 * 25],
     complete: [bool; 64],
     len: usize,
 }
 
 impl MaximaBatch {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             bytes: [0; 64 * 25],
             complete: [false; 64],
@@ -64,21 +64,21 @@ impl MaximaBatch {
         }
     }
 
-    pub(crate) fn capture(&mut self, memory: &impl crate::Memory, pointers: &[usize]) {
+    pub fn capture(&mut self, memory: &impl engine_native_memory::Memory, pointers: &[usize]) {
         self.len = pointers.len();
-        crate::memory::gather_records_once(
+        engine_native_memory::memory::gather_records_once(
             memory,
             pointers,
             &MAXIMA_LAYOUT,
             &mut self.bytes[..self.len * 25],
             &mut self.complete,
-            crate::batch_fallback::Batch::DivisionMaxima,
+            engine_native_memory::batch_fallback::Batch::DivisionMaxima,
         );
     }
 
-    pub(crate) fn read(
+    pub fn read(
         &self,
-        memory: &impl crate::Memory,
+        memory: &impl engine_native_memory::Memory,
         base: usize,
         pointer: usize,
         row: usize,
@@ -96,7 +96,7 @@ impl MaximaBatch {
 }
 
 pub fn stage_division_maxima(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointers: &[usize],
     out: &mut [Result<DivisionMaxima, &'static str>],
@@ -117,7 +117,7 @@ impl DivisionMaxima {
 }
 
 pub fn capture_division_maxima(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> Result<DivisionMaxima, &'static str> {
@@ -128,7 +128,7 @@ pub fn capture_division_maxima(
     }
     let mut bytes = [0_u8; 25];
     let copied = memory.copy_records(
-        crate::memory::RecordSources::Pointers(&[pointer]),
+        engine_native_memory::memory::RecordSources::Pointers(&[pointer]),
         &MAXIMA_LAYOUT,
         &mut bytes,
     );
@@ -158,13 +158,13 @@ fn decode_division_maxima(
 }
 
 pub fn capture_division_combat_stats(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> Result<[i64; 3], &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division combat stat module overflow")? as u64;
-    if pointer == 0 || crate::read::<u64>(memory, pointer) != Some(expected) {
+    if pointer == 0 || engine_native_memory::read::<u64>(memory, pointer) != Some(expected) {
         return Err("division combat stat block identity mismatch");
     }
     let mut defense = [0; 8];
@@ -198,33 +198,33 @@ pub const DATABASE_RVA: Rva = Rva(0x033d_d4d8);
 pub const DATABASE_VECTOR: usize = 0x40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Database(crate::cpdx_array::Array);
+pub struct Database(engine_native_memory::cpdx_array::Array);
 
 impl Database {
-    pub fn read(memory: &impl crate::Memory, base: usize) -> Result<Self, &'static str> {
+    pub fn read(memory: &impl engine_native_memory::Memory, base: usize) -> Result<Self, &'static str> {
         let database = engine_sites::at(base, DATABASE_RVA)
-            .and_then(|at| crate::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|at| usize::try_from(at).ok())
             .filter(|at| *at != 0)
             .ok_or("subunit database pointer unreadable or null")?;
         database
             .checked_add(DATABASE_VECTOR)
-            .and_then(|at| crate::cpdx_array::Array::read(memory, at, 8))
+            .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, 8))
             .filter(|vector| vector.count > 0)
             .map(Self)
             .ok_or("subunit database vector invalid")
     }
 
-    pub fn vector(self) -> crate::cpdx_array::Array {
+    pub fn vector(self) -> engine_native_memory::cpdx_array::Array {
         self.0
     }
 
-    pub fn entry(self, memory: &impl crate::Memory, index: i32) -> Result<usize, &'static str> {
+    pub fn entry(self, memory: &impl engine_native_memory::Memory, index: i32) -> Result<usize, &'static str> {
         u32::try_from(index)
             .ok()
             .filter(|index| *index != 0)
             .and_then(|index| self.0.element(index, 8))
-            .and_then(|at| crate::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|global| usize::try_from(global).ok())
             .filter(|global| *global != 0)
             .ok_or("subunit database index outside the database")
@@ -238,23 +238,23 @@ pub struct Requirement {
 }
 
 pub fn requirements(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     definition: usize,
-) -> Result<crate::cpdx_array::Array, &'static str> {
+) -> Result<engine_native_memory::cpdx_array::Array, &'static str> {
     definition
         .checked_add(ARCHETYPE_REQUIREMENTS_DATA)
-        .and_then(|at| crate::cpdx_array::Array::read(memory, at, ARCHETYPE_REQUIREMENT_STRIDE))
+        .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, ARCHETYPE_REQUIREMENT_STRIDE))
         .ok_or("subunit requirement vector invalid")
 }
 
 pub fn requirement(
-    memory: &impl crate::Memory,
-    vector: crate::cpdx_array::Array,
+    memory: &impl engine_native_memory::Memory,
+    vector: engine_native_memory::cpdx_array::Array,
     index: u32,
 ) -> Result<Requirement, &'static str> {
     let bytes = vector
         .element(index, ARCHETYPE_REQUIREMENT_STRIDE)
-        .and_then(|at| crate::read::<[u8; 16]>(memory, at))
+        .and_then(|at| engine_native_memory::read::<[u8; 16]>(memory, at))
         .ok_or("subunit requirement unreadable")?;
     Ok(Requirement {
         archetype: usize::try_from(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
@@ -270,20 +270,20 @@ pub const SPEED_MODIFIER_KEY: usize = 0x5d8;
 pub const CATEGORIES: usize = 0x508;
 pub const CATEGORY_MODIFIER_KEY: usize = 0x60;
 
-pub(crate) fn template_category(
-    memory: &impl crate::Memory,
+pub fn template_category(
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
 ) -> Result<i32, &'static str> {
     let bytes = pointer
         .checked_add(CATEGORY)
-        .and_then(|p| crate::read::<[u8; CATEGORY_LEN]>(memory, p))
+        .and_then(|p| engine_native_memory::read::<[u8; CATEGORY_LEN]>(memory, p))
         .ok_or("subunit category unreadable")?;
     Ok(category_of(&bytes))
 }
 
-pub(crate) const CATEGORY_LEN: usize = 13;
+pub const CATEGORY_LEN: usize = 13;
 
-pub(crate) fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
+pub fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
     if bytes[8] != 0 {
         9
     } else if bytes[12] != 0 {
@@ -320,12 +320,12 @@ pub const AIR_DEFENSE_DENOMINATOR_RVA: Rva = Rva(0x033e_18b8);
 pub const AIR_DEFENSE_REDUCTION_RVA: Rva = Rva(0x033e_1830);
 
 fn movement_identity(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     stats: usize,
 ) -> Result<(), &'static str> {
     if stats == 0
-        || crate::read::<u64>(memory, stats) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
+        || engine_native_memory::read::<u64>(memory, stats) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
     {
         Err("movement stat block identity mismatch")
     } else {
@@ -334,7 +334,7 @@ fn movement_identity(
 }
 
 pub fn movement_terrain(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     stats: usize,
     terrain: usize,
@@ -394,7 +394,7 @@ pub fn movement_terrain(
     let index = i32::from_le_bytes(index);
     array_at.ok_or("terrain array overflow")?;
     let array = (read > 3)
-        .then(|| crate::cpdx_array::Array::from_header(header, 0x28))
+        .then(|| engine_native_memory::cpdx_array::Array::from_header(header, 0x28))
         .flatten()
         .ok_or("movement terrain array unreadable")?;
     let entry = u32::try_from(index)
@@ -443,9 +443,9 @@ pub fn movement_air_defense_value(
     if defense == 0 {
         return Ok(0);
     }
-    let power = crate::fixed5::power(defense, 150_000)?;
-    let ratio = crate::fixed5::fraction(power, power.wrapping_add(denominator))?;
-    Ok(ratio.wrapping_mul(reduction) / crate::fixed5::SCALE)
+    let power = engine_native_memory::fixed5::power(defense, 150_000)?;
+    let ratio = engine_native_memory::fixed5::fraction(power, power.wrapping_add(denominator))?;
+    Ok(ratio.wrapping_mul(reduction) / engine_native_memory::fixed5::SCALE)
 }
 
 #[cfg(test)]
@@ -454,8 +454,8 @@ mod movement_tests {
 
     #[test]
     fn integer_series_exact_identity_and_zero() {
-        assert_eq!(crate::fixed5::log(100_000), Ok(0));
-        assert_eq!(crate::fixed5::exp(0), Ok(100_000));
+        assert_eq!(engine_native_memory::fixed5::log(100_000), Ok(0));
+        assert_eq!(engine_native_memory::fixed5::exp(0), Ok(100_000));
         assert_eq!(movement_air_defense_value(0, 100_000, 50_000), Ok(0));
         assert_eq!(
             movement_air_defense_value(100_000, 100_000, 50_000),
@@ -469,20 +469,20 @@ mod movement_tests {
 
     #[test]
     fn exceptional_fraction_and_wrapping_product_are_native() {
-        assert_eq!(crate::fixed5::fraction(1, 0), Ok(0xffff_ffff));
-        assert_eq!(crate::fixed5::fraction(i64::MIN, 100_000), Ok(0xffff_ffff));
-        assert_eq!(crate::fixed5::fraction(i64::MAX, 100_000), Ok(0xffff_ffff));
+        assert_eq!(engine_native_memory::fixed5::fraction(1, 0), Ok(0xffff_ffff));
+        assert_eq!(engine_native_memory::fixed5::fraction(i64::MIN, 100_000), Ok(0xffff_ffff));
+        assert_eq!(engine_native_memory::fixed5::fraction(i64::MAX, 100_000), Ok(0xffff_ffff));
         let value = i64::MAX / 2;
         assert_eq!(
-            crate::fixed5::fraction(value, 100_000),
+            engine_native_memory::fixed5::fraction(value, 100_000),
             Ok(value.wrapping_mul(100_000) / 100_000)
         );
     }
 
     #[test]
     fn fractional_power_preserves_native_series_rounding() {
-        assert_eq!(crate::fixed5::log(50_000), Ok(-69_308));
-        assert_eq!(crate::fixed5::log(1_000_000), Ok(230_258));
+        assert_eq!(engine_native_memory::fixed5::log(50_000), Ok(-69_308));
+        assert_eq!(engine_native_memory::fixed5::log(1_000_000), Ok(230_258));
         assert_eq!(
             movement_air_defense_value(50_000, 100_000, 50_000),
             Ok(13_061)
@@ -499,7 +499,7 @@ mod movement_tests {
 
     #[test]
     fn terrain_one_based_cache_static_sum_and_invalid_identity() {
-        use crate::memory::SliceMemory;
+        use engine_native_memory::memory::SliceMemory;
         let mut bytes = [0_u8; 0x1000];
         let base = 0x140_000_000_usize;
         let stats = 0x100;
@@ -603,7 +603,7 @@ pub struct AttackStats {
 }
 
 pub fn capture_attack_stats(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     stats: usize,
     terrain: &mut Vec<i64>,
@@ -613,7 +613,7 @@ pub fn capture_attack_stats(
 }
 
 pub fn capture_attack_stats_holding(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     stats: usize,
     terrain: &mut Vec<i64>,
@@ -625,7 +625,7 @@ pub fn capture_attack_stats_holding(
     let at = stats
         .checked_add(ATTACK_NIGHT)
         .ok_or("stat block address overflow")?;
-    if !crate::read_slice(memory, at, &mut span) {
+    if !engine_native_memory::read_slice(memory, at, &mut span) {
         return Err("stat block attack operands unreadable");
     }
     let word = |offset: usize| {
@@ -682,7 +682,7 @@ pub fn capture_attack_stats_holding(
         panel[1] = Some(maxima.organisation);
     }
     let header = MOVEMENT_TERRAIN_ADJUSTERS - ATTACK_NIGHT;
-    let array = crate::cpdx_array::Array::from_header(
+    let array = engine_native_memory::cpdx_array::Array::from_header(
         span[header..header + 16].try_into().unwrap(),
         UNIT_ADJUSTER_STRIDE,
     )
@@ -691,9 +691,9 @@ pub fn capture_attack_stats_holding(
         .ok_or("module address overflow")? as u64;
     terrain.clear();
     movement_terrain.clear();
-    crate::allocation::reserve_exact(terrain, array.count as usize)
+    engine_allocation::reserve_exact(terrain, array.count as usize)
         .map_err(|_| "stat block terrain allocation failed")?;
-    crate::allocation::reserve_exact(movement_terrain, array.count as usize)
+    engine_allocation::reserve_exact(movement_terrain, array.count as usize)
         .map_err(|_| "stat block terrain allocation failed")?;
     const BATCH: usize = 32;
     let mut entries = [0_u8; BATCH * UNIT_ADJUSTER_STRIDE];
@@ -703,7 +703,7 @@ pub fn capture_attack_stats_holding(
         let address = array
             .element(first, UNIT_ADJUSTER_STRIDE)
             .ok_or("stat block terrain adjuster address overflow")?;
-        if !crate::read_slice(memory, address, &mut entries[..len * UNIT_ADJUSTER_STRIDE]) {
+        if !engine_native_memory::read_slice(memory, address, &mut entries[..len * UNIT_ADJUSTER_STRIDE]) {
             return Err("stat block terrain adjusters unreadable");
         }
         for entry in entries[..len * UNIT_ADJUSTER_STRIDE].chunks_exact(UNIT_ADJUSTER_STRIDE) {
@@ -745,7 +745,7 @@ pub fn capture_attack_stats_holding(
 #[cfg(test)]
 mod attack_tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1000;
     const STATS: usize = 0x2000;
@@ -795,14 +795,14 @@ mod attack_tests {
     #[test]
     fn deployed_cache_reuses_raw_maxima_without_reading_their_words_again() {
         struct Guard<'a>(SliceMemory<'a>);
-        impl crate::Memory for Guard<'_> {
+        impl engine_native_memory::Memory for Guard<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 assert!(
                     !(STATS + MAXIMUM_ORGANISATION..STATS + MAXIMUM_STRENGTH + 8)
                         .contains(&address),
                     "raw maxima reread"
                 );
-                crate::Memory::copy(&self.0, address, output)
+                engine_native_memory::Memory::copy(&self.0, address, output)
             }
         }
         let bytes = memory(0);
@@ -973,7 +973,7 @@ mod attack_tests {
 #[cfg(test)]
 mod maxima_tests {
     use super::*;
-    use crate::memory::{Memory, RecordLayout, RecordSources, SliceMemory};
+    use engine_native_memory::memory::{Memory, RecordLayout, RecordSources, SliceMemory};
 
     struct Calls<'a>(SliceMemory<'a>, std::cell::Cell<usize>);
     impl Memory for Calls<'_> {

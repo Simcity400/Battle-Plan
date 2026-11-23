@@ -5710,6 +5710,7 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "engine-native-memory",
+ "engine-native-parts",
  "engine-sites",
  "game-model",
  "replay-spool",
@@ -5722,6 +5723,18 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "engine-allocation",
+ "engine-sites",
+ "game-model",
+]
+
+[[package]]
+name = "engine-native-parts"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "game-model",
 ]

@@ -1,5 +1,5 @@
 
-use crate::{Memory, msvc_string, read};
+use engine_native_memory::{Memory, msvc_string, read};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x0285_3e78);
@@ -32,7 +32,7 @@ pub fn token(
     )
 }
 
-pub(crate) fn literal(
+pub fn literal(
     memory: &impl Memory,
     address: usize,
 ) -> Result<(usize, usize), &'static str> {
