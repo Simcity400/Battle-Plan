@@ -99,12 +99,43 @@ pub fn refuse(responder: UriSchemeResponder, status: StatusCode, why: &str) {
     responder.respond(response);
 }
 
-pub fn param<'a>(request: &'a Request<Vec<u8>>, name: &str) -> Option<&'a str> {
-    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=')).filter(|value| !value.is_empty())
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode(raw: &str) -> Option<String> {
+    if !raw.as_bytes().contains(&b'%') {
+        return Some(raw.to_owned());
+    }
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = hex_nibble(*bytes.get(i + 1)?)?;
+            let lo = hex_nibble(*bytes.get(i + 2)?)?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+pub fn param(request: &Request<Vec<u8>>, name: &str) -> Option<String> {
+    let raw = request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=')).filter(|value| !value.is_empty())?;
+    percent_decode(raw).filter(|value| !value.is_empty())
 }
 
 fn session(request: &Request<Vec<u8>>) -> Option<String> {
-    param(request, "session").map(str::to_owned)
+    param(request, "session")
 }
 
 impl<O: Outbox> Pull<O> {
@@ -227,5 +258,23 @@ mod tests {
         assert_eq!((asker, lengths(&body)), (1, vec![4]));
         assert_eq!(asks.ask("page2:1".into(), 2), Ok(vec![(2, Vec::new())]), "a reloaded page can still take over");
         assert_eq!(asks.outbox.restarts, 2);
+    }
+
+    #[test]
+    fn percent_encoded_session_param_decodes_colon_for_registry_and_ordering() {
+        let req = tauri::http::Request::builder()
+            .uri("http://push.localhost/follow?session=page-id%3A2&released=64")
+            .body(Vec::new())
+            .unwrap();
+        let decoded = super::param(&req, "session").expect("decoded session");
+        assert_eq!(decoded, "page-id:2");
+        assert_eq!(super::param(&req, "released").as_deref(), Some("64"));
+        let old = tauri::http::Request::builder()
+            .uri("http://push.localhost/follow?session=page-id%3A1")
+            .body(Vec::new())
+            .unwrap();
+        let mut asks = Asks::<Queue, u32>::default();
+        assert_eq!(asks.ask(decoded, 0), Ok(vec![(0, Vec::new())]));
+        assert_eq!(asks.ask(super::param(&old, "session").unwrap(), 1), Err(1));
     }
 }
