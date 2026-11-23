@@ -201,18 +201,23 @@ fn offer(templates: usize, countries: usize, hq_groups: usize) {
     }
 }
 
-pub fn prepare(templates: usize, countries: usize) {
+pub(crate) fn prepare(templates: usize, countries: usize) {
     TEMPLATES.fetch_max(templates, Ordering::Relaxed);
     record_countries(countries);
-    presize();
+    // SAFETY: Crate-internal sizing helper called from `division_templates::Capacities::presize`.
+    unsafe { presize() };
 }
 
-pub fn prepare_hq_groups(groups: usize) {
+pub(crate) fn prepare_hq_groups(groups: usize) {
     record_hq_groups(groups);
-    presize();
+    // SAFETY: Crate-internal sizing helper called from `group_counters::Capacities::presize`.
+    unsafe { presize() };
 }
 
-pub fn presize() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// template-change watches remain live and teardown is excluded.
+pub unsafe fn presize() {
     offer(
         TEMPLATES.load(Ordering::Relaxed),
         COUNTRIES.load(Ordering::Relaxed),
@@ -220,10 +225,10 @@ pub fn presize() {
     );
 }
 
-pub fn record_countries(countries: usize) {
+pub(crate) fn record_countries(countries: usize) {
     COUNTRIES.fetch_max(countries, Ordering::Relaxed);
 }
-pub fn record_hq_groups(groups: usize) {
+pub(crate) fn record_hq_groups(groups: usize) {
     HQ_GROUPS.fetch_max(groups, Ordering::Relaxed);
 }
 
@@ -238,7 +243,7 @@ pub struct Counts {
     pub rereads: u64,
 }
 
-pub fn record(counts: &Counts, templates: Option<usize>) {
+pub(crate) fn record(counts: &Counts, templates: Option<usize>) {
     for (target, value) in READS
         .iter()
         .zip([counts.carried, counts.read, counts.rereads])

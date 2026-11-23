@@ -25,16 +25,19 @@ fn hourly_template_job_publishes_direct_walk_rows() {
         let mut request = TemplatesRequest::take(&countries, 0, 0x1000, &mut capture, hour, false);
         request.run(&source);
         request.restore(&mut capture, None);
-        capture.capture(
-            &SliceMemory {
-                base: 0,
-                bytes: &[],
-            },
-            0,
-            0x1000,
-            hour,
-            false,
-        );
+        // SAFETY: Isolated template test owns its synthetic fixture.
+        unsafe {
+            capture.capture(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &[],
+                },
+                0,
+                0x1000,
+                hour,
+                false,
+            );
+        }
         assert_eq!(template_outcomes(&capture), [Outcome::Rows { len: 1 }; 2]);
         let [
             TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(dictionary)),
@@ -99,7 +102,8 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
                 })
             };
             for hour in [7, 8] {
-                direct.capture(source.as_ref(), 0, 0x1000, hour, false);
+                // SAFETY: Isolated template test owns its synthetic fixture.
+                unsafe { direct.capture(source.as_ref(), 0, 0x1000, hour, false) };
                 let mut cache =
                     engine_allocation::shared(Cache::try_with_capacity(countries + 1).unwrap())
                         .unwrap();
@@ -120,16 +124,19 @@ fn promoted_template_worker_matches_direct_rows_and_faults() {
                     panic!("template request must be returned");
                 };
                 request.restore(&mut captured, None);
-                captured.capture(
-                    &SliceMemory {
-                        base: 0,
-                        bytes: &[],
-                    },
-                    0,
-                    0x1000,
-                    hour,
-                    false,
-                );
+                // SAFETY: Isolated template test owns its synthetic fixture.
+                unsafe {
+                    captured.capture(
+                        &SliceMemory {
+                            base: 0,
+                            bytes: &[],
+                        },
+                        0,
+                        0x1000,
+                        hour,
+                        false,
+                    );
+                }
                 assert_eq!(
                     captured.outcomes(),
                     direct.outcomes(),
