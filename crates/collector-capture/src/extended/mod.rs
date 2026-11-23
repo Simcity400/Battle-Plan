@@ -1841,25 +1841,13 @@ impl Captured {
         fingerprints
     }
 
-    fn acquire_supply_trains(
-        &mut self,
-        memory: &impl Memory,
-        context: supply_trains::CaptureContext,
-    ) -> supply_trains::CaptureReport {
+    fn finish_supply_trains(&mut self) -> supply_trains::CaptureReport {
         self.supply_trains_report.take().unwrap_or_else(|| {
             if !records_any(self.capture_mode, &supply_trains::TABLES) {
                 return self.supply_trains.fail_owned_capture(NOT_RECORDED);
             }
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.supply_trains.capture_owned(memory, context)
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                let _ = (memory, context);
-                self.supply_trains
-                    .fail_owned_capture("supply_trains acquisition not supplied")
-            }
+            self.supply_trains
+                .fail_owned_capture("supply_trains acquisition not supplied")
         })
     }
 
@@ -1907,22 +1895,10 @@ impl Captured {
             .restore_part(request.part, request.captured);
     }
 
-    fn acquire_character_portraits(
-        &mut self,
-        memory: &impl Memory,
-        context: character_portraits::CaptureContext,
-    ) -> character_portraits::CaptureReport {
+    fn finish_character_portraits(&mut self) -> character_portraits::CaptureReport {
         self.character_portraits_report.take().unwrap_or_else(|| {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.character_portraits.capture_owned(memory, context)
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                let _ = (memory, context);
-                self.character_portraits
-                    .fail_owned_capture("character_portraits acquisition not supplied")
-            }
+            self.character_portraits
+                .fail_owned_capture("character_portraits acquisition not supplied")
         })
     }
 
@@ -2010,23 +1986,10 @@ impl Captured {
         request.store
     }
 
-    fn acquire_province_unit_order(
-        &mut self,
-        memory: &impl Memory,
-        context: province_unit_order::CaptureContext,
-    ) -> province_unit_order::CaptureReport {
+    fn finish_province_unit_order(&mut self) -> province_unit_order::CaptureReport {
         self.province_unit_order_report.take().unwrap_or_else(|| {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.province_unit_order
-                    .capture_owned(memory, context, None, None)
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                let _ = (memory, context);
-                self.province_unit_order
-                    .fail_owned_capture("province_unit_order acquisition not supplied")
-            }
+            self.province_unit_order
+                .fail_owned_capture("province_unit_order acquisition not supplied")
         })
     }
 
@@ -2450,42 +2413,16 @@ impl Captured {
         self.intel = request.captured;
         flags
     }
-    pub(crate) fn settle_intel_residual(
-        &mut self,
-        memory: &impl Memory,
-        context: intel::CaptureContext,
-    ) {
-        let report = self.acquire_intel(memory, context);
+    pub(crate) fn settle_intel_residual(&mut self, context: intel::CaptureContext) {
+        let report = self.finish_intel_residual(context);
         self.intel_residual_report = Some(report);
     }
 
-    fn acquire_intel(
-        &mut self,
-        memory: &impl Memory,
-        context: intel::CaptureContext,
-    ) -> intel::CaptureReport {
-        if let Some(report) = self.intel_residual_report.take() {
-            report
-        } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                intel::CaptureReport {
-                    ticks: self.intel.capture(
-                        memory,
-                        context.base,
-                        context.game_state,
-                        context.hour,
-                        context.force_full,
-                    ),
-                }
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                let _ = memory;
-                self.intel
-                    .fail_residual_capture(context, "residual Intel acquisition not supplied")
-            }
-        }
+    fn finish_intel_residual(&mut self, context: intel::CaptureContext) -> intel::CaptureReport {
+        self.intel_residual_report.take().unwrap_or_else(|| {
+            self.intel
+                .fail_residual_capture(context, "residual Intel acquisition not supplied")
+        })
     }
 
     pub(crate) fn relations_pilot(&mut self) -> &mut intel::Captured {
@@ -2760,14 +2697,37 @@ impl Captured {
             self.take_final_inputs_request(&countries, base, game_state, current_hour, force_full);
         let report = final_request.capture(memory);
         self.restore_final_inputs_request(final_request, report, None);
+        tests::stage_fixture_acquisitions(
+            self,
+            memory,
+            base,
+            game_state,
+            current_hour,
+            force_full,
+        );
         let mut ticks = self.capture_tables(memory, base, game_state, current_hour, force_full);
+        scatter(
+            &weather::TABLES,
+            self.weather.capture(memory, base, game_state),
+            &mut ticks,
+        );
+        let mut orders = Orders::vacant();
+        tests::stage_fixture_late(
+            self,
+            memory,
+            base,
+            game_state,
+            current_hour,
+            force_full,
+            &mut orders,
+        );
         self.capture_tables_late(
             memory,
             base,
             game_state,
             current_hour,
             force_full,
-            &mut Orders::vacant(),
+            &mut orders,
             &mut ticks,
         );
         ticks
@@ -2865,16 +2825,6 @@ impl Captured {
                 scatter(&$pack::TABLES, cost, &mut ticks);
             )+};
         }
-        #[cfg(any(test, feature = "test-support"))]
-        macro_rules! staggered {
-            ($($pack:ident),+ $(,)?) => {$(
-                let cost = self.$pack.capture(memory, base, game_state, current_hour, force_full);
-                scatter(&$pack::TABLES, cost, &mut ticks);
-            )+};
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        let weather_ticks = self.weather.capture(memory, base, game_state);
-        #[cfg(not(any(test, feature = "test-support")))]
         let weather_ticks = self.weather.finish_owned_capture();
         scatter(&weather::TABLES, weather_ticks, &mut ticks);
         ordinary!(state_flags, event_feed);
@@ -2891,32 +2841,7 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(
-                    peace_bids,
-                    map_names,
-                    faction_theatres,
-                    model_inputs,
-                    modifier_definitions,
-                    hired_advisors,
-                    country_tactic_unlocks,
-                    logistics,
-                    combat_log,
-                    country_factories,
-                    state_building_inputs
-                );
-                scatter(
-                    &visibility::TABLES,
-                    self.visibility
-                        .capture(memory, base, game_state, current_hour, force_full),
-                    &mut ticks,
-                );
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_slow(current_hour, force_full);
-            }
+            self.fail_missing_slow(current_hour, force_full);
         }
         if let Some(done) = self.stability_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -2925,26 +2850,11 @@ impl Captured {
         } else if !self.records_any(&country_stability::TABLES) {
             self.fail_missing_stability(current_hour, force_full, NOT_RECORDED);
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                let cost = self.country_stability.capture(
-                    memory,
-                    base,
-                    game_state,
-                    current_hour,
-                    force_full,
-                    None,
-                );
-                scatter(&country_stability::TABLES, cost, &mut ticks);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_stability(
-                    current_hour,
-                    force_full,
-                    "stability acquisition not supplied",
-                );
-            }
+            self.fail_missing_stability(
+                current_hour,
+                force_full,
+                "stability acquisition not supplied",
+            );
         }
         self.assemble_production_daily(
             memory,
@@ -2953,7 +2863,7 @@ impl Captured {
             current_hour,
             force_full,
             &mut ticks,
-            cfg!(test),
+            false,
         );
         if let Some(done) = self.war_overview_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -2962,57 +2872,27 @@ impl Captured {
         } else if !self.records_any(&war_overview::TABLES) {
             self.fail_missing_war_overview(current_hour, force_full, NOT_RECORDED);
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(war_overview);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_war_overview(
-                    current_hour,
-                    force_full,
-                    "war overview acquisition not supplied",
-                );
-            }
+            self.fail_missing_war_overview(
+                current_hour,
+                force_full,
+                "war overview acquisition not supplied",
+            );
         }
         if let Some(done) = self.template_ticks.replace([0; division_templates::N]) {
             scatter(&division_templates::TABLES, done, &mut ticks);
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(division_templates);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.division_templates.fail_capture(
-                    current_hour,
-                    force_full,
-                    "template acquisition not supplied",
-                );
-            }
+            self.division_templates.fail_capture(
+                current_hour,
+                force_full,
+                "template acquisition not supplied",
+            );
         }
         if let Some(done) = self.raid_state_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(raid_state_inputs);
-                let cost = self.resource_map.capture(
-                    memory,
-                    base,
-                    game_state,
-                    current_hour,
-                    force_full,
-                    None,
-                );
-                scatter(&resource_map::TABLES, cost, &mut ticks);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_raid_state(current_hour, force_full);
-            }
+            self.fail_missing_raid_state(current_hour, force_full);
         }
         if let Some(done) = self.raid_targets_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
@@ -3021,32 +2901,18 @@ impl Captured {
         } else if !self.records_any(&raid_target_statuses::TABLES) {
             self.fail_missing_raid_targets(current_hour, force_full, NOT_RECORDED);
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(raid_target_statuses);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_raid_targets(
-                    current_hour,
-                    force_full,
-                    "raid target acquisition not supplied",
-                );
-            }
+            self.fail_missing_raid_targets(
+                current_hour,
+                force_full,
+                "raid target acquisition not supplied",
+            );
         }
         if let Some(done) = self.raid_launch_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(raid_launch_inputs);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_raid_launch(current_hour, force_full);
-            }
+            self.fail_missing_raid_launch(current_hour, force_full);
         }
         let cost = if self.air_relations.staged() {
             self.air_relations.ticks()
@@ -3059,20 +2925,7 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                scatter(
-                    &fog::TABLES,
-                    self.fog
-                        .capture(memory, base, game_state, current_hour, force_full),
-                    &mut ticks,
-                );
-                staggered!(construction, projects);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_gated(current_hour, force_full);
-            }
+            self.fail_missing_gated(current_hour, force_full);
         }
         if let Some(done) = self
             .character_inputs_ticks
@@ -3080,50 +2933,29 @@ impl Captured {
         {
             scatter(&character_inputs::TABLES, done, &mut ticks);
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                staggered!(character_inputs);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.character_inputs.fail_capture(
-                    current_hour,
-                    force_full,
-                    "character inputs acquisition not supplied",
-                );
-            }
+            self.character_inputs.fail_capture(
+                current_hour,
+                force_full,
+                "character inputs acquisition not supplied",
+            );
         }
         ticks[TableId::StateBuildings.index()] =
             self.construction.finish_buildings(current_hour, force_full);
         let cost = self.division_model_inputs.finish();
         scatter(&division_model_inputs::TABLES, cost, &mut ticks);
-        let province_order_report = self.acquire_province_unit_order(
-            memory,
-            province_unit_order::CaptureContext { base, game_state },
-        );
+        let province_order_report = self.finish_province_unit_order();
         scatter(
             &province_unit_order::TABLES,
             province_order_report.ticks,
             &mut ticks,
         );
-        let portraits_report = self.acquire_character_portraits(
-            memory,
-            character_portraits::CaptureContext { base, game_state },
-        );
+        let portraits_report = self.finish_character_portraits();
         scatter(
             &character_portraits::TABLES,
             portraits_report.ticks,
             &mut ticks,
         );
-        let supply_report = self.acquire_supply_trains(
-            memory,
-            supply_trains::CaptureContext {
-                base,
-                game_state,
-                hour: current_hour,
-                force_full,
-            },
-        );
+        let supply_report = self.finish_supply_trains();
         scatter(&supply_trains::TABLES, supply_report.ticks, &mut ticks);
         let intel_context = intel::CaptureContext {
             base,
@@ -3131,7 +2963,7 @@ impl Captured {
             hour: current_hour,
             force_full,
         };
-        let intel_report = self.acquire_intel(memory, intel_context);
+        let intel_report = self.finish_intel_residual(intel_context);
         scatter(&intel::TABLES, intel_report.ticks, &mut ticks);
         let governance_report = self.governance_report.take().unwrap_or_else(|| {
             self.governance.fail_owned_capture(
@@ -3170,41 +3002,7 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                let mut packs = self.late_spare.take().expect("late spare present");
-                self.swap_late(&mut packs, orders);
-                packs.capture(
-                    memory,
-                    base,
-                    game_state,
-                    current_hour,
-                    force_full,
-                    self.unit_inputs.as_deref(),
-                    Some(&self.divisions),
-                    Some(&mut engine_raid_inputs::raid_air_scores::Held::default()),
-                    None,
-                );
-                let cost = self.plans.capture_unit_transports(
-                    memory,
-                    base,
-                    game_state,
-                    self.unit_inputs.as_deref(),
-                    &packs.orders,
-                );
-                packs.ticks[TableId::DivisionMovement.index()] += cost;
-                for (total, cost) in ticks.iter_mut().zip(packs.ticks) {
-                    *total += cost;
-                }
-                self.swap_late(&mut packs, orders);
-                self.late_spare = Some(packs);
-                self.plans
-                    .install_order_transport(&mut self.division_presentation);
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                self.fail_missing_late(current_hour, force_full, orders);
-            }
+            self.fail_missing_late(current_hour, force_full, orders);
         }
         let cost = if self.air_histories.staged() {
             self.air_histories.ticks()

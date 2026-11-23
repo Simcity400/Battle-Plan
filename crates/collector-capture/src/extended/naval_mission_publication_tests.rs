@@ -1,5 +1,7 @@
 use collector_certificates::slicing::SliceFingerprints;
-use collector_naval_missions::extended::naval_mission_inputs::tests::{build_world, rows};
+use collector_naval_missions::extended::naval_mission_inputs::tests::{
+    build_world, rows, use_fixture_certificates,
+};
 use engine_native::walk::Outcome;
 use replay_data::rows::tables;
 
@@ -8,6 +10,7 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
     use crate::extended::{Capacities, Captured, NavalMissionLoan, OrdinaryPart};
 
     let mut owner = Captured::with_capacities(&Capacities::default());
+    use_fixture_certificates(&mut owner.naval_mission_inputs);
     let countries = engine_allocation::shared(
         engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
