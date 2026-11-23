@@ -114,6 +114,43 @@ class CoresAndProfileTests(unittest.TestCase):
             self.assertTrue((empty_dir / suite.UI_BUNDLE_MARKER).is_file())
             self.assertEqual((empty_dir / "index.html").read_text(encoding="utf-8"), "v2")
 
+            raced_dir = root / "raced-empty"
+            raced_dir.mkdir()
+            def fake_race_runner(cmd, cwd=None, env=None):
+                out_dir = Path(cmd[cmd.index("--outDir") + 1])
+                (out_dir / "index.html").write_text("built", encoding="utf-8")
+                (raced_dir / "suddenly-appeared.txt").write_text("precious", encoding="utf-8")
+                return SimpleNamespace(returncode=0)
+
+            with self.assertRaisesRegex(RuntimeError, "battleplan-ui-bundle"):
+                suite.run_build_ui(raced_dir, runner=fake_race_runner)
+            self.assertEqual((raced_dir / "suddenly-appeared.txt").read_text(encoding="utf-8"), "precious")
+
+            raced_post_validate = root / "raced-post-validate"
+            raced_post_validate.mkdir()
+            orig_validate = suite.validate_ui_output
+            calls = [0]
+            def inject_after_second_validate(path):
+                res = orig_validate(path)
+                calls[0] += 1
+                if calls[0] == 2:
+                    (res / "late-file.txt").write_text("must-survive", encoding="utf-8")
+                return res
+            suite.validate_ui_output = inject_after_second_validate
+            try:
+                with self.assertRaisesRegex(RuntimeError, "late-file.txt"):
+                    suite.run_build_ui(raced_post_validate, runner=fake_ok)
+            finally:
+                suite.validate_ui_output = orig_validate
+            backups = list(root.glob(f".{raced_post_validate.name}.old-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual((backups[0] / "late-file.txt").read_text(encoding="utf-8"), "must-survive")
+
+            interrupted = root / "interrupted-target"
+            leftover_old = root / f".{interrupted.name}.old-123"
+            leftover_old.mkdir()
+            self.assertEqual(suite.find_ui_leftovers(interrupted), [leftover_old])
+
 
 if __name__ == "__main__":
     unittest.main()

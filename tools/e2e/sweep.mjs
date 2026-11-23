@@ -10,7 +10,7 @@ import { PINS, readHistory } from './coverage.mjs';
 import { Visual } from './visual.mjs';
 import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPicture } from './map.mjs';
 import { REFUSAL_TEXT, classifyWidgetSnapshot, pageShown } from './verdicts.mjs';
-import { buildWidgetClassifierExpr, measureIdleCost, mergeWidgetOutcomes, runThrottled } from './sweepHelpers.mjs';
+import { buildWidgetClassifierExpr, createOutcomeWatcher, measureIdleCost, mergeWidgetOutcomes, runThrottled } from './sweepHelpers.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
 import { allWidgetPages, costPages, HEAVIEST, HEAVIEST_COUNT, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
@@ -412,45 +412,18 @@ const CLASSIFY_WIDGET = buildWidgetClassifierExpr(classifyWidgetSnapshot, REFUSA
 async function watchWidgetOutcomes({ waitForPlaying = false } = {}) {
   await app.evaluate(`(() => {
     const classify = ${CLASSIFY_WIDGET};
-    const rank = { content: 0, placeholder: 1, refusal: 2, error: 3 };
-    const grid = document.querySelector('.dash-grid-scroll'), worst = new Map();
-    const isPlaying = () => !!document.querySelector('button.header-play[aria-label="Pause"]');
-    let active = ${!waitForPlaying} || isPlaying();
-    let stopped = false, rafId = 0;
-    const scan = () => {
-      if (!active || !grid) return;
-      for (const a of grid.querySelectorAll('article.dash-widget')) {
-        const id = a.dataset.widget;
-        if (!id) continue;
-        const next = classify(a);
-        const prev = worst.get(id);
-        if (!prev || (rank[next.outcome] ?? 0) > (rank[prev.outcome] ?? 0)) worst.set(id, next);
-      }
-    };
-    const activateIfPlaying = () => {
-      if (!active && isPlaying()) { active = true; scan(); }
-      else if (active) scan();
-    };
-    const gridObserver = grid ? new MutationObserver(activateIfPlaying) : null;
-    if (gridObserver && grid) gridObserver.observe(grid, { subtree: true, childList: true, attributes: true, characterData: true });
-    const playHost = document.querySelector('button.header-play')?.parentElement ?? document.body;
-    const playObserver = playHost ? new MutationObserver(activateIfPlaying) : null;
-    if (playObserver && playHost) playObserver.observe(playHost, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-label'] });
-    const tick = () => {
-      if (stopped) return;
-      activateIfPlaying();
-      rafId = requestAnimationFrame(tick);
-    };
-    activateIfPlaying();
-    rafId = requestAnimationFrame(tick);
-    __e2e.endWidgetOutcomes = () => {
-      stopped = true;
-      cancelAnimationFrame(rafId);
-      if (active || isPlaying()) { active = true; scan(); }
-      gridObserver?.disconnect();
-      playObserver?.disconnect();
-      return Object.fromEntries(worst);
-    };
+    const makeWatcher = ${createOutcomeWatcher.toString()};
+    const watcher = makeWatcher({
+      grid: document.querySelector('.dash-grid-scroll'),
+      playHost: document.querySelector('button.header-play')?.parentElement ?? document.body,
+      isPlaying: () => !!document.querySelector('button.header-play[aria-label="Pause"]'),
+      classify,
+      observe: (node, options, cb) => { const mo = new MutationObserver(cb); mo.observe(node, options); return () => mo.disconnect(); },
+      requestFrame: cb => requestAnimationFrame(cb),
+      cancelFrame: id => cancelAnimationFrame(id),
+      waitForPlaying: ${Boolean(waitForPlaying)},
+    });
+    __e2e.endWidgetOutcomes = () => watcher.end();
   })()`);
 }
 

@@ -482,6 +482,10 @@ if (sweep) {
       if (w.belowBaselineNoise) notes.push('below baseline noise');
       if (w.lowFrameCount) notes.push(`low sample: ${w.main.n} frames in ${ms1(w.seconds)} s`);
       if (w.correctnessErrors?.length) notes.push(...w.correctnessErrors);
+      if (w.postWindowAuditErrors?.length) {
+        const firstPost = w.postWindowAuditErrors[0];
+        notes.push(`post-window audit @ ${new Date(firstPost.at).toISOString()}: ${firstPost.error}`);
+      }
       if (w.incompleteReasons?.length) notes.push(...w.incompleteReasons);
       costRows.push({
         pass: w.pass,

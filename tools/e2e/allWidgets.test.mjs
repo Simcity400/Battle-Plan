@@ -151,6 +151,13 @@ test('costPages builds an empty page and one default-size page per requested kin
   assert.equal(acknowledged.excludedByNoise.length, 1);
   assert.match(acknowledged.warning, /occupied-states/);
   assert.deepEqual(heaviestKinds(noiseExcluded, 2, { allowBelowNoiseCutoff: true }), ['scoreboard', 'research']);
+  const unambiguousNegativeCutoff = { widgets: [
+    { kind: 'scoreboard', costScoreMs: 12, mainDelta: { p50: 4, p95: 10 }, worker: { p95: 2, mean: 1 }, belowBaselineNoise: false },
+    { kind: 'occupied-states', costScoreMs: 4.8, mainDelta: { p50: 0, p95: -0.2 }, worker: { p95: 5.0, mean: 3 }, belowBaselineNoise: true },
+    { kind: 'wars', costScoreMs: -0.3, mainDelta: { p50: 0, p95: -0.5 }, worker: { p95: 0.2, mean: 0.1 }, belowBaselineNoise: true },
+  ] };
+  assert.deepEqual(heaviestKinds(unambiguousNegativeCutoff, 2), ['scoreboard', 'occupied-states'],
+    'an excluded kind whose zero-clamped score stays below the cutoff is not flagged as a noise exclusion');
   const tied = { widgets: [
     { kind: 'alpha', costScoreMs: 10, mainDelta: { p50: 1 }, worker: { mean: 0 }, requestsPerSec: 0, commitsPerSec: 0 },
     { kind: 'beta', costScoreMs: 10, mainDelta: { p50: 5 }, worker: { mean: 1 }, requestsPerSec: 0, commitsPerSec: 0 },

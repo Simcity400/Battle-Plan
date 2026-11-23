@@ -560,9 +560,11 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     }
     const audited = Array.isArray(w.audit) ? w.audit : [];
     const inWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at >= w.from && s.at <= w.to) : audited;
+    const postWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at > w.to) : [];
     const observedPairs = new Set(playingPictures.filter(r => !r.detached).map(r => `${r.surface}\u0000${r.placement}`));
     const auditedPairs = new Set(inWindowAudit.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
-    const firstAuditError = audited.find(s => s.error !== null)?.error ?? null;
+    const inWindowAuditError = inWindowAudit.find(s => s.error !== null)?.error ?? null;
+    const postWindowAuditErrors = postWindowAudit.filter(s => s.error !== null).map(s => ({ at: s.at, surface: s.surface, placement: s.placement, error: s.error }));
     const widgetErrors = w.from != null && w.to != null && w.widget
       ? winRecords.filter(r => r.t === 'widget_error' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
     let outcome = w.outcome ?? 'content';
@@ -572,12 +574,12 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       detail = widgetErrors[0].message ?? 'widget error';
     }
     let exact = outcome === 'content' ? 'not-audited' : 'n/a', exactError = null;
-    if (outcome === 'content' && (audited.length > 0 || observedPairs.size > 0)) {
-      if (firstAuditError) { exact = 'fail'; exactError = firstAuditError; }
+    if (outcome === 'content' && (inWindowAudit.length > 0 || observedPairs.size > 0)) {
+      if (inWindowAuditError) { exact = 'fail'; exactError = inWindowAuditError; }
       else if (inWindowAudit.length > 0 && [...observedPairs].every(pair => auditedPairs.has(pair))) { exact = 'pass'; }
       else { exact = 'fail'; exactError = 'missing exact-read audit for an observed surface'; }
-    } else if (firstAuditError) {
-      exact = 'fail'; exactError = firstAuditError;
+    } else if (inWindowAuditError) {
+      exact = 'fail'; exactError = inWindowAuditError;
     }
     const incompleteReasons = [];
     if (Array.isArray(w.reasons)) incompleteReasons.push(...w.reasons);
@@ -599,7 +601,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
       lagP95Hours, futureFrames,
-      exact, exactError, auditSamples: inWindowAudit.length,
+      exact, exactError, auditSamples: inWindowAudit.length, postWindowAuditErrors,
       lostRecords: lost, complete, pass, correctnessErrors, incompleteReasons: [...new Set(incompleteReasons)],
       belowBaselineNoise, lowFrameCount,
       costScoreMs,

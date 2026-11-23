@@ -836,9 +836,27 @@ def build_ui_command(out, ungated=False):
     return ["npx.cmd", "vite", "build", "--config", str(config), "--outDir", str(out), "--emptyOutDir", "false"]
 
 
+def _is_marked_bundle_dir(path):
+    marker = path / UI_BUNDLE_MARKER
+    return os.path.lexists(marker) and not _is_link_or_reparse(marker) and stat.S_ISREG(os.lstat(marker).st_mode)
+
+
+def find_ui_leftovers(target):
+    parent = target.parent
+    if not parent.is_dir():
+        return []
+    old = sorted(parent.glob(f".{target.name}.old-*"))
+    staging = sorted(parent.glob(f".{target.name}.staging-*"))
+    return [*old, *staging]
+
+
 def run_build_ui(out, ungated=False, runner=subprocess.run):
-    """Builds into a fresh staging folder beside `--out`, then installs and marks `--out` only on success."""
+    """Builds into a fresh staging folder beside `--out`, then swaps `--out` and writes the marker only on success."""
     target = validate_ui_output(out)
+    leftovers = find_ui_leftovers(target)
+    if leftovers and not os.path.lexists(target):
+        names = ", ".join(str(p) for p in leftovers)
+        print(f"note: found recoverable leftover bundle(s) for missing {target}: {names}", file=sys.stderr)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=str(target.parent)))
     env = dict(os.environ)
@@ -861,7 +879,17 @@ def run_build_ui(out, ungated=False, runner=subprocess.run):
                 backup.rename(target)
             raise
         if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+            if _is_marked_bundle_dir(backup):
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                try:
+                    backup.rmdir()
+                except OSError as error:
+                    kept = sorted(entry.name for entry in backup.iterdir()) if backup.is_dir() else []
+                    raise RuntimeError(
+                        f"refusing to delete unmarked backup {backup}: unexpected entries appeared before swap "
+                        f"({', '.join(kept) or error}); new bundle is installed at {target}"
+                    ) from error
         return 0
     except BaseException:
         if staging.exists():

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { buildWidgetClassifierExpr, measureIdleCost, runThrottled } from './sweepHelpers.mjs';
+import { buildWidgetClassifierExpr, createOutcomeWatcher, measureIdleCost, runThrottled } from './sweepHelpers.mjs';
 import { REFUSAL_TEXT, classifyWidgetSnapshot } from './verdicts.mjs';
 
 const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
@@ -83,6 +83,55 @@ test('runThrottled keeps the requested rate active during the measurement and re
   assert.equal(seenDuringFail, 8);
   assert.equal(activeRate, 1);
   assert.deepEqual(calls, [8, 1]);
+
+  calls.length = 0;
+  const partialThrottle = async value => {
+    calls.push(value);
+    activeRate = value;
+    if (value !== 1) throw new Error('page eval failed after CDP throttle');
+  };
+  await assert.rejects(() => runThrottled(partialThrottle, 4, async () => 'never'), /page eval failed/);
+  assert.equal(activeRate, 1, 'throttle(1) runs in finally even when throttle(rate) itself rejects');
+  assert.deepEqual(calls, [4, 1]);
+});
+
+test('createOutcomeWatcher scans once on playing transition, stops polling, and classifies only mutation-touched widgets', () => {
+  const widgetA = { nodeType: 1, dataset: { widget: 'a' }, closest: sel => (sel === 'article.dash-widget' ? widgetA : null) };
+  const widgetB = { nodeType: 1, dataset: { widget: 'b' }, closest: sel => (sel === 'article.dash-widget' ? widgetB : null) };
+  const childOfA = { nodeType: 1, closest: sel => (sel === 'article.dash-widget' ? widgetA : null) };
+  const grid = { querySelectorAll: () => [widgetA, widgetB] };
+  const playHost = {};
+  let playing = false, gridCb = null, playCb = null, playDisconnected = false, rafCalls = 0, pendingRaf = null;
+  const classified = [];
+  const outcomes = { a: { outcome: 'content', detail: null, notMigrated: false }, b: { outcome: 'content', detail: null, notMigrated: false } };
+  const watcher = createOutcomeWatcher({
+    grid,
+    playHost,
+    isPlaying: () => playing,
+    classify: a => { classified.push(a.dataset.widget); return outcomes[a.dataset.widget]; },
+    observe: (node, _opts, cb) => {
+      if (node === grid) { gridCb = cb; return () => { gridCb = null; }; }
+      playCb = cb; return () => { playDisconnected = true; playCb = null; };
+    },
+    requestFrame: cb => { rafCalls++; pendingRaf = cb; return rafCalls; },
+    cancelFrame: () => { pendingRaf = null; },
+    waitForPlaying: true,
+  });
+  assert.deepEqual(classified, [], 'no classification before playback starts');
+  playing = true;
+  playCb();
+  assert.deepEqual(classified, ['a', 'b'], 'scans all widgets once on playing transition');
+  assert.equal(playDisconnected, true, 'activation observer disconnects once playing');
+  assert.equal(pendingRaf, null, 'activation frame polling stops once playing');
+
+  classified.length = 0;
+  outcomes.a = { outcome: 'error', detail: 'boom', notMigrated: false };
+  gridCb([{ target: childOfA, addedNodes: [] }]);
+  assert.deepEqual(classified, ['a'], 'grid mutation classifies only the touched widget, never untouched siblings');
+
+  const result = watcher.end();
+  assert.equal(result.a.outcome, 'error');
+  assert.equal(result.b.outcome, 'content');
 });
 
 test('measureIdleCost returns bounds on success and records a failure without throwing when pause or speed fails', async () => {

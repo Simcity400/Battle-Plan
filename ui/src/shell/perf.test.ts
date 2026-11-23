@@ -115,27 +115,50 @@ test('beginAudit invalidates in-flight audit continuations via generation token 
 
   let releaseStale!: () => void;
   const staleGate = new Promise<void>(resolve => { releaseStale = resolve; });
+  let staleReadCalls = 0;
   recorder.reader(1, 0, async () => {
+    staleReadCalls++;
     await staleGate;
     return { values: new Map([['A:v', 'old-expected']]) };
   });
 
   await recorder.beginAudit();
+  let secondStructuralReads = 0;
+  let releaseFirstStructural!: () => void;
+  const firstStructuralGate = new Promise<void>(resolve => { releaseFirstStructural = resolve; });
+  recorder.structure(
+    'old-widget',
+    'table',
+    { hour: 1, rows: () => ['a'], exact: async () => { await firstStructuralGate; return ['a']; } },
+    { hour: 2, rows: () => ['b'], exact: async () => { secondStructuralReads++; return ['b']; } },
+  );
+  (recorder as unknown as { commitAudit: unknown[] }).commitAudit.push({
+    at: 1, serial: 1, widgets: ['old-widget'], causes: {},
+    changes: (recorder as unknown as { rowChanges: unknown[] }).rowChanges,
+  });
+
   const sample = (widget: string, at: number, value: string) => ({ t: 'picture', at, widget, surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value }] }) as never;
-  recordPicture(sample('old-widget', 1, 'old-expected'));
-  recordPicture(sample('old-widget', 2, 'old-expected'));
-  const inFlightOld = recorder.auditPicturesBatch(1);
+  for (let i = 1; i <= 12; i++) recordPicture(sample('old-widget', i, 'old-expected'));
+  const inFlightOld = recorder.auditPicturesBatch(12);
 
-  recorder.reader(1, 0, async () => ({ values: new Map([['A:v', 'new-expected']]) }));
+  let newReadCalls = 0;
+  recorder.reader(1, 0, async () => {
+    newReadCalls++;
+    return { values: new Map([['A:v', 'new-expected']]) };
+  });
   await recorder.beginAudit();
-  recordPicture(sample('new-widget', 10, 'new-expected'));
+  recordPicture(sample('new-widget', 100, 'new-expected'));
 
+  releaseFirstStructural();
   releaseStale();
   const staleOutcome = await inFlightOld;
   assert.deepEqual(staleOutcome, { done: true, results: [] }, 'stale continuation returns empty and does not touch new audit');
+  assert.equal(secondStructuralReads, 0, 'stale commit audit does not start second structural read after beginAudit');
+  assert.equal(staleReadCalls, 0, 'stale picture audit does not start queued picture reads after beginAudit');
 
   const next = await recorder.auditPicturesBatch(10);
   assert.equal(next.done, true);
+  assert.equal(newReadCalls, 1);
   assert.deepEqual(next.results.map(r => [r.widget, r.error]), [['new-widget', null]]);
   await capturePictures(false);
   await capturePicturesBatch(100);

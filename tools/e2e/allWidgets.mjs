@@ -93,11 +93,11 @@ export function selectHeaviestKinds(costs, count = HEAVIEST_COUNT) {
   const selected = distinctEntries.slice(0, limit);
   const excluded = distinctEntries.slice(limit);
   const cutoff = selected.at(-1);
-  const cutoffBelowNoise = Boolean(cutoff?.belowBaselineNoise || (cutoff?.mainDelta?.p95 ?? 0) < 0 || cutoff.costScoreMs <= 0);
   const excludedByNoise = excluded.filter(entry => {
-    const belowNoise = Boolean(entry.belowBaselineNoise || (entry.mainDelta?.p95 ?? 0) < 0);
-    if (!belowNoise) return false;
-    return cutoffBelowNoise || (entry.worker?.p95 ?? 0) >= cutoff.costScoreMs;
+    const delta = entry.mainDelta?.p95;
+    if (!(Number.isFinite(delta) && delta < 0) && !entry.belowBaselineNoise) return false;
+    const zeroClampedScore = Math.max(0, delta ?? 0) + (entry.worker?.p95 ?? 0);
+    return zeroClampedScore >= cutoff.costScoreMs;
   });
   const warning = excludedByNoise.length
     ? `Heaviest cutoff (${cutoff.kind} at ${cutoff.costScoreMs.toFixed(1)} ms) excluded ${excludedByNoise.length} kind${excludedByNoise.length === 1 ? '' : 's'} below baseline noise: ${excludedByNoise.map(e => `${e.kind} (${e.costScoreMs.toFixed(1)} ms)`).join(', ')}`

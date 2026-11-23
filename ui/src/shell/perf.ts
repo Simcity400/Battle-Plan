@@ -177,9 +177,11 @@ export class PerfRecorder {
       this.commitAudit = undefined;
       const checks = new WeakMap<StructureRead, Promise<boolean>>();
       const verify = async (read: StructureRead) => {
+        if (this.auditGen !== gen) return false;
         let checked = checks.get(read);
         if (!checked) {
           checked = (async () => {
+            if (this.auditGen !== gen) return false;
             try { return JSON.stringify(read.rows()) === JSON.stringify(await read.exact()); }
             catch { return false; }
           })();
@@ -188,10 +190,17 @@ export class PerfRecorder {
         return checked;
       };
       for (const { changes, ...commit } of commits) {
-        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => ({ widget: c.widget, source: c.source, ...c.placement !== undefined ? { placement: c.placement } : {}, hour: c.current.hour, previousHour: c.previous.hour,
-          before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) }));
         if (this.auditGen !== gen) return { done: true, results: [] };
-        this.push({ t: 'commit', ...commit, changes: verified });
+        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => {
+          if (this.auditGen !== gen) return null;
+          const prevOk = await verify(c.previous);
+          if (this.auditGen !== gen) return null;
+          const currOk = prevOk && await verify(c.current);
+          return { widget: c.widget, source: c.source, ...c.placement !== undefined ? { placement: c.placement } : {}, hour: c.current.hour, previousHour: c.previous.hour,
+            before: c.previous.rows(), after: c.current.rows(), verified: currOk };
+        });
+        if (this.auditGen !== gen) return { done: true, results: [] };
+        this.push({ t: 'commit', ...commit, changes: verified.filter(entry => entry !== null) });
         if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
         if (this.auditGen !== gen) return { done: true, results: [] };
       }
@@ -229,6 +238,7 @@ export class PerfRecorder {
     }
     const batch = work.pictures.splice(0, count);
     const results = await auditInBatches(batch, AUDIT_CONCURRENCY, async record => {
+      if (this.auditGen !== gen || this.pictureAudit !== work) return null;
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null;
@@ -239,7 +249,7 @@ export class PerfRecorder {
     if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
     const done = work.done && work.pictures.length === 0;
     if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }
-    return { done, results };
+    return { done, results: results.filter(entry => entry !== null) };
   }
   async auditPictures(): Promise<PictureAuditResult[]> {
     const results: PictureAuditResult[] = [];

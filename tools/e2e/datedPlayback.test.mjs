@@ -773,6 +773,28 @@ test('cost summary rejects unstable, missing, or stopped-clock windows and prese
   assert.equal(badContent.widgets[0].costScoreMs, -1, 'signed timing score is preserved on failed content row');
   assert.ok(badContent.widgets[0].correctnessErrors.some(r => r.includes('Wrong value')));
   assert.ok(badContent.widgets[0].correctnessErrors.some(r => r.includes('future frame')));
+
+  const postPauseRecords = [
+    ...ticksOf(0, 4000), ...framesOf(0, 4000, 4, 40),
+    ...ticksOf(5000, 9000), ...framesOf(5000, 9000, 6, 40),
+    { t: 'picture', at: 6000, widget: 'w-ok', surface: 'table', placement: 1, renderer: 'page', hour: 1500, head: 1500, eligibleHour: 1500, drawMs: 1 },
+    ...ticksOf(20000, 24000), ...framesOf(20000, 24000, 4, 40),
+  ];
+  const postPauseReport = summarizeWidgetCosts(
+    [{ kind: 'post-pause-ok', widget: 'w-ok', from: 5000, to: 9000, seconds: 4, outcome: 'content', complete: true,
+      audit: [
+        { widget: 'w-ok', surface: 'table', placement: 1, owner: -1, at: 6000, error: null },
+        { widget: 'w-ok', surface: 'table', placement: 1, owner: -1, at: 9250, error: 'post-pause mismatch' },
+      ] }],
+    postPauseRecords,
+    { baselines: [baseStart, baseEnd] },
+  );
+  assert.equal(postPauseReport.widgets[0].exact, 'pass', 'post-pause audit error does not fail an in-window-passing cost row');
+  assert.equal(postPauseReport.widgets[0].pass, true);
+  assert.equal(postPauseReport.widgets[0].exactError, null);
+  assert.deepEqual(postPauseReport.widgets[0].postWindowAuditErrors, [
+    { at: 9250, surface: 'table', placement: 1, error: 'post-pause mismatch' },
+  ]);
 });
 
 test('dated playback fails on playbackReasons, fails every placement on playing-window loss, and isolates overlapping sessions', () => {
