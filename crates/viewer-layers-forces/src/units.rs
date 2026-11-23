@@ -810,6 +810,14 @@ impl Units {
         changed.clear();
         self.combat_changed = changed;
         self.combat_scratch.clear();
+        let keep = self.combat.len();
+        let ceiling = keep.max(64).saturating_mul(4);
+        if self.combat.capacity() > ceiling {
+            self.combat.shrink_to(keep);
+        }
+        if self.combat_scratch.capacity() > ceiling {
+            self.combat_scratch.shrink_to(keep);
+        }
         self.combat_ordered.clear();
     }
 
