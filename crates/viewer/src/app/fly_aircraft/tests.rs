@@ -1,5 +1,5 @@
 use super::*;
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
 
 fn assets(name: &str) -> Arc<AircraftAssets> {
     content_reader_script::test_game::enter();
@@ -60,26 +60,45 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
     Arc::new(assets)
 }
 
-fn settle(fly: &mut FlyAircraft, assets: &Arc<AircraftAssets>) -> FlyAircraftStatus {
-    let (send, receive) = mpsc::channel();
+pub(crate) struct Wakes {
+    send: mpsc::Sender<()>,
+    receive: mpsc::Receiver<()>,
+}
+
+impl Wakes {
+    pub(crate) fn new() -> Self {
+        let (send, receive) = mpsc::channel();
+        Self { send, receive }
+    }
+
+    fn repaint(&self) -> impl Fn() + Send + 'static {
+        let send = self.send.clone();
+        move || {
+            let _ = send.send(());
+        }
+    }
+}
+
+pub(crate) fn settle(
+    fly: &mut FlyAircraft,
+    assets: &Arc<AircraftAssets>,
+    wakes: &Wakes,
+) -> FlyAircraftStatus {
     let mut last = None;
-    for _ in 0..100 {
-        let repaint = send.clone();
-        if let Some(status) = fly.poll(Some(assets), move || {
-            let _ = repaint.send(());
-        }) {
+    loop {
+        if let Some(status) = fly.poll(Some(assets), wakes.repaint()) {
             last = Some(status);
         }
         match &last {
             Some(status) if status.state != FlyAircraftState::Loading => {
                 return status.clone();
             }
-            _ => {
-                let _ = receive.recv_timeout(Duration::from_millis(100));
-            }
+            _ => wakes
+                .receive
+                .recv()
+                .expect("the wakes hold a sender, so a bake's repaint always arrives"),
         }
     }
-    panic!("the aircraft never finished loading: {last:?}");
 }
 
 fn status(aircraft: Option<&str>, state: FlyAircraftState) -> FlyAircraftStatus {
@@ -92,6 +111,7 @@ fn status(aircraft: Option<&str>, state: FlyAircraftState) -> FlyAircraftStatus 
 #[test]
 fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() {
     let first = assets("first");
+    let wakes = Wakes::new();
     let mut fly = FlyAircraft::default();
     assert_eq!(
         fly.poll(Some(&first), || {}),
@@ -105,20 +125,22 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
         Some(status(Some("plane_entity"), FlyAircraftState::Loading))
     );
     assert_eq!(
-        settle(&mut fly, &first),
+        settle(&mut fly, &first, &wakes),
         status(Some("plane_entity"), FlyAircraftState::Ready)
     );
     let baked = fly.ready(&first).unwrap().clone();
     assert_eq!(baked.name, "plane_entity");
     assert_eq!(first.library().slot("plane_entity"), Some(baked.slot));
     let second = assets("second");
+    let merging = second.library();
     assert_eq!(
-        fly.poll(Some(&second), || {}),
+        fly.poll(Some(&second), wakes.repaint()),
         Some(status(Some("plane_entity"), FlyAircraftState::Loading))
     );
     assert!(fly.ready(&second).is_none());
+    drop(merging);
     assert_eq!(
-        settle(&mut fly, &second),
+        settle(&mut fly, &second, &wakes),
         status(Some("plane_entity"), FlyAircraftState::Ready)
     );
     assert_eq!(
@@ -135,8 +157,25 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
 }
 
 #[test]
+fn a_bake_that_panics_still_wakes_the_viewer_and_reports_it_stopped() {
+    let wakes = Wakes::new();
+    let Outcome::Waiting(receive) = start(|| panic!("the bake broke"), wakes.repaint()) else {
+        panic!("the bake starts");
+    };
+    wakes
+        .receive
+        .recv()
+        .expect("the wakes hold a sender, so a bake's repaint always arrives");
+    assert!(matches!(
+        receive.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
+}
+
+#[test]
 fn a_refused_aircraft_reports_why_and_is_never_ready() {
     let assets = assets("refused");
+    let wakes = Wakes::new();
     let mut fly = FlyAircraft::default();
     for (name, reason) in [
         ("ghost_entity", "it names no pdxmesh"),
@@ -144,7 +183,7 @@ fn a_refused_aircraft_reports_why_and_is_never_ready() {
     ] {
         fly.choose(Some(name.into()));
         assert_eq!(
-            settle(&mut fly, &assets),
+            settle(&mut fly, &assets, &wakes),
             status(
                 Some(name),
                 FlyAircraftState::Refused {
@@ -172,7 +211,10 @@ fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
         None
     );
     fly.choose(Some("plane_entity".into()));
-    settle(&mut fly, &assets);
+    assert_eq!(
+        settle(&mut fly, &assets, &Wakes::new()),
+        status(Some("plane_entity"), FlyAircraftState::Ready)
+    );
     let slot = assets.library().slot("plane_entity").unwrap();
     assert_eq!(
         placed(fly.ready(&assets).map(|plane| plane.slot), Some(view)),
