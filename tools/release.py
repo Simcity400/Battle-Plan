@@ -322,7 +322,10 @@ def summarize(pulls):
         with urllib.request.urlopen(request, timeout=SUMMARY_TIMEOUT) as answer:
             return read_highlights(json.load(answer), [pull["number"] for pull in pulls])
     except urllib.error.HTTPError as error:
-        said = error.read(2000).decode("utf-8", errors="replace").strip()
+        try:
+            said = error.read(2000).decode("utf-8", errors="replace").strip().replace(key, "<key>")
+        except (OSError, http.client.HTTPException):
+            said = ""
         say(f"No summary was written, so the notes list pull requests without one: {error}: {said or 'no reason given'}.")
         return None
     except (OSError, ValueError, RecursionError, http.client.HTTPException, Refused) as error:

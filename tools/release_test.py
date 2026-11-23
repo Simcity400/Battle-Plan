@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -434,10 +435,14 @@ class Notes(unittest.TestCase):
             network.request.urlopen.assert_not_called()
         nested = mock.MagicMock()
         nested.__enter__.return_value = io.BytesIO(json.dumps(model_reply("[" * 100_000)).encode())
-        for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{"), None):
+        echoed = urllib.error.HTTPError(release.SUMMARY_URL, 401, "Unauthorized", {}, io.BytesIO(b'{"error": "bad key gsk_secret"}'))
+        cut = urllib.error.HTTPError(release.SUMMARY_URL, 500, "Server Error", {}, mock.Mock(read=mock.Mock(side_effect=TimeoutError())))
+        for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{"), None, echoed, cut):
             failed = mock.Mock(side_effect=failure, return_value=nested)
-            with mock.patch.object(release.urllib.request, "urlopen", failed), mock.patch.dict(os.environ, {"GROQ_API_KEY": "key"}):
+            with mock.patch.object(release.urllib.request, "urlopen", failed), mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_secret"}), \
+                    mock.patch.object(release, "say") as said:
                 self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
+                self.assertNotIn("gsk_secret", said.call_args.args[0])
         self.assertEqual(json.loads(failed.call_args.args[0].data)["reasoning_effort"], "high")
 
     def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
