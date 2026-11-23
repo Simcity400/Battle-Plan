@@ -39,7 +39,9 @@ pub struct Board {
 }
 
 pub fn table_unrecorded(table: replay_data::rows::TableId, status: Status, reason: Option<&str>) -> Option<String> {
-    let name = table.words();
+    let words = table.words();
+    let mut chars = words.chars();
+    let name: String = chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default();
     match status {
         Status::Complete => None,
         Status::NotRecorded => Some(format!("{name} not recorded at this hour")),

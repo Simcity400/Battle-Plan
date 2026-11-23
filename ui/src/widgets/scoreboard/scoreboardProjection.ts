@@ -13,7 +13,7 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
+import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';

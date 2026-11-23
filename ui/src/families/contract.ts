@@ -1,7 +1,43 @@
 import type { LiveValues } from '../charts/live';
+import type { DashboardSource } from '../dashboard/client';
+import type { Channel } from '../dashboard/follow/facts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
+import type { FollowQuery } from '../dashboard/follow/pipeline.ts';
+import type { CountryLooksMap } from './looks.ts';
 
 export type FamilyId = 'table' | 'race' | 'series' | 'log' | 'timeline' | 'parts' | 'pairs' | 'meters';
+
+export interface FamilySourceSubscription {
+  readonly name: string;
+  readonly source: DashboardSource;
+  readonly branch: string;
+  readonly offset: number;
+  readonly query: FollowQuery;
+  readonly channel: Channel;
+  readonly product?: string;
+}
+
+export interface FamilyTheme {
+  surface: string;
+  text: string;
+  muted: string;
+  line: string;
+  lineSoft: string;
+  accent: string;
+  blue: string;
+  red: string;
+  amber: string;
+  green: string;
+  grey: string;
+  hatch: string;
+  hatchEdge?: string;
+  font: string;
+  fontSize: { small: number; body: number };
+  lineWidth: number;
+  hatchSpacing: number;
+  country?: Readonly<Record<string, string>>;
+  countryLooks?: CountryLooksMap;
+}
 
 export interface FamilySources {
   readonly answers: ReadonlyMap<string, FollowedAnswer | undefined>;

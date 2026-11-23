@@ -7,7 +7,7 @@ import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
-import { nextLookChange, type CountryLooksMap } from './looks.ts';
+import { nextLookChange, type CountryLooksMap } from '../looks.ts';
 import {
   deriveTableAudit,
   deriveTableMirror,

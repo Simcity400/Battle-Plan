@@ -166,9 +166,9 @@ fn player_apm_head_carries_dated_name_long_utf8_tag_and_explicit_missing_name_re
         ],
         events: vec![
             Event { qpc: 5 * 60, hour: 5, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 1, paused: false },
-            Event { qpc: 30 * 60, hour: 30, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 2, paused: false },
-            Event { qpc: 5 * 60, hour: 5, actor: 2, player: 2, kind: 1, command_country: Some(2), origin: Origin::PlayerOrder, sequence: 3, paused: false },
-            Event { qpc: 5 * 60, hour: 5, actor: 3, player: 3, kind: 1, command_country: Some(3), origin: Origin::PlayerOrder, sequence: 4, paused: false },
+            Event { qpc: 5 * 60, hour: 5, actor: 2, player: 2, kind: 1, command_country: Some(2), origin: Origin::PlayerOrder, sequence: 2, paused: false },
+            Event { qpc: 5 * 60, hour: 5, actor: 3, player: 3, kind: 1, command_country: Some(3), origin: Origin::PlayerOrder, sequence: 3, paused: false },
+            Event { qpc: 30 * 60, hour: 30, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 4, paused: false },
         ],
         spans,
         ..Default::default()

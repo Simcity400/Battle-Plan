@@ -26,7 +26,8 @@ import { forwardRequest, productRequest } from '../../dashboard/request.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { perfLog } from '../../shell/perf.ts';
-import type { FamilySources } from '../contract.ts';
+import type { FamilySources, FamilySourceSubscription } from '../contract.ts';
+import type { CountryLooksMap } from '../looks.ts';
 import {
   buildDatedCountryLooks,
   effectiveCountryUnobserved,
@@ -44,8 +45,7 @@ import {
   type HolderRun,
   type TableWidgetDeclaration,
 } from './declaration.ts';
-import FamilyTableHost, { type FamilySourceSubscription } from './FamilyTableHost.tsx';
-import type { CountryLooksMap } from './looks.ts';
+import FamilyTableHost from './FamilyTableHost.tsx';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 const NO_TAGS: readonly string[] = [];

@@ -2,7 +2,7 @@ import { rowName, textAt, type FollowedAnswer } from '../../dashboard/follow/mes
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { nextWindowRangesChange, type DeclaredTableContext, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
+import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,

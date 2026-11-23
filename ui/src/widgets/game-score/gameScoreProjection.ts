@@ -11,7 +11,7 @@ import {
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
 import { inHourRanges, nextFactionsChange } from '../../families/holders.ts';
-import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
+import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,

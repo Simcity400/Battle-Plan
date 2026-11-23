@@ -5,7 +5,7 @@ import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
-import { nextLookChange } from './looks.ts';
+import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { familyTableLaneView, liveAdapter } from './laneView.ts';
 import { registerTableProjection } from './registry.ts';

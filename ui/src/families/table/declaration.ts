@@ -16,7 +16,7 @@ import {
   type HolderRun,
   type HourRanges,
 } from '../holders.ts';
-import type { CountryLooksMap } from './looks.ts';
+import type { CountryLooksMap } from '../looks.ts';
 import type { TableColumnSpec, TableProjection } from './model.ts';
 import type { TableBase, TableSettings, TableSortDirection } from './settings.ts';
 

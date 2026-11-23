@@ -23,7 +23,7 @@ import {
 import { canonicalAuditData } from '../audit.ts';
 import { formatValueState, spokenValue, type ValueFormat } from '../valueFormat.ts';
 import type { FamilyColumnLayout } from './layout.ts';
-import { lookAt, type CountryLook, type CountryLooksMap } from './looks.ts';
+import { lookAt, type CountryLook, type CountryLooksMap } from '../looks.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export interface TableColumnSpec extends TableColumnDefaults {

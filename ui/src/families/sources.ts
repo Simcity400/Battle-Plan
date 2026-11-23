@@ -3,7 +3,7 @@ import type { CountrySelection } from '../dashboard/model';
 import type { Gate } from '../dashboard/regionGate';
 import type { CountryGroupReply, HourSpan } from '../generated/dashboard';
 import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
-import type { CountryLook, CountryLooksMap } from './table/looks.ts';
+import type { CountryLook, CountryLooksMap } from './looks.ts';
 
 export { nextFactionsChange };
 export type { FamilyFactionRun };

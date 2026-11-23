@@ -24,7 +24,7 @@ import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
-import { lookAt } from './looks.ts';
+import { lookAt } from '../looks.ts';
 import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow } from './model.ts';
 
 export { computeColumnMaxima };

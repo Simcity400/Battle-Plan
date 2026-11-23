@@ -2,14 +2,10 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import { readTokens } from '../../charts/tokens.ts';
 import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
-import type { DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { canonical } from '../../dashboard/follow/canonical.ts';
-import type { Channel } from '../../dashboard/follow/facts';
-import type { FollowQuery } from '../../dashboard/follow/pipeline.ts';
 import { useElement, useFollowedWidget, usePipeline, useSurfaceLabel } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -17,16 +13,19 @@ import { PreparingPage } from '../../dashboard/preparing.ts';
 import { asFailure } from '../../dashboard/queryError.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
-import { ROW_HEIGHT, updateTableSettings, type TableSettings, type TableTheme } from './settings.ts';
+import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import { perfLog } from '../../shell/perf.ts';
 import { AuditSnapshotStore, auditIdOf, auditRowsOf } from '../audit.ts';
-import type { FamilySources, MirrorModel } from '../contract.ts';
+import type { FamilySources, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import type { CountryLooksMap } from '../looks.ts';
+import { readFamilyTheme } from '../theme.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
-import type { CountryLooksMap } from './looks.ts';
 import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableProjection } from './model.ts';
 import './tableFamily.css';
+
+export type { FamilySourceSubscription };
 
 const TABLE_AUDIT = -1;
 const STATIC_HOLD = {};
@@ -46,16 +45,6 @@ interface AuditSnapshot<TOptions> {
   readonly width: number;
   readonly window: { readonly first: number; readonly count: number };
   readonly measuredWidths: Readonly<Record<string, number>>;
-}
-
-export interface FamilySourceSubscription {
-  readonly name: string;
-  readonly source: DashboardSource;
-  readonly branch: string;
-  readonly offset: number;
-  readonly query: FollowQuery;
-  readonly channel: Channel;
-  readonly product?: string;
 }
 
 export interface FamilyTableHostProps<TOptions> {
@@ -118,35 +107,6 @@ interface WidthsState {
 }
 
 type NavEntry = readonly [key: string, name: string, index: number, treeState: number, parent: string, meta?: unknown];
-
-function themeOf(countryColours?: ReadonlyMap<string, string>, countryLooks?: CountryLooksMap): TableTheme | undefined {
-  if (typeof document === 'undefined') return undefined;
-  const tokens = readTokens();
-  const rootStyle = getComputedStyle(document.documentElement);
-  const hatch = rootStyle.getPropertyValue('--hatch').trim() || tokens.muted;
-  const hatchEdge = rootStyle.getPropertyValue('--hatch-edge').trim() || tokens.border;
-  return {
-    surface: tokens.surface,
-    text: tokens.text,
-    muted: tokens.muted,
-    line: tokens.border,
-    lineSoft: tokens.grid,
-    accent: tokens.accent,
-    blue: tokens.accent,
-    red: tokens.error,
-    amber: tokens.warning,
-    green: tokens.positive,
-    grey: tokens.muted,
-    hatch,
-    hatchEdge,
-    font: tokens.font,
-    fontSize: { small: tokens.fontSize.small, body: tokens.fontSize.body },
-    lineWidth: tokens.lineWidth.grid,
-    hatchSpacing: tokens.hatchSpacing,
-    country: countryColours ? Object.fromEntries(countryColours) : undefined,
-    countryLooks,
-  };
-}
 
 function reducedMotionEnabled(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -268,12 +228,13 @@ export default function FamilyTableHost<TOptions>({
     signature: '',
   });
 
-  const theme = useMemo(() => themeOf(countryColours, countryLooks), [countryColours, countryLooks]);
+  const theme = useMemo(() => readFamilyTheme(countryColours, countryLooks), [countryColours, countryLooks]);
   const tooltipOwner = `family-table:${widget.id}`;
   useEffect(() => () => {
     hideTooltip(tooltipOwner);
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    auditStoreRef.current?.clear();
   }, [tooltipOwner]);
 
   const announce = useCallback((message: string) => {

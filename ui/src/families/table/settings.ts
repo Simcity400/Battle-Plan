@@ -1,6 +1,6 @@
 import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options.ts';
-import type { CountryLooksMap } from './looks.ts';
+import type { FamilyTheme } from '../contract.ts';
 
 export type TableSortDirection = 'ascending' | 'descending';
 export type TableOverflow = 'tooltip' | 'scroll';
@@ -53,27 +53,7 @@ export interface TableLayout {
 
 export type TableCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-export interface TableTheme {
-  surface: string;
-  text: string;
-  muted: string;
-  line: string;
-  lineSoft: string;
-  accent: string;
-  blue: string;
-  red: string;
-  amber: string;
-  green: string;
-  grey: string;
-  hatch: string;
-  hatchEdge?: string;
-  font: string;
-  fontSize: { small: number; body: number };
-  lineWidth: number;
-  hatchSpacing: number;
-  country?: Readonly<Record<string, string>>;
-  countryLooks?: CountryLooksMap;
-}
+export type TableTheme = FamilyTheme;
 
 export interface RankMarker {
   delta: number;
