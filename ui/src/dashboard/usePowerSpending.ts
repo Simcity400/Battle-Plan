@@ -12,7 +12,8 @@ import type { PowerCurrency, SpendingSelection } from './powerSpending';
 import { useCountryGroups } from './useCountryGroups.ts';
 import { useGate } from './regionGate.ts';
 import { SPEC } from './regionTime.ts';
-import { productRequest } from './request.ts';
+import { productRequest } from './request.ts';
+import { gatedRead } from './gatedRead.tsx';
 
 const NO_WARNINGS: readonly string[] = [];
 
@@ -56,7 +57,7 @@ export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, act
     });
     return tags.map(tag => ledgerOf(tag, currency, byTag.get(tag) ?? []));
   }, [replies.data, requests, tags, currency]);
-  return { track, tags, ledgers, span, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
+  return { track, gate, read: gatedRead(gate, { data: ledgers, error: replies.error, retry: replies.retry }), tags, ledgers, span, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: replies.error ?? (groups.data ? undefined : groups.error),
     groupError: groups.data ? groups.error : undefined,

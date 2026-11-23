@@ -31,7 +31,8 @@ import { raidDescription, raidLogRows, raidLogTypes, raidTooltip, targetNameRequ
 import '../../charts/log/log.css';
 import '../../dashboard/intelligence.css';
 import { productRequest } from '../../dashboard/request.ts';
-import { useCampaignGate } from '../../dashboard/regionGate';
+import { useCampaignGate } from '../../dashboard/regionGate';
+import { ReadView, readBlocked } from '../../dashboard/gatedRead.tsx';
 
 const NO_ROWS: readonly LogRow<RaidAt>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
@@ -39,7 +40,7 @@ const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
 export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
-  const { track, data, error, retry } = useRaidLog(widget, runtime, active);
+  const { track, read, data, error, retry } = useRaidLog(widget, runtime, active);
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
   const following = active && widget.time.mode === 'follow' && !!track;
@@ -89,6 +90,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...placeNames.data?.warnings ?? [], ...placeNames.error ? [`Raid targets are not named: ${placeNames.error.message}`] : []] : null);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raids." />;
+  if (read && readBlocked(read)) return <ReadView read={read} loading="">{() => null}</ReadView>;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;

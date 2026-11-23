@@ -31,7 +31,8 @@ import { NO_SPENDING_CATEGORIES, normalizePowerSpendingOptions, POWER_SPENDING_O
 import { formatPower, formatSpent, powerDecimals } from './powerDecimals';
 import { structureAt, structureParts, usePowerSpending } from './usePowerSpending.ts';
 import { useShownHour } from './widgetPerf.ts';
-import './powerSpending.css';
+import './powerSpending.css';
+import { ReadView } from './gatedRead.tsx';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly SpendingTableRow[] = [];
@@ -49,7 +50,7 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   const digits = powerDecimals(options);
   const unit = currency === 'Political' ? 'PP' : 'CP';
   const noun = currency === 'Political' ? 'political power' : 'command power';
-  const { track, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings } = usePowerSpending(widget, runtime, active, currency);
+  const { track, read, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings } = usePowerSpending(widget, runtime, active, currency);
   const following = widget.time.mode === 'follow';
   const from = widget.time.mode === 'range' && track ? resolveWindow(widget, track, runtime.tracks, 0)?.firstHour ?? null : null;
   const hourAt = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null,
@@ -235,6 +236,7 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon={icon} message="Load a campaign and choose a country to see its spending." />;
+  if (read.state === 'outside' || read.state === 'refused') return <ReadView read={read} loading="">{() => null}</ReadView>;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupNotice = groupError && <WidgetState kind="error" failure={groupError} onRetry={retry} />;
   if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading group membership…" /></>;

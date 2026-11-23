@@ -19,13 +19,14 @@ import { pausedKey, useHeadHour } from '../army-size/headHour';
 import { OPTIONS } from './definition';
 import { tallyEntries, tallyIdentities, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallySegmentAt, tallyTooltip, tallyValue } from './raidTallyData';
 import type { TallyMetric } from './raidTallyData';
-import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { ReadView, readBlocked } from '../../dashboard/gatedRead.tsx';
 
 export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const metric = options.metric as TallyMetric;
   const view = options.view === 'lines' ? 'lines' : 'race';
-  const { track, data, error, retry } = useRaidLog(widget, runtime, active);
+  const { track, read, data, error, retry } = useRaidLog(widget, runtime, active);
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
   const fallback = defaultCountryKey(track);
@@ -76,6 +77,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
     ...tally?.unattributed ? [`${tally.unattributed} raids have no named raider and are not counted.`] : []] : null);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
+  if (read && readBlocked(read)) return <ReadView read={read} loading="">{() => null}</ReadView>;
   if (outside || (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="outside" read={coverage} />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;

@@ -13,6 +13,7 @@ import type { PartsRaceDrillAction, PartsRaceDrillState } from './partsRaceDrill
 import { useDrill } from '../drill/useDrill';
 import { countryPartsSelection, pinCountryParts, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData';
 import WidgetState from '../../components/WidgetState';
+import GateState from '../../dashboard/GateState';
 import type { IconName } from '../../components/Icons';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -265,6 +266,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const referenceLabel = config.referenceLabel?.(options);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
+    if (gate.outside) return <GateState gate={gate} loading={`Loading ${config.subject}…`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (failure) return <WidgetState kind="error" failure={failure} onRetry={() => { manifest.retry(); history.retry(); }} />;
     if (grouped && groups.error && !groups.data) return <WidgetState kind="error" what="country groups" failure={groups.error} onRetry={groups.retry} />;

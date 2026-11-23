@@ -1,7 +1,7 @@
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { useGate } from './regionGate.ts';
-import { SPEC } from './regionTime.ts';
+import { SPEC, UNRECORDED_MESSAGE } from './regionTime.ts';
 import { useProduct } from './products.ts';
 import { contentTitle } from './contentTitles.ts';
 import { drawableIcon } from './artwork.ts';
@@ -9,7 +9,8 @@ import { compareTags } from './tagOrder.ts';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo } from '../generated/dashboard';
-import { productRequest } from './request.ts';
+import { productRequest } from './request.ts';
+import { gatedRead } from './gatedRead.tsx';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
@@ -48,7 +49,8 @@ export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   const range = ranged ? gate.window : null;
   const request = track && (!ranged || range) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
     params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } }) : null;
-  return { track, ...useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source) };
+  const product = useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source);
+  return { track, read: catalogue ? null : gatedRead(gate, product, ranged && gate.open && !range ? UNRECORDED_MESSAGE : null), ...product };
 }
 
 export function startedBy(episodes: readonly RaidEpisode[], hour: number | null): number {

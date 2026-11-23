@@ -20,7 +20,8 @@ import { formatPower, powerDecimals } from '../../dashboard/powerDecimals';
 import { usePowerSpending } from '../../dashboard/usePowerSpending.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
-import { OPTIONS } from './definition';
+import { OPTIONS } from './definition';
+import { ReadView } from '../../dashboard/gatedRead.tsx';
 
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
@@ -39,7 +40,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
-  const { track, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings, span } = usePowerSpending(widget, runtime, active, 'Political');
+  const { track, read, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings, span } = usePowerSpending(widget, runtime, active, 'Political');
   const following = widget.time.mode === 'follow';
   const from = widget.time.mode === 'range' ? span?.firstHour ?? null : null;
   const end = span?.lastHour ?? null;
@@ -94,6 +95,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const warnings = useMemo(() => [...(ledgers?.flatMap(ledger => ledger.warnings) ?? []), ...groupWarnings], [ledgers, groupWarnings]);
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its political power spending." />;
+  if (read.state === 'outside' || read.state === 'refused') return <ReadView read={read} loading="">{() => null}</ReadView>;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupNotice = groupError && <WidgetState kind="error" failure={groupError} onRetry={retry} />;
   if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading spending…" /></>;

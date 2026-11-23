@@ -39,7 +39,7 @@ import { answerShape, answerValues, factionEntries, factionNote, factionSummarie
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
 import { useRegion } from '../../dashboard/widgetTime.ts';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
 import type { BoundWindow } from '../../dashboard/regionTime';
 
 export interface FactionTotalsViewProps extends WidgetProps {
@@ -88,7 +88,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const held = useMemo(() => fixed && !group && groups.data ? fixedRosters(groups.data, membership as 'end' | 'ever', extent[0], extent[1]) : undefined,
     [fixed, group, groups.data, membership, extent[0], extent[1]]);
   const moment = Math.floor((fixed ? null : rosters.hour) ?? playhead ?? extent[1]);
-  const askAt = fixed ? gate.hour : gate.recorded(rosters.hour);
+  const askAt = fixed ? gate.hour : gate.recorded(rosters.hour ?? rosters.at);
   const factionData = fixed ? held : rosters.data;
   const rosterData = useMemo(() => group ? group.rosterAt(moment) : only && factionData
     ? { ...factionData, factions: factionData.factions.filter(faction => faction.id === only) } : factionData, [group, moment, only, factionData]);
