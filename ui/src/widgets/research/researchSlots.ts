@@ -43,16 +43,22 @@ export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (
     for (const field of ['percent', 'days', 'saved'] as const) values.set(read.index + ':' + field, numbers[field]);
     values.set(read.index + ':bar', numbers.fraction === null ? '' : String(numbers.fraction));
     values.set(read.index + ':left', numbers.left === null ? '' : String(numbers.left));
+    values.set(read.index + ':estimate', numbers.left === null ? '' : String(effectiveHour(read, hour)));
   }
   return values;
 }
 
-export function estimateHour(shown: { hour: number; data: ResearchSlotsReply | undefined } | undefined, asked: ResearchSlotsReply & { hour: number },
+const effectiveHour = (read: ResearchSlotNow, hour: number) =>
+  hour < read.state.firstHour ? hour : read.state.firstHour + Math.floor((hour - read.state.firstHour) / 24) * 24;
+
+export function estimateHour(shown: { texts: ReadonlyMap<string, string>; hour: number; data: ResearchSlotsReply | undefined } | undefined, asked: ResearchSlotsReply & { hour: number },
   slot: number, token: string): number {
-  const at = shown?.data ? shown.hour : asked.hour;
-  const read = (shown?.data ?? asked).slots.find(held => held.index === slot);
-  if (!read || read.state.token !== token || read.state.details?.remainingDays == null || at < read.state.firstHour) return at;
-  return read.state.firstHour + Math.floor((at - read.state.firstHour) / 24) * 24;
+  if (shown) {
+    const painted = shown.texts.get(slot + ':estimate');
+    return shown.data?.slots.find(held => held.index === slot)?.state.token === token && painted ? Number(painted) : shown.hour;
+  }
+  const read = asked.slots.find(held => held.index === slot);
+  return !read || read.state.token !== token || read.state.details?.remainingDays == null ? asked.hour : effectiveHour(read, asked.hour);
 }
 
 export interface SlotInspection { fraction: number | null; left: number | null; hour: number; token?: string | null }

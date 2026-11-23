@@ -48,22 +48,22 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
   };
 }
 
-const tableStructures: Readonly<Record<string, (raw: unknown) => string>> = {
+const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
   'occupied-states': raw => occupiedStructure(validateOccupiedStates(raw)),
   'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
-  [HISTORY_PANEL]: raw => historyStructure(validateSpecialProjectsReply(raw)),
+  [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
 };
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {
-  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw) ?? 'present';
+  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw, hour) ?? 'present';
 }
 
 export function readingStructure(product: string | undefined): Structure | undefined {
   const view = product === undefined ? undefined : panelViews[product]?.structure, table = product === undefined ? undefined : tableStructures[product];
   if (view) return (panel, hour) => panel.data === undefined ? undefined : view(panel.data, hour);
-  if (table) return panel => panel.data === undefined ? undefined : table(panel.data);
+  if (table) return (panel, hour) => panel.data === undefined ? undefined : table(panel.data, hour);
   return undefined;
 }
 

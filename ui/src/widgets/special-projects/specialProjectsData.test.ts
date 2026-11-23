@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectStructure, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -560,12 +560,41 @@ test('R5-S1, R5-S5: the followed History installs again when a status ends or a 
   const status = { ...data.projects[0].statuses[0], firstHour: 120, lastHour: 130, readHour: 120, state: 'running' as const };
   const at = (head: number, lastStatus: number, reads = [{ owner: 9, firstHour: 120, lastHour: head, readHour: 120 }]) => ({ ...data, available: [{ firstHour: 100, lastHour: head }],
     partial: [], unresolved: [], reads, projects: [{ ...data.projects[0], statuses: [{ ...status, lastHour: lastStatus }] }] });
-  assert.equal(historyStructure(at(131, 131)), historyStructure(at(130, 130)), 'a running status that grows needs no install');
-  assert.notEqual(historyStructure(at(131, 130)), historyStructure(at(130, 130)), 'R5-S1: a status that ends before the head installs');
+  assert.equal(historyStructure(at(131, 131), 131), historyStructure(at(130, 130), 130), 'a running status that grows needs no install');
+  assert.notEqual(historyStructure(at(131, 130), 131), historyStructure(at(130, 130), 130), 'R5-S1: a status that ends before the head installs');
   const reread = at(131, 131, [{ owner: 9, firstHour: 120, lastHour: 130, readHour: 120 }, { owner: 9, firstHour: 131, lastHour: 131, readHour: 131 }]);
-  assert.notEqual(historyStructure(reread), historyStructure(at(130, 130)), 'R5-S5: a repeated read installs, so tooltips name it');
-  const held = heldThrough(at(131, 130), 140);
+  assert.notEqual(historyStructure(reread, 131), historyStructure(at(130, 130), 130), 'R5-S5: a repeated read installs, so tooltips name it');
+  const held = heldThrough(at(131, 130), 131, 140);
   assert.deepEqual([held.available[0].lastHour, held.reads[0].lastHour, held.projects[0].statuses[0].lastHour], [140, 140, 130], 'open runs hold to the head; an ended status stays ended');
+});
+
+test('F-S1: a missing read while the country stays identified ends the status there, though no coverage reaches the hour', () => {
+  const data = fixture();
+  const status = { ...data.projects[0].statuses[0], firstHour: 120, lastHour: 130, readHour: 120, state: 'running' as const };
+  const unread = { ...data, identities: [{ firstHour: 100, lastHour: 131, slot: 5, countryId: 10 }], available: [{ firstHour: 100, lastHour: 130 }], partial: [], unresolved: [],
+    reads: [{ owner: 9, firstHour: 120, lastHour: 130, readHour: 120 }], projects: [{ ...data.projects[0], statuses: [status] }] };
+  const read = { ...unread, identities: [{ firstHour: 100, lastHour: 130, slot: 5, countryId: 10 }] };
+  assert.notEqual(historyStructure(unread, 131), historyStructure(read, 130), 'the hour without a read installs');
+  const held = heldThrough(unread, 131, 140);
+  assert.deepEqual([held.identities[0].lastHour, held.available[0].lastHour, held.projects[0].statuses[0].lastHour], [140, 130, 130],
+    'only runs open at the evaluated hour are held to the head');
+});
+
+test('F-S6, F-S7: a kept completion hovers as its counted entry, and warnings change the picture', () => {
+  const data = fixture();
+  data.projects.push({ id: 'history-only', owner: 9, local: 4, firstRead: 120, firstState: 'unknown', entries: [marker(118, 120)], attempts: [],
+    statuses: [{ ...data.projects[0].statuses[0], firstHour: 140, lastHour: 150, state: 'running', progress: 5 }] });
+  const span = projectHistory(data, 150).lanes.find(lane => lane.id === 'history-only')!.spans[0];
+  const tip = historyTooltip(data, 'history-only', span, 118, 150);
+  assert.deepEqual(tip?.rows, [{ label: 'Completed', value: dayLabel(118) }], `the completion bar names its completion: ${JSON.stringify(tip)}`);
+  assert.notEqual(historyPicture([{ ...data, warnings: ['a new warning'] }], 150, () => undefined), historyPicture([data], 150, () => undefined));
+});
+
+test('F-S2: a newly counted completion changes the Current structure, so its menu offers the jump', () => {
+  const data = projects();
+  const counted = projects();
+  counted.projects[2].entries = [marker(170, 175)];
+  assert.notEqual(projectStructure(counted, 180), projectStructure(data, 180));
 });
 
 test('R3-S5: a completion dated outside the project status stays drawn once the project gains a status', () => {

@@ -15,9 +15,9 @@ test('at 15 hours a frame for 600 frames, special projects ask nothing, commit o
     const played = await act<{ head: number; asked: string[]; rendered: Record<string, number> }>('play(600, 15)');
     t.diagnostic(`600 frames to hour ${played.head}: renders ${JSON.stringify(played.rendered)}; asked ${played.asked.join(', ') || 'nothing'}`);
     assert.deepEqual(played.asked, [], 'no request while playing: each reads the panel it follows');
-    assert.ok((played.rendered.current ?? 0) <= 2, `Current: ${played.rendered.current} commits for one project starting`);
+    assert.ok((played.rendered.current ?? 0) <= 3, `Current: ${played.rendered.current} commits for one project starting and one completion listed`);
     const starts = await act<number>(`statusStarts(30000, ${played.head})`);
-    assert.ok((played.rendered.history ?? 0) <= starts + 2, `History: ${played.rendered.history} commits for ${starts} new statuses`);
+    assert.ok((played.rendered.history ?? 0) <= 2 * starts + 2, `History: ${played.rendered.history} commits for ${starts} new statuses, at most the install and the picture for each`);
     const cards = await act<{ id: string; progress: string | null }[]>('cards()');
     assert.deepEqual(cards.map(card => card.id), ['fast', 'slow', 'late']);
     for (const card of cards) assert.equal(card.progress, await act<string | null>(`progressAt(${JSON.stringify(card.id)}, ${played.head})`), `${card.id} painted at the head`);
@@ -39,6 +39,8 @@ test('U-S2, R3-S3, R3-S6: History tooltips, menus and errors come from its follo
     const played = await act<{ head: number }>('play(240, 15)');
     await act('pause()');
     await act('settled()');
+    const currentMenu = await act<string[] | null>('menuFor("fast")');
+    assert.ok(currentMenu?.some(item => item.startsWith('Jump to completion')), `R3-S6: a completion listed after the card was drawn is in its menu: ${currentMenu?.join(' | ')}`);
     assert.equal(await act('historyKey("ArrowDown")'), true, 'History draws its timeline');
     await act('settled()');
     const tip = await act<{ title: string | null; rows: [string, string][] } | null>('tooltip()');
@@ -47,12 +49,10 @@ test('U-S2, R3-S3, R3-S6: History tooltips, menus and errors come from its follo
     await act('historyKey("ContextMenu")');
     const historyMenu = await act<string[]>('menu()');
     assert.ok(historyMenu.some(item => item.startsWith('Jump to first recorded')), `the History menu opens on the followed project: ${historyMenu.join(' | ')}`);
-    const currentMenu = await act<string[] | null>('menuFor("fast")');
-    assert.ok(currentMenu?.some(item => item.startsWith('Jump to completion')), `R3-S6: a completion listed after the card was drawn is in its menu: ${currentMenu?.join(' | ')}`);
 
     await act('mount("Projects refused in this fixture")');
     await act('settled()');
-    const refusal = await act<string | null>('detail("history")');
-    assert.match(refusal ?? '', /Projects refused in this fixture/, `R3-S3: History shows its followed panel's refusal, not a whole-branch state: ${refusal}`);
+    const refusal = await act<string>('text("history")');
+    assert.match(refusal, /Projects refused in this fixture/, `R3-S3, F-S5: History shows its followed panel's refusal by name: ${refusal}`);
   }, 180_000));
 });

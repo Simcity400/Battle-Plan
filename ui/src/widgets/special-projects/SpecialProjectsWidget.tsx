@@ -253,6 +253,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (noneAt?.reason) body = <NoMembersState reason={noneAt.reason} />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
+  else if (view === 'history' && history.outside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  else if (view === 'history' && history.refused !== undefined) body = <WidgetState kind="unavailable" message={history.refused} />;
   else if (!notes) body = <WidgetState kind="loading" label="Loading special projects…" />;
   else if (notes.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={notes.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {

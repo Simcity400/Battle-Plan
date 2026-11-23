@@ -198,7 +198,6 @@ export const fixture = {
   pause() { clock.setPlaying(false); },
   asked: () => [...requests],
   text: (id: string) => document.getElementById(id)?.textContent ?? '',
-  detail: (id: string) => document.querySelector<HTMLElement>(`#${id} [data-detail]`)?.dataset.detail ?? null,
   statusStarts: (from: number, to: number) => reply.projects.reduce((count, project) => count + project.statuses.filter(run => from < run.firstHour && run.firstHour <= to).length, 0),
   historyKey(key: string) {
     const canvas = document.querySelector<HTMLCanvasElement>('#history canvas[aria-label="Special project history"]');
@@ -233,7 +232,7 @@ export const fixture = {
   },
 };
 function menuItems() {
-  const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].map(item => item.textContent ?? '');
+  const items = [...document.querySelectorAll<HTMLElement>(':popover-open [role="menuitem"]')].map(item => item.textContent ?? '');
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   return items;
 }

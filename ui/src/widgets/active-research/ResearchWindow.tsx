@@ -24,7 +24,7 @@ export interface ResearchShown { name: string; icon: string | undefined }
 export default function ResearchWindow({ runtime, widget, track, tag, data, reply, opened, item, shown, feed, installed, subscribe, active, anchor, onClose }: {
   runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; data: ResearchData; reply: ResearchSlotsAt; opened: OpenedResearch;
   item: Extract<ActiveSlot, { kind: 'researching' }> | null; shown: ResearchShown; feed: PanelFeed | null;
-  installed: () => { hour: number; data: ResearchSlotsReply | undefined } | undefined; subscribe: (changed: () => void) => () => void;
+  installed: () => { texts: ReadonlyMap<string, string>; hour: number; data: ResearchSlotsReply | undefined } | undefined; subscribe: (changed: () => void) => () => void;
   active: boolean; anchor: FloatingAnchor; onClose: () => void;
 }) {
   const facts = useRef<HTMLDivElement>(null);
