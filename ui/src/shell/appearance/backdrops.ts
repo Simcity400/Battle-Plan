@@ -55,7 +55,9 @@ function encode(bitmap: ImageBitmap, edge: number, quality: number): { url: stri
   return { url: webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/jpeg', quality), width, height };
 }
 
-export async function importBackdrop(file: File): Promise<BackdropImage> {
+export const importBackdrop = (file: File): Promise<BackdropImage> => tracked(() => importing(file));
+
+async function importing(file: File): Promise<BackdropImage> {
   if (!file.type.startsWith('image/')) throw new Error('Choose a PNG, JPEG, WebP, GIF or BMP image.');
   if (file.size > MAX_INPUT_BYTES) throw new Error('Choose an image smaller than 40 MB.');
   if ((await listBackdrops()).length >= MAX_BACKDROPS) throw new Error(`You can keep up to ${MAX_BACKDROPS} backgrounds. Remove one first.`);

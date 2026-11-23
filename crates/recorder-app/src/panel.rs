@@ -100,11 +100,7 @@ pub fn request(app: &AppHandle) -> Request {
 
 impl Drop for Request {
     fn drop(&mut self) {
-        let close = {
-            let mut state = state(&self.0);
-            state.requests -= 1;
-            state.requests == 0 && std::mem::take(&mut state.closing)
-        };
+        let close = state(&self.0).answered();
         if close && let Some(window) = self.0.get_webview_window(LABEL) {
             let _ = window.destroy();
         }
@@ -112,15 +108,21 @@ impl Drop for Request {
 }
 
 fn dismiss_window(app: &AppHandle, window: &tauri::WebviewWindow) {
-    let busy = {
-        let mut state = state(app);
-        state.closing |= state.requests > 0;
-        state.closing
-    };
+    let busy = state(app).dismissing();
     let _ = if busy { window.hide() } else { window.destroy() };
 }
 
 impl State {
+    fn dismissing(&mut self) -> bool {
+        self.closing |= self.requests > 0;
+        self.closing
+    }
+
+    fn answered(&mut self) -> bool {
+        self.requests -= 1;
+        self.requests == 0 && std::mem::take(&mut self.closing)
+    }
+
     fn live(&self, instance: u64) -> bool {
         self.live.is_some_and(|(live, _)| live == instance)
     }
@@ -241,16 +243,17 @@ fn closes_on_focus_loss(shown: bool, focused: bool, dialog: bool) -> bool {
 
 pub fn toggle(app: &AppHandle, anchor: Rect) {
     let window = app.get_webview_window(LABEL);
-    let (opening, closed_recently) = {
+    let (opening, closed_recently, closing) = {
         let state = state(app);
         (
             state.opening,
             state
                 .closed_at
                 .is_some_and(|closed| closed.elapsed() < REOPEN_GUARD),
+            state.closing,
         )
     };
-    match click(window.is_some(), opening, closed_recently) {
+    match click(window.is_some() && !closing, opening, closed_recently) {
         Click::Close => {
             if let Some(window) = window {
                 let instance = instance_of(app, &window);
@@ -758,6 +761,19 @@ mod tests {
         assert_eq!(click(false, false, true), Click::Ignore);
         assert_eq!(click(true, false, false), Click::Close);
         assert_eq!(click(false, false, false), Click::Open);
+    }
+
+    #[test]
+    fn a_panel_dismissed_while_its_save_is_out_hides_can_be_opened_again_and_survives_the_reply() {
+        let mut state = State { requests: 1, ..State::default() };
+        assert!(state.dismissing(), "a panel with a save out is hidden, not destroyed");
+        assert_eq!(click(!state.closing, false, false), Click::Open, "so the tray opens it again instead of closing it twice");
+        state.closing = false;
+        assert!(!state.answered(), "the reply to a panel opened again destroys nothing");
+        state.requests = 1;
+        assert!(state.dismissing());
+        assert!(state.answered(), "the reply to a dismissed panel closes it");
+        assert!(!State::default().dismissing(), "a panel with nothing out closes at once");
     }
 
     const fn area(x: i32, y: i32, width: i32, height: i32) -> Area {

@@ -74,7 +74,7 @@ impl Inner {
         }
     }
 
-    fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+    fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
         if self.map.is_none() || !self.status.ready || self.shutting_down {
             return Err("The map isn’t ready yet".into());
         }
@@ -244,7 +244,7 @@ impl NativeHost {
             .clone()
     }
 
-    pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+    pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.ask_export(path, view_id)
     }

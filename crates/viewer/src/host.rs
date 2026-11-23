@@ -175,14 +175,22 @@ pub struct Launch {
 
 pub const STOPPED: &str = "The map stopped before the export finished";
 
-pub struct Reply(Option<Box<dyn FnOnce(Result<String, String>) + Send>>);
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Saved {
+    pub message: String,
+    pub warning: Option<String>,
+}
+
+pub type Answer = Result<Saved, String>;
+
+pub struct Reply(Option<Box<dyn FnOnce(Answer) + Send>>);
 
 impl Reply {
-    pub fn new(answer: impl FnOnce(Result<String, String>) + Send + 'static) -> Self {
+    pub fn new(answer: impl FnOnce(Answer) + Send + 'static) -> Self {
         Self(Some(Box::new(answer)))
     }
 
-    fn send(mut self, answer: Result<String, String>) {
+    fn send(mut self, answer: Answer) {
         if let Some(reply) = self.0.take() {
             reply(answer);
         }
@@ -209,7 +217,7 @@ impl ExportJob {
         Self { reply, path, view_id, receipt }
     }
 
-    pub fn answer(self, answer: Result<String, String>) {
+    pub fn answer(self, answer: Answer) {
         let Self { reply, receipt, .. } = self;
         reply.send(answer);
         drop(receipt);
@@ -373,7 +381,7 @@ fn embedded_map(
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) type Answers = Arc<Mutex<Vec<Result<String, String>>>>;
+    pub(crate) type Answers = Arc<Mutex<Vec<Answer>>>;
 
     pub(crate) fn job_under(exit: &'static replay::exit::Exit, path: &str) -> (ExportJob, Answers) {
         let answers = Answers::default();
@@ -387,6 +395,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn taken(answers: &Answers) -> Vec<Result<String, String>> {
+        taken_saved(answers).into_iter().map(|answer| answer.map(|saved| saved.message)).collect()
+    }
+
+    pub(crate) fn taken_saved(answers: &Answers) -> Vec<Answer> {
         std::mem::take(&mut *answers.lock().unwrap())
     }
 
@@ -399,7 +411,7 @@ pub(crate) mod tests {
             assert_eq!(exit.count(replay::exit::What::Export), 1, "the reply is settled while the receipt still holds the exit");
             heard.lock().unwrap().push(answer);
         }));
-        job.answer(Ok("Saved map.png".into()));
+        job.answer(Ok(Saved { message: "Saved map.png".into(), warning: None }));
         assert_eq!(taken(&answers), [Ok("Saved map.png".to_owned())]);
         assert_eq!(exit.count(replay::exit::What::Export), 0);
         let (dropped, answers) = job_under(exit, "lost.png");

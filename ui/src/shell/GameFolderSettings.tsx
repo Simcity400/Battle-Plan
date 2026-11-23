@@ -54,7 +54,7 @@ const FIELDS: { kind: Kind; label: string; help: string; missing: string }[] = [
   { kind: 'user', label: 'Paradox user folder', help: 'The game’s user folder under Documents / Paradox Interactive. Contains settings and mod descriptors.', missing: 'Still needed: choose the Paradox user folder to finish setting up.' },
 ];
 let unsaved: Paths | null = null;
-registerDraft(() => unsaved !== null, 'setting');
+registerDraft(() => unsaved !== null, 'folders');
 
 export default function GameFolderSettings({ folders, unread = false, client, onFoldersChange }: { folders: ContentFolders | null; unread?: boolean; client: DashboardClient; onFoldersChange: (folders: ContentFolders) => void }) {
   const saved = (): Paths => ({ game: folders?.game ?? '', user: folders?.user ?? '' });

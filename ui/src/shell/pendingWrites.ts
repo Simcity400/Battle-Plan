@@ -10,7 +10,9 @@ export interface PendingWrite {
 type Entry = { state: 'saving' } | { state: 'failed'; retry?: () => void };
 
 const writes = new Map<symbol, Entry>();
-const drafts = new Map<() => boolean, 'work' | 'setting'>();
+type Draft = { kind: 'work' } | { kind: 'setting'; section: string };
+
+const drafts = new Map<() => boolean, Draft>();
 const listeners = new Set<() => void>();
 
 const changed = () => {
@@ -46,15 +48,20 @@ export function writeSlot(): WriteSlot {
   };
 }
 
-export function registerDraft(unsaved: () => boolean, kind: 'work' | 'setting' = 'work'): () => void {
-  drafts.set(unsaved, kind);
+export function registerDraft(unsaved: () => boolean, section?: string): () => void {
+  drafts.set(unsaved, section === undefined ? { kind: 'work' } : { kind: 'setting', section });
   return () => { drafts.delete(unsaved); };
+}
+
+export function draftSection(): string | null {
+  for (const [unsaved, draft] of drafts) if (draft.kind === 'setting' && unsaved()) return draft.section;
+  return null;
 }
 
 export function writesState(): WritesState {
   const entries = [...writes.values()];
   if (entries.some(entry => entry.state === 'saving')) return 'saving';
-  const settingDraft = [...drafts].some(([unsaved, kind]) => kind === 'setting' && unsaved());
+  const settingDraft = draftSection() !== null;
   return entries.length || settingDraft ? 'failed' : null;
 }
 

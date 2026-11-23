@@ -811,6 +811,12 @@ impl Live {
         }))
     }
 
+    pub fn forget_save(&mut self, campaign: &str) {
+        if let Some(held) = self.campaigns.get_mut(campaign) {
+            held.saving = false;
+        }
+    }
+
     pub fn discard(
         &mut self,
         session_dir: &Path,

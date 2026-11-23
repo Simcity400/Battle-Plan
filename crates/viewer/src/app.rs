@@ -3051,14 +3051,14 @@ impl Viewer {
         Some(capture.exit)
     }
 
-    fn answer_export(capture: &mut Capture, answer: Result<String, String>) {
+    fn answer_export(capture: &mut Capture, answer: crate::host::Answer) {
         if let Some(job) = capture.export.take() {
             job.answer(answer);
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn arm_export(&mut self, path: &str) -> std::sync::Arc<std::sync::Mutex<Vec<Result<String, String>>>> {
+    pub(crate) fn arm_export(&mut self, path: &str) -> crate::host::tests::Answers {
         let (job, answers) = crate::host::tests::job(path);
         self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
         answers
@@ -3284,13 +3284,7 @@ impl Viewer {
 
     fn capture_written(&mut self, mut capture: Capture, output: &Path, shown: (replay_data::BranchId, replay_data::Hour), written: Result<Option<String>, String>, ctx: &egui::Context) {
         let answer = match written {
-            Ok(warning) => Ok(format!(
-                "Saved {}: branch {}, hour {}{}",
-                output.display(),
-                shown.0,
-                shown.1,
-                warning.map(|warning| format!(" ({warning})")).unwrap_or_default()
-            )),
+            Ok(warning) => Ok(crate::host::Saved { message: format!("Saved {}: branch {}, hour {}", output.display(), shown.0, shown.1), warning }),
             Err(error) => {
                 let message = format!("{}: {error}", capture.path.display());
                 if capture.exit
@@ -3302,7 +3296,7 @@ impl Viewer {
                 Err(message)
             }
         };
-        self.capture_note = Some(answer.clone().unwrap_or_else(|why| why));
+        self.capture_note = Some(answer.clone().map_or_else(|why| why, |saved| saved.message));
         if capture.frames <= 1 {
             Self::answer_export(&mut capture, answer);
         }
@@ -8913,7 +8907,11 @@ pub(crate) mod tests {
         viewer.capture = Some(capture);
         let capture = viewer.end_capture().unwrap();
         viewer.capture_written(capture, Path::new("unconfirmed.png"), (1, 41), Ok(Some("Windows didn’t confirm it reached the disk".to_owned())), &ctx);
-        assert_eq!(taken(&answers), [Ok("Saved unconfirmed.png: branch 1, hour 41 (Windows didn’t confirm it reached the disk)".to_owned())], "a picture Windows replaced is reported saved, with why it may not last");
+        assert_eq!(
+            crate::host::tests::taken_saved(&answers),
+            [Ok(crate::host::Saved { message: "Saved unconfirmed.png: branch 1, hour 41".to_owned(), warning: Some("Windows didn’t confirm it reached the disk".to_owned()) })],
+            "a picture Windows replaced is reported saved, with why it may not last as a field of its own"
+        );
 
         let (capture, answers) = export("full.png");
         viewer.capture = Some(capture);

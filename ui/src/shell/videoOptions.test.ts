@@ -51,6 +51,7 @@ test('a display change the desktop couldn’t save stays chosen, and Try again s
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'video-fixture', enforce: 'pre', transform(source, id) {
       const name = id.replaceAll('\\', '/');
+      if (name.endsWith('/shell/writes.ts')) return source.replace("import { invoke } from '@tauri-apps/api/core';", 'const invoke = (...args) => globalThis.__videoFixture.invoke(...args);');
       if (name.endsWith('/shell/VideoSettings.tsx')) return source.replace(/import \{[^\n]+\} from 'react';/, 'const { useEffect, useId, useRef, useState } = globalThis.__videoFixture.hooks;')
         .replace("import { invoke } from '@tauri-apps/api/core';", 'const invoke = (...args) => globalThis.__videoFixture.invoke(...args);')
         .replace("import { desktopAvailable, errorMessage } from './api';", 'const desktopAvailable = true, errorMessage = String;');

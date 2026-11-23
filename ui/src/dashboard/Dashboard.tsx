@@ -55,6 +55,7 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   onBranch?: (branch: BranchChoice | null) => void;
   onMapError?: (operation: string, error: string | null) => void;
+  onMapWarning?: (warning: string) => void;
   mapRetry?: number;
   onUnsaved?: (pages: readonly PageId[]) => void;
   unsavedReader?: Latest<(() => readonly PageId[]) | null>;
@@ -65,7 +66,7 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, unsavedReader, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onMapWarning, mapRetry = 0, onUnsaved, unsavedReader, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   useEffect(() => {
     const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
@@ -176,9 +177,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const roles = useSourceRoles(client);
   const clock = useMemo(() => new PlaybackController(), []);
   const mapErrors = useRef(onMapError);
+  const mapWarnings = useRef(onMapWarning);
+  mapWarnings.current = onMapWarning;
   mapErrors.current = onMapError;
   const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error),
-    warning => setWarning(`The map change was made, but Windows didn’t confirm it was saved: ${warning}`)), []);
+    warning => mapWarnings.current?.(`The map change was made, but Windows didn’t confirm it was saved: ${warning}`)), []);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   useEffect(() => {
     maps.onToggle = (view, toggle) => view.id === CAMPAIGN_MAP_VIEW

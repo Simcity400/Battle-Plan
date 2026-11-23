@@ -462,39 +462,44 @@ fn changing(state: &VideoState) -> std::sync::MutexGuard<'_, ()> {
     state.3.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Result<(bool, Option<String>), String> {
+pub type ToggleFailed = (String, Option<bool>);
+
+fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Result<(bool, Option<String>), ToggleFailed> {
     let consumed = std::cell::Cell::new(false);
+    let decided = std::cell::Cell::new(None);
     let saved = commit(
         path,
         &state.0,
         |settings| {
             let requested = state.1.swap(false, Ordering::AcqRel);
             consumed.set(requested);
-            settings.map_diagnostics = enabled.unwrap_or(!(requested || settings.map_diagnostics));
+            let wanted = enabled.unwrap_or(!(requested || settings.map_diagnostics));
+            decided.set(Some(wanted));
+            settings.map_diagnostics = wanted;
         },
         |current, saved| current.map_diagnostics = saved.map_diagnostics,
     );
     if saved.is_err() && consumed.get() {
         state.1.store(true, Ordering::Release);
     }
-    saved.map(|(saved, warning)| (saved.map_diagnostics, warning))
+    saved.map(|(saved, warning)| (saved.map_diagnostics, warning)).map_err(|error| (error, decided.get()))
 }
 
-fn toggle_diagnostics<T>(path: &Path, state: &VideoState, enabled: Option<bool>, announce: impl FnOnce(bool, Option<String>, bool) -> T) -> Result<T, String> {
+fn toggle_diagnostics<T>(path: &Path, state: &VideoState, enabled: Option<bool>, announce: impl FnOnce(bool, Option<String>, bool) -> T) -> Result<T, ToggleFailed> {
     let _changing = changing(state);
-    let muted = muted_in(&*stored(&state.0)?);
+    let muted = muted_in(&*stored(&state.0).map_err(|error| (error, None))?);
     let (enabled, warning) = set_diagnostics(path, state, enabled)?;
     Ok(announce(enabled, warning, muted))
 }
 
-pub fn diagnostics_failed(app: &AppHandle, enabled: Option<bool>, error: &str) {
-    let wanted = enabled.unwrap_or_else(|| !diagnostics_switch(&app.state::<VideoState>()).value);
+pub fn diagnostics_failed(app: &AppHandle, enabled: Option<bool>, (error, decided): &ToggleFailed) {
+    let wanted = decided.or(enabled).unwrap_or_else(|| !diagnostics_switch(&app.state::<VideoState>()).value);
     let _ = app.emit("map-diagnostics-error", serde_json::json!({ "error": error, "wanted": wanted }));
 }
 
-pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
+pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, ToggleFailed> {
     let state = app.state::<VideoState>();
-    let (changed, muted) = toggle_diagnostics(&path()?, &state, enabled, |enabled, warning, muted| {
+    let (changed, muted) = toggle_diagnostics(&path().map_err(|error| (error, None))?, &state, enabled, |enabled, warning, muted| {
         let changed = announce_diagnostics(app, &state, enabled, warning);
         let now_muted = stored(&state.0).map_or(muted, |stored| muted_in(&stored));
         (changed, (now_muted != muted).then(|| announce_muted(app, &state, !muted, None)))
@@ -567,7 +572,10 @@ pub fn map_diagnostics(state: State<'_, VideoState>) -> MapSwitch {
 #[tauri::command]
 pub async fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        change_map_diagnostics(&app, enabled).inspect_err(|error| diagnostics_failed(&app, enabled, error))
+        change_map_diagnostics(&app, enabled).map_err(|failed| {
+            diagnostics_failed(&app, enabled, &failed);
+            failed.0
+        })
     })
     .await
     .map_err(|error| error.to_string())?

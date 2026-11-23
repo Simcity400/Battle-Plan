@@ -267,12 +267,17 @@ export function stopPromptVisible(asking: boolean, snapshot: Snapshot): boolean 
   return asking && snapshot.phase === 'recording' && !snapshot.stopping;
 }
 
-export function settingsQueue<T extends { warning?: string | null }>(read: () => Promise<T>, show: (value: T) => void, warn: (warning: string) => void = () => {}) {
-  let saving = 0, overlapped = false;
-  const refresh = () => read().then(show);
+export function settingsQueue<T extends { warning?: string | null }>(read: () => Promise<T>, show: (value: T) => void, warn: (warning: string) => void = () => {},
+  unread: (cause: unknown) => void = () => {}) {
+  let saving = 0, overlapped = false, started = 0;
+  const refresh = () => {
+    const asked = started;
+    return read().then(value => { if (asked === started && saving === 0) show(value); });
+  };
   const save = async (work: () => Promise<T | null>): Promise<void> => {
     overlapped ||= saving > 0;
     saving++;
+    started++;
     let reply: T | null = null;
     try {
       reply = await work();
@@ -281,7 +286,7 @@ export function settingsQueue<T extends { warning?: string | null }>(read: () =>
       saving--;
       const drained = saving === 0, refreshing = drained && (overlapped || reply === null);
       if (drained) overlapped = false;
-      if (refreshing) void refresh().catch(() => {});
+      if (refreshing) void refresh().catch(unread);
       else if (drained && reply) show(reply);
     }
   };

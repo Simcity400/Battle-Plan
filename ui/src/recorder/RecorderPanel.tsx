@@ -478,7 +478,8 @@ export default function RecorderPanel() {
   const visit = useRef({ number: 0, open: false });
   const [openFailure, setOpenFailure] = useState<PanelFailure | null>(null);
   const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings,
-    warning => setFailure({ text: 'Saved, but Windows didn’t confirm the change reached the disk.', detail: warning })));
+    warning => setFailure({ text: 'Saved, but Windows didn’t confirm the change reached the disk.', detail: warning }),
+    cause => setFailure(actionFailure('Couldn’t read the recorder settings.', errorMessage(cause)))));
   const { state: updateState, error: updateReadFailure, retry: retryUpdateRead } = useUpdateState();
   const updates = useUpdateActions();
   const [updateAsk, setUpdateAsk] = useState<{ kind: 'confirm' | 'downloaded'; version: string; from: View } | null>(null);

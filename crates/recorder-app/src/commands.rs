@@ -307,14 +307,17 @@ pub async fn choose_save_folder(
     app: AppHandle,
     window: WebviewWindow,
 ) -> Result<Option<SettingsView>, String> {
+    let request = panel::request(&app);
     blocking(move || {
+        let _request = request;
         let current = save_folder(&RecorderSettings::load().unwrap_or_default());
         let Some(folder) =
             pick_folder(&app, &window, "Choose where recordings are saved", &current)
         else {
             return Ok(None);
         };
-        update(move |settings| settings.choose_save_folder(folder)).map(Some)
+        let receipt = app.state::<Arc<Recorder>>().admit(What::Change)?;
+        receipt.carry(|| update(move |settings| settings.choose_save_folder(folder))).map(Some)
     })
     .await
 }
@@ -325,10 +328,17 @@ pub async fn set_user_folder(
     window: WebviewWindow,
     choose: bool,
 ) -> Result<Option<SettingsView>, String> {
+    if !choose {
+        let (request, receipt) = admitted(&app)?;
+        return blocking(move || {
+            let _request = request;
+            receipt.carry(|| update(|settings| settings.user_folder = None)).map(Some)
+        })
+        .await;
+    }
+    let request = panel::request(&app);
     blocking(move || {
-        if !choose {
-            return update(|settings| settings.user_folder = None).map(Some);
-        }
+        let _request = request;
         let current = RecorderSettings::load()
             .ok()
             .and_then(|settings| settings.user_folder)
@@ -342,7 +352,8 @@ pub async fn set_user_folder(
         ) else {
             return Ok(None);
         };
-        update(move |settings| settings.user_folder = Some(folder)).map(Some)
+        let receipt = app.state::<Arc<Recorder>>().admit(What::Change)?;
+        receipt.carry(|| update(move |settings| settings.user_folder = Some(folder))).map(Some)
     })
     .await
 }
@@ -661,6 +672,36 @@ mod tests {
             Some(RunValue::command(OsStr::new(OURS))),
             "the new settings are already the file, so With Windows keeps the value they name"
         );
+    }
+
+    #[test]
+    fn a_settings_change_admitted_on_arrival_is_saved_though_quit_seals_while_it_waits_on_the_settings_lock() {
+        use replay::exit::What;
+        let folder = std::env::temp_dir().join(format!("battleplan-recorder-arrival-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let path = folder.join("recorder.json");
+        let exit: &'static Exit = Box::leak(Box::new(Exit::new()));
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        let another_writer = replay::exit::lock_file(std::path::Path::new(&lock)).unwrap();
+        let receipt = exit.admit(What::Change).unwrap();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                receipt.carry(|| {
+                    started.send(()).unwrap();
+                    RecorderSettings::hold_under(exit, &path, |held| held.update(|settings| settings.auto_save = true))
+                })
+            })
+        };
+        waiting.recv().unwrap();
+        assert!(exit.seal(), "Quit seals while the change waits for the settings lock");
+        assert!(!exit.empty_within(std::time::Duration::ZERO), "and waits for the change it admitted when it arrived");
+        drop(another_writer);
+        assert!(writer.join().unwrap().is_ok_and(|applied| applied.value.auto_save), "the change is saved, not refused by the seal");
+        assert!(exit.empty_within(std::time::Duration::ZERO));
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

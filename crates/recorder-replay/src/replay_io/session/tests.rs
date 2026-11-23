@@ -555,3 +555,12 @@ fn a_capture_its_collector_never_finished_prints_one_stop_line() {
     let replay = Replay::open_newest(&ended.replays[0]).unwrap();
     assert!(crate::replay_io::stop_lines(&replay).is_empty());
 }
+
+#[test]
+fn a_discard_accepted_after_a_deferred_save_keeps_the_campaign_from_being_published() {
+    let mut live = Live::default();
+    live.campaigns.insert("a".into(), Box::new(Campaign { saving: true, ..Campaign::default() }));
+    live.forget_save("a");
+    assert!(!live.campaigns["a"].saving, "end_campaign no longer saves it on the deferred Save's word");
+    live.forget_save("unknown");
+}

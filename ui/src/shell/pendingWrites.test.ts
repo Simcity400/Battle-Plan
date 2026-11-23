@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { registerDraft, retryFailed, settled, unsavedNow, writeSlot, writesState } from './pendingWrites.ts';
+import { draftSection, registerDraft, retryFailed, settled, unsavedNow, writeSlot, writesState } from './pendingWrites.ts';
 import { tracked } from './writes.ts';
 
 test('a write is pending from the moment it is asked until it is answered, and a failed one until it saves or is discarded', async () => {
@@ -42,8 +42,9 @@ test('every write the client sends is pending from the moment it is sent until i
 
 test('a settings field typed but not applied keeps a close from going ahead unasked', () => {
   let typed = true;
-  const unregister = registerDraft(() => typed, 'setting');
+  const unregister = registerDraft(() => typed, 'folders');
   assert.equal(writesState(), 'failed');
+  assert.equal(draftSection(), 'folders', 'Save… can open the settings that hold it');
   typed = false;
   assert.equal(writesState(), null);
   unregister();

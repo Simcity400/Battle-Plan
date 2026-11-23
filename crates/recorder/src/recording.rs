@@ -235,7 +235,7 @@ fn settle(
                 discard_recording(root, target, &campaign)
             });
             let Some(discarded) = discarded else {
-                locked(&settling.requests).push((campaign, true));
+                requeue(settling, campaign, true);
                 continue;
             };
             settled.remove(&campaign);
@@ -269,7 +269,7 @@ fn settle(
                     (replay_io::Unsaved::default(), Some(waiting), false),
                 );
                 if let Some(request) = request {
-                    locked(&settling.requests).push((campaign, request));
+                    requeue(settling, campaign, request);
                 }
                 continue;
             };
@@ -335,7 +335,7 @@ fn settle(
             }
         });
         let Some(result) = result else {
-            locked(&settling.requests).push((campaign, discard));
+            requeue(settling, campaign, discard);
             continue;
         };
         locked(&settling.done).push(match result {
@@ -2485,6 +2485,13 @@ pub(crate) fn capture(
                     "detach timed out {}; collector may still be loaded",
                     end.describe(&directory)
                 );
+                decisions.extend(control.end_requests());
+                if let Some(settling) = &settling {
+                    locked(&settling.done).extend(decisions.iter().map(|(campaign, &discard)| {
+                        SetAside::Failed(campaign.clone(), format!("the session couldn’t finish, so it wasn’t {}; choose again once it is taken up", if discard { "discarded" } else { "saved" }))
+                    }));
+                    report_set_aside(settling, stage);
+                }
                 let ending = control.seal();
                 let read = read_at_stop.as_ref().and_then(Option::as_deref);
                 let discarded = match discard_target(ending.as_ref(), read) {
@@ -2579,6 +2586,8 @@ pub(crate) fn capture(
         let here = recorded_here.contains(campaign);
         if !here {
             settle_decision(output, target, campaign, discard, naming, settling.as_deref(), &mut outcome.issues);
+        } else if discard {
+            ahead.forget_save(campaign);
         }
         here
     });
@@ -3045,6 +3054,13 @@ fn saved_at_end(
 ) -> bool {
     let in_progress = current == Some(campaign);
     !(discard && in_progress) && (auto_save || (stop && !discard && in_progress))
+}
+
+fn requeue(settling: &Settling, campaign: String, discard: bool) {
+    let mut requests = locked(&settling.requests);
+    if !requests.iter().any(|(asked, _)| *asked == campaign) {
+        requests.insert(0, (campaign, discard));
+    }
 }
 
 fn finish_ahead(
@@ -5311,6 +5327,9 @@ pub fn lock_waiting(session: &Path, campaign: &str) -> Result<WaitingLock, Strin
     let target = waiting_target(session, campaign)?;
     fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
     let lock = finalization_lock(&target)?;
+    if waiting_target(session, campaign)? != target {
+        return Err(format!("{campaign} moved while BattlePlan Recorder waited to act on it; choose again"));
+    }
     Ok(WaitingLock { session: session.to_owned(), campaign: campaign.to_owned(), target, _lock: lock })
 }
 
@@ -6136,6 +6155,11 @@ mod tests {
         assert!(locked(&settling.requests).is_empty());
         assert_eq!(unanswered, [("forwarded".to_owned(), false)], "a request the ending session never took is handed to its final destinations");
         assert!(take_done(&settling).is_empty(), "and it is never answered as a failure");
+        locked(&settling.requests).push(("newer".to_owned(), false));
+        requeue(&settling, "newer".to_owned(), true);
+        requeue(&settling, "retried".to_owned(), true);
+        assert_eq!(*locked(&settling.requests), [("retried".to_owned(), true), ("newer".to_owned(), false)], "a retry goes ahead of what was accepted after it, and never over a newer choice for its campaign");
+        locked(&settling.requests).clear();
         let mut decisions: BTreeMap<String, bool> = unanswered.into_iter().collect();
         decisions.extend([("forwarded".to_owned(), true), ("dropped".to_owned(), true)]);
         assert_eq!(decided_destination(&decisions, "forwarded"), Some(replay_io::Destination::Unsaved), "a decision taken after one already forwarded wins: this later Discard keeps the campaign out of the recordings, to be rolled back");

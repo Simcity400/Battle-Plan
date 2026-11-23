@@ -164,7 +164,7 @@ export const nativeDashboardClient: DashboardClient = {
     return reply;
   },
 
-  chooseHistory: async (path, segmentId, choice, signal) => { await request<unknown>('dashboard_history_choice', () => ({ path, segmentId, choice }), signal); },
+  chooseHistory: async (path, segmentId, choice, signal) => { await tracked(() => request<unknown>('dashboard_history_choice', () => ({ path, segmentId, choice }), signal)); },
   async openSource(path, signal): Promise<DashboardSource> {
     if (signal.aborted) throw cancelled();
     const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,

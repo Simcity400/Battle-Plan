@@ -697,7 +697,7 @@ pub fn popout_fly_aircraft(
     running(&popouts, Some(generation))?.map_action(MapAction::FlyAircraft { aircraft })
 }
 
-pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
     let generation = generation.ok_or("The map isn’t popped out")?;
     running(popouts, Some(generation))?.export(path, None)
 }

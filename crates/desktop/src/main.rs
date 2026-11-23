@@ -87,7 +87,7 @@ async fn export_map(
     host: State<'_, NativeHost>,
     popouts: State<'_, popout::PopOuts>,
     view_id: Option<String>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<viewer::host::Saved>, String> {
     let popout = (view_id.as_deref() == Some(popout::VIEW_ID))
         .then(|| popouts.current_generation())
         .flatten();

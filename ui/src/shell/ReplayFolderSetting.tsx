@@ -17,7 +17,7 @@ export default function ReplayFolderSetting({ library, client }: { library: Repl
   useEffect(() => setFolder(library.folder ?? ''), [library.folder]);
   const typed = useRef({ folder, saved: library.folder ?? '' });
   typed.current = { folder, saved: library.folder ?? '' };
-  useEffect(() => registerDraft(() => { const { folder, saved } = typed.current; return folder.trim() !== '' && folder.trim() !== saved; }, 'setting'), []);
+  useEffect(() => registerDraft(() => { const { folder, saved } = typed.current; return folder.trim() !== '' && folder.trim() !== saved; }, 'folders'), []);
   const saving = useRef(false);
   const save = async (next: string) => {
     const path = next.trim();

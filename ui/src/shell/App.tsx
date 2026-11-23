@@ -21,7 +21,7 @@ import { widgetDefinitions } from '../dashboard/definitions';
 import { stableJson } from '../dashboard/model';
 import { sameCampaignPath } from '../dashboard/campaigns';
 import { actionFailure } from '../dashboard/queryError.ts';
-import { FailureLine } from '../components/FailureLine';
+import { DismissButton, FailureLine } from '../components/FailureLine';
 import AnalyticsNav from './AnalyticsNav';
 import BrandMark from '../components/BrandMark';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
@@ -47,7 +47,7 @@ import { commitZone } from './commitCount';
 import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
 import type { RestartGuard } from '../update/UpdateControl';
 import { leavePrompt, leavingTitle, RESTARTING, unsavedDetail } from './unsaved';
-import { registerDraft, retryFailed, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
+import { draftSection, registerDraft, retryFailed, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
 import { closeGuard, type CloseGuard, type CloseGuardFailure, type LeavingFor } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
@@ -228,6 +228,7 @@ export default function App() {
   const [page, setPage] = useState<PageId>(() => { try { const saved = localStorage.getItem(PAGE_KEY); return pages.find(entry => entry.id === saved)?.id ?? pages[0].id; } catch { return pages[0].id; } });
   const [layoutReset, setLayoutReset] = useState(0);
   const [pageStorageWarning, setPageStorageWarning] = useState<string | null>(null);
+  const [mapWarning, setMapWarning] = useState<string | null>(null);
   const choosePage = (next: PageId) => { setPage(next); try { localStorage.setItem(PAGE_KEY, next); } catch {  } };
   const changePages = (next: PageEntry[]) => { setPages(next); setPageStorageWarning(savePages(next)); };
   const deletePage = (id: PageId) => {
@@ -401,10 +402,12 @@ export default function App() {
   const unsavedWork = layoutsUnsaved || themeChanged || writes !== null;
   const leavingNow = useRef(leaving);
   leavingNow.current = leaving;
+  const editingToLeave = useRef<typeof leaving>(null);
   useEffect(() => {
     if (!unsavedWork) {
-      const asked = leavingNow.current;
+      const asked = leavingNow.current ?? editingToLeave.current;
       if (restartConfirmed.current || unsavedNow()) return;
+      editingToLeave.current = null;
       setLeaving(null);
       if (asked?.kind === 'update' && asked.restart) void asked.restart().then(restarted => { if (!restarted) guard.current?.recheck(); });
       else if (asked) guard.current?.leave();
@@ -434,6 +437,7 @@ export default function App() {
   }, [unsavedNow]);
   const stayHere = () => {
     if (closing) return;
+    editingToLeave.current = null;
     restartConfirmed.current = false;
     const back = leaving?.opener;
     setLeaving(null);
@@ -452,7 +456,8 @@ export default function App() {
     });
   };
   const saveBeforeClose = () => {
-    if (unsavedPages.length || themeChanged) setLeaving(null);
+    const section = draftSection() as SettingsSection | null;
+    if (unsavedPages.length || themeChanged || section) { editingToLeave.current = leaving; setLeaving(null); }
     if (unsavedPages.length) {
       choosePage(unsavedPages[0]);
       setSaveRequest(count => count + 1);
@@ -464,6 +469,7 @@ export default function App() {
       openSettings('appearance');
       return;
     }
+    if (section) { openSettings(section); return; }
     retryFailed();
   };
   const everReady = useRef(false);
@@ -536,6 +542,7 @@ export default function App() {
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
         {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{pageStorageWarning}</span></div>}
+        {mapWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{mapWarning}</span><DismissButton onDismiss={() => setMapWarning(null)} /></div>}
         {switchFailure && <FailureLine className="shell-switch-failure" message={`Couldn’t show ${TAB_NAMES[switchFailure.tab]}.`}
           detail={switchFailure.message} retryDisabled={switching} onRetry={() => void changeTab(switchFailure.tab)} />}
         {!leaveShown && guardFailures.map(failure => <FailureLine key={failure.key} className="shell-guard-failure" message={failure.message} detail={failure.detail} onRetry={failure.retry} />)}
@@ -581,7 +588,7 @@ export default function App() {
 
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
-          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setUnsavedPages} unsavedReader={layoutReader} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
+          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} onMapWarning={setMapWarning} mapRetry={retry} onUnsaved={setUnsavedPages} unsavedReader={layoutReader} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
         </section>
       </main>
       <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />

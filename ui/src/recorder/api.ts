@@ -27,8 +27,8 @@ export const recorderSettings = () => invoke<RecorderSettings>('recorder_setting
 export const updateSettings = (patch: SettingsPatch) => invokeWrite<RecorderSettings>('update_recorder_settings', { patch });
 export const setCampaignChoice = (campaign: string, choice: { record?: boolean; next?: NextLoad }) =>
   invokeWrite<RecorderSettings>('set_campaign_choice', { campaign, record: choice.record ?? null, next: choice.next ?? null });
-export const chooseSaveFolder = () => invoke<RecorderSettings | null>('choose_save_folder');
-export const setUserFolder = (choose: boolean) => invoke<RecorderSettings | null>('set_user_folder', { choose });
+export const chooseSaveFolder = () => invokeWrite<RecorderSettings | null>('choose_save_folder');
+export const setUserFolder = (choose: boolean) => invokeWrite<RecorderSettings | null>('set_user_folder', { choose });
 export const openRecordingsFolder = () => invoke<void>('open_recordings_folder');
 export const showSessionFiles = () => invoke<void>('show_session_files');
 export const openReplay = (path: string | null) => invoke<void>('open_replay', { path });

@@ -213,6 +213,20 @@ test('a settings save is sent at once, overlapping saves end in one read of what
   await assert.rejects(queue.save(async () => { throw new Error('flush failed'); }), /flush failed/);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(shown.at(-1), 'stored before the flush failed', 'a failed save is followed by a read of what is stored');
+
+  let finishRead!: () => void;
+  const slowRead = new Promise<void>(resolve => { finishRead = resolve; });
+  const unread: unknown[] = [], laterShown: string[] = [];
+  const later = settingsQueue<Stored>(async () => { await slowRead; return { value: 'read before the later save' }; }, value => { laterShown.push(value.value); }, () => {}, cause => { unread.push(cause); });
+  await assert.rejects(later.save(async () => { throw new Error('refused'); }));
+  await later.save(async () => ({ value: 'the later save' }));
+  finishRead();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(laterShown.at(-1), 'the later save', 'a read that started before a later save never replaces what that save showed');
+  const failing = settingsQueue<Stored>(async () => { throw new Error('locked'); }, () => {}, () => {}, cause => { unread.push(cause); });
+  await assert.rejects(failing.save(async () => { throw new Error('refused'); }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(unread.length, 1, 'and a read that fails after the saves says so');
 });
 
 interface Numbered { revision: number; phase: string }
