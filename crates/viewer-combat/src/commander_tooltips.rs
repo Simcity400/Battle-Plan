@@ -1,9 +1,9 @@
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, leader_traits::LeaderTraits, tokens::Token,
-    unit_leader::Adjuster, unit_leader::Component, unit_leader::Leaders, unit_leader::Skills,
-    unit_leader::SubUnit, unit_leader::SubUnits, unit_leader::TraitEffects,
-    unit_leader::TraitReference, unit_leader::Traits,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_military::leader_traits::LeaderTraits;
+use content_reader_parser::tokens::Token;
+use content_reader_key_names::unit_leader::{Adjuster, Component, Leaders, Skills, TraitEffects, TraitReference, Traits};
+use content_reader_script::sub_units::{SubUnit, SubUnits};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::CharacterRoleTraitRow, rows::CharacterRow, rows::CountryRow,
@@ -60,7 +60,7 @@ fn int_defines(defines: &Defines, category: &str, names: [&str; 3]) -> Result<[i
 }
 
 impl Content {
-    pub(super) fn sub_units(&self) -> Result<&content_reader_core::unit_leader::SubUnits, &str> {
+    pub(super) fn sub_units(&self) -> Result<&content_reader_script::sub_units::SubUnits, &str> {
         self.sub_units.as_deref().map_err(String::as_str)
     }
     pub(super) fn shared_sub_units(&self) -> Result<Arc<SubUnits>, String> {
@@ -73,7 +73,7 @@ impl Content {
         sub_units: Result<SubUnits, String>,
         leader_traits: Result<Arc<LeaderTraits>, String>,
     ) -> io::Result<(Self, Skills)> {
-        let (terrain, _) = content_reader_core::terrain::read(layers)?;
+        let (terrain, _) = content_reader_key_names::terrain::read(layers)?;
         let terrain: Vec<String> = terrain
             .categories
             .iter()

@@ -20,4 +20,4 @@ Balanced block spans count line feeds in opening-brace order, including tagged b
 
 Parallel content readers retain result order. Workers inherit the caller's job and priority because the caller waits on those workers. A scoped join resumes the worker's panic on the caller.
 
-[Balanced parser](../../crates/content-reader-core/src/parser.rs) · [Native reader](../../crates/content-reader-core/src/parser/native.rs) · [Math consumption](../../crates/content-reader-core/src/parser/native/math.rs) · [Decimal representation](../../crates/content-reader-core/src/parser/decimal.rs) · [Parallel reader](../../crates/content-reader-core/src/parallel.rs)
+[Balanced parser](../../crates/content-reader-parser/src/parser.rs) · [Native reader](../../crates/content-reader-script/src/native.rs) · [Math consumption](../../crates/content-reader-script/src/native/math.rs) · [Decimal representation](../../crates/content-reader-parser/src/parser/decimal.rs) · [Parallel reader](../../crates/content-reader-layers/src/parallel.rs)

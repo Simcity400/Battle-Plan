@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,10 +8,10 @@ use std::{
 use viewer_foundation::building_facts::{SlotAdmission, admit_slot, is_floating_harbor_slot};
 use dashboard_text::table_access::Refusals;
 
-use content_reader_core::{
-    ResolvedLayers, buildings::BuildingType, buildings::Buildings, buildings::Slot, map::MapData,
-    mesh, positions::BuildingPosition,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_key_names::buildings::{BuildingType, Buildings, Slot};
+use content_reader_map::{map::MapData, positions::BuildingPosition};
+use content_reader_mesh::mesh;
 use content_reader_image::native::Decode;
 use replay_data::rows::{BuildingRow, TableId, tables};
 #[cfg(test)]
@@ -85,7 +86,7 @@ pub struct Defines {
 }
 
 impl Defines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let graphics = |name| defines.fixed5("NGraphics", name);
         let max_levels = defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?;
         if max_levels <= 0 {
@@ -900,8 +901,8 @@ impl MapBuildingAssets {
         layers: &ResolvedLayers,
         decode: Decode,
         map: &MapData,
-        defines: &content_reader_core::defines::Defines,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        defines: &content_reader_defines::defines::Defines,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
         let provinces = ProvinceMap {
             width: map.width,
@@ -910,10 +911,10 @@ impl MapBuildingAssets {
         };
         let (states, _) = content_reader_states::states::read(layers, defines, &map.definitions)?;
         let defines = Defines::load(defines)?;
-        let types = content_reader_core::buildings::read(layers)?;
+        let types = content_reader_key_names::buildings::read(layers)?;
         let roster = layers.descriptor_roster()?;
         if !roster.unreadable.is_empty() {
-            warnings.push((content_reader_core::DiagnosticKind::ParseFailure, format!(
+            warnings.push((content_reader_parser::DiagnosticKind::ParseFailure, format!(
                 "These gfx descriptors do not parse, so the entities they declare are missing: {}.",
                 roster.unreadable.join(", ")
             )));
@@ -923,7 +924,7 @@ impl MapBuildingAssets {
         let mut ambiguous_slots = BTreeSet::new();
         let mut outside = 0usize;
         let mut floating = Vec::new();
-        for (order, position) in content_reader_core::positions::read_buildings(layers)?
+        for (order, position) in content_reader_map::positions::read_buildings(layers)?
             .into_iter()
             .enumerate()
         {
@@ -974,13 +975,13 @@ impl MapBuildingAssets {
                 .push((position, province));
         }
         if !ambiguous_slots.is_empty() {
-            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_parser::DiagnosticKind::Refused, format!(
                 "Map-building slots are not drawn or used as rail and port anchors where content declares their type or bucket more than once differently (names equal but for letter case are one declaration), because the engine's choice is unverified: {}.",
                 ambiguous_slots.into_iter().collect::<Vec<_>>().join(", ")
             )));
         }
         if outside != 0 {
-            warnings.push((content_reader_core::DiagnosticKind::Warning, format!(
+            warnings.push((content_reader_parser::DiagnosticKind::Warning, format!(
                 "{outside} authored map-building positions are ignored, as the engine ignores them: their province is not land or not in the declared state."
             )));
         }
@@ -1024,7 +1025,7 @@ impl MapBuildingAssets {
         warnings.extend(
             unselected
                 .into_iter()
-                .map(|message| (content_reader_core::DiagnosticKind::Warning, message)),
+                .map(|message| (content_reader_parser::DiagnosticKind::Warning, message)),
         );
         let mut entities = BTreeMap::new();
         let mut damaged_entities = BTreeMap::new();
@@ -1041,7 +1042,7 @@ impl MapBuildingAssets {
             }
         }
         if !unresolved.is_empty() {
-            warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
+            warnings.push((content_reader_parser::DiagnosticKind::Refused, format!(
                 "{} map-building entities named by common/buildings resolve to no mesh ({}); buildings of those types are not drawn.",
                 unresolved.len(),
                 unresolved.join(", ")
@@ -1050,7 +1051,7 @@ impl MapBuildingAssets {
         let floating_mesh = library.slot(FLOATING_HARBOR_ENTITY);
         if !floating.is_empty() && floating_mesh.is_none() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!(
                     "{FLOATING_HARBOR_ENTITY} resolves to no mesh; floating harbours are not drawn."
                 ),

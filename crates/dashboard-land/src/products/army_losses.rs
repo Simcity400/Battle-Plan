@@ -178,7 +178,7 @@ impl ReplyWarnings for ArmyLossesReply {
 
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
-    units: Option<Arc<content_reader_core::equipment::Database>>,
+    units: Option<Arc<content_reader_key_names::equipment::Database>>,
 }
 
 pub struct ArmyLosses;

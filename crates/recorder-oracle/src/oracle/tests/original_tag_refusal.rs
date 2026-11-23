@@ -5,7 +5,7 @@ fn appearance_report(
     frame: &DecodedFrame,
     saved: &Save,
     membership: &save::PartialMapMembership,
-    equipment: &content_reader_core::equipment::Database,
+    equipment: &content_reader_key_names::equipment::Database,
 ) -> Report {
     let mut report = compare(frame, saved, membership, equipment).unwrap();
     report.attempt_table(TableId::CountryAppearance, |report| {

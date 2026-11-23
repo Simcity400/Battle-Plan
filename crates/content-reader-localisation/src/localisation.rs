@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use crate::{ResolvedLayers, content::normalize_path};
+use content_reader_layers::{ResolvedLayers, content::normalize_path};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -46,7 +46,7 @@ pub struct Localisation {
 #[derive(Clone)]
 enum Entries {
     Read(BTreeMap<String, String>),
-    Kept(content_reader_core::kept::Table),
+    Kept(content_reader_layers::kept::Table),
 }
 
 impl Default for Entries {
@@ -140,7 +140,7 @@ impl Localisation {
     }
 
     pub fn keep(&self, out: &mut Vec<u8>) {
-        use content_reader_core::kept::{Table, put_bytes, put_texts};
+        use content_reader_layers::kept::{Table, put_bytes, put_texts};
         put_bytes(out, self.language.as_bytes());
         put_texts(out, &self.logged);
         put_texts(out, &self.refused);
@@ -155,12 +155,12 @@ impl Localisation {
     }
 
     pub fn from_kept(bytes: &std::sync::Arc<Vec<u8>>, at: usize) -> io::Result<(Self, usize)> {
-        let mut input = content_reader_core::kept::Input::new(bytes, at);
+        let mut input = content_reader_layers::kept::Input::new(bytes, at);
         let language = input.text()?;
         let logged = input.texts()?;
         let refused = input.texts()?;
         let duplicates = input.texts()?;
-        let (table, end) = content_reader_core::kept::Table::read(bytes, input.at())?;
+        let (table, end) = content_reader_layers::kept::Table::read(bytes, input.at())?;
         Ok((
             Self {
                 language,
@@ -199,7 +199,7 @@ impl Localisation {
         arguments: &[(&str, Argument<'_>)],
         collect_fallbacks: bool,
     ) -> (Result<String, Unlocalised>, Vec<String>) {
-        let key = crate::parser::c_string(key);
+        let key = content_reader_parser::parser::c_string(key);
         if key.is_empty() {
             return (Ok(String::new()), Vec::new());
         }
@@ -223,7 +223,7 @@ impl Localisation {
         key: &[u8],
         arguments: &[(&str, Argument<'_>)],
     ) -> Result<Vec<u8>, Unlocalised> {
-        let key = crate::parser::c_string(key);
+        let key = content_reader_parser::parser::c_string(key);
         let output = self.output(key, arguments, false);
         match output.cause {
             Some(cause) => Err(Unlocalised {
@@ -235,7 +235,7 @@ impl Localisation {
     }
 
     pub fn requires_arguments(&self, key: &[u8], names: &[&str]) -> bool {
-        let key = crate::parser::c_string(key);
+        let key = content_reader_parser::parser::c_string(key);
         if key.is_empty() {
             return false;
         }
@@ -250,7 +250,7 @@ impl Localisation {
         arguments: &[(&str, Argument<'_>)],
         deferred: &[&str],
     ) -> Result<Result<String, Unlocalised>, usize> {
-        let key = crate::parser::c_string(key);
+        let key = content_reader_parser::parser::c_string(key);
         if key.is_empty() {
             return Ok(Ok(String::new()));
         }
@@ -343,7 +343,7 @@ impl Localisation {
             }
             return;
         };
-        let text = crate::parser::c_string(text.as_bytes());
+        let text = content_reader_parser::parser::c_string(text.as_bytes());
         let mut rest = text;
         while !rest.is_empty() {
             let Some(open) = rest.iter().position(|&byte| byte == b'$') else {
@@ -507,7 +507,7 @@ pub fn format_scripted_variable(value: i64, format: Option<&[u8]>) -> String {
             return out.finish().expect("fixed5 formatter writes only ASCII");
         }
     }
-    crate::fixed5::fixed5_to_string(value, -1)
+    content_reader_parser::fixed5::fixed5_to_string(value, -1)
 }
 
 fn argument(operand: &[u8], arguments: &[(&str, Argument<'_>)], out: &mut Output) -> bool {
@@ -670,7 +670,7 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                 Some(suffixes) => {
                     let whole = (value / 100_000) as i32;
                     if whole.wrapping_abs() < 1000 {
-                        crate::fixed5::format_fixed5(value, false, read.precision)
+                        content_reader_parser::fixed5::format_fixed5(value, false, read.precision)
                     } else {
                         scaled(whole, suffixes, read.precision)
                     }
@@ -681,7 +681,7 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                     } else {
                         value
                     };
-                    crate::fixed5::format_fixed5(shown, read.trim, read.precision)
+                    content_reader_parser::fixed5::format_fixed5(shown, read.trim, read.precision)
                 }
             };
             (Some(shown), value > 0, value < 0)
@@ -1138,7 +1138,7 @@ const LANGUAGE_LIST: &str = "localisation/languages.yml";
 fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
     match layers.recorded_language() {
         Some(recorded) if recorded != language => {
-            content_reader_core::content::diagnostics::Diagnostics::note(format!(
+            content_reader_layers::content::diagnostics::Diagnostics::note(format!(
                 "Text is shown in {recorded}, the language this recording was made in: it carries no {language} text."
             ));
             recorded
@@ -1173,7 +1173,7 @@ fn read_with(
         ..Localisation::default()
     };
     let mut sources = BTreeMap::new();
-    let read = content_reader_core::parallel::map(&files, |(_, _, path)| {
+    let read = content_reader_layers::parallel::map(&files, |(_, _, path)| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bytes = layers.read_path(&normalize_path(path)?)?;
             io::Result::Ok(parse(&bytes))
@@ -2470,7 +2470,7 @@ mod tests {
 
     #[test]
     fn an_archive_file_whose_name_is_not_utf8_loads() {
-        use content_reader_core::test_support::{Record, zip_records};
+        use content_reader_layers::test_support::{Record, zip_records};
         let root = std::env::temp_dir().join(format!(
             "hoi4_localisation_raw_name_{}_{:?}",
             std::process::id(),

@@ -431,8 +431,8 @@ fn leader_traits(text: &str) -> LeaderTraits {
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, text).unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (traits, _) = content_reader_core::leader_traits::read(&layers).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (traits, _) = content_reader_military::leader_traits::read(&layers).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     traits
 }
@@ -1530,7 +1530,7 @@ fn unnamed_roster_row(id: u32, ordinal: u32) -> CharacterRow {
 
 #[test]
 fn a_saved_character_no_country_lists_is_compared_as_the_memory_that_wrote_or_loaded_the_save() {
-    let document = content_reader_core::parser::parse(UNNAMED_ROSTER).unwrap();
+    let document = content_reader_parser::parser::parse(UNNAMED_ROSTER).unwrap();
     let pack = saved::parse(&document.items).unwrap();
     let country = CountryRow {
         id: 7,

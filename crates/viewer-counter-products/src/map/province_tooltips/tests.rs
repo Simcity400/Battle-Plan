@@ -169,7 +169,7 @@ fn navy_hover_rebuilds_when_prepared_source_coverage_finishes_without_an_hour_ch
 
 #[test]
 fn a_land_province_gives_the_delayed_click_footer_and_water_does_not() {
-    use content_reader_core::map::ProvinceKind;
+    use content_reader_map::map::ProvinceKind;
     let loc: Localisation = [("PROVINCE_CLICK_VIEW", "Click to view State")]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))

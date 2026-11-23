@@ -15,9 +15,11 @@ tauri-build = { version = "2", features = [] }
 serde_json.workspace = true
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-layers.workspace = true
 replay = { workspace = true, features = ["journal"] }
 app-update.workspace = true
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 replay-data.workspace = true
 recorder = { path = "../recorder" }

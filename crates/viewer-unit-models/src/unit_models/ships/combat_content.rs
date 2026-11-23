@@ -1,7 +1,9 @@
 
 use std::{collections::BTreeMap, io};
 
-use content_reader_core::{Diagnostic, DiagnosticKind, mesh, parser, parser::native};
+use content_reader_parser::{Diagnostic, DiagnosticKind, parser};
+use content_reader_mesh::mesh;
+use content_reader_script::native;
 
 use viewer_models::{entity_animation::Rig, mesh_pose};
 
@@ -75,7 +77,7 @@ impl Config {
                     _ => None,
                 };
                 if let Some(destination) = stored_float {
-                    if let Some(value) = content_reader_core::crt::scan_f32(&field.value.text) {
+                    if let Some(value) = content_reader_parser::crt::scan_f32(&field.value.text) {
                         *destination = value;
                         return native::Shape::One;
                     }

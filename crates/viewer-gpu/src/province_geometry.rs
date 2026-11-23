@@ -1,4 +1,4 @@
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, PartialEq)]

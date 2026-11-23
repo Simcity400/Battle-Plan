@@ -13,12 +13,19 @@ doctest = false
 test-support = []
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-mesh.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 dashboard-text.workspace = true
 viewer-foundation.workspace = true
 viewer-gpu.workspace = true
 viewer-runtime.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-image.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
@@ -32,9 +39,10 @@ viewer-scene-base.workspace = true
 viewer-terrain.workspace = true
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 viewer-gpu = { workspace = true, features = ["test-support"] }
 viewer-runtime = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-image = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }

@@ -1,7 +1,9 @@
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
-use content_reader_core::{ResolvedLayers, defines::Defines, parser};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_parser::parser;
 use replay_data::{
     rows::ProvinceRow, rows::Recorded, rows::TableId, rows::WeatherProvinceRow, rows::tables,
 };

@@ -1,6 +1,7 @@
 use super::*;
 use dashboard_text::triggers::ContentFacts;
-use content_reader_core::{tag_aliases::TagAliases, trigger_keys::TriggerNames};
+use content_reader_key_names::tag_aliases::TagAliases;
+use content_reader_script::trigger_keys::TriggerNames;
 use content_reader_sound::music::{Music, Song, Track};
 use replay_data::rows::*;
 use replay_frame::frame::{Metrics, TableView};
@@ -11,7 +12,7 @@ fn enter_music_tables() {
 
     static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
     let tables = TABLES.get_or_init(|| {
-        content_reader_core::test_game::executable()
+        content_reader_script::test_game::executable()
             .trigger("check_variable", 0, TriggerReader::Body, 0)
             .build()
     });
@@ -57,7 +58,7 @@ fn fixture_content() -> Arc<viewer_audio::Content> {
         music.songs.push(Song {
             track: index,
             station: station.into(),
-            chance: content_reader_core::parser::parse(body.as_bytes())
+            chance: content_reader_parser::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             source: String::new(),
@@ -472,7 +473,7 @@ fn music_inputs_recheck_has_war_end_hours_and_unresolved_unrelated_endpoints() {
         music.songs.push(Song {
             track: index,
             station: "on".into(),
-            chance: content_reader_core::parser::parse(body.as_bytes())
+            chance: content_reader_parser::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             source: String::new(),
@@ -634,7 +635,7 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
         music.songs.push(Song {
             track: index,
             station: station.into(),
-            chance: content_reader_core::parser::parse(body.as_bytes())
+            chance: content_reader_parser::parser::parse(body.as_bytes())
                 .unwrap()
                 .items,
             source: String::new(),
@@ -665,7 +666,7 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
         "base=-0.12345",
     ]
     .map(|body| {
-        content_reader_core::parser::parse(body.as_bytes())
+        content_reader_parser::parser::parse(body.as_bytes())
             .unwrap()
             .items
     });

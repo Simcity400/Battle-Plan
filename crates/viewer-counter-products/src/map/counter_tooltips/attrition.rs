@@ -74,7 +74,7 @@ fn coloured_percent(value: i64, precision: i32) -> String {
         _ => 'Y',
     };
     let sign = if scaled >= 0 { "+" } else { "" };
-    let number = content_reader_core::fixed5::fixed5_to_string(scaled, precision);
+    let number = content_reader_parser::fixed5::fixed5_to_string(scaled, precision);
     format!("\u{11}{colour}{sign}{number}%\u{11}!")
 }
 

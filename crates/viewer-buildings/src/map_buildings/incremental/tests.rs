@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::buildings;
+use content_reader_key_names::buildings;
 use replay_data::rows::{
     CountryLinkRow, FloatingHarborDeploymentRow, LexicalTokenRow, LocalPlayerRow, NavalBaseRow,
     ProvinceRow, ProvinceSupplyRow, RaidScope, RaidTargetStatusRow, StateRow, TABLE_COUNT,
@@ -136,8 +136,8 @@ const WIDE: u32 = 600;
 const SEA: u32 = 14;
 
 fn assets() -> MapBuildingAssets {
-    content_reader_core::test_game::enter();
-    let types = buildings::parse(TYPES, &content_reader_core::key_names::KeyNames::default()).unwrap();
+    content_reader_script::test_game::enter();
+    let types = buildings::parse(TYPES, &content_reader_script::key_names::KeyNames::default()).unwrap();
     let site = |state, province: u32| BuildingPosition {
         state,
         kind: String::new(),

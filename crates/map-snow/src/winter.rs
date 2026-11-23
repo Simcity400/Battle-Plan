@@ -1,10 +1,8 @@
 use crate::invalid;
-use content_reader_core::{
-    ResolvedLayers,
-    defines::Defines,
-    map::{MapData, ProvinceKind},
-    parser::{self, Value},
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::{MapData, ProvinceKind};
+use content_reader_parser::parser::{self, Value};
 use content_reader_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, io};
 

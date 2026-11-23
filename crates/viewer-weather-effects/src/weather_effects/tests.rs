@@ -1227,7 +1227,7 @@ fn fresh_emitter_accumulates_births_only_after_frame_updates() {
 
 #[test]
 fn native_births_interpolate_motion_without_retransforming_survivors() {
-    use content_reader_core::mesh::Transform;
+    use content_reader_mesh::mesh::Transform;
     let mut emitter = activation_test_emitter();
     emitter.emission.base = 2.;
     emitter.velocity.base = 0.;
@@ -1380,7 +1380,7 @@ fn a_simulation_moves_without_its_noise_table() {
 fn a_kept_event_leaves_its_player_once_none_of_its_particles_lives() {
     use viewer_models::entity_animation::{Clock, Event, Player, Request, stage_rig};
     use viewer_models::{ModelInstance, PaletteJoint};
-    use content_reader_core::mesh;
+    use content_reader_mesh::mesh;
     use std::{collections::BTreeMap, sync::Arc};
 
     let mut rig = stage_rig(true);

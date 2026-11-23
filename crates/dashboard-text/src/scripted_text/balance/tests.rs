@@ -75,7 +75,7 @@ pub fn fixture(
             ),
         ),
     ]);
-    let mut frame = crate::scope::tests::positive_frame();
+    let mut frame = content_reader_script::scope::tests::positive_frame();
     *frame.tables[TableId::PowerBalances.index()] =
         TableView::Complete(TableRows::PowerBalances(vec![PowerBalanceRow {
             balance: b"balance".to_vec(),
@@ -235,7 +235,7 @@ impl<'a> BalanceEffectScopes<'a> {
     pub fn describe(
         &self,
         text: &ScriptedText<'a>,
-        effects: &[content_reader_core::parser::Item],
+        effects: &[content_reader_parser::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,

@@ -779,7 +779,7 @@ fn compare_projects(
                     .iter()
                     .map(|entry| {
                         (
-                            content_reader_core::parser::c_string(&entry.name),
+                            content_reader_parser::parser::c_string(&entry.name),
                             entry.value_raw,
                         )
                     })

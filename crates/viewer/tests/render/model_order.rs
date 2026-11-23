@@ -1,4 +1,5 @@
-use content_reader_core::{mesh, test_support::Stack};
+use content_reader_mesh::mesh;
+use content_reader_layers::test_support::Stack;
 use content_reader_image::native::Decode;
 use std::sync::Arc;
 use viewer_audio::{Content, Emitter, Engine, Frame, Group, Mix, Samples};

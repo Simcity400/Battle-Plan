@@ -10,9 +10,11 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
 replay.workspace = true
 engine-air-history.workspace = true
-content-reader-core.workspace = true
 content-reader-regions.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

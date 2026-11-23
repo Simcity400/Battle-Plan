@@ -1,3 +1,4 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use super::*;
 use crate::fixtures::{Folder, folder_catalogue};
 use replay_data::{rows::LexicalTokenRow, rows::TableId};
@@ -5,14 +6,14 @@ use replay_data::{rows::LexicalTokenRow, rows::TableId};
 fn decision() -> Decision {
     let id = b"sample_decision".to_vec();
     Decision {
-        seed_component: content_reader_core::decisions::seed_component(&id),
+        seed_component: content_reader_politics::decisions::seed_component(&id),
         name: id.clone(),
         id,
         ..Default::default()
     }
 }
 
-fn event_fixture() -> (Fixture, content_reader_core::decisions::Database, Folder) {
+fn event_fixture() -> (Fixture, content_reader_politics::decisions::Database, Folder) {
     event_files_fixture(&[])
 }
 
@@ -36,7 +37,7 @@ fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
             literal: b"bound_integer".to_vec(),
         }],
     );
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let content = Content {
         key_names: Some(&names),
         ..Default::default()
@@ -69,14 +70,14 @@ fn custom_effect_tooltip_idea_callback_reuses_wrapper_and_missing_name() {
             " EFFECT_SHOW_IDEA_TOOLTIP:0 \"<$NAME$>\"\n BOUND_CHILD:0 \"{{$WORD$}\"\n"
         ),
     )]);
-    let parsed = content_reader_core::ideas::parse_ideas(
+    let parsed = content_reader_politics::ideas::parse_ideas(
         b"ideas={country={BOUND_IDEA={}}}",
         &[],
         &Default::default(),
     );
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), parsed.ideas);
-    let lists = content_reader_core::names::NameLists::default();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), parsed.ideas);
+    let lists = content_reader_politics::names::NameLists::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&lists),
@@ -103,7 +104,7 @@ fn custom_effect_tooltip_refuses_only_the_unavailable_bound_fragment() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "custom_effect_tooltip={localization_key=TIP VALUE=unsupported_formatter|something} custom_effect_tooltip=TIP",
         &mut super::super::tests::fresh(),
@@ -133,11 +134,11 @@ fn unscoped_bound_callbacks_use_null_context_text() {
         |renderer| {
             for callback in ["idea_desc", "tech_effect"] {
                 let item =
-                    content_reader_core::parser::parse(format!("name={callback}|missing").as_bytes())
+                    content_reader_parser::parser::parse(format!("name={callback}|missing").as_bytes())
                         .unwrap()
                         .items
                         .remove(0);
-                let bound = content_reader_core::gui::native::BoundLocalization::from_value(&item.value);
+                let bound = content_reader_script::localization_binding::BoundLocalization::from_value(&item.value);
                 assert_eq!(
                     renderer.bound_localisation(&bound, Scopes::of(Scope::Country(1)), false),
                     Ok("NULL".to_owned())
@@ -218,11 +219,11 @@ fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
         .entries
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
-    definition.complete_effect = content_reader_core::parser::parse(b"custom_effect_tooltip=TIP")
+    definition.complete_effect = content_reader_parser::parser::parse(b"custom_effect_tooltip=TIP")
         .unwrap()
         .items;
     definition.days_remove = b"7".to_vec();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let content = Content {
         decisions: Some(&database),
         key_names: Some(&names),
@@ -287,7 +288,7 @@ fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
 
 fn event_files_fixture(
     events: &[(&str, &str)],
-) -> (Fixture, content_reader_core::decisions::Database, Folder) {
+) -> (Fixture, content_reader_politics::decisions::Database, Folder) {
     let (mut fixture, mut database) = decision_fixture(Some(None));
     let mut files = vec![
         (
@@ -337,7 +338,7 @@ fn decision_and_mission_description_cases() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, database, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let content = Content {
         decisions: Some(&database),
         key_names: Some(&names),
@@ -427,10 +428,10 @@ fn unlock_decision_deterministic_body_needs_no_active_seed_row() {
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
     definition.fixed_random_seed = false;
-    definition.complete_effect = content_reader_core::parser::parse(b"custom_effect_tooltip=TIP")
+    definition.complete_effect = content_reader_parser::parser::parse(b"custom_effect_tooltip=TIP")
         .unwrap()
         .items;
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
         &mut super::super::tests::fresh(),
@@ -455,12 +456,12 @@ fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
     definition.fixed_random_seed = false;
-    definition.complete_effect = content_reader_core::parser::parse(
+    definition.complete_effect = content_reader_parser::parser::parse(
         b"random_owned_state={limit={state=1} custom_effect_tooltip=TIP}",
     )
     .unwrap()
     .items;
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
         &mut super::super::tests::fresh(),
@@ -545,7 +546,7 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
             },
         ],
     );
-    let parse = |body: &[u8]| content_reader_core::parser::parse(body).unwrap().items;
+    let parse = |body: &[u8]| content_reader_parser::parser::parse(body).unwrap().items;
     let definition = database
         .entries
         .get_mut(b"syn_decision".as_slice())
@@ -556,7 +557,7 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
         parse(b"tag=ROOT political_power_cost=-0.3"),
         parse(b"tag=capital custom_modifier_tooltip=MOD_BODY"),
     ];
-    let masked = content_reader_core::modifiers::values(&parse(b"political_power_gain=0.1"));
+    let masked = content_reader_script::modifiers::values(&parse(b"political_power_gain=0.1"));
     fixture.with_renderer(
         &mut super::super::tests::fresh(),
         Content::default(),
@@ -569,7 +570,7 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
             );
         },
     );
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_decision_tooltip={decision=SYN_DECISION show_modifiers=yes}",
         &mut super::super::tests::fresh(),
@@ -628,7 +629,7 @@ fn activate_targeted_decision_saved_target_without_active_instance() {
         .get_mut(b"syn_decision".as_slice())
         .unwrap()
         .fixed_random_seed = false;
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let mut scopes = super::super::tests::fresh();
     scopes
         .saved_targets
@@ -670,7 +671,7 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_default_draw() {
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
     definition.fixed_random_seed = false;
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for (name, expected, refused) in [
         (b"RANDOM_NAME".as_slice(), "", true),
         (b"SINGLE_NAME".as_slice(), "Targeted detail\n", false),
@@ -723,10 +724,10 @@ fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_p
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
     definition.fixed_random_seed = false;
-    definition.complete_effect = content_reader_core::parser::parse(b"country_event={id=synthetic.1}")
+    definition.complete_effect = content_reader_parser::parser::parse(b"country_event={id=synthetic.1}")
         .unwrap()
         .items;
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for (title, expected, refused) in [
         (
             b"title=SYN_EVENT".as_slice(),
@@ -736,7 +737,7 @@ fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_p
         (b"title=RANDOM_NAME".as_slice(), "Unlock Agenda AAA\n", true),
     ] {
         let event = std::sync::Arc::new(content_reader_events::events::Event {
-            titles: content_reader_core::parser::parse(title).unwrap().items,
+            titles: content_reader_parser::parser::parse(title).unwrap().items,
             ..Default::default()
         });
         let lookup = |_: &[u8]| Ok(event.clone());
@@ -773,9 +774,9 @@ fn news_event_id_and_timing_fields() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let event = std::sync::Arc::new(content_reader_events::events::Event {
-        titles: content_reader_core::parser::parse(b"title=SYN_EVENT")
+        titles: content_reader_parser::parser::parse(b"title=SYN_EVENT")
             .unwrap()
             .items,
         ..Default::default()
@@ -800,9 +801,9 @@ fn state_event_controller_keeps_state_and_from_root() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
 
     let (fixture, _, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let event = std::sync::Arc::new(content_reader_events::events::Event {
-        titles: content_reader_core::parser::parse(b"title=SYN_EVENT")
+        titles: content_reader_parser::parser::parse(b"title=SYN_EVENT")
             .unwrap()
             .items,
         ..Default::default()
@@ -833,8 +834,8 @@ fn show_mio_template_name_initial_trait_and_no_line_feed() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
 
     let (fixture, _, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
-    let mut database = content_reader_core::industrial_organisations::Database::default();
+    let names = content_reader_script::key_names::KeyNames::default();
+    let mut database = content_reader_military::industrial_organisations::Database::default();
     database
         .read_file(b"SYN_MIO={name=SYN_MIO_NAME initial_trait={}}", &names)
         .unwrap();
@@ -910,7 +911,7 @@ fn unlock_mio_operand_uses_recorded_instance_and_owner_name() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
 
     let (fixture, _folder) = unlock_mio_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_military_industrial_organization_tooltip=mio:SYN_MIO",
         &mut super::super::tests::fresh(),
@@ -928,8 +929,8 @@ fn show_mio_instance_reuses_the_shared_owner_name_path() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = unlock_mio_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
-    let mut database = content_reader_core::industrial_organisations::Database::default();
+    let names = content_reader_script::key_names::KeyNames::default();
+    let mut database = content_reader_military::industrial_organisations::Database::default();
     database
         .read_file(b"SYN_MIO={name=SYN_MIO_NAME initial_trait={}}", &names)
         .unwrap();
@@ -951,7 +952,7 @@ fn unlock_mio_carried_saved_and_variable_operands_share_the_name_path() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = unlock_mio_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for operand in ["FROM", "event_target:chosen", "var:syn_carrier"] {
         let mut scopes = super::super::tests::fresh();
         scopes.scopes[0].from = Link::Scope(1);
@@ -993,7 +994,7 @@ fn unlock_mio_absent_or_non_mio_targets_keep_literal_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = unlock_mio_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for operand in ["mio:ABSENT", "SYN_MIO_NAME", "THIS"] {
         let output = fixture.render_native(
             &format!("unlock_military_industrial_organization_tooltip={operand}"),
@@ -1020,7 +1021,7 @@ fn unlock_mio_missing_recorded_roster_is_named_and_counted() {
     *fixture.frame.tables[tables::IndustrialOrganisations::ID.index()] = TableView::Unavailable {
         reason: "synthetic MIO roster gap".into(),
     };
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_military_industrial_organization_tooltip=mio:SYN_MIO",
         &mut super::super::tests::fresh(),
@@ -1055,7 +1056,7 @@ fn unlock_mio_policy_block_refuses_only_unrecorded_roster() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
 
     let (fixture, _, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_mio_policy_tooltip={policy=SYN_POLICY show_modifiers=yes}",
         &mut super::super::tests::fresh(),
@@ -1081,8 +1082,8 @@ fn format99_mio_policy_uses_cached_membership_content_and_modifiers() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _, _folder) = event_fixture();
-    let names = content_reader_core::key_names::KeyNames::default();
-    let mut database = content_reader_core::industrial_organisations::Database::default();
+    let names = content_reader_script::key_names::KeyNames::default();
+    let mut database = content_reader_military::industrial_organisations::Database::default();
     database.policies.read_file(
         b"SYN_POLICY={name=POLICY_NAME equipment_bonus={synthetic_group={soft_attack=1}} organization_modifier={custom_modifier_tooltip=TIP}}",
         &names,
@@ -1187,7 +1188,7 @@ fn event_option_tooltip_matches_raw_name_in_registration_order() {
             "news_event={id=synthetic.0 option={name=Chosen custom_effect_tooltip=SYN_EVENT}}",
         ),
     ]);
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for (name, expected) in [
         ("Chosen", "detail"),
         ("chosen", "News Alpha"),
@@ -1223,7 +1224,7 @@ fn event_option_tooltip_skips_recursive_effects_in_inactive_children() {
             "option={name=recursive hidden_effect={event_option_tooltip=other}}}"
         ),
     )]);
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for (name, expected) in [("chosen", "detail"), ("recursive", "")] {
         let output = fixture.render_native(
             &format!("event_option_tooltip={name}"),
@@ -1255,7 +1256,7 @@ fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session()
             "\u{feff}l_english:\n SCOPE:0 \"[THIS.GetTag]/[ROOT.GetTag]/[FROM.GetTag]/[PREV.GetTag]\"\n",
         ),
     ]);
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let mut scopes = EventScopes::new(vec![
         EventScope {
             root: Link::Scope(1),
@@ -1275,7 +1276,7 @@ fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session()
         .insert(0, vec![(b"prior_tip".to_vec(), EventObject::Country(2))]);
     let caller = scopes.scopes[0];
     let items =
-        content_reader_core::effect_keys::read_body(b"event_option_tooltip=chosen", &names).unwrap();
+        content_reader_script::effect_keys::read_body(b"event_option_tooltip=chosen", &names).unwrap();
     fixture.with_renderer(
         &mut scopes,
         Content {
@@ -1328,7 +1329,7 @@ fn event_option_tooltip_trims_only_ascii_whitespace() {
             "\u{feff}l_english:\n PAD:0 \" \\t\\n\u{a0}detail\u{a0}\\n\\t \"\n",
         ),
     ]);
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "event_option_tooltip=chosen",
         &mut super::super::tests::fresh(),
@@ -1365,7 +1366,7 @@ fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
     ]);
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let names = scripted.layers.layers.key_names().unwrap();
-    let effects = content_reader_core::scripted_effects::read(&scripted.layers.layers, &names).unwrap();
+    let effects = content_reader_key_names::scripted_effects::read(&scripted.layers.layers, &names).unwrap();
     for (name, expected) in [("chosen", "detail"), ("operand", "operand text")] {
         let output = fixture.render_native(
             &format!("event_option_tooltip={name}"),
@@ -1389,7 +1390,7 @@ fn event_option_tooltip_empty_name_matches_the_default_option_name() {
         "events/synthetic.txt",
         "add_namespace=synthetic country_event={id=synthetic.1 option={custom_effect_tooltip=TIP}}",
     )]);
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     let output = fixture.render_native(
         "event_option_tooltip=\"\"",
         &mut super::super::tests::fresh(),
@@ -1526,7 +1527,7 @@ fn set<T: TableSchema>(fixture: &mut Fixture, rows: Vec<T::Row>) {
     *fixture.frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
-fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, content_reader_core::decisions::Database) {
+fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, content_reader_politics::decisions::Database) {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::DecisionRandomItems.index()] = TableView::Unavailable {
         reason: "random items not recorded".into(),
@@ -1562,13 +1563,13 @@ fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, content_reader_core:
             ..Default::default()
         }],
     );
-    let mut database = content_reader_core::decisions::Database::default();
+    let mut database = content_reader_politics::decisions::Database::default();
     database.entries.insert(
         b"syn_decision".to_vec(),
         Decision {
             id: b"SYN_DECISION".to_vec(),
             name: b"SYN_DECISION".to_vec(),
-            seed_component: content_reader_core::decisions::seed_component(b"SYN_DECISION"),
+            seed_component: content_reader_politics::decisions::seed_component(b"SYN_DECISION"),
             has_state_targets: true,
             target_states: [b"4".to_vec(), b"2".to_vec(), b"4".to_vec()].into(),
             ..Default::default()
@@ -1714,7 +1715,7 @@ fn highlight_filters_use_fresh_country_from_state_and_all_state_fallback() {
         .entries
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
-    definition.target_trigger = content_reader_core::parser::parse(b"FROM = { state = 2 }")
+    definition.target_trigger = content_reader_parser::parser::parse(b"FROM = { state = 2 }")
         .unwrap()
         .items;
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
@@ -1733,8 +1734,8 @@ fn highlight_filters_use_fresh_country_from_state_and_all_state_fallback() {
         .entries
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
-    definition.target_root_trigger = content_reader_core::parser::parse(b"tag = CCC").unwrap().items;
-    definition.highlight_conditions = content_reader_core::parser::parse(b"state = 5").unwrap().items;
+    definition.target_root_trigger = content_reader_parser::parser::parse(b"tag = CCC").unwrap().items;
+    definition.highlight_conditions = content_reader_parser::parser::parse(b"state = 5").unwrap().items;
     let output = fixture.render(
         body,
         &mut scopes,
@@ -1805,7 +1806,7 @@ fn inactive_decision_skips_unsupported_title_and_empty_trigger_does_not_enable_h
         .unwrap();
     definition.has_state_targets = false;
     definition.target_states.clear();
-    definition.highlight_states = content_reader_core::parser::parse(b"highlight_states_trigger = {}")
+    definition.highlight_states = content_reader_parser::parser::parse(b"highlight_states_trigger = {}")
         .unwrap()
         .items;
     set::<tables::Decisions>(

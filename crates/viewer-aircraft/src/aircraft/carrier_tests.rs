@@ -61,7 +61,7 @@ fn fixture() -> (DecodedFrame, AirRegistrySources, AirBaseRow) {
 }
 
 fn movement() -> MovementContent {
-    use content_reader_core::{movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain};
+    use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain};
     let terrain = ProvinceTerrain { flags: 0, index: 1 };
     let neighbour = |to| {
         vec![Neighbour {
@@ -323,8 +323,8 @@ fn an_unplaced_carrier_route_never_becomes_a_static_origin() {
     );
 
     let mut missing_terrain = movement;
-    missing_terrain.map = content_reader_core::movement::MovementMap::from_parts::<
-        content_reader_core::movement::ProvinceTerrain,
+    missing_terrain.map = content_reader_map::movement::MovementMap::from_parts::<
+        content_reader_map::movement::ProvinceTerrain,
     >(&[]);
     let world = RouteWorld {
         map: &missing_terrain.map,

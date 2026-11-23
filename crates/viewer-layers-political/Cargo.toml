@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 test-support = [
-    "content-reader-core/test-support",
+    "content-reader-script/test-support",
     "content-reader-country-names/test-support",
     "content-reader-localisation/test-support",
     "dashboard-text/test-support",
@@ -34,7 +34,11 @@ test-support = [
 ]
 
 [dependencies]
-content-reader-core = { workspace = true }
+content-reader-key-names.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 content-reader-country-names = { workspace = true }
 content-reader-localisation = { workspace = true }
 dashboard-text = { workspace = true }

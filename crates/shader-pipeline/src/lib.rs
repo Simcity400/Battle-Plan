@@ -5,7 +5,7 @@ static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 use std::{collections::BTreeMap, path::Path};
 
-use content_reader_core::pdxshader::program::{Program, Stage, Technique};
+use content_reader_gui::pdxshader::program::{Program, Stage, Technique};
 
 pub mod artwork;
 pub mod atlas;

@@ -28,7 +28,7 @@ const MUSIC_OPEN: Duration = Duration::from_secs(2);
 
 pub struct Source {
     pub content: Arc<Content>,
-    pub layers: content_reader_core::ResolvedLayers,
+    pub layers: content_reader_layers::ResolvedLayers,
 }
 
 enum Command {
@@ -456,7 +456,7 @@ fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
     }
 }
 
-fn read_bytes(source: &Source, load: Load) -> Result<content_reader_core::content::Bytes, String> {
+fn read_bytes(source: &Source, load: Load) -> Result<content_reader_layers::content::Bytes, String> {
     let path = sample_path(source, load)?;
     source
         .layers

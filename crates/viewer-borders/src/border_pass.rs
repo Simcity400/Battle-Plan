@@ -7,10 +7,8 @@ use std::{
 use viewer_gpu::textures::load_uploadable;
 
 use eframe::wgpu;
-use content_reader_core::{
-    ResolvedLayers, adjacencies::Adjacency, adjacencies::IMPASSABLE, map::MapData,
-    map::ProvinceKind,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::{adjacencies::{Adjacency, IMPASSABLE}, map::{MapData, ProvinceKind}};
 use content_reader_image::{dds, native::Decode};
 use content_reader_regions::regions::StrategicRegion;
 use content_reader_states::states::StateDefinition;
@@ -42,7 +40,7 @@ pub struct BorderAssets {
 impl BorderAssets {
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         map: [u32; 2],
         texture_quality: u8,
         decode: Decode,
@@ -89,7 +87,7 @@ impl BorderAssets {
     }
 }
 
-fn faction_highlight_color(defines: &content_reader_core::defines::Defines) -> io::Result<[f32; 4]> {
+fn faction_highlight_color(defines: &content_reader_defines::defines::Defines) -> io::Result<[f32; 4]> {
     let index = defines.int32("NMapMode", "FACTION_THEATER_HIGHLIGHT_COLOR_INDEX")?;
     if !(0..=i32::from(u8::MAX) - 10).contains(&index) {
         return Err(invalid(
@@ -364,7 +362,7 @@ pub fn strait_quads(
     map: &MapData,
     land: &dyn Fn(u32) -> bool,
 ) -> io::Result<Vec<StraitVertex>> {
-    let raster = content_reader_core::movement::raster_neighbours(
+    let raster = content_reader_map::movement::raster_neighbours(
         map.width as usize,
         map.height as usize,
         &map.province_ids,

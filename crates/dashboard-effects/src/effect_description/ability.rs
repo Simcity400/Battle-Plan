@@ -23,13 +23,13 @@ pub fn ability_description(
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let selected = crate::triggers::event_scopes::project(scopes, 0);
+    let selected = content_reader_script::triggers::event_scopes::project(scopes, 0);
     let mut text = String::new();
     for (label, modifiers) in ["country", "leader", "unit"]
         .into_iter()
         .zip(&definition.modifiers)
     {
-        if modifiers != &content_reader_core::modifiers::Modifiers::default() {
+        if modifiers != &content_reader_script::modifiers::Modifiers::default() {
             match renderer.modifier_description_with(
                 modifiers,
                 "",

@@ -83,8 +83,8 @@ fn empty_variable_keys_do_not_relax_other_save_or_content_syntax() {
         let input = format!("HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b {body}");
         assert!(SaveDocument::read(input.as_bytes()).is_err(), "{body}");
     }
-    assert!(content_reader_core::parser::parse(b"variables={=0}").is_err());
-    assert!(content_reader_core::parser::parse_unclosed(b"variables={=0}").is_err());
+    assert!(content_reader_parser::parser::parse(b"variables={=0}").is_err());
+    assert!(content_reader_parser::parser::parse_unclosed(b"variables={=0}").is_err());
     let saved =
         SaveDocument::read(b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b variables={0}")
             .unwrap();

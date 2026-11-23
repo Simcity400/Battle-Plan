@@ -375,7 +375,7 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
 
 #[test]
 fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use replay_data::{
         rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow, rows::NavalCombatAirEfficiency,
         rows::NavalCombatAirEfficiencyModifier, rows::NavalShipModifierSource,
@@ -396,12 +396,12 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
         ),
     )
     .unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let mut warnings = Vec::new();
     let content = naval_air_groups::Content::load(
         &layers,
         &mut warnings,
-        content_reader_core::equipment::Database::default(),
+        content_reader_key_names::equipment::Database::default(),
     );
     std::fs::remove_dir_all(root).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");

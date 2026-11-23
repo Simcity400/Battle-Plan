@@ -1,6 +1,6 @@
 use super::{CAPTURES, SEED_CACHE, copy_tree, hash, invalid, lock};
 use crate::Options;
-use content_reader_core::content::visual::{Choice, InstalledMod};
+use content_reader_layers::content::visual::{Choice, InstalledMod};
 use serde_json::json;
 use std::{
     ffi::OsString,
@@ -120,7 +120,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         config.user_dir = path.clone();
     }
     let resolve = config.resolve_options()?;
-    let installed = content_reader_core::content::visual::installed(&resolve, &AtomicBool::new(false))?;
+    let installed = content_reader_layers::content::visual::installed(&resolve, &AtomicBool::new(false))?;
     let sets = [
         wanted[0].iter().map(|name| choose(&installed, name)).collect::<io::Result<Vec<_>>>()?,
         wanted[1].iter().map(|name| choose(&installed, name)).collect::<io::Result<Vec<_>>>()?,

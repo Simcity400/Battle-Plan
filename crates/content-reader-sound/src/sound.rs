@@ -1,6 +1,8 @@
 
-use crate::{ResolvedLayers, crt, defines, parser};
-use content_reader_core::script_files::ScriptPath;
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::{crt, parser};
+use content_reader_defines::defines;
+use content_reader_layers::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
 
 pub(crate) fn registered(name: &str) -> &[u8] {

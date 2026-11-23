@@ -5,7 +5,7 @@ use recorder_derive_framework::{
     testing::deployed::{Edits, Run, division, world},
     testing::noting::{self, Noted, Noting},
 };
-use content_reader_core::unit_leader::needs::SubUnitNeeds;
+use content_reader_key_names::unit_leader::needs::SubUnitNeeds;
 use replay_data::rows::{
     CountryLocalSubunitRow, DivisionEquipmentCountRow, DivisionEquipmentDesignRow, DivisionEquipmentRow, DivisionEquipmentTemplateRow, DivisionEquipmentTypeRow, DivisionLandInputsRow,
     DivisionManpowerContributor, DivisionPanelStatsRow, DivisionTemplateIconRow, LexicalTokenRow, LocalSubunitRequirement, Recorded, StockpileRow, TemplateSettings, TemplateSubunit,

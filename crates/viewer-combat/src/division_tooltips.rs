@@ -1,4 +1,4 @@
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
@@ -57,7 +57,7 @@ fn combat_strength(strength: i64, maximum: i64, factor: i64) -> Option<i64> {
 }
 
 fn one_decimal(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_to_string(value, 1)
+    content_reader_parser::fixed5::fixed5_to_string(value, 1)
 }
 
 fn tactic_effects(
@@ -180,7 +180,7 @@ fn combat_stat(
 }
 
 fn fixed_decimal(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_to_string(value, -1)
+    content_reader_parser::fixed5::fixed5_to_string(value, -1)
 }
 
 fn armour_description(
@@ -344,7 +344,7 @@ fn division_summary(
 fn division_experience_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
-    experience: content_reader_core::unit_leader::DivisionExperienceProgress,
+    experience: content_reader_key_names::unit_leader::DivisionExperienceProgress,
 ) -> Result<String, String> {
     let level = builtin(icons, loc, &format!("UNIT_LEVEL_{}", experience.level), &[])?;
     let combat = content_reader_localisation::localisation::format_scripted_variable(

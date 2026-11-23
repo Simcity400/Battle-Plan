@@ -38,7 +38,7 @@ pub struct Speeds {
 
 impl CameraLaw {
     pub fn load(
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         settings: &content_reader_settings::settings::SettingsKeys,
     ) -> io::Result<Self> {
         use content_reader_settings::settings::constructed;
@@ -62,7 +62,7 @@ impl CameraLaw {
         ))
     }
 
-    pub fn content_defines(defines: &content_reader_core::defines::Defines) -> io::Result<[f32; 4]> {
+    pub fn content_defines(defines: &content_reader_defines::defines::Defines) -> io::Result<[f32; 4]> {
         let define = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
             if value.is_finite() {

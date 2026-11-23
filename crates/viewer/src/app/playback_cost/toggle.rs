@@ -2,7 +2,7 @@ use super::super::{Capture, Playhead, Viewer};
 use super::{drain, frame_ui, memory, render_state, wait_until};
 use crate::Options;
 use eframe::egui;
-use content_reader_core::content::visual::Choice;
+use content_reader_layers::content::visual::Choice;
 use serde_json::{Value, json};
 use std::{
     io,

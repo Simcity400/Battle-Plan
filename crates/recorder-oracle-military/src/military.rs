@@ -1046,7 +1046,7 @@ fn compare_template_text(
     saved: &[u8],
     saved_present: bool,
 ) {
-    let prefix = content_reader_core::parser::c_string(stored);
+    let prefix = content_reader_parser::parser::c_string(stored);
     if prefix.len() < stored.len() {
         report.limitation(
             "native text serialization ends at the first NUL; captured trailing bytes are not save-comparable",
@@ -1413,7 +1413,7 @@ pub fn compare_division_template_icons(
             let names_group = settings
                 .names_group
                 .as_deref()
-                .map(content_reader_core::parser::c_string)
+                .map(content_reader_parser::parser::c_string)
                 .filter(|key| !key.is_empty());
             setting!(
                 "division_names_group",
@@ -1718,7 +1718,7 @@ pub fn compare_naval_units(
             ),
             Recorded::Value(None) => return Err(invalid("fleet stored name capture refused")),
             Recorded::Value(Some(bytes)) => {
-                let comparable = content_reader_core::parser::c_string(bytes);
+                let comparable = content_reader_parser::parser::c_string(bytes);
                 if comparable.len() != bytes.len() {
                     report.limitation("native name serialization ends at the first NUL; trailing owned bytes need a live comparison", format!("{label}.name"));
                 }

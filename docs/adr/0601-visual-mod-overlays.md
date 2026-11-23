@@ -10,4 +10,4 @@ Folder overlays follow Windows directory junctions and keep the canonical direct
 
 Draw an artwork item or operation from the selected visual stack first, and retry from the unmodified recorded stack when the selection cannot supply it. When stages depend on one another, fall back for the whole operation so the selected asset does not inherit an incompatible recorded stage. Separate strict-draw and ordinary draw memo entries. Track which mod supplied each file and which operations used recorded fallback. Nested observers capture their own fallbacks, isolated observers selectively publish them, and reused memo entries replay them to each consumer. A named refusal remains when neither stack can draw the item.
 
-[Visual-mod discovery and mounts](../../crates/content-reader-core/src/content/visual.rs) · [Artwork fallback and diagnostics](../../crates/content-reader-core/src/content.rs)
+[Visual-mod discovery and mounts](../../crates/content-reader-layers/src/content/visual.rs) · [Artwork fallback and diagnostics](../../crates/content-reader-layers/src/content.rs)

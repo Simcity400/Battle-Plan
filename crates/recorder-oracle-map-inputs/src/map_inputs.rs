@@ -186,7 +186,7 @@ fn reserved_original_tag(frame: &DecodedFrame, save: &Save, report: &mut Report)
             &label,
         ) {
             Some(Some(bytes)) => {
-                let comparable = content_reader_core::parser::c_string(bytes);
+                let comparable = content_reader_parser::parser::c_string(bytes);
                 if comparable.len() < bytes.len() {
                     report.limitation("native text serialization ends at the first NUL; captured trailing original-tag bytes are not save-comparable", &label);
                 }
@@ -607,7 +607,7 @@ fn original_tag(
             );
             return;
         };
-        let comparable = content_reader_core::parser::c_string(bytes);
+        let comparable = content_reader_parser::parser::c_string(bytes);
         if comparable.len() < bytes.len() {
             report.limitation("native text serialization ends at the first NUL; captured trailing original-tag bytes are not save-comparable", format!("{label}.original_tag"));
         }
@@ -913,7 +913,7 @@ mod tests {
     fn ship_tooltip_suffixes_use_current_saved_variant_and_keep_runtime_caches_explicit() {
         use replay_data::rows::HullVariantInputs;
         let (_, mut saved, _, _) = super::super::fixtures::fixture();
-        let doc = content_reader_core::parser::parse(
+        let doc = content_reader_parser::parser::parse(
             br#"equipments={type={id={id=3 type=70}
             version=255 number_of_design_team_traits=-2147483648
             upgrades={upgrades={{engine 255} {engine 0}}}
@@ -953,7 +953,7 @@ mod tests {
         let mut report = Report::default();
         ship_tooltip_suffixes(&row, &saved, &mut report);
         assert_eq!(report.differences.len(), 3);
-        let doc = content_reader_core::parser::parse(b"equipments={type={id={id=3 type=70}}}").unwrap();
+        let doc = content_reader_parser::parser::parse(b"equipments={type={id={id=3 type=70}}}").unwrap();
         saved.production = save::production::parse(&doc.items).unwrap();
         row.hull_variant = Recorded::Value(Some(HullVariantInputs {
             version: Some(0),
@@ -992,7 +992,7 @@ mod tests {
     }
 
     fn pool(source: &[u8]) -> save::production::Pool {
-        let doc = content_reader_core::parser::parse(source).unwrap();
+        let doc = content_reader_parser::parser::parse(source).unwrap();
         save::production::parse_pool(&doc.items).unwrap()
     }
 

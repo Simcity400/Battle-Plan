@@ -91,10 +91,10 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
         (None, 0, -7, -42_857),
         (None, 0, 0, i64::from(u32::MAX)),
     ] {
-        let mut buildings = content_reader_core::buildings::Buildings::default();
+        let mut buildings = content_reader_key_names::buildings::Buildings::default();
         buildings.types.insert(
             "infrastructure".into(),
-            content_reader_core::buildings::BuildingType {
+            content_reader_key_names::buildings::BuildingType {
                 name: "infrastructure".into(),
                 province_max,
                 state_max,
@@ -102,7 +102,7 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
             },
         );
         buildings.declaration_order.push("infrastructure".into());
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load(
                 "fixture.lua",
@@ -174,7 +174,7 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
         &frame,
         &saved,
         &Default::default(),
-        &content_reader_core::defines::Defines::new().unwrap(),
+        &content_reader_defines::defines::Defines::new().unwrap(),
         &names,
         &mut report,
     )

@@ -499,7 +499,7 @@ fn synthetic_inputs(writers: &[Box<dyn Writer>]) -> Vec<TableId> {
 fn synthetic_definitions(writers: &[Box<dyn Writer>]) -> Definitions {
     let mut held = Definitions::read_none()
         .with_areas(Ok(vec![1_000; 16]))
-        .with_needs(Ok(content_reader_core::unit_leader::needs::SubUnitNeeds::default()))
+        .with_needs(Ok(content_reader_key_names::unit_leader::needs::SubUnitNeeds::default()))
         .with_regions(Ok(definitions::ProvinceRegions::new([(1, &[0, 1, 2, 3, 4][..]), (2, &[4, 5, 6, 7, 8][..])])));
     for uses in writers.iter().flat_map(|writer| writer.definitions()) {
         if let Definition::Define(define) = uses.definition {

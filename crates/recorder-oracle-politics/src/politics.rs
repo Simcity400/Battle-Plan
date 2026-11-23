@@ -86,7 +86,7 @@ fn available_advisors(
         compared += 1;
         recorded.entry(tag.to_vec()).or_default().insert((
             row.character,
-            content_reader_core::parser::c_string(&row.idea).to_vec(),
+            content_reader_parser::parser::c_string(&row.idea).to_vec(),
         ));
     }
     for (tag, records) in report.canonical_countries(&pack.character_status) {
@@ -312,7 +312,7 @@ fn advisor_token_key(token: &[u8]) -> (u32, Vec<u8>) {
     });
     (
         hash,
-        content_reader_core::parser::c_string(token).to_ascii_lowercase(),
+        content_reader_parser::parser::c_string(token).to_ascii_lowercase(),
     )
 }
 
@@ -731,7 +731,7 @@ mod tests {
                     character_status={character={id=2 type=73} advisor=no}
                 }}}
             "#;
-        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
@@ -779,7 +779,7 @@ mod tests {
                     character_status={character={id=1 type=73} advisor=yes}
                 }}}
             "#;
-        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
@@ -829,7 +829,7 @@ mod tests {
                 character_status={character={id=1 type=73} advisor=yes}
             }}}
         "#;
-        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
@@ -870,7 +870,7 @@ mod tests {
                 character_status={character={id=2 type=73} advisor=yes}
             }}}
         "#;
-        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(source).unwrap().items).unwrap();
         let country = germany();
         let links = BTreeMap::from([(102, &country)]);
         let mut frame = frame();
@@ -1106,7 +1106,7 @@ mod tests {
 
     fn saved_leaders() -> (governance::Pack, saved::Pack) {
         let characters = saved::parse(
-            &content_reader_core::parser::parse(
+            &content_reader_parser::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a"
                         country_leaders={ country_leader={ ideology=nazism id=12 }
@@ -1317,7 +1317,7 @@ mod tests {
         load_hour: bool,
     ) -> Report {
         let mut pack = saved::parse(
-            &content_reader_core::parser::parse(
+            &content_reader_parser::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a" }
@@ -1386,20 +1386,20 @@ mod tests {
 
     #[test]
     fn advisor_tokens_merge_case_variants_from_different_mod_files() {
-        content_reader_core::test_game::enter();
-        let names = content_reader_core::key_names::KeyNames::default();
-        let mut authored = content_reader_core::characters::Characters::default();
+        content_reader_script::test_game::enter();
+        let names = content_reader_script::key_names::KeyNames::default();
+        let mut authored = content_reader_key_names::characters::Characters::default();
         for file in [
             b"characters={AAA_first={advisor={slot=chief idea_token=mixed_advisor}}}".as_slice(),
             b"characters={AAA_second={advisor={slot=chief idea_token=MiXeD_Advisor}}}".as_slice(),
         ] {
-            authored.merge(content_reader_core::characters::parse(file, &names).unwrap());
+            authored.merge(content_reader_key_names::characters::parse(file, &names).unwrap());
         }
         let (tokens, gap) = authored.advisor_tokens();
         assert!(gap.is_none());
         let tokens = tokens.collect::<Vec<_>>();
         assert_eq!(tokens, ["mixed_advisor"]);
-        let mut pack = saved::parse(&content_reader_core::parser::parse(br#"
+        let mut pack = saved::parse(&content_reader_parser::parser::parse(br#"
             character_manager={historical={
                 character={id={id=1 type=73} token=first advisors={advisor={idea_token=mixed_advisor}}}
                 character={id={id=2 type=73} token=second advisors={advisor={idea_token=MiXeD_Advisor}}}
@@ -1528,7 +1528,7 @@ mod tests {
 
     fn run_faction_advisors(rows: &[(u32, &[u8])], slots: Vec<Option<&[u8]>>) -> Report {
         let characters = saved::parse(
-            &content_reader_core::parser::parse(
+            &content_reader_parser::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="GER_a"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a_idea" }

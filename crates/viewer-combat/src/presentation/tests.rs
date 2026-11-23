@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut out = Bindings::default();
     let has = |name: &str| name == "GFX_known" || name == "combat_tactic:tactic_a";
     sprite(&mut out.values, "leader", "GFX_earlier".into());
@@ -21,9 +21,9 @@ fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
     portrait(&mut out, &has, "leader", &value, 2);
     assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
     let tactics =
-        super::super::tactics::Content::from_database(content_reader_core::combat_tactics::parse(
+        super::super::tactics::Content::from_database(content_reader_military::combat_tactics::parse(
             b"a = { picture = tactic_a } b = { picture = tactic_b }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         ));
     tactic(&mut out, &has, &tactics, "tactic", 2, b"b");
     assert_eq!(out.values["tactic"].sprite, None);
@@ -106,7 +106,7 @@ fn exile_operand_refusal_hides_only_badge_and_keeps_commander_portrait() {
 
 #[test]
 fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut out = Bindings::default();
     for prefix in ["attacker", "defender"] {
         hide(&mut out.values, &format!("{prefix}_tactic"));
@@ -116,9 +116,9 @@ fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
         );
     }
     let content =
-        super::super::tactics::Content::from_database(content_reader_core::combat_tactics::parse(
+        super::super::tactics::Content::from_database(content_reader_military::combat_tactics::parse(
             b"defend = { picture = mod_defense }",
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         ));
     let mut sides = [
         LandCombatSideDetails {

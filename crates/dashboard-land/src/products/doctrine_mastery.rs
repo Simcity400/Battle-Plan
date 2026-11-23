@@ -3,7 +3,9 @@ use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}};
 use dashboard_base::{Source, catalogue::{self, Refusals, View}};
 use dashboard_follow::live::{Cells, Source as Cell};
-use content_reader_core::{content::ResolvedContent, doctrines::Database, tokens::Token};
+use content_reader_layers::content::ResolvedContent;
+use content_reader_military::doctrines::Database;
+use content_reader_parser::tokens::Token;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, DecodedSource};
@@ -97,7 +99,7 @@ fn default_reward(source: &Source, resolved: &Arc<ResolvedContent>) -> Result<i6
     let shared = source.state::<DefaultReward>();
     let mut held = shared.lock().unwrap_or_else(|error| error.into_inner());
     if held.0.as_ref().is_none_or(|(old, _)| !Arc::ptr_eq(old, resolved)) {
-        let read = content_reader_core::defines::read(&resolved.layers).and_then(|defines| defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY")).map_err(|error| error.to_string());
+        let read = content_reader_defines::defines::read(&resolved.layers).and_then(|defines| defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY")).map_err(|error| error.to_string());
         held.0 = Some((Arc::clone(resolved), read));
     }
     held.0.as_ref().map(|(_, read)| read.clone()).expect("default reward read")
@@ -119,7 +121,7 @@ fn owner_reads(owner: Owner) -> Vec<Read> {
 }
 
 fn spelled(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(content_reader_core::parser::c_string(bytes)).into_owned()
+    String::from_utf8_lossy(content_reader_parser::parser::c_string(bytes)).into_owned()
 }
 
 struct Naming<'c> {
@@ -163,7 +165,7 @@ impl<'c> Naming<'c> {
         }
     }
 
-    fn icon(&mut self, presentation: Result<Option<&content_reader_core::doctrines::Presentation>, String>, token: &[u8]) -> Option<String> {
+    fn icon(&mut self, presentation: Result<Option<&content_reader_military::doctrines::Presentation>, String>, token: &[u8]) -> Option<String> {
         match presentation {
             Ok(Some(presentation)) if !presentation.icon.is_empty() => Some(spelled(&presentation.icon)),
             Ok(_) => {
@@ -194,9 +196,9 @@ impl<'c> Naming<'c> {
             .rewards
             .iter()
             .map(|reward| {
-                let mut key = content_reader_core::parser::c_string(token).to_vec();
+                let mut key = content_reader_parser::parser::c_string(token).to_vec();
                 key.push(b'_');
-                key.extend_from_slice(content_reader_core::parser::c_string(&reward.token));
+                key.extend_from_slice(content_reader_parser::parser::c_string(&reward.token));
                 let threshold = match (reward.mastery, &context.default_reward) {
                     (0, Ok(default)) => Some(*default),
                     (0, Err(reason)) => {

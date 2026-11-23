@@ -19,13 +19,13 @@ fn tokens() -> TokenNames<'static> {
 
 fn stat(name: &[u8], value_raw: i64) -> UnitBonusStat {
     UnitBonusStat {
-        selector: content_reader_core::equipment::stat_index(name).unwrap() as u32,
+        selector: content_reader_script::equipment_stats::stat_index(name).unwrap() as u32,
         value_raw,
     }
 }
 
 fn rows() -> Vec<CountryUnitBonusRow> {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     vec![
         CountryUnitBonusRow {
             country: 102,
@@ -69,7 +69,7 @@ fn rows() -> Vec<CountryUnitBonusRow> {
 
 fn saved(list: &str) -> Vec<UnitBonus> {
     let text = format!("countries={{GER={{deployment={{unit_modifiers={{{list}}}}}}}}}");
-    let document = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+    let document = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
     content_reader_save::production::parse(&document.items)
         .unwrap()
         .unit_bonuses
@@ -87,7 +87,7 @@ const LIST: &str = r#"
     { type=rewards number=1 id=synthetic_doctrine }"#;
 
 fn run(rows: Vec<CountryUnitBonusRow>, list: &str, hour: i32) -> Report {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (mut frame, mut save, _, _) = crate::fixtures::fixture();
     save.production
         .unit_bonuses

@@ -39,7 +39,7 @@ fn content() -> Context {
     let catalogue = dashboard_base::catalogue::tests::with_effect_describer(catalogue, dashboard_effects::effect_describer);
     let catalogue = Arc::new(catalogue);
     catalogue.scripted_content().unwrap().set_synthetic_environment(Default::default());
-    let database = Arc::new(content_reader_core::doctrines::read(&catalogue.content.layers).unwrap());
+    let database = Arc::new(content_reader_military::doctrines::read(&catalogue.content.layers).unwrap());
     Context { catalogue, database, default_reward: Ok(100_000) }
 }
 

@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::parser;
+use content_reader_parser::parser;
 
 fn fuel_status(
     scalars: &str,

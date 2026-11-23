@@ -242,7 +242,7 @@ impl Tables {
 mod tests {
     use super::*;
     fn parse(body: &str) -> io::Result<Tables> {
-        let parsed = content_reader_core::parser::parse(body.as_bytes())?;
+        let parsed = content_reader_parser::parser::parse(body.as_bytes())?;
         let mut tables = Tables::default();
         tables.country(&parsed.items)?;
         Ok(tables)

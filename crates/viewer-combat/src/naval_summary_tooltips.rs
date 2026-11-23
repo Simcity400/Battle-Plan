@@ -1,5 +1,5 @@
 
-use content_reader_core::unit_leader::SubUnits;
+use content_reader_script::sub_units::SubUnits;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::NavalCombatSideDetails, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -131,7 +131,7 @@ fn screening_description(
     screening: &Screening,
     defines: &content_reader_naval_combat_defines::naval_combat_defines::Defines,
     correction: &str,
-    static_modifier: Result<&content_reader_core::modifiers::Modifiers, String>,
+    static_modifier: Result<&content_reader_script::modifiers::Modifiers, String>,
     definitions: Result<&Definitions<'_>, String>,
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -416,9 +416,9 @@ pub(super) fn flag_description(
     by_type.sort_by_key(|source| source.damage);
     for source in by_type {
         let token = if source.token == 0 {
-            content_reader_core::tokens::Token::Rejected
+            content_reader_parser::tokens::Token::Rejected
         } else {
-            content_reader_core::tokens::Token::register(
+            content_reader_parser::tokens::Token::register(
                 tokens
                     .name(source.token)
                     .map_err(|error| error.to_string())?

@@ -12,7 +12,7 @@ pub struct Defines {
     pub victory: i64,
 }
 impl Defines {
-    pub fn load(d: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(d: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             org: d.fixed5("NMilitary", "COMBAT_VALUE_ORG_IMPORTANCE")?,
             strength: d.fixed5("NMilitary", "COMBAT_VALUE_STR_IMPORTANCE")?,

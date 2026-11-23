@@ -1,6 +1,6 @@
 
 use super::*;
-use content_reader_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
+use content_reader_key_names::buildings::{BuildingType, Buildings, SpawnPoint};
 use replay_data::{rows::BuildingRow, rows::ProvinceRow};
 use viewer_gpu::province_map::ProvinceMap;
 use dashboard_text::table_access::TokenNames;

@@ -1,7 +1,9 @@
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
-use content_reader_core::{buildings::Buildings, defines::Defines, parser::Operator};
+use content_reader_key_names::buildings::Buildings;
+use content_reader_defines::defines::Defines;
+use content_reader_parser::parser::Operator;
 use replay_data::{
     rows::BuildingRow, rows::CountryBuildingResourceRow, rows::ResourceDefinitionRow,
     rows::StateBaseResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
@@ -24,8 +26,8 @@ const HEALTHY: u64 = mask::<BuildingRow>(&["healthy_level"]);
 const OVERRIDE: u64 =
     mask::<CountryBuildingResourceRow>(&["building", "count", "resource", "amount"]);
 
-type Index<T> = OnceLock<crate::triggers::refusal::Resolved<Result<T, crate::triggers::Failure>>>;
-type Grants = BTreeMap<u32, Result<Vec<(u32, i64)>, crate::triggers::Failure>>;
+type Index<T> = OnceLock<content_reader_script::triggers::refusal::Resolved<Result<T, content_reader_script::triggers::Failure>>>;
+type Grants = BTreeMap<u32, Result<Vec<(u32, i64)>, content_reader_script::triggers::Failure>>;
 
 pub const ONE: i64 = 100_000;
 
@@ -139,7 +141,7 @@ pub fn resource_bonuses(defines: &Defines) -> io::Result<[i64; 2]> {
 pub trait Links {
     fn slot(&self, raw: u32) -> Option<u32>;
     fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String>;
-    fn token_input(&self, name: &[u8]) -> Result<Option<u32>, crate::triggers::Failure> {
+    fn token_input(&self, name: &[u8]) -> Result<Option<u32>, content_reader_script::triggers::Failure> {
         self.token_of(name).map_err(Into::into)
     }
 }
@@ -157,22 +159,22 @@ pub struct StateResources<'a> {
 fn table<T: TableSchema>(
     frame: HourFrame<'_>,
     mask: u64,
-) -> Result<Rowset<'_, T::Row>, crate::triggers::Failure> {
+) -> Result<Rowset<'_, T::Row>, content_reader_script::triggers::Failure> {
     frame
         .complete::<T>(mask)
-        .map_err(|error| crate::triggers::Failure::input(T::ID, "", None, error.to_string()))
+        .map_err(|error| content_reader_script::triggers::Failure::input(T::ID, "", None, error.to_string()))
 }
 
-fn walked<T: TableSchema>(why: io::Error) -> crate::triggers::Failure {
-    crate::triggers::refusal::input_error(T::ID, why)
+fn walked<T: TableSchema>(why: io::Error) -> content_reader_script::triggers::Failure {
+    content_reader_script::triggers::refusal::input_error(T::ID, why)
 }
 
 fn get<T>(
     cell: &Index<T>,
-    build: impl FnOnce() -> Result<T, crate::triggers::Failure>,
-) -> Result<&T, crate::triggers::Failure> {
+    build: impl FnOnce() -> Result<T, content_reader_script::triggers::Failure>,
+) -> Result<&T, content_reader_script::triggers::Failure> {
     cell.get_or_init(|| {
-        crate::triggers::refusal::Resolved::new(|| crate::triggers::refusal::deferred(build))
+        content_reader_script::triggers::refusal::Resolved::new(|| content_reader_script::triggers::refusal::deferred(build))
     })
     .value()
     .as_ref()
@@ -199,7 +201,7 @@ impl<'a> StateResources<'a> {
         }
     }
 
-    pub fn resource_database(&self) -> Result<&BTreeMap<u32, u8>, crate::triggers::Failure> {
+    pub fn resource_database(&self) -> Result<&BTreeMap<u32, u8>, content_reader_script::triggers::Failure> {
         get(&self.resources, || {
             table::<tables::ResourceDefinitions>(self.frame, ACTIVE)?
                 .iter()
@@ -211,7 +213,7 @@ impl<'a> StateResources<'a> {
         })
     }
 
-    fn grants(&self, links: &impl Links) -> Result<&Grants, crate::triggers::Failure> {
+    fn grants(&self, links: &impl Links) -> Result<&Grants, content_reader_script::triggers::Failure> {
         get(&self.grants, || {
             let resources = self.resource_database()?;
             let lists = grant_lists(
@@ -232,7 +234,7 @@ impl<'a> StateResources<'a> {
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
-    ) -> Result<i64, crate::triggers::Failure> {
+    ) -> Result<i64, content_reader_script::triggers::Failure> {
         Ok(state_resource_amount(
             &self.operands(state, resource, controller, links)?,
         ))
@@ -244,16 +246,16 @@ impl<'a> StateResources<'a> {
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
-    ) -> Result<ResourceOperands, crate::triggers::Failure> {
+    ) -> Result<ResourceOperands, content_reader_script::triggers::Failure> {
         let key = (u128::from(state) << 32) | u128::from(resource);
         let input = table::<tables::StateResourceInputs>(self.frame, INPUT)?
             .get(u128::from(state))
             .map_err(walked::<tables::StateResourceInputs>)?
             .ok_or_else(|| {
-            crate::triggers::Failure::input(
+            content_reader_script::triggers::Failure::input(
                 replay_data::rows::TableId::StateResourceInputs,
                 "",
-                Some(crate::triggers::Store::State(state)),
+                Some(content_reader_script::triggers::Store::State(state)),
                 format!("state {state} has no recorded resource inputs"),
             )
         })?;
@@ -287,7 +289,7 @@ impl<'a> StateResources<'a> {
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
-    ) -> Result<i64, crate::triggers::Failure> {
+    ) -> Result<i64, content_reader_script::triggers::Failure> {
         let buildings = get(&self.state_buildings, || {
             let mut out: BTreeMap<u32, Vec<(u32, i16)>> = BTreeMap::new();
             for row in table::<tables::StateBuildings>(self.frame, HEALTHY)?.iter() {
@@ -330,7 +332,7 @@ impl<'a> StateResources<'a> {
                 let list = grants
                     .get(&building)
                     .ok_or_else(|| {
-                        crate::triggers::Failure::from(format!(
+                        content_reader_script::triggers::Failure::from(format!(
                             "state {state} has a building type the content lacks"
                         ))
                     })?

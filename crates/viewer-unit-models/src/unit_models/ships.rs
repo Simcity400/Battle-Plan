@@ -47,7 +47,7 @@ impl ShipAssets {
     pub(super) fn load(
         layers: &ResolvedLayers,
         roster: &mesh::Roster,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
         let config =
             combat_content::Config::read(&layers.read_uncovered(NAVAL_COMBAT_FILE)?, warnings);
@@ -59,7 +59,7 @@ impl ShipAssets {
         let (root, nodes) = formation_nodes(layers, descriptors, &formation)?;
         let combat = combat_content::CombatAssets::load(descriptors, &config)
             .map_err(|error| error.to_string());
-        let combat_rotations = content_reader_core::positions::read_unit_stacks(layers)?
+        let combat_rotations = content_reader_map::positions::read_unit_stacks(layers)?
             .into_iter()
             .filter(|stack| stack.kind == 0)
             .map(|stack| (stack.province, stack.rotation))
@@ -77,7 +77,7 @@ impl ShipAssets {
 #[cfg(test)]
 fn read_formation(
     bytes: &[u8],
-    warnings: &mut Vec<content_reader_core::Diagnostic>,
+    warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> io::Result<(String, f32)> {
     combat_content::Config::read(bytes, warnings).formation()
 }
@@ -341,7 +341,7 @@ impl UnitModelAssets {
                 let ordinal = order.as_ref().and_then(|order| order.mixed(force.id, force.province));
                 let tag_of = |owner: u32| -> Result<String, String> {
                     let country = links.get(&owner).and_then(|slot| countries.get(slot)).ok_or("naval_formation_model_country: native model owner is unavailable")?;
-                    content_reader_core::parser::text(content_reader_core::parser::c_string(&country.tag)).map(str::to_owned).map_err(|error| format!("naval_formation_model_country: {error}"))
+                    content_reader_parser::parser::text(content_reader_parser::parser::c_string(&country.tag)).map(str::to_owned).map_err(|error| format!("naval_formation_model_country: {error}"))
                 };
                 let part = self.naval_force(&values, route, &ground, &link, vision, &skip, ordinal, clock.map(|clock| clock.speed), day, || {
                     let models = roster.get(&force.id)?;
@@ -838,7 +838,7 @@ impl UnitModelAssets {
         let mut names = selection::Pass::new(self, frame, Some(&hour));
         let tag_of = |owner: u32| -> Result<String, String> {
             let country = links.get(&owner).and_then(|slot| countries.get(slot)).ok_or("naval_formation_model_country: native model owner is unavailable")?;
-            content_reader_core::parser::text(content_reader_core::parser::c_string(&country.tag)).map(str::to_owned).map_err(|error| format!("naval_formation_model_country: {error}"))
+            content_reader_parser::parser::text(content_reader_parser::parser::c_string(&country.tag)).map(str::to_owned).map_err(|error| format!("naval_formation_model_country: {error}"))
         };
         let mut out = Vec::with_capacity(forces.len());
         for &id in forces {

@@ -47,7 +47,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             required,
             ..Default::default()
         });
-        let mut projects = content_reader_core::special_projects::Catalog::default();
+        let mut projects = content_reader_military::special_projects::Catalog::default();
         projects.projects = [("oilfield".into(), Default::default())].into();
         assets.tooltip.projects = Ok(projects);
         let mut frame = frame();
@@ -132,7 +132,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
 
 #[test]
 fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::super::test_support::put;
     for narrative in [None, Some("narrative"), Some("")] {
         for country_override in [true, false] {
@@ -146,9 +146,9 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 .specializations
                 .push("test".into());
             assets.tooltip.intel = Ok(intel::Defines::default());
-            let mut project = content_reader_core::special_projects::Project::default();
+            let mut project = content_reader_military::special_projects::Project::default();
             project.name = narrative.map(Into::into);
-            let mut projects = content_reader_core::special_projects::Catalog::default();
+            let mut projects = content_reader_military::special_projects::Catalog::default();
             projects.projects = [("oilfield".into(), project)].into();
             assets.tooltip.projects = Ok(projects);
             let mut frame = positive_frame();
@@ -304,8 +304,8 @@ fn scripted_content_with_files(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let content = content_reader_core::content::ResolvedContent {
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let content = content_reader_layers::content::ResolvedContent {
         layers,
         stats: Default::default(),
         changed: Vec::new(),
@@ -320,7 +320,7 @@ fn scripted_content_with_files(
 
 #[test]
 fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use super::super::super::test_support::put;
     let (scripted, root) = scripted_content_with_files(&[
         ("common/units/test.txt", "sub_units={syn_unit={}}"),
@@ -453,14 +453,14 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
     };
     run(&context);
 }
-fn triggers(text: &str) -> content_reader_core::triggers::Triggers {
-    content_reader_core::parser::parse(text.as_bytes())
+fn triggers(text: &str) -> content_reader_script::triggers::Triggers {
+    content_reader_parser::parser::parse(text.as_bytes())
         .unwrap()
         .items
 }
 #[test]
 fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_context(|context| {
         let scope = Scopes::of(Scope::Country(2));
         let text = context.trigger_text(
@@ -506,9 +506,9 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inversion() {
     use super::super::super::test_support::put;
     let mut assets = assets();
-    let mut project = content_reader_core::special_projects::Project::default();
+    let mut project = content_reader_military::special_projects::Project::default();
     project.name = Some("project_name".into());
-    let mut projects = content_reader_core::special_projects::Catalog::default();
+    let mut projects = content_reader_military::special_projects::Catalog::default();
     projects.projects = [("oilfield".into(), project)].into();
     assets.tooltip.projects = Ok(projects);
     let mut frame = frame();
@@ -601,7 +601,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
 
 #[test]
 fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_context(|context| {
         let scopes = Scopes {
             root: Scope::Country(2),
@@ -641,7 +641,7 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
 
 #[test]
 fn custom_tooltip_chains_follow_the_raid_scopes_links() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_context(|context| {
         let raid = Scopes {
             from: Some(Scope::Country(1)),

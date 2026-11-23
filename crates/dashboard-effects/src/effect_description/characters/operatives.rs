@@ -190,7 +190,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_native_text(
             if field(children(item), "all")
                 .and_then(|item| item.value.scalar())
-                .and_then(content_reader_core::parser::read_bool)
+                .and_then(content_reader_parser::parser::read_bool)
                 .unwrap_or(false)
             {
                 b"EFFECT_FREE_RANDOM_OPERATIVE_ALL"
@@ -205,7 +205,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn char_operative_days(&self, item: &Item, scopes: Scopes) -> Result<i32, String> {
         let operand = item.value.scalar().unwrap_or_default();
-        match content_reader_core::crt::scan_i32(operand).stored() {
+        match content_reader_parser::crt::scan_i32(operand).stored() {
             Some(days) => Ok(days),
             None => Ok((self.scoped_value(operand, scopes)? / 100_000) as i32),
         }
@@ -268,11 +268,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     fn char_event_tooltip(&self, item: &Item, scopes: Scopes) -> Result<Option<String>, String> {
         let Some(text) = field(children(item), "tooltip")
             .and_then(|item| item.value.read_string())
-            .filter(|text| !content_reader_core::parser::c_string(text).is_empty())
+            .filter(|text| !content_reader_parser::parser::c_string(text).is_empty())
         else {
             return Ok(None);
         };
-        let text = std::str::from_utf8(content_reader_core::parser::c_string(text))
+        let text = std::str::from_utf8(content_reader_parser::parser::c_string(text))
             .map_err(|_| "event tooltip is not UTF-8")?;
         let mut text = self.expanded(text, scopes)?;
         text.push('\n');

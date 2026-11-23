@@ -1,4 +1,4 @@
-use crate::triggers::Failure;
+use content_reader_script::triggers::Failure;
 
 fn localisation_status(
     frame: replay_frame::frame::HourFrame<'_>,
@@ -17,11 +17,8 @@ fn localisation_status(
     }
 }
 
-use content_reader_core::{
-    parser::Item, parser::Operator, scope::Keyword as ScopeKeyword, scope::Names, scoped_variable,
-    scoped_variable::Constant, scoped_variable::Link, scoped_variable::ScopedVariable,
-    variable_builtins,
-};
+use content_reader_parser::parser::{Item, Operator};
+use content_reader_script::{scope::{Keyword as ScopeKeyword, Names}, scoped_variable::{self, Constant, Link, ScopedVariable}, variable_builtins};
 
 use super::{
     Scope, Scopes,
@@ -187,7 +184,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             return Ok((id, token));
         }
-        let constant = content_reader_core::fixed5::fixed5_to_string(value, 5);
+        let constant = content_reader_parser::fixed5::fixed5_to_string(value, 5);
         let Some(country) = self.scoped_country(constant.as_bytes(), scopes)? else {
             return Err(Self::NULL_IDEOLOGY.into());
         };
@@ -667,7 +664,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 if let Some(value) = self.builtin_variable(store, operand, scopes, index)? {
                     return Ok(Value::Raw(value));
                 }
-                return Err(crate::triggers::refusal::refused(format!(
+                return Err(content_reader_script::triggers::refusal::refused(format!(
                     "{} is a built-in game variable of {}, which the game computes before the stored keys; it is not reproduced",
                     String::from_utf8_lossy(&operand.name),
                     self.describe_store(store)

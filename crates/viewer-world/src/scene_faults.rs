@@ -134,7 +134,7 @@ impl Probe {
             Effect Unknown { VertexShader = V PixelShader = U RasterizerState = Visible }
         "#;
         let program =
-            content_reader_core::pdxshader::program::read_with(b"scene-test.shader", &|path| {
+            content_reader_gui::pdxshader::program::read_with(b"scene-test.shader", &|path| {
                 Some(if path == b"scene-test.shader" {
                     source.to_vec()
                 } else {
@@ -175,11 +175,11 @@ impl Probe {
         )
         .map_err(io::Error::other)?;
         let mut pass = shader_pipeline::gpu::Pass::packed(&compiled, &state, OUTPUT_FORMAT, 1);
-        let raster = content_reader_core::pdxshader::RasterizerState {
+        let raster = content_reader_gui::pdxshader::RasterizerState {
             cull_mode: 0,
             ..Default::default()
         };
-        let depth = content_reader_core::pdxshader::DepthStencilState {
+        let depth = content_reader_gui::pdxshader::DepthStencilState {
             depth_enable: false,
             depth_write_mask: 0,
             ..Default::default()
@@ -200,13 +200,13 @@ impl Probe {
             .bind_program(Some(selection), pass.vertices.clone());
         state
             .stream
-            .bind_rasterizer(content_reader_core::pdxshader::RasterizerState {
+            .bind_rasterizer(content_reader_gui::pdxshader::RasterizerState {
                 cull_mode: 0,
                 ..Default::default()
             });
         state
             .stream
-            .bind_depth_stencil(content_reader_core::pdxshader::DepthStencilState {
+            .bind_depth_stencil(content_reader_gui::pdxshader::DepthStencilState {
                 depth_enable: false,
                 depth_write_mask: 0,
                 ..Default::default()
@@ -224,7 +224,7 @@ impl Probe {
         state: &mut viewer_scene_base::shader_scene::State,
         texture: &wgpu::TextureView,
     ) -> io::Result<()> {
-        use content_reader_core::pdxshader::program::Stage;
+        use content_reader_gui::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let selection = self
             .effect

@@ -1,7 +1,5 @@
 use super::*;
-use crate::triggers::{
-    ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query,
-};
+use content_reader_script::triggers::{ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query};
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
     rows::CountryWarRow, rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow,
@@ -187,7 +185,7 @@ fn frame(hour: Hour, state: State) -> DecodedFrame {
 
 fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(&World<'_>) -> T) -> T {
     let dlcs = BTreeSet::new();
-    let triggers = content_reader_core::trigger_keys::TriggerNames::default();
+    let triggers = content_reader_script::trigger_keys::TriggerNames::default();
     let aliases = Arc::default();
     run(&World::read(
         frame,
@@ -275,7 +273,7 @@ fn scoped_ruling_ideology_keeps_unresolved_country_refusal() {
 #[test]
 fn has_war_records_clock_only_when_scanning_relations() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
-    let body = content_reader_core::parser::parse(b"has_war=yes").unwrap().items;
+    let body = content_reader_parser::parser::parse(b"has_war=yes").unwrap().items;
     for (hour, enemies, expected, scans) in [
         (16, Vec::new(), true, true),
         (21, Vec::new(), false, true),
@@ -1577,7 +1575,7 @@ fn richer_frame() -> DecodedFrame {
 }
 
 fn other_world_queries() -> Vec<Query> {
-    use crate::triggers::Scope;
+    use content_reader_script::triggers::Scope;
     vec![
         Query::UnitStatus(77),
         Query::RaidWingName(9),
@@ -1854,14 +1852,14 @@ fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare(
     let file = root.join("common/country_leader/traits.txt");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, "leader_traits = { same = {} }").unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let leaders = content_reader_core::leader_traits::read(&layers).unwrap().0;
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let leaders = content_reader_military::leader_traits::read(&layers).unwrap().0;
     std::fs::remove_dir_all(root).unwrap();
-    let units = content_reader_core::unit_leader::Traits::default();
+    let units = content_reader_key_names::unit_leader::Traits::default();
     let states: std::collections::BTreeMap<u32, Vec<u32>> = [(1, vec![1])].into();
     let (dlcs, triggers, aliases) = (
         BTreeSet::new(),
-        content_reader_core::trigger_keys::TriggerNames::default(),
+        content_reader_script::trigger_keys::TriggerNames::default(),
         Arc::default(),
     );
     let digests = |frame: &DecodedFrame, keys: &[Key]| -> Vec<Option<u64>> {
@@ -1919,7 +1917,7 @@ fn every_declaration_names_existing_fields() {
     for query in declared_world_queries() {
         assert!(Key::World(query).dependence().is_some());
     }
-    use crate::scope::Query as Scopes;
+    use content_reader_script::scope::Query as Scopes;
     for query in [
         Scopes::Slot(101),
         Scopes::RawSlot(0),
@@ -1931,7 +1929,7 @@ fn every_declaration_names_existing_fields() {
         Scopes::AliasEntry("AAA".into()),
         Scopes::ResolveTag("AAA".into()),
         Scopes::Roster,
-        Scopes::Describe(crate::scope::Target::Country(1)),
+        Scopes::Describe(content_reader_script::scope::Target::Country(1)),
     ] {
         assert!(Key::Scopes(query).dependence().is_some());
     }
@@ -1946,8 +1944,8 @@ fn every_declaration_names_existing_fields() {
 
 #[test]
 fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read() {
-    use crate::scope::{Query as Scopes, RecordedScopes, Target};
-    use content_reader_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
+    use content_reader_script::scope::{Query as Scopes, RecordedScopes, Target};
+    use content_reader_key_names::tag_aliases::{TagAlias, TagAliases};
     use replay_data::{
         rows::CountryCounterInputRow, rows::Recorded, rows::ReservedCountryNamingRow,
     };
@@ -1999,8 +1997,8 @@ fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read(
     .collect::<Vec<_>>();
     let (_, resolved) = capture(&frame, || {
         scopes.resolve(
-            &content_reader_core::scope::Scope::Country("AAA".into()),
-            &crate::scope::Context::default(),
+            &content_reader_script::scope::Scope::Country("AAA".into()),
+            &content_reader_script::scope::Context::default(),
         )
     });
     keys.extend(resolved.keys().cloned());
@@ -2108,8 +2106,8 @@ fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read(
 
 #[test]
 fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
-    use crate::scope::{Context, RecordedScopes, Target};
-    use content_reader_core::scope::{Keyword, Scope};
+    use content_reader_script::scope::{Context, RecordedScopes, Target};
+    use content_reader_script::scope::{Keyword, Scope};
     use replay_data::rows::CountryAppearanceRow;
     let mut frame = frame(100, BASE);
     set::<tables::CountryAppearance>(
@@ -2124,7 +2122,7 @@ fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
             })
             .collect(),
     );
-    let aliases = Arc::new(content_reader_core::tag_aliases::TagAliases::default());
+    let aliases = Arc::new(content_reader_key_names::tag_aliases::TagAliases::default());
     let scopes = RecordedScopes::read(&frame, aliases.clone());
     let overlord = |this| {
         scopes.resolve(
@@ -2207,8 +2205,8 @@ fn the_overlord_scope_declares_the_appearances_links_and_tags_it_reads() {
 
 #[test]
 fn the_capital_scope_declares_the_politics_links_and_tags_it_reads() {
-    use crate::scope::{Context, RecordedScopes, Target};
-    use content_reader_core::scope::{Keyword, Scope};
+    use content_reader_script::scope::{Context, RecordedScopes, Target};
+    use content_reader_script::scope::{Keyword, Scope};
     use replay_data::rows::PoliticsRow;
     let mut frame = frame(100, BASE);
     set::<tables::Politics>(
@@ -2223,7 +2221,7 @@ fn the_capital_scope_declares_the_politics_links_and_tags_it_reads() {
             })
             .collect(),
     );
-    let aliases = Arc::new(content_reader_core::tag_aliases::TagAliases::default());
+    let aliases = Arc::new(content_reader_key_names::tag_aliases::TagAliases::default());
     let scopes = RecordedScopes::read(&frame, aliases.clone());
     let capital = |this| {
         scopes.resolve(

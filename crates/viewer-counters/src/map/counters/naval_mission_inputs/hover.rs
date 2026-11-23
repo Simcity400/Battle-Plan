@@ -7,13 +7,13 @@ pub(super) mod patrol;
 mod source;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(in crate::map::counters) enum Control {
+pub(in content_reader_map::map::counters) enum Control {
     Button,
     Status,
     Pride,
 }
 
-pub(in crate::map::counters) type Hovers = BTreeMap<(u32, u32, Control), Prepared>;
+pub(in content_reader_map::map::counters) type Hovers = BTreeMap<(u32, u32, Control), Prepared>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Value {
@@ -37,7 +37,7 @@ enum Op {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::map::counters) struct Prepared(Vec<Op>);
+pub(in content_reader_map::map::counters) struct Prepared(Vec<Op>);
 
 impl Prepared {
     pub(super) fn line(
@@ -61,7 +61,7 @@ impl Prepared {
     fn gap(&mut self, body: bool, count: usize) {
         self.0.push(Op::Gap(body, count));
     }
-    pub(in crate::map::counters) fn render(
+    pub(in content_reader_map::map::counters) fn render(
         &self,
         loc: &Localisation,
         recorded: &str,
@@ -144,7 +144,7 @@ impl Value {
 }
 
 fn percent(raw: i64) -> String {
-    let text = content_reader_core::fixed5::fixed5_percent(raw.clamp(0, 100_000), 0, true);
+    let text = content_reader_parser::fixed5::fixed5_percent(raw.clamp(0, 100_000), 0, true);
     if raw < 75_000 {
         format!("\u{11}R{text}\u{11}!")
     } else if raw < 100_000 {

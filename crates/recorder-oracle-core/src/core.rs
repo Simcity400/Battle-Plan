@@ -57,7 +57,7 @@ pub fn compare_province_names(
 
 pub fn compare_countries(
     save: &Save,
-    equipment: &ContentRead<'_, content_reader_core::equipment::Database>,
+    equipment: &ContentRead<'_, content_reader_key_names::equipment::Database>,
     by_tag: &BTreeMap<&[u8], &CountryRow>,
     report: &mut Report,
 ) {
@@ -515,8 +515,8 @@ fn compare_state_scalars(actual: &StateRow, saved: &content_reader_save::State, 
 pub fn compare_railway_infrastructure(
     frame: &DecodedFrame,
     save: &Save,
-    buildings: &content_reader_core::buildings::Buildings,
-    defines: &content_reader_core::defines::Defines,
+    buildings: &content_reader_key_names::buildings::Buildings,
+    defines: &content_reader_defines::defines::Defines,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {

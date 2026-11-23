@@ -1,7 +1,8 @@
 
-use content_reader_core::{
-    Diagnostic, DiagnosticKind, ResolvedLayers, crt, defines, effect_keys, fields, fixed5,
-    key_names, map, modifiers, parser, scope, script_files, tokens,
-};
+use content_reader_parser::{Diagnostic, DiagnosticKind, crt, fields, fixed5, parser, tokens};
+use content_reader_layers::{ResolvedLayers, script_files};
+use content_reader_defines::defines;
+use content_reader_script::{effect_keys, key_names, modifiers, scope};
+use content_reader_map::map;
 
 pub mod states;

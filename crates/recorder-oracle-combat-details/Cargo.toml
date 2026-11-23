@@ -10,8 +10,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-parser.workspace = true
 engine-native.workspace = true
-content-reader-core.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 content-reader-save.workspace = true

@@ -356,9 +356,9 @@ mod tests {
 
     #[test]
     fn unbound_port_authored_fallback_keeps_raw_lookup_and_bound_localisation_distinct() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = test_frame(0);
-        let gui = content_reader_core::gui::native::read(
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = raw pdx_tooltip = RAW }
             guiButtonType = { name = missing pdx_tooltip = MISSING }
@@ -390,8 +390,8 @@ mod tests {
 
     #[test]
     fn port_callback_handled_empty_controls_suppress_authored_fallback() {
-        content_reader_core::test_game::enter();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter();
+        let gui = content_reader_gui::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let authored = Authored::read(gui.template("authored").unwrap(), false);
@@ -430,8 +430,8 @@ mod tests {
 
     #[test]
     fn port_callback_false_allows_fallback_but_unknown_admission_does_not() {
-        content_reader_core::test_game::enter();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter();
+        let gui = content_reader_gui::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let input = Hover {
@@ -463,8 +463,8 @@ mod tests {
 
     #[test]
     fn authored_fallback_replaces_only_present_hash_fields_and_appends_unscoped_bound() {
-        content_reader_core::test_game::enter();
-        let gui = content_reader_core::gui::native::read(
+        content_reader_script::test_game::enter();
+        let gui = content_reader_gui::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = absent pdx_tooltip = MISSING pdx_tooltip_delayed = BODY }
             guiButtonType = { name = empty pdx_tooltip = EMPTY }

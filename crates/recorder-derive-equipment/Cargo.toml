@@ -14,7 +14,7 @@ test-support = ["recorder-derive-framework/test-support"]
 memory-labels = ["recorder-derive-framework/memory-labels"]
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-key-names.workspace = true
 engine-dlc.workspace = true
 engine-land-inputs.workspace = true
 recorder-derive-framework.workspace = true

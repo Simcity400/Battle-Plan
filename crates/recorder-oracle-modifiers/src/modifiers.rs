@@ -1,6 +1,6 @@
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
-use content_reader_core::parser::c_string;
+use content_reader_parser::parser::c_string;
 use content_reader_save::characters as saved;
 use replay_data::{rows::CountryRow, rows::HiredAdvisorRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -215,7 +215,7 @@ mod tests {
 
     fn pack() -> saved::Pack {
         saved::parse(
-            &content_reader_core::parser::parse(
+            &content_reader_parser::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a" country="GER"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a" }

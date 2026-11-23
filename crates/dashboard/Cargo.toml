@@ -13,9 +13,14 @@ doctest = false
 export-types = ["dashboard-base/export-types", "dashboard-air/export-types", "dashboard-economy/export-types", "dashboard-intelligence/export-types", "dashboard-land/export-types", "dashboard-naval/export-types", "dashboard-players/export-types", "dashboard-politics/export-types", "dashboard-production/export-types", "dashboard-research/export-types", "dashboard-wars/export-types", "dashboard-world/export-types"]
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 base64 = "0.22.1"
 blake3 = { workspace = true }
-content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
 content-reader-equipment-graphics = { workspace = true }
 content-reader-wargoals = { workspace = true }
@@ -66,7 +71,8 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
 content-reader-wargoals = { workspace = true, features = ["test-support"] }

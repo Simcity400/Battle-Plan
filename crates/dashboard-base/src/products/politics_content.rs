@@ -5,12 +5,10 @@ use crate::{
     Artwork, Source,
     catalogue::{self, Catalogue, View},
 };
-use content_reader_core::{
-    characters::AdvisorRole, characters::Authored, characters::BuiltTemplate,
-    characters::Characters, characters::PORTRAIT_ROLES, characters::PORTRAIT_SIZES, coverage::Gap,
-    ideas::Idea, ideas::IdeaContent, ideologies::Ideologies, leader_traits::LeaderTraits,
-    modifier_definitions::ModifierDefinitions,
-};
+use content_reader_key_names::{characters::{AdvisorRole, Authored, BuiltTemplate, Characters, PORTRAIT_ROLES, PORTRAIT_SIZES}, ideologies::Ideologies, modifier_definitions::ModifierDefinitions};
+use content_reader_parser::coverage::Gap;
+use content_reader_politics::ideas::{Idea, IdeaContent};
+use content_reader_military::leader_traits::LeaderTraits;
 use std::{
     collections::BTreeMap,
     io,
@@ -41,7 +39,7 @@ pub enum RecordedName {
     None,
 }
 
-type PortraitKey = (u32, Vec<u8>, u32, content_reader_core::content::ArtworkMode);
+type PortraitKey = (u32, Vec<u8>, u32, content_reader_layers::content::ArtworkMode);
 
 pub struct PoliticsContent {
     pub catalogue: Arc<Catalogue>,
@@ -50,7 +48,7 @@ pub struct PoliticsContent {
     pub traits: LeaderTraits,
     pub ideologies: Ideologies,
     pub modifier_definitions: ModifierDefinitions,
-    pub names: content_reader_core::names::NameLists,
+    pub names: content_reader_politics::names::NameLists,
     pub warnings: Vec<String>,
     artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
     portraits: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
@@ -63,13 +61,13 @@ pub struct PoliticsContent {
 }
 
 pub struct PowerContent {
-    pub decisions: content_reader_core::decisions::Database,
+    pub decisions: content_reader_politics::decisions::Database,
     pub abilities: content_reader_abilities::abilities::AbilitySprites,
     focuses: content_reader_focus::focus::Focuses,
     pub warnings: Vec<String>,
-    pub unit_traits: content_reader_core::unit_leader::Traits,
-    pub triggers: content_reader_core::trigger_keys::TriggerNames,
-    pub aliases: Arc<content_reader_core::tag_aliases::TagAliases>,
+    pub unit_traits: content_reader_key_names::unit_leader::Traits,
+    pub triggers: content_reader_script::trigger_keys::TriggerNames,
+    pub aliases: Arc<content_reader_key_names::tag_aliases::TagAliases>,
     pub dlcs: std::collections::BTreeSet<String>,
 }
 
@@ -77,7 +75,7 @@ impl PowerContent {
     pub fn national_focus(
         &self,
         id: &str,
-    ) -> Result<Option<&content_reader_focus::focus::FocusDefinition>, &content_reader_core::coverage::Gap>
+    ) -> Result<Option<&content_reader_focus::focus::FocusDefinition>, &content_reader_parser::coverage::Gap>
     {
         self.focuses
             .get_in(content_reader_focus::focus::Database::National, id)
@@ -187,7 +185,7 @@ impl PoliticsContent {
         })
     }
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
-        Self::read(catalogue, content_reader_core::ideologies::read)
+        Self::read(catalogue, content_reader_key_names::ideologies::read)
     }
 
     pub fn load_with_ideologies(
@@ -200,26 +198,26 @@ impl PoliticsContent {
     fn read(
         catalogue: Arc<Catalogue>,
         ideologies: impl FnOnce(
-            &content_reader_core::ResolvedLayers,
-        ) -> io::Result<(Ideologies, Vec<content_reader_core::Diagnostic>)>,
+            &content_reader_layers::ResolvedLayers,
+        ) -> io::Result<(Ideologies, Vec<content_reader_parser::Diagnostic>)>,
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let (ideologies, ideology_warnings) = ideologies(layers)?;
-        let officers = content_reader_core::defines::read(layers)?
+        let officers = content_reader_defines::defines::read(layers)?
             .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
         let (read, traits, definitions, names) = std::thread::scope(|threads| {
-            let traits = content_reader_core::parallel::spawn(threads, || {
-                content_reader_core::leader_traits::read(layers)
+            let traits = content_reader_layers::parallel::spawn(threads, || {
+                content_reader_military::leader_traits::read(layers)
             });
-            let definitions = content_reader_core::parallel::spawn(threads, || {
-                content_reader_core::modifier_definitions::read(layers)
+            let definitions = content_reader_layers::parallel::spawn(threads, || {
+                content_reader_key_names::modifier_definitions::read(layers)
             });
             let names =
-                content_reader_core::parallel::spawn(threads, || content_reader_core::names::read(layers));
+                content_reader_layers::parallel::spawn(threads, || content_reader_politics::names::read(layers));
             let read = (|| {
                 let (ideas, advisors, idea_warnings) =
-                    content_reader_core::ideas::read(layers, &officers)?;
-                let characters = content_reader_core::characters::read(layers, advisors)?;
+                    content_reader_politics::ideas::read(layers, &officers)?;
+                let characters = content_reader_key_names::characters::read(layers, advisors)?;
                 io::Result::Ok((ideas, idea_warnings, characters))
             })();
             (read, traits.join(), definitions.join(), names.join())
@@ -280,19 +278,19 @@ impl PoliticsContent {
                     resources,
                     aliases,
                 ) = std::thread::scope(|threads| {
-                    use content_reader_core::parallel::spawn;
+                    use content_reader_layers::parallel::spawn;
                     let abilities = spawn(threads, || content_reader_abilities::abilities::read(layers));
                     let focuses = spawn(threads, || content_reader_focus::focus::read_national(layers));
                     let unit_traits = spawn(threads, || {
-                        content_reader_core::unit_leader::Traits::registered(layers)
+                        content_reader_key_names::unit_leader::Traits::registered(layers)
                     });
                     let scripted_triggers =
-                        spawn(threads, || content_reader_core::scripted_triggers::read(layers));
-                    let buildings = spawn(threads, || content_reader_core::buildings::read(layers));
-                    let resources = spawn(threads, || content_reader_core::resources::read(layers));
-                    let aliases = spawn(threads, || content_reader_core::tag_aliases::read(layers));
+                        spawn(threads, || content_reader_key_names::scripted_triggers::read(layers));
+                    let buildings = spawn(threads, || content_reader_key_names::buildings::read(layers));
+                    let resources = spawn(threads, || content_reader_key_names::resources::read(layers));
+                    let aliases = spawn(threads, || content_reader_key_names::tag_aliases::read(layers));
                     (
-                        content_reader_core::decisions::read(layers),
+                        content_reader_politics::decisions::read(layers),
                         abilities.join(),
                         focuses.join(),
                         unit_traits.join(),
@@ -306,9 +304,9 @@ impl PoliticsContent {
                 let abilities = settled(abilities)?;
                 let (focuses, focus_warnings) = settled(focuses)?;
                 let unit_traits = settled(unit_traits)?;
-                let triggers = content_reader_core::trigger_keys::TriggerNames::new(
+                let triggers = content_reader_script::trigger_keys::TriggerNames::new(
                     settled(scripted_triggers)?,
-                    content_reader_core::trigger_keys::CountTriggerNames::new(
+                    content_reader_key_names::key_name_products::count_trigger_names(
                         &settled(buildings)?,
                         &self.ideologies,
                         &settled(resources)?.0,
@@ -648,7 +646,7 @@ impl PoliticsContent {
             kind,
             identity.to_vec(),
             edge,
-            content_reader_core::content::artwork_mode(),
+            content_reader_layers::content::artwork_mode(),
         );
         let store = if edge == ICON_EDGE {
             &self.portraits
@@ -750,7 +748,7 @@ impl PoliticsContent {
         let key = format!(
             "{token}\u{0}{}\u{0}{country:?}\u{0}{saved:?}\u{0}{:?}",
             character.unwrap_or(""),
-            content_reader_core::content::artwork_mode(),
+            content_reader_layers::content::artwork_mode(),
         );
         if let Some(cached) = self
             .artwork
@@ -790,7 +788,7 @@ impl PoliticsContent {
         icon: &IdeaIcon,
     ) -> Result<Option<String>, Box<Finding>> {
         let recorded = match self.catalogue.recorded() {
-            Some(recorded) if !content_reader_core::content::is_strict() => recorded,
+            Some(recorded) if !content_reader_layers::content::is_strict() => recorded,
             _ => return idea_icon(&self.catalogue, token, icon),
         };
         let drawn = catalogue::draw(

@@ -30,7 +30,7 @@ pub fn assets() -> TrainAssets {
             }],
             ..Default::default()
         },
-        equipment: content_reader_core::equipment::Database::default(),
+        equipment: content_reader_key_names::equipment::Database::default(),
         defines: DEFINES,
         routes: RouteCache::default(),
     }
@@ -47,7 +47,7 @@ pub fn next_hour_plan() -> TrainPlan {
 pub(super) fn route(path: Vec<u32>, points: Vec<[f32; 3]>, distance: Vec<f32>, seed: u32) -> Route {
     Route {
         path,
-        curve: Arc::new((crate::railways::TrainRoute { points, open_end: false }, distance)),
+        curve: Arc::new((content_reader_map::railways::TrainRoute { points, open_end: false }, distance)),
         seed,
     }
 }

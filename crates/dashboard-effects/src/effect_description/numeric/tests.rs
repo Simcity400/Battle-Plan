@@ -289,11 +289,11 @@ fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let resources = [content_reader_core::resources::Resource {
+    let resources = [content_reader_key_names::resources::Resource {
         token: "syn_resource".into(),
         icon_frame: Some(7),
     }];
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for (body, expected) in [
         (
             "create_import={resource=syn_resource amount=4 exporter=BBB factories=100}",
@@ -339,11 +339,11 @@ fn imports_and_licenses_resolve_reserved_country_names() {
                 ..Default::default()
             },
         ]));
-    let resources = [content_reader_core::resources::Resource {
+    let resources = [content_reader_key_names::resources::Resource {
         token: "syn_resource".into(),
         icon_frame: Some(7),
     }];
-    let names = content_reader_core::key_names::KeyNames::default();
+    let names = content_reader_script::key_names::KeyNames::default();
     for (body, expected) in [
         (
             "create_import={resource=syn_resource amount=4 exporter=0}",

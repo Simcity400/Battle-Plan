@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use super::*;
 use viewer_unit_reads::air_reachability::TargetPredicates;
 use viewer_unit_reads::aircraft_model;
@@ -302,7 +303,7 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audi
     );
     let typed = assets.lazy_diagnostics();
     assert!(typed.iter().any(|(kind, line)| {
-        *kind == content_reader_core::DiagnosticKind::Refused
+        *kind == content_reader_parser::DiagnosticKind::Refused
             && line.contains("AbsentFlap")
             && line.contains("(2)")
     }));
@@ -397,7 +398,7 @@ fn a_roster_whose_every_plane_is_refused_keeps_each_reason() {
         ])
     );
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -1089,7 +1090,7 @@ fn a_transient_bake_read_keeps_its_claim_and_warnings_but_no_decision_or_merge()
     assert_eq!(
         once.iter()
             .filter(
-                |(kind, line)| *kind == content_reader_core::DiagnosticKind::Refused
+                |(kind, line)| *kind == content_reader_parser::DiagnosticKind::Refused
                     && line.contains("odd_plane -> AbsentFlap")
                     && line.contains("(2)")
             )
@@ -1099,7 +1100,7 @@ fn a_transient_bake_read_keeps_its_claim_and_warnings_but_no_decision_or_merge()
     assert_eq!(
         once.iter()
             .filter(
-                |(kind, line)| *kind == content_reader_core::DiagnosticKind::Warning
+                |(kind, line)| *kind == content_reader_parser::DiagnosticKind::Warning
                     && line.contains("1 geometry-less entities")
             )
             .count(),
@@ -1364,7 +1365,7 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
         "{}",
         unusable["clean_plane_entity"]
     );
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -1429,7 +1430,7 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
         &mut warnings,
     )
     .unwrap();
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -1668,7 +1669,7 @@ fn regions_skip_undefined_provinces_and_count_duplicates() {
     );
     assert_eq!(fractions[&8], RegionFractions::default());
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Warning);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Warning);
     assert!(warnings[0].1.contains("list 2 provinces"));
 }
 
@@ -2170,7 +2171,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     assert_eq!(
         warnings,
         [(
-            content_reader_core::DiagnosticKind::Logged,
+            content_reader_parser::DiagnosticKind::Logged,
             "Aircraft scenario scenario_entity has no attachment node rocket: the game logs it and that actor rides the scenario entity's root".to_owned()
         )]
     );
@@ -2182,7 +2183,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     );
     assert!(missile.is_none());
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Refused);
     assert!(warnings[0].1.contains("ROCKET_SPEED is unreadable"));
     let (bomber, warnings) = rig(
         (6, 0),
@@ -2191,7 +2192,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
         Ok(band),
     );
     assert_eq!(bomber.unwrap().unbound, [Some(UNBOUND_SPEED)]);
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Logged);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Logged);
     let (bound, _) = rig((6, 0), vec![(0, "joint1".into())], Err("unused"), Ok(band));
     assert_eq!(bound.unwrap().unbound, [None]);
     let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), Ok(band));
@@ -2212,7 +2213,7 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     let missing = Err("NDefines.NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y is unreadable");
     let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), missing);
     assert!(rocket.is_none());
-    assert_eq!(warnings[0].0, content_reader_core::DiagnosticKind::Refused);
+    assert_eq!(warnings[0].0, content_reader_parser::DiagnosticKind::Refused);
     assert!(
         warnings[0]
             .1
@@ -2725,7 +2726,7 @@ fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
             warnings
                 .iter()
                 .filter(|(kind, line)| {
-                    *kind == content_reader_core::DiagnosticKind::Refused && line.starts_with(&refused)
+                    *kind == content_reader_parser::DiagnosticKind::Refused && line.starts_with(&refused)
                 })
                 .count(),
             1,
@@ -2787,7 +2788,7 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
 
 #[test]
 fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!("viewer-aircraft-player-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let mut mesh = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
@@ -2904,13 +2905,13 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
             attempts.push(from_recording);
             if from_recording {
                 notes.push((
-                    content_reader_core::DiagnosticKind::Logged,
+                    content_reader_parser::DiagnosticKind::Logged,
                     "recorded rig".into(),
                 ));
                 Some("recorded")
             } else {
                 notes.push((
-                    content_reader_core::DiagnosticKind::Refused,
+                    content_reader_parser::DiagnosticKind::Refused,
                     "its animation file gfx/entities/patrol.anim does not read".into(),
                 ));
                 None
@@ -2923,7 +2924,7 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
     assert_eq!(
         warnings,
         [(
-            content_reader_core::DiagnosticKind::Logged,
+            content_reader_parser::DiagnosticKind::Logged,
             "recorded rig".to_owned()
         )]
     );
@@ -2935,7 +2936,7 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
         true,
         |from_recording, notes| {
             notes.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!("refused from the recording: {from_recording}"),
             ));
             None::<&str>
@@ -2946,7 +2947,7 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
     assert_eq!(
         warnings,
         [(
-            content_reader_core::DiagnosticKind::Refused,
+            content_reader_parser::DiagnosticKind::Refused,
             "refused from the recording: false".to_owned()
         )]
     );

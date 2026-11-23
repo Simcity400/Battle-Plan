@@ -8,4 +8,4 @@ Reuse the immutable mesh and animation name joins across repeated pose queries. 
 
 Keep rest values separate from samples. Animation streams are frame-major, containing only the joints declaring the corresponding channel and in their source order. A short or absent sampled channel can use its rest pose. A still recorded hour has no animation time, so it selects the first sample of the default state. Resolve all shapes together if the mesh declares no explicit LOD ladder, since shape order alone can put an undrawable collision subgroup before visible geometry. The collision projection chooses the last qualifying collision submesh and uses bounds when none qualifies.
 
-[Mesh reader](../../crates/content-reader-core/src/mesh.rs) · [Container reader](../../crates/content-reader-core/src/mesh/container.rs) · [Animation reader](../../crates/content-reader-core/src/mesh/animation.rs)
+[Mesh reader](../../crates/content-reader-mesh/src/mesh.rs) · [Container reader](../../crates/content-reader-mesh/src/mesh/container.rs) · [Animation reader](../../crates/content-reader-mesh/src/mesh/animation.rs)

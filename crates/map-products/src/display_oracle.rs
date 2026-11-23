@@ -1,4 +1,4 @@
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use map_display_data::{Refresh, SnowMud, Summary};
 use replay_data::rows::{Recorded, TableId, TableRows, WeatherProvinceRow};
 use replay_frame::frame::{DecodedFrame, TableView};

@@ -1,5 +1,6 @@
 
-use content_reader_core::{ResolvedLayers, static_modifiers::Descriptions};
+use content_reader_layers::ResolvedLayers;
+use content_reader_politics::static_modifiers::Descriptions;
 use replay_data::{
     rows::ModifierBreakdownNode, rows::PowerBalanceModifierBreakdownRow, rows::tables,
 };
@@ -88,7 +89,7 @@ impl Checker {
         let mut blocks = Vec::with_capacity(row.sources.len());
         for source in &row.sources {
             let key =
-                std::str::from_utf8(content_reader_core::parser::c_string(source)).map_err(|_| {
+                std::str::from_utf8(content_reader_parser::parser::c_string(source)).map_err(|_| {
                     format!(
                         "static modifier {} is not UTF-8",
                         String::from_utf8_lossy(source)

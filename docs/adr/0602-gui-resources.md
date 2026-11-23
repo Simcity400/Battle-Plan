@@ -8,4 +8,4 @@ The font file list follows assignment order. `path` appends and `fontfiles` repl
 
 Font glyph and kerning files use the native token walk. Line boundaries do not delimit records. The first file holding a codepoint or kerning pair wins. Line height and baseline come from the first file, and texture paths use bytewise extension resolution. Font-specific text colours retain the first stored colour for each code except code zero. Font draw geometry uses the viewport stored when the font is built. Its auxiliary colour can affect an early sprite bake before text objects restore the default. Integer component writes from offsets may reach later font state. Model the named effects of those writes and refuse any subsequent operation whose required resource state cannot be determined.
 
-[GUI resources](../../crates/content-reader-core/src/gui/native/resources.rs) · [Bitmap fonts](../../crates/content-reader-core/src/gui/native/fonts.rs)
+[GUI resources](../../crates/content-reader-gui/src/gui/native/resources.rs) · [Bitmap fonts](../../crates/content-reader-gui/src/gui/native/fonts.rs)

@@ -1,8 +1,8 @@
 use super::{loc, paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
-use crate::content::Content;
+use content_reader_layers::content::Content;
 use crate::tooltips::{hover_text, set_hover};
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;

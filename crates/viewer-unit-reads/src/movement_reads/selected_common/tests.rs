@@ -153,7 +153,7 @@ fn railway_frame() -> DecodedFrame {
 
 fn railway_answers(frame: &DecodedFrame, target: u32) -> (Fact<bool>, Fact<bool>) {
     let mut assets = assets();
-    let graph = content_reader_core::province_graph::ProvinceGraph {
+    let graph = content_reader_map::province_graph::ProvinceGraph {
         edges: BTreeMap::from([(1, vec![(3, None), (2, None), (2, None)]), (4, Vec::new())]),
         ..Default::default()
     };
@@ -600,7 +600,7 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
         let mut assets = assets();
         assets.geometry.land.extend([1, 2, 3]);
         assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
-            &content_reader_core::province_graph::ProvinceGraph::default(),
+            &content_reader_map::province_graph::ProvinceGraph::default(),
             &assets.geometry,
         ));
         let world = World::read(frame, assets.trigger_content.facts());
@@ -694,7 +694,7 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
 fn selected_rule_warning_localises_the_native_name_and_preserves_defined_empty() {
     let frame = strait_frame();
     let state_keys = BTreeMap::new();
-    let rule = content_reader_core::adjacency_rules::parse(b"adjacency_rule = { name = fixture_rule }")
+    let rule = content_reader_map::adjacency_rules::parse(b"adjacency_rule = { name = fixture_rule }")
         .unwrap()
         .remove(0);
     for (value, expected) in [

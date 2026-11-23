@@ -8,7 +8,7 @@ use syn::visit::{self, Visit};
 fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inputs() {
     let selected = selected_tables();
     assert!(selected.contains(&TableId::Campaign));
-    for &table in crate::triggers::RECORDED_TABLES {
+    for &table in content_reader_script::triggers::RECORDED_TABLES {
         assert!(
             selected.contains(&table),
             "authored trigger input {table:?} is required"
@@ -407,7 +407,7 @@ fn source_census_follows_aliases_macros_and_production_after_test_modules() {
             rows!(CountryGameScoreInputs);
             let _ = T::WarOwnedRelations;
             read::<WarOwnedRelations>();
-            let _: content_reader_core::intelligence::OperationTokens;
+            let _: content_reader_military::intelligence::OperationTokens;
             let _ = "tables::Decisions"; // tables::TimedIdeas
         }
     "#;

@@ -1,6 +1,7 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use super::*;
 use crate::equipment_graphics::Names;
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use std::path::{Path, PathBuf};
 
 struct Root(PathBuf);
@@ -203,7 +204,7 @@ fn modded(root: &Root) -> PathBuf {
 }
 
 fn catalogue(layers: &ResolvedLayers, designs: &[(String, String)]) -> Catalogue {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let roster = layers.descriptor_roster().unwrap();
     let equipment = equipment::Database::load_complete(layers).unwrap();
     let names = Names {

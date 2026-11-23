@@ -1,6 +1,8 @@
 
 use crate::sound::Notes;
-use content_reader_core::{ResolvedLayers, crt, defines, parser};
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::{crt, parser};
+use content_reader_defines::defines;
 use std::io;
 
 pub const FOLDER: &str = "sound/combat_sounds";
@@ -173,7 +175,7 @@ impl BattleDefines {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::test_support::Stack;
+    use content_reader_layers::test_support::Stack;
 
     #[test]
     fn definitions_share_slots_by_sub_unit_type_and_refuse_by_name() {

@@ -14,7 +14,10 @@ export-types = ["dashboard-base/export-types", "dashboard-world/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
-content-reader-core = { workspace = true }
+content-reader-key-names.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 content-reader-localisation = { workspace = true }
 dashboard-base = { workspace = true }
 dashboard-core = { workspace = true }
@@ -35,8 +38,8 @@ serde_json = { workspace = true }
 ts-rs = "11.1"
 
 [dev-dependencies]
+content-reader-script = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }

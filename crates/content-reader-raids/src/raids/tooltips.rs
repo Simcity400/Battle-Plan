@@ -1,5 +1,5 @@
 
-use crate::{fields, parser::Item};
+use content_reader_parser::{fields, parser::Item};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Definition {
@@ -73,7 +73,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
     for item in items {
         match item
             .keyword()
-            .map(crate::parser::Keyword::folded)
+            .map(content_reader_parser::parser::Keyword::folded)
             .as_deref()
         {
             Some(b"days_to_prepare") => super::integer(&item.value, &mut out.days_to_prepare),
@@ -108,7 +108,7 @@ fn read_into(items: &[Item], out: &mut Definition) -> std::io::Result<()> {
                         for field in body {
                             let slot = match field
                                 .keyword()
-                                .map(crate::parser::Keyword::folded)
+                                .map(content_reader_parser::parser::Keyword::folded)
                                 .as_deref()
                             {
                                 Some(b"weight") => &mut modifier.weight,
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn repeated_formulas_preserve_modifier_order_and_defaults() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let got = tooltip(
             br#"days_to_prepare = 4 target_loc_key = "some_target"
             success_factors = { success = { base = 0.4 STRENGTH = { weight = -0.1 ignored = 1 } } }
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_custom_modifier_is_dropped() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let got = tooltip(
             br#"success_factors = { success = {
                 "strength" = { weight = 0.3 }
@@ -196,7 +196,7 @@ mod tests {
         let doc = super::super::reader::document(
             &text,
             &|_| Some(false),
-            &crate::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
             &mut Vec::new(),
         )
         .unwrap();

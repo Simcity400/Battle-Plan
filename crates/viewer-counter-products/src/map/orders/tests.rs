@@ -1040,7 +1040,7 @@ fn bench_synthetic_1943_plan() {
 
 #[test]
 fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
-    use content_reader_core::{movement::Neighbour, movement::ProvinceTerrain};
+    use content_reader_map::movement::{Neighbour, ProvinceTerrain};
     use replay_data::{
         rows::OrderExecutionInputs, rows::ProvinceRow, rows::Recorded, rows::TableRows,
     };

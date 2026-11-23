@@ -1,7 +1,7 @@
 
 use super::super::views::{Need, Pace, Reader as ViewReader, Views};
 use dashboard_follow::panel::{Panel, PanelData, dated};
-use content_reader_core::ResolveOptions;
+use content_reader_layers::ResolveOptions;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
 use std::{

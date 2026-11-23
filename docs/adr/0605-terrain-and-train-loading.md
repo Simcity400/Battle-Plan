@@ -10,4 +10,4 @@ Train graphics reads every direct definition file in content order and shares th
 
 Choose country, graphical culture, and then default, with the first two available only for a valid creator tag. Within a table try the equipment type before its archetype and require its first wagon. A country archetype can therefore win against a culture's exact type. Resolve country tags and culture names through content, trying the culture suffix for unqualified names. The registered null culture is a real index-zero object and distinct from a missing culture. Train definitions sharing an ASCII-folded equipment name share one table entry.
 
-[Terrain reader](../../crates/content-reader-core/src/terrain.rs) · [Train graphics](../../crates/content-reader-core/src/train_gfx.rs)
+[Terrain reader](../../crates/content-reader-key-names/src/terrain.rs) · [Train graphics](../../crates/content-reader-gui/src/train_gfx.rs)

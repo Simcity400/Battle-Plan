@@ -4,4 +4,4 @@ The regular, medium and small flag sets have separate atlas defines. A flag cell
 
 Accept uncompressed true-colour Targa files at three or four bytes per pixel with no colour map. The first stored row is the bottom row regardless of descriptor origin bits. With a nonempty identification field, compute the pixel start using its signed one-byte length plus 20. That can seek back into the header for large byte values. A negative start follows the engine's rejection and permits the next candidate. A short file can appear to succeed in the game because pixel reads are unchecked, leaving the resulting bytes undefined. The decoder and consumers distinguish that truncation from an ordinary candidate refusal and allocate output only after the full pixel range is available.
 
-[Flag decoder](../../crates/content-reader-core/src/flags.rs) · [Dashboard flag projection](../../crates/dashboard-world/src/products/country_flags.rs)
+[Flag decoder](../../crates/content-reader-gui/src/flags.rs) · [Dashboard flag projection](../../crates/dashboard-world/src/products/country_flags.rs)

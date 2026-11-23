@@ -1,18 +1,13 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
 
-use crate::{
-    ResolvedLayers,
-    fixed5::script_fixed5,
-    key_names::KeyNames,
-    parser::{
-        self, Item, Operator, Value,
-        native::{self, Shape},
-    },
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::{fixed5::script_fixed5, parser::{self, Item, Operator, Value}};
+use content_reader_script::{key_names::KeyNames, native::{self, Shape}};
 
 pub mod aircraft;
 pub mod context;
@@ -304,10 +299,10 @@ pub struct Names {
 impl Names {
     pub fn read(
         layers: &ResolvedLayers,
-        default_map: &crate::terrain::DefaultMap,
+        default_map: &content_reader_key_names::terrain::DefaultMap,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
-        let index = crate::country_tags::country_tag_index(layers)?;
+        let index = content_reader_key_names::country_tags::country_tag_index(layers)?;
         warnings.extend(index.warning());
         Ok(Self {
             countries: index.files.into_keys().collect(),
@@ -459,7 +454,7 @@ impl Content {
                             }
                             Some(b"limit") => {
                                 pool.limit.extend(
-                                    crate::triggers::body(&field.value).unwrap_or_default(),
+                                    content_reader_script::triggers::body(&field.value).unwrap_or_default(),
                                 );
                             }
                             _ => {}
@@ -1094,7 +1089,7 @@ fn strings(value: &Value) -> io::Result<Vec<String>> {
         .collect()
 }
 
-pub use crate::fixed5::authored_fixed5;
+pub use content_reader_parser::fixed5::authored_fixed5;
 
 fn folded_strings(value: &Value) -> io::Result<Vec<String>> {
     Ok(strings(value)?
@@ -1129,7 +1124,7 @@ mod tests {
     }
 
     fn enter_pool_test_tables() {
-        use content_reader_core::{test_game, trigger_keys::Reader};
+        use content_reader_script::{test_game, trigger_keys::Reader};
         use engine_executable::executable_tables::{self, Tables};
         static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
         let tables = TABLES.get_or_init(|| {
@@ -1142,7 +1137,7 @@ mod tests {
 
     #[test]
     fn the_graphic_db_trigger_reader_keeps_content_names() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let key_names = KeyNames {
             countries: [b"EST".to_vec()].into(),
             ..KeyNames::default()
@@ -1178,7 +1173,7 @@ mod tests {
 
     #[test]
     fn aircraft_override_keeps_pool_visit_ties_and_reverse_strings() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let names = Names {
             countries: ["AAA".to_owned()].into(),
             continents: ["europe".to_owned()].into(),
@@ -1316,7 +1311,7 @@ mod tests {
 
     #[test]
     fn buckets_accept_declared_tags_factions_and_continents_and_skip_the_rest() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let factions = ["EN2".to_owned()];
         let pools = content(
             br#"
@@ -1515,7 +1510,7 @@ mod tests {
 
     #[test]
     fn pools_follow_the_field_readers() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let pools = content(
             br#"
             @weight = 4
@@ -1597,7 +1592,7 @@ mod tests {
 
     #[test]
     fn null_equipment_names_do_not_match_authored_empty_pools() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let pools = content(
             br#"default = {
                 "" = { pool = { weight = 9 models = { null_model } icons = { null_icon } } }

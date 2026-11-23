@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::{terrain::TerrainAdjuster, terrain::TerrainCategory};
+use content_reader_key_names::terrain::{TerrainAdjuster, TerrainCategory};
 
 fn category(name: &str, color: Result<[f32; 4], &str>) -> TerrainCategory {
     TerrainCategory {

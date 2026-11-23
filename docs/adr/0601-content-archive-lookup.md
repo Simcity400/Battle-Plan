@@ -8,4 +8,4 @@ Archive enumeration retains symbolic link records. The game opens the archive me
 
 An inventory digest covers the decoded bytes a passwordless open sees. Where admission or encryption prevents such an open, cover the opening fields and the record's stored bytes instead. This includes central metadata that can change an encrypted member's admission even when local bytes are identical. Check the held archive identity and all covered central records on each reached lookup, including a miss or a password-form request. Verify the reached covered payload against its digest. A changed or disappeared verified record never turns into a silent pass to the layer below. A legacy archive digest scheme must miss the cache rather than claiming it carried the stronger proof.
 
-[Archive reader](../../crates/content-reader-core/src/content/physfs_zip.rs) · [Archive verification and overlay](../../crates/content-reader-core/src/content.rs)
+[Archive reader](../../crates/content-reader-layers/src/content/physfs_zip.rs) · [Archive verification and overlay](../../crates/content-reader-layers/src/content.rs)

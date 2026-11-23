@@ -1,6 +1,6 @@
 
 use crate::{Source, presentation::Presentation, products::ContentOptions};
-use content_reader_core::content::visual::Choice;
+use content_reader_layers::content::visual::Choice;
 use content_reader_image::Rgba8Image;
 use std::{
     path::{Path, PathBuf},

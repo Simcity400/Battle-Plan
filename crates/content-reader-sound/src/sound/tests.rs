@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::test_support::Stack;
+use content_reader_layers::test_support::Stack;
 
 #[test]
 fn asset_files_load_recursively_and_resolve_after_every_file() {

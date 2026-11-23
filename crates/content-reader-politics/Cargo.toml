@@ -1,0 +1,29 @@
+[package]
+name = "content-reader-politics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MIT AND Zlib"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
+engine-executable.workspace = true
+
+[dev-dependencies]
+content-reader-layers = { workspace = true, features = ["layer-fixtures", "test-support"] }
+content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
+engine-heap.workspace = true
+
+[features]
+test-support = ["content-reader-layers/test-support", "content-reader-script/test-support"]

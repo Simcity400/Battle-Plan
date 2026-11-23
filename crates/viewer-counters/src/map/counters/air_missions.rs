@@ -933,17 +933,17 @@ impl Prepared {
                                 let number = if small {
                                     format!(
                                         "{}/{}",
-                                        content_reader_core::fixed5::fixed5_to_string(
+                                        content_reader_parser::fixed5::fixed5_to_string(
                                             supply.supplied,
                                             0
                                         ),
-                                        content_reader_core::fixed5::fixed5_to_string(supply.needed, 0)
+                                        content_reader_parser::fixed5::fixed5_to_string(supply.needed, 0)
                                     )
                                 } else {
                                     format!(
                                         "{}R{}{}!",
                                         viewer_native_gui::native_text::COLOR,
-                                        content_reader_core::fixed5::fixed5_to_string(supply.deficit, 1),
+                                        content_reader_parser::fixed5::fixed5_to_string(supply.deficit, 1),
                                         viewer_native_gui::native_text::COLOR
                                     )
                                 };

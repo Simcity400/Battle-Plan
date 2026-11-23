@@ -16,7 +16,7 @@ pub(crate) fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             bound: radius.hypot(1.0),
             convoy_radius: None,
             attachments: 0,
-            cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+            cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         }],
         ..ModelLibrary::default()
     }
@@ -112,19 +112,19 @@ pub fn visual_stack(
     )
     .unwrap();
     std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-    let options = content_reader_core::ResolveOptions {
+    let options = content_reader_layers::ResolveOptions {
         game_dir: root.join("steamapps/common/Game"),
         user_dir: root.join("user"),
         cache_dir: root.join("cache"),
     };
     let base = root.join("base");
     let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-    let selected = [content_reader_core::content::visual::Choice {
+    let selected = [content_reader_layers::content::visual::Choice {
         id: "mod/art.mod".into(),
         name: "Art".into(),
     }];
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    content_reader_layers::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
     (root, layers)
 }
 
@@ -167,7 +167,7 @@ pub fn animated_root_fixture(
             bound: 1.0,
             convoy_radius: None,
             attachments: 0,
-            cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+            cull_distance_squared: content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
         }],
         ..Default::default()
     };

@@ -81,7 +81,7 @@ pub(super) struct ShipTables {
 }
 
 pub(super) struct ShipInputs<'a> {
-    pub(super) equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
+    pub(super) equipment: Result<&'a content_reader_key_names::equipment::Database, &'a str>,
     pub(super) tables: Arc<ShipTables>,
 }
 
@@ -299,7 +299,7 @@ pub(super) struct NavalContext<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct NavalSources<'a> {
     pub(super) type_tints: &'a type_tint::Index,
-    pub(super) equipment: Result<&'a content_reader_core::equipment::Database, &'a str>,
+    pub(super) equipment: Result<&'a content_reader_key_names::equipment::Database, &'a str>,
     pub(super) vision: &'a Vision,
     pub(super) native: &'a NativeInputs,
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
@@ -315,7 +315,7 @@ fn set_frame_argument(number: u32) -> i32 {
 
 pub(super) fn ideology_frame(
     frame: &DecodedFrame,
-    ideologies: &content_reader_core::ideologies::Ideologies,
+    ideologies: &content_reader_key_names::ideologies::Ideologies,
     country_ids: &BTreeMap<u32, u32>,
     slot: u32,
 ) -> Result<Option<i32>, String> {
@@ -1053,7 +1053,7 @@ pub(super) fn port_counters_with(
         }
         (Some(_), None) => Err(PORT_ORDER_UNRECORDED.into()),
     };
-    let homes = crate::map::naval_selection::home_bases(
+    let homes = content_reader_map::map::naval_selection::home_bases(
         frame,
         tables.vision.ours(),
         inputs.selected_fleets,

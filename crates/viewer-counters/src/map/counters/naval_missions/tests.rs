@@ -588,7 +588,7 @@ fn kinds(count: usize) -> Vec<MissionEntry> {
 
 #[test]
 fn mission_click_footprints_follow_the_composed_entry_buttons() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let res = Res::new();
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
     let entries = kinds(2);
@@ -628,7 +628,7 @@ fn mission_click_footprints_follow_the_composed_entry_buttons() {
 
 #[test]
 fn f3_fading_strike_and_invasion_keep_last_unknown_count_until_rewritten() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "name = \"naval_mission_mapicon_entry\"",
         "name = \"naval_mission_mapicon_entry\" fade_type = linear fade_time = 1000",
@@ -830,7 +830,7 @@ fn places(source: &str, count: usize) -> Vec<[i32; 2]> {
 
 #[test]
 fn entries_stand_where_the_code_moves_content_and_the_list() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let list = r#"position = { x = 0 y = 0 }
 				size = { x = 241 y = 50 }"#;
     assert_eq!(
@@ -856,7 +856,7 @@ fn entries_stand_where_the_code_moves_content_and_the_list() {
 
 #[test]
 fn first_on_top_reverses_the_paint_order_only() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with("spacing = 2.0", "spacing = 2.0 first_on_top = yes");
     let painted = buttons(&source, &kinds(3));
     let order: Vec<_> = painted
@@ -876,7 +876,7 @@ fn first_on_top_reverses_the_paint_order_only() {
 
 #[test]
 fn root_margins_reach_the_entries() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
         "name = \"naval_mission_mapicon\" size = { width = 200 height = 100 } \
@@ -887,7 +887,7 @@ fn root_margins_reach_the_entries() {
 
 #[test]
 fn a_clipping_root_clips_the_entries() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
         "name = \"naval_mission_mapicon\" size = { width = 40 height = 40 } clipping = yes",
@@ -899,7 +899,7 @@ fn a_clipping_root_clips_the_entries() {
 
 #[test]
 fn a_percentage_content_lays_out_in_the_root() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
         "name = \"naval_mission_mapicon\" size = { width = 200 height = 100 }",
@@ -914,7 +914,7 @@ fn a_percentage_content_lays_out_in_the_root() {
 
 #[test]
 fn a_hidden_content_keeps_the_roots_artwork() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
         "name = \"naval_mission_mapicon\" \
@@ -934,7 +934,7 @@ fn a_hidden_content_keeps_the_roots_artwork() {
 
 #[test]
 fn an_icon_without_shown_kinds_draws_its_root() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let with_art = SYNTHETIC_MISSION_GUI.replacen(
         "OverlappingElementsBoxType = {",
         "iconType = { name = \"content_art\" spriteType = \"GFX_content_art\" position = { x = 3 y = 4 } }\n\t\t\tOverlappingElementsBoxType = {",
@@ -994,7 +994,7 @@ fn sprite_frame(part: &native_gui::Part) -> u32 {
 
 #[test]
 fn the_synthetic_entry_draws_the_code_selected_children_at_authored_positions() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut report = CounterReport::default();
     let layout = laid_entry(&fixture_entry(2, Ok(None)), &Res::new(), &mut report);
     let names: Vec<_> = layout
@@ -1027,7 +1027,7 @@ fn the_synthetic_entry_draws_the_code_selected_children_at_authored_positions() 
 
 #[test]
 fn counts_colour_and_undecided_children() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let res = Res::new();
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
     let entries = [fixture_entry(1, Ok(Some(0)))];
@@ -1082,7 +1082,7 @@ fn counts_colour_and_undecided_children() {
 
 #[test]
 fn an_undefined_kind_sprite_keeps_the_authored_one() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut report = CounterReport::default();
     let res = Res::new().without("GFX_mapicon_naval_invasion_support");
     let layout = laid_entry(&fixture_entry(9, Ok(None)), &res, &mut report);
@@ -1106,7 +1106,7 @@ fn an_undefined_kind_sprite_keeps_the_authored_one() {
 
 #[test]
 fn a_replaced_kind_sprite_drops_the_authored_rotation() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "quadTextureSprite = \"GFX_synthetic_mission_button\"",
         "quadTextureSprite = \"GFX_mapicon_naval_mission_patrol\" rotation = 0.5",
@@ -1129,7 +1129,7 @@ fn a_replaced_kind_sprite_drops_the_authored_rotation() {
 
 #[test]
 fn a_progress_button_takes_frame_two_as_its_value() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut res = Res::new();
     res.progress.push("GFX_mapicon_naval_mission_strike_force");
     let layout = laid_entry(
@@ -1148,7 +1148,7 @@ fn a_progress_button_takes_frame_two_as_its_value() {
 
 #[test]
 fn a_vertical_kind_strip_draws_its_second_row() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut res = Res::new();
     res.vertical.push("GFX_mapicon_naval_mission_strike_force");
     let layout = laid_entry(
@@ -1167,7 +1167,7 @@ fn a_vertical_kind_strip_draws_its_second_row() {
 
 #[test]
 fn native_reader_keys_keep_the_entrys_later_children() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "iconType = {
 			name = \"pride\"",
@@ -1187,7 +1187,7 @@ fn native_reader_keys_keep_the_entrys_later_children() {
 
 #[test]
 fn a_text_in_a_scaled_entry_container_draws() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "iconType = {
 			name = \"pride\"",
@@ -1212,7 +1212,7 @@ fn a_text_in_a_scaled_entry_container_draws() {
 
 #[test]
 fn inline_icons_in_mission_texts_are_acquired() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with("text = \"100%\"", "text = \"EFFICIENCY_KEY\"");
     let windows = windows_of(&source);
     let localisation: content_reader_localisation::localisation::Localisation =
@@ -1226,7 +1226,7 @@ fn inline_icons_in_mission_texts_are_acquired() {
 
 #[test]
 fn modded_forms_lay_out_rather_than_being_refused() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let right = synthetic_with("format = left", "format = right");
     assert_eq!(places(&right, 2).len(), 2);
     let clipping = synthetic_with(
@@ -1269,7 +1269,7 @@ fn drawn_buttons(harness: &mut Harness, entries: &[MissionEntry]) -> Vec<String>
 
 #[test]
 fn an_outgoing_entry_draws_until_its_hide_ends() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     for (extra, listed) in [
         ("fade_type = linear fade_time = 1000", 2.0),
         (
@@ -1311,7 +1311,7 @@ fn an_outgoing_entry_draws_until_its_hide_ends() {
 
 #[test]
 fn an_entry_hidden_by_its_roots_ended_fade_keeps_that_frames_clock() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = entry_with(
         "iconType = { name = \"anim\" spriteType = \"GFX_anim\" position = { x = 0 y = 0 } }",
     )
@@ -1370,7 +1370,7 @@ fn gaps(harness: &mut Harness, what: &str) -> usize {
 
 #[test]
 fn an_undecided_pride_leaves_its_entry_unknown_until_a_decided_write() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let res = Res::new();
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
     let decided = [fixture_entry(1, Ok(Some(2)))];
@@ -1393,7 +1393,7 @@ fn an_undecided_pride_leaves_its_entry_unknown_until_a_decided_write() {
 
 #[test]
 fn a_slot_allocated_after_a_divergence_leaves_what_an_update_may_keep_unknown() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     const MOVED: &str = "its pool slot may not be the game's";
     let res = Res::new();
     let mut harness = Harness::new(&entry_with(
@@ -1433,7 +1433,7 @@ fn a_slot_allocated_after_a_divergence_leaves_what_an_update_may_keep_unknown() 
 
 #[test]
 fn a_mission_windows_unknown_transition_settles_as_the_other_naval_windows_do() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let fading = synthetic_with(
         "name = \"naval_mission_mapicon\"",
         "name = \"naval_mission_mapicon\" fade_type = linear fade_time = 500",
@@ -1498,7 +1498,7 @@ fn a_mission_windows_unknown_transition_settles_as_the_other_naval_windows_do() 
 
 #[test]
 fn a_frame_that_stops_withholds_every_icon_until_rebuilt() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     const STOPPED: &str = "its frame does not update";
     let res = Res::new();
     let two = kinds(2);
@@ -1552,7 +1552,7 @@ fn a_frame_that_stops_withholds_every_icon_until_rebuilt() {
 
 #[test]
 fn a_structural_refusal_withholds_the_icon_and_its_entries_until_rebuilt() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     const REFUSED: &str = "its update does not apply";
     let res = Res::new();
     let two = kinds(2);
@@ -1631,7 +1631,7 @@ fn a_structural_refusal_withholds_the_icon_and_its_entries_until_rebuilt() {
 
 #[test]
 fn a_list_placement_refusal_withholds_the_entries_until_they_are_placed_again() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     const UNPLACED: &str = "its place in";
     let root = "name = \"naval_mission_mapicon\"";
     let source = entry_with("fade_type = linear fade_time = 1000").replacen(
@@ -1660,7 +1660,7 @@ fn a_list_placement_refusal_withholds_the_entries_until_they_are_placed_again() 
 
 #[test]
 fn unlisted_records_take_the_code_writes_over_no_registration() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let none: [MissionEntry; 0] = [];
     let red_zero = "\u{11}R0%\u{11}!";
     assert_eq!(record(1, &none).alert, Ok(true));
@@ -1704,7 +1704,7 @@ fn unlisted_records_take_the_code_writes_over_no_registration() {
 
 #[test]
 fn crossing_the_cutoff_erases_and_shows_again() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let res = Res::new();
     let two = kinds(2);
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
@@ -1764,7 +1764,7 @@ fn crossing_the_cutoff_erases_and_shows_again() {
 
 #[test]
 fn a_region_out_of_view_is_reached_until_its_provinces_are_clean() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let provinces = |region: u32| -> &'static [u32] {
         match region {
             4 => &[140, 141],
@@ -1828,7 +1828,7 @@ fn a_region_out_of_view_is_reached_until_its_provinces_are_clean() {
 
 #[test]
 fn a_moving_root_keeps_frames_coming_until_it_settles() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = "\t\tcontainerWindowType = {\n\t\t\tname = \"content\"";
     let source = synthetic_with(
         content,
@@ -1851,7 +1851,7 @@ fn a_moving_root_keeps_frames_coming_until_it_settles() {
 
 #[test]
 fn descendants_and_percentage_roots_run_on_the_instances() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = synthetic_with(
         "name = \"naval_mission_mapicon\"",
         "name = \"naval_mission_mapicon\" size = { width = 10% height = 5% }",
@@ -1883,7 +1883,7 @@ fn descendants_and_percentage_roots_run_on_the_instances() {
 
 #[test]
 fn a_fixed_window_entry_is_refused_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let source = SYNTHETIC_MISSION_GUI.replacen(
         "containerWindowType = {\n\t\tname = \"naval_mission_mapicon_entry\"",
         "windowType = {\n\t\tname = \"naval_mission_mapicon_entry\"",
@@ -1914,7 +1914,7 @@ fn a_fixed_window_entry_is_refused_by_name() {
 
 #[test]
 fn political_mode_keeps_the_empty_grids_and_hides_the_counted_containers() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let modded = synthetic_with(
         "name = \"unit_grid\"",
         "name = \"unit_grid\" background = { name = \"bg\" spriteType = \"GFX_grid_bg\" }",
@@ -1946,7 +1946,7 @@ fn political_mode_keeps_the_empty_grids_and_hides_the_counted_containers() {
 
 #[test]
 fn naval_mode_accepts_prepared_grids_and_independent_badge_counts() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let res = Res::new();
     let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
     harness.windows.missions.mode = NAVAL_UI_MODE;
@@ -2020,7 +2020,7 @@ fn naval_mode_accepts_prepared_grids_and_independent_badge_counts() {
 
 #[test]
 fn gaps_and_unanchored_icons_are_named_and_counted() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let windows = windows_of("");
     let Err(reason) = MissionWindows::find(&windows).map(|_| ()) else {
         panic!("no mission windows declared");
@@ -2059,7 +2059,7 @@ fn gaps_and_unanchored_icons_are_named_and_counted() {
 
 #[test]
 fn slot_history_survives_unknown_census_and_unplaced_regions_becoming_drawable() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui_text = format!(
         "guiTypes={{containerWindowType={{name=unit_counter size={{width=81 height=29}} \
          buttonType={{name=count_bg spriteType=GFX_synthetic_plate}} \

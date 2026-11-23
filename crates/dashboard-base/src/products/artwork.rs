@@ -1,3 +1,4 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 pub mod sprites;
 
@@ -63,7 +64,7 @@ fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<S
 
 struct TechnologyName {
     database_index: Option<u32>,
-    presentation: Result<content_reader_core::technology::PresentationName, String>,
+    presentation: Result<content_reader_military::technology::PresentationName, String>,
     folders: Vec<String>,
     children: std::sync::OnceLock<catalogue::Drawn<Result<Vec<String>, String>>>,
 }
@@ -78,8 +79,8 @@ struct TechnologyNames {
 
 impl TechnologyNames {
     fn read(
-        definitions: Vec<content_reader_core::technology::Template>,
-        unread: Vec<content_reader_core::technology::UnreadFile>,
+        definitions: Vec<content_reader_military::technology::Template>,
+        unread: Vec<content_reader_military::technology::UnreadFile>,
     ) -> Self {
         let mut out = Self::default();
         let mut unknown_place = None;
@@ -140,9 +141,9 @@ impl TechnologyNames {
 
 #[cfg(test)]
 fn technology_name(
-    presentation: &content_reader_core::technology::PresentationName,
-    world: Result<&crate::triggers::World<'_>, String>,
-    database: Option<&Arc<content_reader_core::equipment::Database>>,
+    presentation: &content_reader_military::technology::PresentationName,
+    world: Result<&content_reader_script::triggers::World<'_>, String>,
+    database: Option<&Arc<content_reader_key_names::equipment::Database>>,
 ) -> Result<String, String> {
     let mut children = technology_children(presentation, world, database)?;
     Ok(if children.len() == 1 {
@@ -153,16 +154,16 @@ fn technology_name(
 }
 
 fn technology_children(
-    presentation: &content_reader_core::technology::PresentationName,
-    world: Result<&crate::triggers::World<'_>, String>,
-    database: Option<&Arc<content_reader_core::equipment::Database>>,
+    presentation: &content_reader_military::technology::PresentationName,
+    world: Result<&content_reader_script::triggers::World<'_>, String>,
+    database: Option<&Arc<content_reader_key_names::equipment::Database>>,
 ) -> Result<Vec<String>, String> {
     presentation.children(
         |body| {
             world
                 .as_ref()
                 .map_err(Clone::clone)?
-                .evaluate(body, crate::triggers::Scopes::empty())
+                .evaluate(body, content_reader_script::triggers::Scopes::empty())
                 .decided()
         },
         |child| {
@@ -200,14 +201,14 @@ struct Preparation {
     point_days: Option<f64>,
     technology_names: Arc<TechnologyNames>,
     inventory: Vec<String>,
-    preparation_warnings: Vec<content_reader_core::Diagnostic>,
+    preparation_warnings: Vec<content_reader_parser::Diagnostic>,
     warnings: Vec<String>,
-    folder_definitions: Arc<Vec<content_reader_core::technology::FolderDefinition>>,
+    folder_definitions: Arc<Vec<content_reader_military::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
 }
 
 impl Preparation {
-    fn read(layers: &content_reader_core::ResolvedLayers, kind: Kind) -> io::Result<Self> {
+    fn read(layers: &content_reader_layers::ResolvedLayers, kind: Kind) -> io::Result<Self> {
         let mut warnings = Vec::new();
         let mut folder_definitions = Vec::new();
         let mut folder_warnings = Vec::new();
@@ -229,8 +230,8 @@ impl Preparation {
                     )
                 }
                 Kind::Technology => {
-                    let read = content_reader_core::technology::Database::read(layers)?;
-                    match content_reader_core::technology::read_folders(layers) {
+                    let read = content_reader_military::technology::Database::read(layers)?;
+                    match content_reader_military::technology::read_folders(layers) {
                         Ok(folders) => {
                             folder_definitions = folders.folders;
                             folder_warnings
@@ -245,7 +246,7 @@ impl Preparation {
                             .into_iter()
                             .map(|(_, message)| message),
                     );
-                    if let Some(database) = layers.key_names()?.equipment_database() {
+                    if let Some(database) = layers.key_name_products()?.equipment_database() {
                         warnings.extend(
                             database
                                 .misreads
@@ -275,7 +276,7 @@ impl Preparation {
     }
 }
 
-type IconKey = (bool, content_reader_core::content::ArtworkMode, String);
+type IconKey = (bool, content_reader_layers::content::ArtworkMode, String);
 
 pub struct Context {
     diagnostics: catalogue::OwnRefusals,
@@ -289,8 +290,8 @@ pub struct Context {
     point_days: Option<f64>,
     warnings: Vec<String>,
     inventory: Vec<String>,
-    preparation_warnings: Vec<content_reader_core::Diagnostic>,
-    folder_definitions: Arc<Vec<content_reader_core::technology::FolderDefinition>>,
+    preparation_warnings: Vec<content_reader_parser::Diagnostic>,
+    folder_definitions: Arc<Vec<content_reader_military::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
     folder_availability: OnceLock<catalogue::Drawn<Vec<Option<bool>>>>,
 }
@@ -441,7 +442,7 @@ pub struct FocusFrame<'a> {
         catalogue::OwnRefusals,
     )>,
     rereads:
-        std::cell::RefCell<std::collections::HashMap<crate::triggers::inputs::Key, Option<u64>>>,
+        std::cell::RefCell<std::collections::HashMap<content_reader_script::triggers::inputs::Key, Option<u64>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub text_builds: std::cell::Cell<usize>,
 }
@@ -462,7 +463,7 @@ impl<'a> FocusFrame<'a> {
     }
 
 
-    pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
+    pub fn reread(&self, key: &content_reader_script::triggers::inputs::Key) -> Option<u64> {
         if let Some(read) = self.rereads.borrow().get(key) {
             return *read;
         }
@@ -471,9 +472,9 @@ impl<'a> FocusFrame<'a> {
         read
     }
 
-    fn read_now(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
+    fn read_now(&self, key: &content_reader_script::triggers::inputs::Key) -> Option<u64> {
         match key {
-            crate::triggers::inputs::Key::FocusTag(tag) => Some(crate::triggers::inputs::digest(
+            content_reader_script::triggers::inputs::Key::FocusTag(tag) => Some(content_reader_script::triggers::inputs::digest(
                 &focus_slot(self.frame, tag),
             )),
             _ => self.text().ok()?.reread(key),
@@ -490,7 +491,7 @@ impl<'a> FocusFrame<'a> {
             self.text_builds.set(self.text_builds.get() + 1);
             catalogue::capture(|| {
                 shown.scripted_content().map(|content| {
-                    crate::triggers::inputs::unrecorded(|| {
+                    content_reader_script::triggers::inputs::unrecorded(|| {
                         crate::scripted_text::ScriptedText::new_in(
                             frame,
                             &shown.localisation,
@@ -637,7 +638,7 @@ impl Context {
                             None => Some(true),
                             Some(trigger) => world.as_ref().ok().and_then(|world| {
                                 world
-                                    .evaluate(trigger, crate::triggers::Scopes::empty())
+                                    .evaluate(trigger, content_reader_script::triggers::Scopes::empty())
                                     .decided()
                                     .ok()
                             }),
@@ -741,7 +742,7 @@ impl Context {
     fn focus(
         &self,
         token: &str,
-    ) -> Result<Option<&content_reader_focus::focus::FocusDefinition>, &content_reader_core::coverage::Gap>
+    ) -> Result<Option<&content_reader_focus::focus::FocusDefinition>, &content_reader_parser::coverage::Gap>
     {
         match self.kind {
             Kind::Focus(database) => self.definitions.get_in(focus_database(database), token),
@@ -795,7 +796,7 @@ impl Context {
                 .catalogue
                 .content
                 .layers
-                .key_names()
+                .key_name_products()
                 .map_err(|error| error.to_string())?;
             let database = registry
                 .equipment_database()
@@ -901,7 +902,7 @@ impl Context {
                         .catalogue
                         .content
                         .layers
-                        .key_names()
+                        .key_name_products()
                         .map_err(|error| error.to_string())?;
                     let world = self
                         .catalogue
@@ -1060,7 +1061,7 @@ impl Context {
         ))
     }
 
-    pub fn tokens(&self) -> (&[String], &[content_reader_core::Diagnostic]) {
+    pub fn tokens(&self) -> (&[String], &[content_reader_parser::Diagnostic]) {
         (&self.inventory, &self.preparation_warnings)
     }
 
@@ -1464,8 +1465,8 @@ impl Context {
             let country = country_scopes
                 .entry(tag)
                 .or_insert_with(|| {
-                    crate::triggers::inputs::query(
-                        || crate::triggers::inputs::Key::FocusTag(tag.to_owned()),
+                    content_reader_script::triggers::inputs::query(
+                        || content_reader_script::triggers::inputs::Key::FocusTag(tag.to_owned()),
                         || focus_slot(frame, tag),
                     )
                 })
@@ -1499,7 +1500,7 @@ impl Context {
                                                 ),
                                             ]),
                                         ));
-                                        let evaluator = crate::triggers::Evaluator::new(
+                                        let evaluator = content_reader_script::triggers::Evaluator::new(
                                             context()?.trigger_world()?,
                                             None,
                                         )
@@ -1559,7 +1560,7 @@ impl Context {
                 let mut scope = crate::scripted_text::EventScope::of(
                     crate::scripted_text::EventObject::Country(slot),
                 );
-                let seed = crate::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed_in(frame));
+                let seed = content_reader_script::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed_in(frame));
                 scope.clock_seed = Some(seed);
                 let scopes = match seed {
                     Some(seed) => {
@@ -1618,7 +1619,7 @@ impl Context {
         let sprites: Vec<_> = sprites.into_iter().map(|sprite| (sprite, 0)).collect();
         let batch = || catalogue::sprite_frames_png(layers, &sprites, *decode, ICON_EDGE);
         let _ = if self.catalogue.recorded().is_some() {
-            content_reader_core::content::strict(batch)
+            content_reader_layers::content::strict(batch)
         } else {
             batch()
         };
@@ -1627,7 +1628,7 @@ impl Context {
     fn cached_icon(&self, drawing: &Catalogue, name: &str) -> io::Result<Option<String>> {
         let key = (
             !std::ptr::eq(drawing, &*self.catalogue),
-            content_reader_core::content::artwork_mode(),
+            content_reader_layers::content::artwork_mode(),
             name.to_owned(),
         );
         let held = |cache: &BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>| {
@@ -1792,8 +1793,8 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
 }
 
 fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
-    use content_reader_core::{gui::native::Fields, gui::native::Kind};
-    let (_, root) = content_reader_core::gui::native::kept_container_window(
+    use content_reader_gui::gui::native::{Fields, Kind};
+    let (_, root) = content_reader_gui::gui::native::kept_container_window(
         catalogue.guis()?,
         "topbar",
         &mut Vec::new(),
@@ -2588,17 +2589,17 @@ mod tests {
             &[],
         );
         let layers = &catalogue.content.layers;
-        let presentation = content_reader_core::technology::Database::read(layers).unwrap();
-        let registry = layers.key_names().unwrap();
-        let again = layers.key_names().unwrap();
+        let presentation = content_reader_military::technology::Database::read(layers).unwrap();
+        let registry = layers.key_name_products().unwrap();
+        let again = layers.key_name_products().unwrap();
         assert!(Arc::ptr_eq(
             registry.equipment_database().unwrap(),
             again.equipment_database().unwrap()
         ));
-        let triggers = content_reader_core::trigger_keys::TriggerNames::default();
-        let aliases = Arc::new(content_reader_core::tag_aliases::TagAliases::default());
+        let triggers = content_reader_script::trigger_keys::TriggerNames::default();
+        let aliases = Arc::new(content_reader_key_names::tag_aliases::TagAliases::default());
         let empty = BTreeSet::new();
-        let world = crate::triggers::World::unrecorded(&empty, &triggers, &aliases);
+        let world = content_reader_script::triggers::World::unrecorded(&empty, &triggers, &aliases);
         let named = |key: &str| {
             presentation
                 .definitions
@@ -2620,13 +2621,13 @@ mod tests {
         assert_eq!(select("invalid").unwrap(), "invalid");
         assert_eq!(select("harbor").unwrap(), "harbor");
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
-        let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
+        let world = content_reader_script::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
             technology_name(named("dlc"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_child"
         );
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
-        let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
+        let world = content_reader_script::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
             technology_name(named("harbor"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_harbor"
@@ -3059,7 +3060,7 @@ mod tests {
 mod interface_refusals {
     use crate::catalogue::{Catalogue, tests::folder_catalogue};
     use crate::products::artwork;
-    use content_reader_core::ResolvedLayers;
+    use content_reader_layers::ResolvedLayers;
     use std::collections::BTreeSet;
     use std::sync::{Arc, atomic::AtomicBool};
 

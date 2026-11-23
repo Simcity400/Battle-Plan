@@ -29,9 +29,9 @@ fn combat_task_forces_never_offer_sea_counter_sources() {
 fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
     use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow, rows::ShipRow};
     use {
-        crate::map::counter_groups, crate::map::counter_groups::Extents,
-        crate::map::counter_groups::GroupDefines, crate::map::counter_groups::Icon,
-        crate::map::counter_groups::Level,
+        content_reader_map::map::counter_groups, content_reader_map::map::counter_groups::Extents,
+        content_reader_map::map::counter_groups::GroupDefines, content_reader_map::map::counter_groups::Icon,
+        content_reader_map::map::counter_groups::Level,
     };
 
     let eng = TaskForceRow {
@@ -312,7 +312,7 @@ fn the_port_comparator_wraps_and_the_insertion_sort_orders_the_cycle() {
     assert!(port_sort_compare(&bottom, &middle) < 0);
     assert!(port_sort_compare(&middle, &top) < 0);
     assert!(port_sort_compare(&top, &bottom) < 0);
-    use crate::map::naval_combat_grid::fleet_difference;
+    use content_reader_map::map::naval_combat_grid::fleet_difference;
     assert_eq!(fleet_difference(7 << 32, 5 << 32), 2);
     assert_eq!(
         fleet_difference(u64::from(i32::MIN as u32) << 32, 1 << 32),
@@ -628,7 +628,7 @@ fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
 
 #[test]
 fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -643,7 +643,7 @@ fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
     }"#,
         ),
     )]);
-    crate::map::counters::tests::with_counter_inputs_fixture(
+    content_reader_map::map::counters::tests::with_counter_inputs_fixture(
         guis,
         |_| {},
         |content| {
@@ -710,7 +710,7 @@ fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
 
 #[test]
 fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occurrences() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -727,7 +727,7 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
     }"#,
         ),
     )]);
-    crate::map::counters::tests::with_counter_inputs_fixture(
+    content_reader_map::map::counters::tests::with_counter_inputs_fixture(
         guis,
         |_| {},
         |content| {
@@ -735,7 +735,7 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
             content.defines.groups.strategic_distance = 200.;
         },
         |mut inputs| {
-            use crate::map::counters::preparation::plan_probe;
+            use content_reader_map::map::counters::preparation::plan_probe;
             inputs.settings.color_mode = CounterColorMode::Allegiance;
             inputs.visibility.political_mode = false;
             inputs.visibility.strategic_grouping = true;
@@ -870,7 +870,7 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
 #[test]
 fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another() {
     use replay_data::rows::TaskForceCounterInputRow;
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -888,7 +888,7 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
     }"#,
         ),
     )]);
-    crate::map::counters::tests::with_counter_inputs_fixture(
+    content_reader_map::map::counters::tests::with_counter_inputs_fixture(
         guis,
         |_| {},
         |content| content.aggression = Arc::new(vec![1]),
@@ -969,7 +969,7 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
 
 #[test]
 fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavailable() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = native::Guis::new(vec![(
         MAPICONS_GUI.into(),
         native::read(
@@ -984,7 +984,7 @@ fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavaila
     }"#,
         ),
     )]);
-    crate::map::counters::tests::with_counter_inputs_fixture(
+    content_reader_map::map::counters::tests::with_counter_inputs_fixture(
         guis,
         |_| {},
         |content| {

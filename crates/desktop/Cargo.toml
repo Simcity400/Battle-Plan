@@ -37,8 +37,8 @@ custom-protocol = ["tauri/custom-protocol"]
 served-ui = ["custom-protocol"]
 
 [dev-dependencies]
+content-reader-script.workspace = true
 recorder-derive.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

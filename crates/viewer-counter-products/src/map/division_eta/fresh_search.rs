@@ -274,10 +274,7 @@ impl<'a> Inputs<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{
-        movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        movement::RailMovementDefines,
-    };
+    use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain, RailMovementDefines};
     use replay_data::{
         rows::CountryLinkRow, rows::CountryRow, rows::RailEdgeRow, rows::RailwayBuildingHealth,
         rows::RailwayBuildingState, rows::Recorded, rows::TableId, rows::TableRows,
@@ -337,7 +334,7 @@ mod tests {
 
     #[test]
     fn idle_explicit_target_times_the_searched_route_at_the_edge_speed() {
-        use content_reader_core::province_graph::ProvinceGraph;
+        use content_reader_map::province_graph::ProvinceGraph;
         use content_reader_unit_path::unit_path::MoveGraph;
         use dashboard_text::triggers::World;
         use replay_data::rows::DivisionTemplateIconRow;

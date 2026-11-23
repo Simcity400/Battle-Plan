@@ -10,11 +10,17 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 content-reader-states.workspace = true
 replay-data.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }
 
 [lints]

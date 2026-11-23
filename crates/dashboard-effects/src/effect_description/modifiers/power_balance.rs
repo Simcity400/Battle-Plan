@@ -12,7 +12,7 @@ mod tests;
 fn text(fields: &[Item], name: &str) -> Vec<u8> {
     field(fields, name)
         .map(|item| {
-            content_reader_core::parser::c_string(item.value.scalar().unwrap_or_default()).to_vec()
+            content_reader_parser::parser::c_string(item.value.scalar().unwrap_or_default()).to_vec()
         })
         .unwrap_or_default()
 }
@@ -26,7 +26,7 @@ fn absolute(value: i64) -> i64 {
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    fn balance_database(&self) -> Result<&content_reader_core::power_balance::Database, String> {
+    fn balance_database(&self) -> Result<&content_reader_politics::power_balance::Database, String> {
         self.context
             .content
             .power_balances
@@ -36,7 +36,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     fn balance_definition(
         &self,
         id: &[u8],
-    ) -> Result<&content_reader_core::power_balance::Definition, String> {
+    ) -> Result<&content_reader_politics::power_balance::Definition, String> {
         self.balance_database()?.definition(id).ok_or_else(|| {
             format!(
                 "balance {} is absent from content",
@@ -90,7 +90,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn balance_side(
         &self,
-        definition: &content_reader_core::power_balance::Definition,
+        definition: &content_reader_politics::power_balance::Definition,
         id: &[u8],
     ) -> Result<String, String> {
         match definition.sides.iter().find(|side| same(side, id)) {
@@ -188,10 +188,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let explicit = field(fields, "set_value");
         let defaults = field(fields, "set_default")
             .and_then(|item| item.value.scalar())
-            .and_then(content_reader_core::parser::read_bool)
+            .and_then(content_reader_parser::parser::read_bool)
             .unwrap_or(false);
         let value = explicit
-            .map(content_reader_core::modifiers::stored)
+            .map(content_reader_script::modifiers::stored)
             .unwrap_or(if defaults {
                 definition.initial_value
             } else {
@@ -285,7 +285,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let current = current.as_deref();
         let left = current.map_or(definition.left.as_slice(), |row| row.left.as_slice());
         let right = current.map_or(definition.right.as_slice(), |row| row.right.as_slice());
-        let value = field(fields, "value").map_or(0, content_reader_core::modifiers::stored);
+        let value = field(fields, "value").map_or(0, content_reader_script::modifiers::stored);
         let predicted = current
             .map_or(0, |row| row.value_raw)
             .wrapping_add(value)

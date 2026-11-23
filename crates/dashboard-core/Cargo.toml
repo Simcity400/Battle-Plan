@@ -10,9 +10,12 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["dep:recorder-derive", "content-reader-core/test-support", "replay/test-support"]
+test-support = ["dep:recorder-derive", "content-reader-layers/test-support", "replay/test-support"]
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
 recorder-derive = { workspace = true, optional = true }
 replay.workspace = true
 engine-allocation.workspace = true
@@ -20,7 +23,6 @@ engine-executable.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 job-priority.workspace = true
-content-reader-core.workspace = true
 content-reader-settings.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
@@ -29,9 +31,9 @@ ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 engine-heap.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

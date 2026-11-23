@@ -87,7 +87,7 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
     );
     pixel.textures.push((1, TextureKind::D2));
     let compiled = Compiled { vertex, pixel };
-    let program = content_reader_core::pdxshader::program::read_with(b"session.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"session.shader", &|path| {
         Some(if path == b"session.shader" {
             b"Effect Session { }".to_vec()
         } else {

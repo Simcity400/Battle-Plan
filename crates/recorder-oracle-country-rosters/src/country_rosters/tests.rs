@@ -4,7 +4,7 @@ use replay_data::rows::Recorded;
 
 fn saved_roles() -> characters::Pack {
     characters::parse(
-        &content_reader_core::parser::parse(
+        &content_reader_parser::parser::parse(
             br"character_manager={historical={
                 character={id={id=7 type=73} token=general country=GER
                     corps_commander={id={id=17 type=4713} skill=1}}
@@ -84,7 +84,7 @@ fn country_rosters_compare_sets_preserve_absence_and_name_null_limitations() {
     save.countries.get_mut(b"GER".as_slice()).unwrap().cores = vec![7, 3];
     save.characters = saved_roles();
     save.characters.character_status = characters::parse(
-        &content_reader_core::parser::parse(
+        &content_reader_parser::parser::parse(
             br"countries={GER={characters={
             character_status={character={id=8 type=73} unit_leader=yes}
             character_status={character={id=7 type=73} unit_leader=yes}

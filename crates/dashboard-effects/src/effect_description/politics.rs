@@ -348,7 +348,7 @@ impl Renderer<'_, '_, '_> {
         let enabled = item
             .value
             .scalar()
-            .and_then(content_reader_core::parser::read_bool)
+            .and_then(content_reader_parser::parser::read_bool)
             .unwrap_or(false);
         let key = if enabled {
             b"EFFECT_SET_MAJOR_YES".as_slice()
@@ -425,7 +425,7 @@ impl Renderer<'_, '_, '_> {
         let fields = children(item);
         let cost = field(fields, "cost")
             .and_then(|item| item.value.scalar())
-            .and_then(|value| content_reader_core::crt::scan_i32(value).stored())
+            .and_then(|value| content_reader_parser::crt::scan_i32(value).stored())
             .unwrap_or(0);
         let focuses = fields
             .iter()

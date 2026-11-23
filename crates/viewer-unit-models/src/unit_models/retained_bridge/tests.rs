@@ -467,7 +467,7 @@ fn naval_rows(frame: &mut DecodedFrame, hour: i32) {
 
 #[test]
 fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_changes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut reference = assets();
     let new = assets();
     let base = frame();
@@ -656,7 +656,7 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
 
 #[test]
 fn coarse_selection_scopes_keep_hour_records_and_lazy_join_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let plain = assets();
     let profiled = assets();
     let base = frame();

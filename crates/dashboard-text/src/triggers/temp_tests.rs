@@ -1,7 +1,7 @@
 use super::*;
 
-fn temp_effects(text: &str) -> content_reader_core::parser::native::Read {
-    use content_reader_core::{parser::native, parser::native::Shape};
+fn temp_effects(text: &str) -> content_reader_script::native::Read {
+    use content_reader_script::native::{self, Shape};
     native::read(
         text.as_bytes(),
         native::Mode::KeepMark,
@@ -208,7 +208,7 @@ fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
 fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use content_reader_core::scripted_triggers::Template;
+    use content_reader_script::scripted_trigger_grammar::Template;
 
     let frame = positive_variables_frame();
     let mut triggers = TriggerNames::default();
@@ -490,7 +490,7 @@ fn format98_random_temp_trigger_and_mtth_share_the_seed_context() {
                 .decided(),
             Ok(true)
         );
-        let fields = content_reader_core::parser::parse(
+        let fields = content_reader_parser::parser::parse(
             b"base=1 modifier={always=yes factor=random} modifier={always=yes factor=random}",
         )
         .unwrap()

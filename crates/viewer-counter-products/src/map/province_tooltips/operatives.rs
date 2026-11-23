@@ -1,5 +1,5 @@
 use super::{Arg, Context, Tooltip, line};
-use content_reader_core::fixed5::fixed5_to_string;
+use content_reader_parser::fixed5::fixed5_to_string;
 use replay_data::{rows::IntelNetworkRow, rows::tables};
 use viewer_native_gui::native_text::{COLOR, FLAG};
 

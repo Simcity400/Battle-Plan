@@ -22,7 +22,7 @@ pub(super) fn hour_temperature(content: &Content, frame: &DecodedFrame, rows: &[
         .province_hover
         .temperature_at(frame, rows, province)
 }
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn withheld_controls_hide_wherever_a_mod_nests_them_and_count_once() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=moved gridBoxType={name=state_shared_slot_building_entries}} instantTextboxType={name=state_name} containerWindowType={name=province_info_window iconType={name=province_building_entries} iconType={name=province_custom_icon_building_entries}}}}",
         );

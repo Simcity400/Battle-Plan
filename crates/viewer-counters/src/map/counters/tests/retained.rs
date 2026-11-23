@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -41,7 +41,7 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
             content.region_of = Arc::new([(1, 1), (2, 1), (3, 2)].into());
         },
         |mut inputs| {
-            use crate::map::counters::preparation::plan_probe;
+            use content_reader_map::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -198,7 +198,7 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
 
 #[test]
 fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_changed() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -232,7 +232,7 @@ fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_cha
             content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
         },
         |mut inputs| {
-            use crate::map::counters::preparation::plan_probe;
+            use content_reader_map::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -331,9 +331,9 @@ fn land_plates_against_fresh(
     overlay: &str,
     extra: &str,
     frames: Vec<LandFrame>,
-) -> Vec<(crate::map::counters::preparation::plan_probe::Counts, crate::map::counters::preparation::plan_probe::Counts)> {
-    use crate::map::counters::preparation::plan_probe;
-    content_reader_core::test_game::enter();
+) -> Vec<(content_reader_map::map::counters::preparation::plan_probe::Counts, content_reader_map::map::counters::preparation::plan_probe::Counts)> {
+    use content_reader_map::map::counters::preparation::plan_probe;
+    content_reader_script::test_game::enter();
     let guis = layout_gui(
         format!(
             r#"guiTypes={{
@@ -445,7 +445,7 @@ fn grouping_re_forming_lays_out_only_the_re_formed_columns() {
 
 #[test]
 fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -479,7 +479,7 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
             content.region_of = Arc::new([(1, 1), (2, 2), (3, 3)].into());
         },
         |mut inputs| {
-            use crate::map::counters::preparation::plan_probe;
+            use content_reader_map::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -680,13 +680,13 @@ fn synthetic_hour_with_history(
 
 #[test]
 fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_counter_inputs_fixture(
         action_gui(false),
         |_| {},
         |_| {},
         |inputs| {
-            use crate::map::counters::preparation::plan_probe;
+            use content_reader_map::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
             let frame = DecodedFrame {
@@ -769,7 +769,7 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
 
 #[test]
 fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_changes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -1165,8 +1165,8 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
     };
     use replay_frame::frame::TableView;
     use viewer_gpu::province_map::ProvinceMap;
-    content_reader_core::test_game::enter();
-    let stack = content_reader_core::test_support::Stack::new("base-icon-lookups");
+    content_reader_script::test_game::enter();
+    let stack = content_reader_layers::test_support::Stack::new("base-icon-lookups");
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
     stack.write(
@@ -1246,12 +1246,12 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 .unwrap();
         },
         |content| {
-            let definitions = content_reader_core::buildings::parse(
+            let definitions = content_reader_key_names::buildings::parse(
                 b"buildings={hq_first={naval_headquarter=yes} hq_second={naval_headquarter=yes}
                 fac_a={specialization={air}} fac_b={specialization={naval}}
                 ambiguous={naval_headquarter=yes specialization={land}}
                 ambiguous={naval_headquarter=no specialization={nuclear}}}",
-                &content_reader_core::key_names::KeyNames::default(),
+                &content_reader_script::key_names::KeyNames::default(),
             )
             .unwrap();
             content.building_icons = BuildingIconContent::load(
@@ -1604,8 +1604,8 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
 
 #[test]
 fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_alone() {
-    use crate::map::counters::base_windows::{Family, PreparedBases, State};
-    use crate::map::counters::preparation::plan_probe;
+    use content_reader_map::map::counters::base_windows::{Family, PreparedBases, State};
+    use content_reader_map::map::counters::preparation::plan_probe;
     with_base_windows("base-windows-kept", |mut inputs| {
         inputs.camera.height = 80.;
         inputs.camera.center = [2., 2.];
@@ -1679,8 +1679,8 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
 }
 
 fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
-    content_reader_core::test_game::enter();
-    let stack = content_reader_core::test_support::Stack::new(name);
+    content_reader_script::test_game::enter();
+    let stack = content_reader_layers::test_support::Stack::new(name);
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
     stack.write(
@@ -1767,7 +1767,7 @@ fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
 
 #[test]
 fn keep_drawn_preserves_motion_continuity_when_land_appears_below_cutoff() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}

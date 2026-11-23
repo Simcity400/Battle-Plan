@@ -1,4 +1,4 @@
-use content_reader_core::mesh;
+use content_reader_mesh::mesh;
 
 pub(super) fn skeleton(decoded: &mesh::Mesh) -> mesh::Mesh {
     mesh::Mesh {

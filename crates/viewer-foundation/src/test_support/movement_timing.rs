@@ -4,7 +4,7 @@ use content_reader_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, sync::Arc};
 
 pub fn terrain(source: &str) -> TerrainSpeedContent {
-    let terrain = Arc::new(content_reader_core::terrain::parse_definitions(source.as_bytes()).unwrap());
+    let terrain = Arc::new(content_reader_key_names::terrain::parse_definitions(source.as_bytes()).unwrap());
     let regions = BTreeMap::from([
         (
             9,

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn production_design_discounts_preserve_order_empty_omission_and_exhausted_uses() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         br#"discount={
         { uses=-1 discount=1.23457 types={ synthetic_frame synthetic_frame } }
         { uses=9 discount=-0.00001 types={} }
@@ -20,14 +20,14 @@ fn production_design_discounts_preserve_order_empty_omission_and_exhausted_uses(
     assert_eq!(rows[1].factor.raw, -1);
     assert!(rows[1].equipment.is_empty());
     assert!(parse_production(&[]).unwrap().design_templates.is_empty());
-    let malformed = content_reader_core::parser::parse(b"discount={{ uses=1 types={} }}").unwrap();
+    let malformed = content_reader_parser::parser::parse(b"discount={{ uses=1 types={} }}").unwrap();
     assert!(parse_production(&malformed.items).is_err());
 }
 
 #[test]
 fn deployment_conveyor_requires_its_unconditional_name_key() {
     let parse = |field: &str| {
-        let doc = content_reader_core::parser::parse(format!("military_deployment_conveyor={{id={{id=1 type=8}} division_template_id={{id=2 type=9}} amount=1 location=0 priority=1 {field}}}").as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(format!("military_deployment_conveyor={{id={{id=1 type=8}} division_template_id={{id=2 type=9}} amount=1 location=0 priority=1 {field}}}").as_bytes()).unwrap();
         parse_deployment(&doc.items)
     };
     assert!(parse("").unwrap_err().to_string().contains("name"));
@@ -39,7 +39,7 @@ fn deployment_conveyor_requires_its_unconditional_name_key() {
 fn deployment_name_ordered_retains_presence_and_refuses_malformed_flags() {
     for (flag, expected) in [("", None), ("is_name_ordered=no", Some(false))] {
         let text = format!("id={{id=17 type=63}} division_name={{type=0 {flag}}}");
-        let fields = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+        let fields = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
         assert_eq!(
             parse_deployment_line(&fields.items).unwrap().name_ordered,
             expected
@@ -51,7 +51,7 @@ fn deployment_name_ordered_retains_presence_and_refuses_malformed_flags() {
         "is_name_ordered=unknown",
     ] {
         let text = format!("id={{id=17 type=63}} division_name={{type=0 {flag}}}");
-        let fields = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+        let fields = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
         assert!(parse_deployment_line(&fields.items).is_err());
     }
 }
@@ -59,7 +59,7 @@ fn deployment_name_ordered_retains_presence_and_refuses_malformed_flags() {
 #[test]
 fn equipment_rosters_keep_saved_order_repeats_and_absence() {
     let production = |text: &[u8]| {
-        let document = content_reader_core::parser::parse(text).unwrap();
+        let document = content_reader_parser::parser::parse(text).unwrap();
         parse(&document.items).unwrap().countries.unwrap()[b"GER".as_slice()]
             .production
             .clone()
@@ -93,7 +93,7 @@ fn equipment_rosters_keep_saved_order_repeats_and_absence() {
 
 #[test]
 fn pool_preserves_order_duplicates_signed_extrema_and_zero() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         br#"
         equipment={id={id=4294967295 type=70} amount=-92233720368547.75808}
         equipment={id={id=0 type=70} amount=0.00000}
@@ -123,7 +123,7 @@ fn pool_refuses_conflicting_fields_null_handles_and_precision_loss() {
         "equipment={id={id=1 type=70} amount=92233720368547.75808}",
         "allow_zero_entries=yes allow_zero_entries=no",
     ] {
-        let doc = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
         assert!(parse_pool(&doc.items).is_err(), "{text}");
     }
 }
@@ -131,16 +131,16 @@ fn pool_refuses_conflicting_fields_null_handles_and_precision_loss() {
 #[test]
 fn registry_keeps_full_handles_and_distinguishes_absence_from_empty() {
     assert!(parse(&[]).unwrap().variants.is_none());
-    let doc = content_reader_core::parser::parse(b"equipments={}").unwrap();
+    let doc = content_reader_parser::parser::parse(b"equipments={}").unwrap();
     assert!(parse(&doc.items).unwrap().variants.unwrap().is_empty());
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"equipments={same={id={id=1 type=70}} same={id={id=1 type=71}}}",
     )
     .unwrap();
     let rows = parse(&doc.items).unwrap().variants.unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[&0x1_0000_0046].definition, b"same");
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"equipments={first={id={id=1 type=70}} second={id={id=1 type=70}}}",
     )
     .unwrap();
@@ -150,7 +150,7 @@ fn registry_keeps_full_handles_and_distinguishes_absence_from_empty() {
 #[test]
 fn variant_version_keeps_raw_byte_and_zero_omission() {
     let variant = |text: &str| {
-        let document = content_reader_core::parser::parse(
+        let document = content_reader_parser::parser::parse(
             format!("equipments={{synthetic={{id={{id=1 type=70}} {text}}}}}").as_bytes(),
         )
         .unwrap();
@@ -172,7 +172,7 @@ fn variant_version_keeps_raw_byte_and_zero_omission() {
 
 #[test]
 fn division_bank_wrapper_is_distinct_from_other_country_equipment() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"countries={GER={equipment={invalid=yes} units={
           division={id={id=7 type=51} id={id=7 type=51} equipment={
             equipment={id={id=3 type=70} amount=0.00001}}}
@@ -197,7 +197,7 @@ fn division_bank_wrapper_is_distinct_from_other_country_equipment() {
 
 #[test]
 fn production_base_preserves_saved_widths_and_writer_omissions() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"id={id=4294967295 type=56} cost=92233720368547.75807
           speed=-92233720368547.75808 produced=-0.00001
           active_factories=-2147483648 priority=2147483647 amount=-1",
@@ -212,7 +212,7 @@ fn production_base_preserves_saved_widths_and_writer_omissions() {
     assert_eq!(line.priority, i32::MAX);
     assert_eq!(line.amount, -1);
     let doc =
-        content_reader_core::parser::parse(b"id={id=0 type=56} cost=0 priority=0 amount=1").unwrap();
+        content_reader_parser::parser::parse(b"id={id=0 type=56} cost=0 priority=0 amount=1").unwrap();
     let line = parse_line_base(&doc.items).unwrap();
     assert_eq!(line.speed, None);
     assert_eq!(line.produced, None);
@@ -221,12 +221,12 @@ fn production_base_preserves_saved_widths_and_writer_omissions() {
 
 #[test]
 fn delivery_progress_exists_only_for_active_status_and_keeps_defaults_absent() {
-    let doc = content_reader_core::parser::parse(b"produced={}").unwrap();
+    let doc = content_reader_parser::parser::parse(b"produced={}").unwrap();
     let delivery = parse_delivery(&doc.items).unwrap();
     assert_eq!(delivery.status, None);
     assert_eq!(delivery.progress, None);
     assert_eq!(delivery.total_progress, None);
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"status=1 progress=-0.00001 total_progress=92233720368547.75807 produced={}",
     )
     .unwrap();
@@ -238,14 +238,14 @@ fn delivery_progress_exists_only_for_active_status_and_keeps_defaults_absent() {
         "status=2 progress=0 produced={}",
         "status=1 progress=0",
     ] {
-        let doc = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
         assert!(parse_delivery(&doc.items).is_err(), "{text}");
     }
 }
 
 #[test]
 fn production_country_wrapper_and_variant_children_preserve_saved_keys_and_order() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         br#"
         countries={GER={production={
             naval_lines={id={id=4294967295 type=57} cost=0 priority=1 amount=-1
@@ -275,7 +275,7 @@ fn production_country_wrapper_and_variant_children_preserve_saved_keys_and_order
     assert_eq!(production.lines[1].mio, None);
     assert!(!production.lines[0].converting);
     assert!(production.lines[1].converting);
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"id={id=0 type=56} cost=0 priority=0 amount=1 requested_factories=2           equipment_variant_index={id=3 type=70} is_converting=no",
     )
     .unwrap();
@@ -293,7 +293,7 @@ fn production_country_wrapper_and_variant_children_preserve_saved_keys_and_order
     for level in ["-1", "256"] {
         let text = "equipments={plane={id={id=3 type=70} upgrades={upgrades={{engine LEVEL}}}}}"
             .replace("LEVEL", level);
-        let doc = content_reader_core::parser::parse(text.as_bytes()).unwrap();
+        let doc = content_reader_parser::parser::parse(text.as_bytes()).unwrap();
         assert!(parse(&doc.items).is_err(), "{level}");
     }
 }
@@ -306,7 +306,7 @@ fn selected_variant_organisation_marker_keeps_signed_values_and_omission() {
         ("number_of_design_team_traits=-2147483648", Some(i32::MIN)),
         ("number_of_design_team_traits=2147483647", Some(i32::MAX)),
     ] {
-        let doc = content_reader_core::parser::parse(
+        let doc = content_reader_parser::parser::parse(
             format!("equipments={{type={{id={{id=1 type=70}} {suffix}}}}}").as_bytes(),
         )
         .unwrap();
@@ -322,7 +322,7 @@ fn selected_variant_organisation_marker_keeps_signed_values_and_omission() {
         "number_of_design_team_traits={}",
         "number_of_design_team_traits=1 number_of_design_team_traits=1",
     ] {
-        let doc = content_reader_core::parser::parse(
+        let doc = content_reader_parser::parser::parse(
             format!("equipments={{type={{id={{id=1 type=70}} {suffix}}}}}").as_bytes(),
         )
         .unwrap();
@@ -332,7 +332,7 @@ fn selected_variant_organisation_marker_keeps_signed_values_and_omission() {
 
 #[test]
 fn army_upgrade_parent_priority_and_nested_requests_are_not_conflated() {
-    let doc = content_reader_core::parser::parse(
+    let doc = content_reader_parser::parser::parse(
         b"countries={GER={units={division={
         id={id=1 type=51} requests={upgrades={priority=-1
             request={request=-0.00001 total=92233720368547.75807
@@ -362,7 +362,7 @@ fn army_upgrade_parent_priority_and_nested_requests_are_not_conflated() {
 }
 
 fn pack(text: &[u8]) -> io::Result<Pack> {
-    parse(&content_reader_core::parser::parse(text)?.items)
+    parse(&content_reader_parser::parser::parse(text)?.items)
 }
 
 const QUEUE: &[u8] = br#"countries={
@@ -566,7 +566,7 @@ fn absent_containers_stay_absent_and_foreign_keys_are_refused() {
 
 #[test]
 fn country_template_selection_retains_empty_missing_and_full_references() {
-    let document = content_reader_core::parser::parse(
+    let document = content_reader_parser::parser::parse(
         br#"countries={
         AAA={templates_locked=yes deployment={hq_next_deploy_order=19 default_hq_template={id=4294967295 type=52}}}
         BBB={deployment={}}
@@ -604,7 +604,7 @@ fn country_template_selection_retains_empty_missing_and_full_references() {
 
 #[test]
 fn country_garrison_priority_keeps_default_signed_value_and_missing_wrapper_distinct() {
-    let document = content_reader_core::parser::parse(
+    let document = content_reader_parser::parser::parse(
         br#"countries={
         AAA={occupation_status={}}
         BBB={occupation_status={priority=-2147483648}}
@@ -629,7 +629,7 @@ fn country_garrison_priority_keeps_default_signed_value_and_missing_wrapper_dist
 
 #[test]
 fn country_template_state_keeps_inherited_garrison_groups_and_state_overrides() {
-    let document = content_reader_core::parser::parse(
+    let document = content_reader_parser::parser::parse(
         br#"countries={AAA={occupation_status={
         division_template_id={id=3 type=52}
         occupation={BBB={garrison_template_by_state={0={id=9 type=52}}}
@@ -657,7 +657,7 @@ fn country_template_state_keeps_inherited_garrison_groups_and_state_overrides() 
 
 #[test]
 fn unit_modifiers_keep_entry_and_target_order_and_omitted_source_fields() {
-    let document = content_reader_core::parser::parse(
+    let document = content_reader_parser::parser::parse(
         br#"countries={
         AAA={deployment={unit_modifiers={
             { synthetic_unit={ synthetic_stat=0.25 combat_width=-0.5
@@ -735,7 +735,7 @@ fn unit_modifiers_keep_entry_and_target_order_and_omitted_source_fields() {
     assert!(list[1].targets.is_empty());
     assert_eq!(pack.unit_bonuses[b"BBB".as_slice()], Ok(Vec::new()));
     assert_eq!(pack.unit_bonuses[b"CCC".as_slice()], Ok(Vec::new()));
-    let named = content_reader_core::parser::parse(
+    let named = content_reader_parser::parser::parse(
         br#"countries={AAA={deployment={unit_modifiers={ named={ type=effect number=0 } }}}}"#,
     )
     .unwrap();

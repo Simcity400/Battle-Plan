@@ -1,9 +1,5 @@
-use crate::{
-    flags::{BackgroundPriority, FlagContent, FlagImage},
-    panel,
-    snapshot::{self, OmissionReason, OmittedLoads, Phase, Problem, Snapshot},
-    targets, tray,
-};
+use content_reader_gui::flags::{BackgroundPriority, FlagContent, FlagImage};
+use crate::{panel, snapshot::{self, OmissionReason, OmittedLoads, Phase, Problem, Snapshot}, targets, tray};
 use recorder::controller::{
     self, CaptureOutcome, Control, Discovery, GameProcess, LoadedCampaign, Omission, Probe,
     Recording, Refusal, SetAside, Stage, Waiting,
@@ -404,7 +400,7 @@ impl Recorder {
             return Ok(Arc::clone(content));
         }
         let identity = controller::session_identity(session).map_err(std::io::Error::other)?;
-        let options = content_reader_core::ResolveOptions {
+        let options = content_reader_layers::ResolveOptions {
             game_dir,
             user_dir,
             cache_dir: replay::recorder_settings::directory(),

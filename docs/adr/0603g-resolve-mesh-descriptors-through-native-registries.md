@@ -10,4 +10,4 @@ Stored state text and structural stream alignment are separate. A later valid as
 
 Test embedded NUL handling at the shared token replay layer. The descriptor tree lexer rejects an embedded NUL before that projection, so the same case cannot be exercised as an integration fixture.
 
-[Descriptor registration](../../crates/content-reader-core/src/mesh/descriptors.rs) · [Mesh and animation poses](0603-d-compose-mesh-poses-from-authored-channels.md)
+[Descriptor registration](../../crates/content-reader-mesh/src/mesh/descriptors.rs) · [Mesh and animation poses](0603-d-compose-mesh-poses-from-authored-channels.md)

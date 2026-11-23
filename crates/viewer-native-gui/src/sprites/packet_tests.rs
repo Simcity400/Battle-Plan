@@ -1,10 +1,7 @@
 use super::*;
 use crate::{native_shader::draw, sprites::{self, Batch, Exact, Quad, SpritePass}};
 use eframe::wgpu;
-use content_reader_core::pdxshader::{
-    Address,
-    program::{Filter, Program, Sampler, Technique as AuthoredTechnique},
-};
+use content_reader_gui::pdxshader::{Address, program::{Filter, Program, Sampler, Technique as AuthoredTechnique}};
 use shader_pipeline::{Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput};
 
 fn program() -> Program {
@@ -202,7 +199,7 @@ fn sprite_packet_failed_selects_stay_uncached_and_replay_every_refusal() {
     for (stage, name) in [(&mut source.vertex, "V"), (&mut source.pixel, "P")] {
         stage
             .entries
-            .push(content_reader_core::pdxshader::program::Entry {
+            .push(content_reader_gui::pdxshader::program::Entry {
                 name: name.into(),
                 source: Default::default(),
             });

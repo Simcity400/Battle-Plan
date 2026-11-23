@@ -12,7 +12,7 @@ fn oracle_output_keeps_the_latest_uncovered_content_note() {
     fs::write(root.join("events/a.txt"), b"synthetic event").unwrap();
     fs::write(root.join("gfx/leaders/a.tga"), b"synthetic portrait").unwrap();
     let layers =
-        content_reader_core::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2)
+        content_reader_layers::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2)
             .unwrap();
     let report = Report {
         content_reads: Some(layers.report_uncovered_reads()),

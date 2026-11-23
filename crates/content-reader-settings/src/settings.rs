@@ -1,8 +1,5 @@
-use crate::{
-    fixed5::decimal_i32,
-    gui::native::{Case, PersistentKey, PointAxis},
-    parser::{self, Document, Item},
-};
+use content_reader_parser::{fixed5::decimal_i32, parser::{self, Document, Item}};
+use content_reader_gui::gui::native::{Case, PersistentKey, PointAxis};
 use std::{
     fs,
     io::{self, Read},
@@ -21,7 +18,7 @@ fn bounded_read(path: &Path) -> io::Result<Vec<u8>> {
 fn bounded_parse<T: Send + Sync + 'static>(path: &Path, parser: &'static str, read: impl FnOnce(&[u8]) -> io::Result<T>) -> io::Result<std::sync::Arc<T>> {
     let tables = engine_executable::executable_tables::current()
         .map_or_else(Vec::new, |tables| tables.identity().sha256.to_vec());
-    content_reader_core::content::Generation::parse_snapshot(path, parser, 1, &tables, bounded_read, |bytes| {
+    content_reader_layers::content::Generation::parse_snapshot(path, parser, 1, &tables, bounded_read, |bytes| {
         if bytes.len() > 256 * 1024 { return Err(io::Error::other("Settings file exceeds its size limit")); }
         read(bytes)
     })
@@ -36,7 +33,7 @@ fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<&'a str> {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SettingsKeys(Vec<crate::gui::native::PersistentKey>, Absent);
+pub struct SettingsKeys(Vec<content_reader_gui::gui::native::PersistentKey>, Absent);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Absent(bool);
@@ -174,7 +171,7 @@ fn map_rendering_case(keyword: &str) -> Option<Case> {
 
 impl SettingsKeys {
     pub fn read(bytes: &[u8]) -> Self {
-        Self(crate::gui::native::persistent_keys(bytes, settings_case), Absent(false))
+        Self(content_reader_gui::gui::native::persistent_keys(bytes, settings_case), Absent(false))
     }
 
     pub fn absent() -> Self {
@@ -222,15 +219,15 @@ impl SettingsKeys {
     }
 
     pub fn bool_at(&self, path: &[&str]) -> Option<bool> {
-        self.stored(path, crate::gui::native::bool_of)
+        self.stored(path, content_reader_gui::gui::native::bool_of)
     }
 
     pub fn i32_at(&self, path: &[&str]) -> Option<i32> {
-        self.stored(path, |text| crate::crt::scan_i32(text).stored())
+        self.stored(path, |text| content_reader_parser::crt::scan_i32(text).stored())
     }
 
     pub fn f32_at(&self, path: &[&str]) -> Option<f32> {
-        self.stored(path, crate::crt::scan_f32)
+        self.stored(path, content_reader_parser::crt::scan_f32)
     }
 
     pub fn string_at(&self, path: &[&str]) -> Option<Vec<u8>> {
@@ -257,8 +254,8 @@ impl SettingsKeys {
         self.bool_at(&["force_pow2_textures"]).unwrap_or(false)
     }
 
-    pub fn texture_decode(&self) -> crate::image::native::Decode {
-        crate::image::native::Decode {
+    pub fn texture_decode(&self) -> content_reader_image::native::Decode {
+        content_reader_image::native::Decode {
             force_pow2_textures: self.force_pow2_textures(),
         }
     }
@@ -320,10 +317,10 @@ pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
 #[derive(Default)]
 struct Languages(std::sync::Mutex<std::collections::BTreeMap<
     (std::path::PathBuf, Option<[u8; 32]>),
-    (Option<String>, content_reader_core::content::diagnostics::Diagnostics),
+    (Option<String>, content_reader_layers::content::diagnostics::Diagnostics),
 >>);
 
-pub fn language_in(layers: &content_reader_core::ResolvedLayers, user: &Path) -> io::Result<Option<String>> {
+pub fn language_in(layers: &content_reader_layers::ResolvedLayers, user: &Path) -> io::Result<Option<String>> {
     layers.admit_generation()?;
     let path = user.join("settings.txt");
     let tables = engine_executable::executable_tables::current().map(|tables| tables.identity().sha256);
@@ -334,7 +331,7 @@ pub fn language_in(layers: &content_reader_core::ResolvedLayers, user: &Path) ->
         diagnostics.credit();
         return Ok(language.clone());
     }
-    let (value, diagnostics) = content_reader_core::content::diagnostics::capture(|| {
+    let (value, diagnostics) = content_reader_layers::content::diagnostics::capture(|| {
         layers.with_file_witness(&path, || read_keys(user).map(|keys| keys.language()))
     });
     diagnostics.credit();
@@ -374,7 +371,7 @@ impl MapOptions {
             ("show_allied_plans", &mut options.allied_plans, false),
         ] {
             for key in settings.assignments(name) {
-                match crate::gui::native::bool_of(&key.value) {
+                match content_reader_gui::gui::native::bool_of(&key.value) {
                     Some(value) => *field = value != invert,
                     None => unread.push(note(name, &key.value, "the game keeps the value before it")),
                 }
@@ -387,7 +384,7 @@ impl MapOptions {
             let mut stored = Some(*field);
             let mut unknown = None;
             for key in settings.assignments(name) {
-                stored = crate::crt::scan_i32(&key.value)
+                stored = content_reader_parser::crt::scan_i32(&key.value)
                     .stored()
                     .map(|value| value.clamp(0, 1) == selects);
                 if stored.is_none() {
@@ -523,7 +520,7 @@ impl Display {
                     .iter()
                     .filter(move |key| key.keyword == Some(keyword))
             };
-            let gui_scale = match stored_in(here("gui_scale"), crate::crt::scan_f32) {
+            let gui_scale = match stored_in(here("gui_scale"), content_reader_parser::crt::scan_f32) {
                 Some(scale) if !scale.is_finite() => {
                     return Err(io::Error::other("Invalid gui_scale in game settings"));
                 }
@@ -533,10 +530,10 @@ impl Display {
             point_in(here("min_gui"), "graphics.min_gui", &mut min_gui_point)
                 .map_err(io::Error::other)?;
             fullscreen =
-                stored_in(here("fullscreen"), crate::gui::native::bool_of).unwrap_or(fullscreen);
+                stored_in(here("fullscreen"), content_reader_gui::gui::native::bool_of).unwrap_or(fullscreen);
             borderless =
-                stored_in(here("borderless"), crate::gui::native::bool_of).unwrap_or(borderless);
-            display_index = stored_in(here("adapter"), |text| crate::crt::scan_i32(text).stored())
+                stored_in(here("borderless"), content_reader_gui::gui::native::bool_of).unwrap_or(borderless);
+            display_index = stored_in(here("adapter"), |text| content_reader_parser::crt::scan_i32(text).stored())
                 .unwrap_or(display_index);
             size = pair("size", size_point, None)?;
             clamps.push(Clamp {
@@ -937,7 +934,7 @@ mod tests {
         use engine_executable::executable_tables::{self, Tables};
         static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
         let tables = TABLES.get_or_init(|| {
-            content_reader_core::test_game::executable()
+            content_reader_script::test_game::executable()
                 .words([
                     "adapter",
                     "borderless",
@@ -965,7 +962,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn cached_language_tracks_edits_absence_and_transient_read_failures() {
-        use content_reader_core::test_support::rewrite_preserving_modified_time;
+        use content_reader_layers::test_support::rewrite_preserving_modified_time;
         use std::os::windows::fs::OpenOptionsExt;
         enter_settings_tables();
         let root = std::env::temp_dir().join(format!("language-input-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -974,8 +971,8 @@ mod tests {
         let english = b"language=\"l_english\"";
         let spanish = b"language=\"l_spanish\"";
         fs::write(&file, english).unwrap();
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         let exclusive = fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&file).unwrap();
         assert!(language_in(&layers, &root).is_err());
         drop(exclusive);
@@ -987,24 +984,24 @@ mod tests {
         assert!(language_in(&layers, &root).is_err());
         drop(layers);
         drop(scope);
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         let changed = SettingsKeys::read(spanish).language();
         assert_ne!(original, changed);
         assert_eq!(language_in(&layers, &root).unwrap(), changed);
         drop(layers);
         drop(scope);
         fs::remove_file(&file).unwrap();
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         assert_eq!(language_in(&layers, &root).unwrap(), None);
         fs::write(&file, vec![b' '; 256 * 1024 + 1]).unwrap();
         assert!(layers.validate_generation().is_err());
         assert!(language_in(&layers, &root).is_err());
         drop(layers);
         drop(scope);
-        let scope = content_reader_core::content::Generation::enter();
-        let layers = content_reader_core::ResolvedLayers::default();
+        let scope = content_reader_layers::content::Generation::enter();
+        let layers = content_reader_layers::ResolvedLayers::default();
         assert!(language_in(&layers, &root).unwrap_err().to_string().contains("size limit"));
         drop(layers);
         drop(scope);

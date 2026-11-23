@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 
 #[cfg(test)]
 use viewer_models::entity_animation::Clock;
@@ -13,11 +14,12 @@ use viewer_foundation::tables::core;
 #[cfg(test)]
 use dashboard_text::table_access::TokenNames;
 
-use content_reader_core::{ResolvedLayers, cities::Cities};
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::cities::Cities;
 use content_reader_image::{IndexedImage, native::Decode};
 
 #[cfg(test)]
-use content_reader_core::buildings::BuildingType;
+use content_reader_key_names::buildings::BuildingType;
 #[cfg(test)]
 use replay_data::{rows::BuildingRow, rows::ProvinceRow, rows::tables};
 #[cfg(test)]
@@ -765,7 +767,7 @@ impl Sprawl {
         layers: &ResolvedLayers,
         decode: Decode,
         plan: &SprawlPlan,
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
@@ -898,7 +900,7 @@ impl Sprawl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::cities;
+    use content_reader_map::cities;
 
     fn damage_types() -> Vec<BuildingType> {
         ["infrastructure", "industrial_complex", "arms_factory"]
@@ -1115,7 +1117,7 @@ mod tests {
     #[test]
     fn city_damage_drives_authored_fire_and_smoke_on_the_state_entry_clock() {
         use viewer_models::entity_animation::{Clip, Node, Player, Rig};
-        use content_reader_core::mesh;
+        use content_reader_mesh::mesh;
         let state = |name: &str, particle: &str| Clip {
             state: mesh::EntityState {
                 name: name.into(),
@@ -1342,9 +1344,9 @@ mod tests {
     fn grouped_city_frames_preserve_admission_placements_requests_and_clock_records() {
         use viewer_models::entity_animation::{Clip, Node, Rig};
         use viewer_models::ModelPass;
-        use content_reader_core::mesh;
+        use content_reader_mesh::mesh;
         use viewer_gpu::camera::{Free, Lens, Pose};
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let rigs: Vec<_> = (0..9)
             .map(|index| {
                 Arc::new(Rig {

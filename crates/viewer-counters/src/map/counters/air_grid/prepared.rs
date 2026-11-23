@@ -1,3 +1,4 @@
+use content_reader_key_names::unit_leader::AirWings as _;
 use super::super::{CounterInputs, tables};
 use super::*;
 use content_reader_localisation::localisation::Argument;

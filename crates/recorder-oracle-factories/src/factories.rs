@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use content_reader_core::buildings::Buildings;
+use content_reader_key_names::buildings::Buildings;
 use content_reader_save::{PartialMapMembership, Save, StateControlEmission};
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;

@@ -18,7 +18,7 @@ impl gui::Sheets for Sheets {
 }
 
 fn effect(source: &str) -> Arc<shader_pipeline::library::Effect> {
-    let program = content_reader_core::pdxshader::program::read_with(b"gfx/FX/fixture.lua", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"gfx/FX/fixture.lua", &|path| {
         Some(match path {
             b"gfx/FX/fixture.shader" => source.as_bytes().to_vec(),
             _ => Vec::new(),
@@ -55,7 +55,7 @@ use gui::PartKind;
 
 #[test]
 fn a_recordless_animated_technique_draws_the_plain_sprite() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
         texture: 7,
@@ -115,7 +115,7 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
 
 #[test]
 fn each_draw_submits_its_native_records_and_topology() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use eframe::wgpu::PrimitiveTopology::{TriangleList, TriangleStrip};
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
@@ -209,7 +209,7 @@ fn each_draw_submits_its_native_records_and_topology() {
 
 #[test]
 fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
         texture: 7,
@@ -402,7 +402,7 @@ fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
 
 #[test]
 fn bound_portrait_texture_keeps_the_icons_mask_sampler() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let sheets = Sheets(sprites::SpriteSheet {
         name: "mask".into(),
         texture: 7,

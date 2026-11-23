@@ -1,5 +1,5 @@
 use dashboard_text::triggers::{Evaluator, Scope, Scopes, World, inputs};
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{HashMap, VecDeque},

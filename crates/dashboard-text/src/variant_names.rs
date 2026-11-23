@@ -66,7 +66,7 @@ pub fn compare_variants(
 }
 
 pub fn enabled_module_slots<'f>(
-    database: &content_reader_core::equipment::Database,
+    database: &content_reader_key_names::equipment::Database,
     index: usize,
     frame: impl Into<HourFrame<'f>>,
 ) -> Result<bool, String> {
@@ -91,7 +91,7 @@ pub fn enabled_module_slots<'f>(
 }
 
 pub fn variant_order<'f>(
-    database: &content_reader_core::equipment::Database,
+    database: &content_reader_key_names::equipment::Database,
     index: usize,
     variant: &VariantDefinitionRow,
     frame: impl Into<HourFrame<'f>>,
@@ -288,16 +288,16 @@ impl<'a> Tags<'a> {
 
     pub fn tag_of(&self, raw: u32) -> Option<String> {
         let slot = link_slot_in(&self.links, raw)?;
-        crate::triggers::refusal::reference(
+        content_reader_script::triggers::refusal::reference(
             self.tags
                 .get(&slot)
                 .and_then(|tag| tag.as_ref().ok())
                 .cloned(),
             raw != 0,
             || {
-                crate::triggers::refusal::missing_reference(
+                content_reader_script::triggers::refusal::missing_reference(
                     replay_data::rows::TableId::Countries,
-                    Some(crate::triggers::Store::Country(slot)),
+                    Some(content_reader_script::triggers::Store::Country(slot)),
                 )
             },
         )
@@ -327,13 +327,13 @@ impl<'a> Tags<'a> {
                 }
             }
         }
-        match crate::triggers::refusal::reference(
+        match content_reader_script::triggers::refusal::reference(
             self.tags.get(&slot),
             raw != 0,
             || {
-                crate::triggers::refusal::missing_reference(
+                content_reader_script::triggers::refusal::missing_reference(
                     replay_data::rows::TableId::Countries,
-                    Some(crate::triggers::Store::Country(slot)),
+                    Some(content_reader_script::triggers::Store::Country(slot)),
                 )
             },
         ) {
@@ -385,11 +385,11 @@ pub fn raw_variant_spelled(
             String::new()
         }
     };
-    let token = crate::triggers::refusal::reference(
+    let token = content_reader_script::triggers::refusal::reference(
         literal,
         definition.equipment_token != 0,
         || {
-            crate::triggers::refusal::missing_reference(
+            content_reader_script::triggers::refusal::missing_reference(
                 replay_data::rows::TableId::LexicalTokens,
                 None,
             )

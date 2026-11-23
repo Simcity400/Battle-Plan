@@ -812,8 +812,8 @@ impl<'a> PlateStyle<'a> {
                 viewer_native_gui::counter_hovers::gui_authored::Authored::read(root, false)
             }),
             takes_pointer: root
-                .and_then(|root| root.find(content_reader_core::gui::native::Kind::Button, "count_bg"))
-                .and_then(content_reader_core::gui::native::Element::button)
+                .and_then(|root| root.find(content_reader_gui::gui::native::Kind::Button, "count_bg"))
+                .and_then(content_reader_gui::gui::native::Element::button)
                 .is_some_and(|button| !button.always_transparent && button.enabled),
             child: if gun {
                 inputs.assets.layouts.gun.as_ref().ok().map(|gun| &gun.plate)
@@ -3397,7 +3397,7 @@ mod tests {
 
     #[test]
     fn columns_keep_the_native_grid_origin_and_viewport_item_offsets() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let document = native::read(
             br#"guiTypes={
                 containerWindowType={name=unit_mapicon size={width=76 height=31}
@@ -3433,7 +3433,7 @@ mod tests {
 
     #[test]
     fn unsupported_column_parent_terms_refuse_every_affected_plate_by_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let resources = gui::fixture();
         for fields in [
             "show_animation_type=linear",

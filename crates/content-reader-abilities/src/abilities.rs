@@ -1,15 +1,11 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
-use crate::key_names::KeyNames;
+use content_reader_script::key_names::KeyNames;
 use std::{collections::BTreeMap, io};
 
-use crate::{
-    ResolvedLayers,
-    fields::{block, invalid},
-    modifiers::{self, Modifiers},
-    parser::Item,
-    parser::native::{self, Shape},
-    scope::ScopeKind,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::{fields::{block, invalid}, parser::Item};
+use content_reader_script::{modifiers::{self, Modifiers}, native::{self, Shape}, scope::ScopeKind};
 
 const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 
@@ -17,7 +13,7 @@ const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 pub struct AbilitySprites {
     pub by_token: BTreeMap<Vec<u8>, String>,
     pub definitions: BTreeMap<Vec<u8>, Definition>,
-    pub warnings: Vec<crate::Diagnostic>,
+    pub warnings: Vec<content_reader_parser::Diagnostic>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -25,7 +21,7 @@ pub struct Definition {
     pub name: Vec<u8>,
     pub description: Vec<u8>,
     pub modifiers: [Modifiers; 3],
-    pub adjusters: Vec<crate::unit_leader::Adjuster>,
+    pub adjusters: Vec<content_reader_key_names::unit_leader::Adjuster>,
     pub effects: [Vec<Item>; 3],
 }
 
@@ -52,7 +48,7 @@ fn apply_with_terrain(
     sprites: &mut AbilitySprites,
     terrains: &BTreeMap<Vec<u8>, Vec<u8>>,
     names: &KeyNames,
-) -> io::Result<Vec<crate::Diagnostic>> {
+) -> io::Result<Vec<content_reader_parser::Diagnostic>> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -156,7 +152,7 @@ fn apply_with_terrain(
         .filter(|item| item.keyword_is("ability"))
     {
         for item in block(&root.value, "ability")? {
-            let token = crate::parser::c_string(
+            let token = content_reader_parser::parser::c_string(
                 item.key
                     .as_deref()
                     .ok_or_else(|| invalid("ability has no token"))?,
@@ -217,7 +213,7 @@ fn apply_with_terrain(
                                     .iter()
                                     .position(|old| old.key == key)
                                     .unwrap_or_else(|| {
-                                        definition.adjusters.push(crate::unit_leader::Adjuster {
+                                        definition.adjusters.push(content_reader_key_names::unit_leader::Adjuster {
                                             key,
                                             ..Default::default()
                                         });
@@ -270,8 +266,8 @@ fn apply_with_terrain(
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
-    let paths = content_reader_core::script_files::database_paths(layers, "common/abilities/")?;
-    let terrains = crate::terrain::read_definitions(layers)?
+    let paths = content_reader_layers::script_files::database_paths(layers, "common/abilities/")?;
+    let terrains = content_reader_key_names::terrain::read_definitions(layers)?
         .categories
         .into_iter()
         .map(|category| (category.name.to_ascii_lowercase(), category.name))
@@ -294,7 +290,7 @@ mod tests {
 
     #[test]
     fn ability_notes_keep_kind() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let notes = apply_with_terrain(
             b"ability = { a = { duration = { x = 1 } } }",
             &mut AbilitySprites::default(),
@@ -305,7 +301,7 @@ mod tests {
         assert!(
             notes
                 .iter()
-                .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
+                .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Misread),
             "{notes:?}"
         );
     }
@@ -318,7 +314,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_leave_contents_in_the_ability() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(
             br#"@sprite=custom ability={a={"icon"=ignored unknown={ICON=@sprite}}}"#,
@@ -343,7 +339,7 @@ mod tests {
 
     #[test]
     fn default_and_authored_sprites_take_the_animated_suffix() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(
             b"ability={ force_attack={ duration=168 } special={ icon=GFX_custom } }",
@@ -360,7 +356,7 @@ mod tests {
 
     #[test]
     fn lookup_keeps_the_first_exact_token_and_later_malformed_fields_still_fail() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(b"ability={ special={ icon=GFX_old } }", &mut sprites).unwrap();
         apply(b"ability={ special={ icon=GFX_new } }", &mut sprites).unwrap();
@@ -376,7 +372,7 @@ mod tests {
 
     #[test]
     fn repeated_adjusters_are_read_again_only_on_the_default_token() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let terrains = BTreeMap::from([
             (b"none".to_vec(), b"none".to_vec()),
             (b"plains".to_vec(), b"plains".to_vec()),
@@ -410,7 +406,7 @@ mod tests {
 
     #[test]
     fn a_comment_only_file_declares_nothing() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         apply(b"# no abilities in this layer\n", &mut sprites).unwrap();
         assert!(sprites.by_token.is_empty());
@@ -418,7 +414,7 @@ mod tests {
 
     #[test]
     fn value_effect_scopes_follow_ability_type_in_authored_order() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut sprites = AbilitySprites::default();
         let notes = apply_with_terrain(br#"
         ability={
@@ -438,7 +434,7 @@ mod tests {
 
     #[test]
     fn description_keeps_accumulators_adjusters_and_appended_effect_order() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut catalog = AbilitySprites::default();
         let terrains = BTreeMap::from([(b"synthetic".to_vec(), b"SYNTHETIC".to_vec())]);
         apply_with_terrain(
@@ -468,7 +464,7 @@ mod tests {
         assert_eq!(definition.modifiers[2].values[0].value, 60_000);
         assert_eq!(
             definition.adjusters,
-            [crate::unit_leader::Adjuster {
+            [content_reader_key_names::unit_leader::Adjuster {
                 key: "SYNTHETIC".into(),
                 attack: 40_000,
                 defence: 50_000,
@@ -496,7 +492,7 @@ mod tests {
 
     #[test]
     fn description_defaults_and_duplicate_lookup_preserve_exact_case() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut catalog = AbilitySprites::default();
         apply(
             b"ability={a={name=FIRST} a={name=LATER} A={name=UPPER}}",

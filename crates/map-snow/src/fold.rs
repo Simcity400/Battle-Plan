@@ -437,7 +437,7 @@ mod tests {
     fn unknown_cells_stay_unknown_until_a_later_hour_observes_them() {
         use replay_data::rows::TableRows;
         let ids = (0..144u32).map(|at| [30, 20, 10][(at / 48) as usize]).collect();
-        let map = content_reader_core::map::MapData {
+        let map = content_reader_map::map::MapData {
             width: 12,
             height: 12,
             province_ids: ids,

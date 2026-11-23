@@ -30,7 +30,7 @@ impl Operative {
     pub fn of(row: &OperativeMembershipRow, content: &Content) -> Self {
         let (name, name_missing) = match &row.name {
             Recorded::NotRecorded => (None, Some("The operative's name is not recorded".to_owned())),
-            Recorded::Value(bytes) => match content.text(content_reader_core::parser::c_string(bytes)) {
+            Recorded::Value(bytes) => match content.text(content_reader_parser::parser::c_string(bytes)) {
                 Some(name) => (Some(name), None),
                 None => (None, Some("The operative has no saved name".to_owned())),
             },

@@ -1,5 +1,5 @@
 use super::{binding::Bindings, content::Content, state_view};
-use content_reader_core::gui::native::Element;
+use content_reader_gui::gui::native::Element;
 use replay_data::rows::{AirCountryRelationRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -20,7 +20,7 @@ const MINES: [&str; 4] = ["mine_text", "enemy_mine_text", "mine_icon", "enemy_mi
 const ACCESS_RULES: [&str; 3] = ["naval_access_rule_allowed", "naval_access_rule_avoid", "naval_access_rule_blocked"];
 
 fn percent(share: i64) -> String {
-    content_reader_core::fixed5::fixed5_percent(share, 0, true)
+    content_reader_parser::fixed5::fixed5_percent(share, 0, true)
 }
 
 fn mine_share(amount: i64, maximum: i64) -> i64 {

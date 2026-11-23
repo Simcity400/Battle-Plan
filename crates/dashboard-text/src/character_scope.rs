@@ -1,6 +1,8 @@
 
-use crate::{state_resources::Links, triggers::Failure};
-use content_reader_core::{leader_traits::LeaderTraits, unit_leader::Traits};
+use crate::state_resources::Links;
+use content_reader_script::triggers::Failure;
+use content_reader_military::leader_traits::LeaderTraits;
+use content_reader_key_names::unit_leader::Traits;
 use replay_data::{
     rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
     rows::CountryCharacterRow, rows::TableSchema, rows::UnitLeaderRow, rows::UnitLeaderTraitRow,
@@ -96,7 +98,7 @@ impl UnitLeader<'_> {
                 row.id
             ).into()),
             Self::Direct(row) => Ok(row.skill_level),
-            Self::Referenced(row) => row.skill_level.ok_or_else(|| Failure::input(replay_data::rows::TableId::CharacterOperatives, "skill_level", Some(crate::triggers::Store::Character(row.character)), format!(
+            Self::Referenced(row) => row.skill_level.ok_or_else(|| Failure::input(replay_data::rows::TableId::CharacterOperatives, "skill_level", Some(content_reader_script::triggers::Store::Character(row.character)), format!(
                     "character {}'s referenced unit leader has no skill object, which the skill read requires",
                     row.character
                 ))),
@@ -105,7 +107,7 @@ impl UnitLeader<'_> {
 }
 
 fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
-    crate::triggers::refusal::input_error(T::ID, why)
+    content_reader_script::triggers::refusal::input_error(T::ID, why)
 }
 
 fn held<T: Clone>(table: &Result<T, Failure>) -> Evaluation<T> {
@@ -180,7 +182,7 @@ impl<'a> Tables<'a> {
                 Failure::input(
                     replay_data::rows::TableId::Characters,
                     "",
-                    Some(crate::triggers::Store::Character(character)),
+                    Some(content_reader_script::triggers::Store::Character(character)),
                     format!("character {character} has no Characters row"),
                 )
             })

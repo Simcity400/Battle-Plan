@@ -435,7 +435,7 @@ fn ita_advisor_availability_requires_a_nonleader_without_the_new_duce_flag() {
         .scripted
         .insert(b"ita_is_advisor_available".to_vec());
     let names = TriggerNames {
-        scripted: content_reader_core::scripted_triggers::ScriptedTriggers::parse(
+        scripted: content_reader_script::scripted_trigger_grammar::ScriptedTriggers::parse(
             &[(
                 "common/scripted_triggers/synthetic.txt",
                 b"ITA_is_advisor_available = { is_country_leader = no NOT = { has_character_flag = ITA_has_new_duce_flag } }",
@@ -445,7 +445,7 @@ fn ita_advisor_availability_requires_a_nonleader_without_the_new_duce_flag() {
         ..Default::default()
     };
     let trigger =
-        content_reader_core::triggers::read(b"ITA_is_advisor_available = yes", &key_names).items;
+        content_reader_script::triggers::read(b"ITA_is_advisor_available = yes", &key_names).items;
     let dlcs = BTreeSet::new();
     let aliases = Arc::new(TagAliases::default());
     for flagged in [false, true] {

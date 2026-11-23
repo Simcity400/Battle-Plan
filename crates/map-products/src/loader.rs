@@ -1,5 +1,5 @@
 use crate::{ProductContent, ProductInputs};
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 pub use map_content::loader::*;
 use std::{io, path::Path, sync::Arc};
 use viewer_gpu::{province_geometry::ProvinceGeometry, province_map::{HeightField, ProvinceMap}};

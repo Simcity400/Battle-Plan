@@ -10,10 +10,15 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["content-reader-core/test-support", "content-reader-unit-path/test-support", "dashboard-text/test-support", "engine-executable/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support"]
+test-support = ["content-reader-layers/test-support", "content-reader-script/test-support", "content-reader-unit-path/test-support", "dashboard-text/test-support", "engine-executable/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support"]
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 content-reader-country-names.workspace = true
 content-reader-localisation.workspace = true
 content-reader-states.workspace = true
@@ -29,7 +34,8 @@ viewer-gpu.workspace = true
 viewer-runtime.workspace = true
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 content-reader-unit-path = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true

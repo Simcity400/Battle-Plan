@@ -7,7 +7,7 @@ use dashboard_base::products::politics_content::{PoliticsContent, politics_conte
 use dashboard_text::idea_names::IdeaCountry;
 use dashboard_text::identity::{Look, built_template_in, character_script_token_in};
 use dashboard_text::stability as formula;
-use content_reader_core::characters::BuiltTemplate;
+use content_reader_key_names::characters::BuiltTemplate;
 use replay_data::rows::{
     CharacterRow, CountryStabilityInputRow, CountryStabilityLineRow, Recorded, StabilityPartKeyRow, StabilityPartRow, TableId, tables,
 };

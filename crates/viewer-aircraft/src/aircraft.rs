@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 
 #[cfg(test)]
 use viewer_models::aircraft_events::callback;
@@ -21,9 +22,10 @@ use engine_air_history::air_kamikaze::window_sum;
 mod launches;
 mod model_inputs;
 mod scenarios;
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, map::MapData, map::ProvinceKind, mesh, mesh::Transform,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::{MapData, ProvinceKind};
+use content_reader_mesh::mesh::{self, Transform};
 use content_reader_equipment_graphics::equipment_graphics::aircraft as aircraft_catalogue;
 use content_reader_image::native::Decode;
 use content_reader_regions::regions::StrategicRegion;
@@ -401,7 +403,7 @@ pub struct AircraftAssets {
     bakes: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     #[cfg(test)]
     resolve_hooks: tests::ResolveHooks,
-    lazy_diagnostics: Mutex<Vec<content_reader_core::Diagnostic>>,
+    lazy_diagnostics: Mutex<Vec<content_reader_parser::Diagnostic>>,
     keys: TokenKeys,
     rigs: BTreeMap<String, Rig>,
     region_provinces: BTreeMap<u32, Vec<u32>>,
@@ -480,7 +482,7 @@ fn plane_library<'a>(
     decode: Decode,
     roster: &mesh::Roster,
     declared: impl IntoIterator<Item = &'a String>,
-    warnings: &mut Vec<content_reader_core::Diagnostic>,
+    warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> io::Result<(ModelLibrary, BTreeMap<String, String>)> {
     let mut unusable = BTreeMap::new();
     let mut names = Vec::new();
@@ -493,7 +495,7 @@ fn plane_library<'a>(
         }
     }
     if !unusable.is_empty() {
-        warnings.push((content_reader_core::DiagnosticKind::Refused, format!(
+        warnings.push((content_reader_parser::DiagnosticKind::Refused, format!(
             "Aircraft entities are refused, and wings whose aircraft resolves to one are not drawn: {}",
             unusable
                 .iter()
@@ -895,11 +897,11 @@ fn scenario_flown(
     (kind, outcome): (u8, u8),
     bones: &[(u8, String)],
     defines: (&Result<f32, &'static str>, &Result<Band, &'static str>),
-    warnings: &mut Vec<content_reader_core::Diagnostic>,
+    warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> Option<Rig> {
     let mut refuse = |reason: String| {
         warnings.push((
-            content_reader_core::DiagnosticKind::Refused,
+            content_reader_parser::DiagnosticKind::Refused,
             format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
         ));
     };
@@ -952,8 +954,8 @@ fn shown_or_recorded<T>(
     layers: &ResolvedLayers,
     entity: &str,
     below: bool,
-    mut fly: impl FnMut(bool, &mut Vec<content_reader_core::Diagnostic>) -> Option<T>,
-    warnings: &mut Vec<content_reader_core::Diagnostic>,
+    mut fly: impl FnMut(bool, &mut Vec<content_reader_parser::Diagnostic>) -> Option<T>,
+    warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> Option<T> {
     let mut notes = Vec::new();
     if let Some(flown) = fly(false, &mut notes) {
@@ -966,7 +968,7 @@ fn shown_or_recorded<T>(
             let why = notes
                 .iter()
                 .rev()
-                .find(|(kind, _)| *kind == content_reader_core::DiagnosticKind::Refused)
+                .find(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Refused)
                 .map_or("not flown", |(_, why)| why.as_str());
             layers.note_overlay_refusal(format!("aircraft scenario {entity} ({why})"));
             warnings.extend(recorded);
@@ -987,11 +989,11 @@ fn scenario_rig(
     speed: f32,
     events: Vec<mesh::EntityEvent>,
     (rocket_speed, band): (&Result<f32, &'static str>, &Result<Band, &'static str>),
-    warnings: &mut Vec<content_reader_core::Diagnostic>,
+    warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> Option<Rig> {
     let mut refuse = |reason: String| {
         warnings.push((
-            content_reader_core::DiagnosticKind::Refused,
+            content_reader_parser::DiagnosticKind::Refused,
             format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
         ));
         None
@@ -1032,7 +1034,7 @@ fn scenario_rig(
     for ((_, bone), absent) in bones.iter().zip(absent) {
         if absent {
             warnings.push((
-                content_reader_core::DiagnosticKind::Logged,
+                content_reader_parser::DiagnosticKind::Logged,
                 format!(
                     "Aircraft scenario {entity} has no attachment node {bone}: the game logs it and that actor rides the scenario entity's root"
                 ),
@@ -1065,7 +1067,7 @@ impl AircraftAssets {
         )
     }
 
-    pub fn lazy_diagnostics(&self) -> Vec<content_reader_core::Diagnostic> {
+    pub fn lazy_diagnostics(&self) -> Vec<content_reader_parser::Diagnostic> {
         self.lazy_diagnostics
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1098,7 +1100,7 @@ impl AircraftAssets {
         refusals.extend(
             self.lazy_diagnostics()
                 .into_iter()
-                .filter(|(kind, _)| *kind == content_reader_core::DiagnosticKind::Refused)
+                .filter(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Refused)
                 .map(|(_, reason)| reason),
         );
         refusals
@@ -1110,11 +1112,11 @@ impl AircraftAssets {
         map: &MapData,
         (defines, graphics): (&Defines, &Defines),
         regions: &BTreeMap<u32, StrategicRegion>,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
-        let database = content_reader_core::equipment::Database::load_complete(layers)?;
+        let database = content_reader_key_names::equipment::Database::load_complete(layers)?;
         let text = |bytes: &[u8], what: &str| {
-            content_reader_core::parser::text(bytes)
+            content_reader_parser::parser::text(bytes)
                 .map(str::to_owned)
                 .map_err(|refused| invalid_data(format!("equipment {what}: {refused}")))
         };
@@ -2124,7 +2126,7 @@ fn flight_requests(
 fn region_membership(
     regions: impl Iterator<Item = (u32, Vec<u32>)>,
     kinds: &BTreeMap<u32, ProvinceKind>,
-    warnings: &mut Vec<content_reader_core::Diagnostic>,
+    warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> RegionMembership {
     let (mut members, mut fractions) = (BTreeMap::new(), BTreeMap::new());
     let mut skipped = 0_usize;
@@ -2150,7 +2152,7 @@ fn region_membership(
         members.insert(region, provinces);
     }
     if skipped != 0 {
-        warnings.push((content_reader_core::DiagnosticKind::Warning, format!(
+        warnings.push((content_reader_parser::DiagnosticKind::Warning, format!(
             "strategic regions list {skipped} provinces missing from the map definitions; the game skips them"
         )));
     }

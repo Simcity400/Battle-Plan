@@ -103,7 +103,7 @@ pub struct ScoreDefines {
 }
 
 impl ScoreDefines {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             avoid_with_defence: defines.fixed5("NMilitary", "BASE_CHANCE_TO_AVOID_HIT")?,
             avoid_without_defence: defines.fixed5("NMilitary", "CHANCE_TO_AVOID_HIT_AT_NO_DEF")?,

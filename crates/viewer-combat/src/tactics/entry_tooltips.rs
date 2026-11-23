@@ -1,6 +1,6 @@
 use super::super::tooltips::{Described, hover_text, set_hover, tactic_description};
 use super::*;
-use content_reader_core::fixed5::fixed5_percent;
+use content_reader_parser::fixed5::fixed5_percent;
 
 fn counter_id(content: &Content, definition: &Definition) -> Evaluation<i32> {
     let name = field(&definition.items, "countered_by")

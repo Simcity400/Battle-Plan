@@ -474,7 +474,7 @@ fn occupation_resistance_hover_compares_additions_and_exile_without_certifying_r
     let text = b"countries={AAA={} BBB={diplomacy={hosting_our_government_in_exile=AAA legitimacy=75}}} states={7={resistance={added_resistance_targets={{amount=-1.23456 controller=AAA tooltip=fixture}}}}} provinces={}";
     let saved = saved_pack(text);
     let intel =
-        content_reader_save::intel::parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap();
+        content_reader_save::intel::parse(&content_reader_parser::parser::parse(text).unwrap().items).unwrap();
     let a = CountryRow {
         id: 10,
         tag: b"AAA".to_vec(),
@@ -583,7 +583,7 @@ fn history_fixture(input: &[u8]) -> content_reader_states::states::StateDefiniti
         resource: &|_| content_reader_states::states::Resource::Found,
         max_building_levels: 20,
         province_count: 1000,
-        names: &content_reader_core::key_names::KeyNames::default(),
+        names: &content_reader_script::key_names::KeyNames::default(),
     };
     content_reader_states::states::parse_states(input, &context)
         .unwrap()
@@ -784,7 +784,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
 }
 
 fn saved_pack(text: &[u8]) -> saved::Pack {
-    saved::parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap()
+    saved::parse(&content_reader_parser::parser::parse(text).unwrap().items).unwrap()
 }
 
 #[test]
@@ -1604,7 +1604,7 @@ fn dictionary_missing_entry_is_explicit_and_literal_bytes_are_preserved() {
 
 #[test]
 fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let row = replay_data::rows::BuildingRow {
         location: 7,
@@ -1689,7 +1689,7 @@ fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
 
 #[test]
 fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let saved = saved_pack(b"countries={GER={production={general_lines={building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}}}}} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let names = BTreeMap::from([
         (11, b"factory\0tail".as_slice()),
@@ -1967,7 +1967,7 @@ fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
 fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_bases() {
     use content_reader_save::naval_launch::parse_country_occurrences;
     use replay_data::{rows::NavalBaseRow, rows::Recorded};
-    let bases = parse_country_occurrences(&content_reader_core::parser::parse(
+    let bases = parse_country_occurrences(&content_reader_parser::parser::parse(
         b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
     ).unwrap().items).unwrap();
     let tags = [
@@ -2043,7 +2043,7 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
 
 #[test]
 fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut content = saved::BaseResources::default();
     content.add_state_history(&history_fixture(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}"))
         .unwrap();

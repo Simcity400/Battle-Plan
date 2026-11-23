@@ -1,13 +1,13 @@
 use std::sync::OnceLock;
 
-use content_reader_core::{scope::ScopeKind, trigger_keys::Reader};
+use content_reader_script::{scope::ScopeKind, trigger_keys::Reader};
 use engine_executable::executable_tables::{self, Tables};
 
 pub fn enter() {
     static TABLES: OnceLock<Tables> = OnceLock::new();
     let tables = TABLES.get_or_init(|| {
         let country = ScopeKind::Country.bit();
-        content_reader_core::test_game::executable()
+        content_reader_script::test_game::executable()
             .trigger("add_to_temp_variable", 0, Reader::Body, 0)
             .trigger("any_owned_state", country, Reader::Body, 0)
             .trigger("check_variable", 0, Reader::Body, 0)

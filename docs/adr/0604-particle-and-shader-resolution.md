@@ -8,4 +8,4 @@ The native shader reader consumes raw `[[...]]` code, declaration names up to th
 
 Static float extraction accepts only one declaration of a plain literal outside preprocessor conditionals, with no macro or caller/technique define that can change it. A statement crossed by a conditional is conditional. Refuse uncertain values rather than guessing what the compiled shader sees.
 
-[Particle descriptors](../../crates/content-reader-core/src/particles.rs) · [Shader declarations](../../crates/content-reader-core/src/pdxshader/mod.rs) · [Shader programs](../../crates/content-reader-core/src/pdxshader/program.rs)
+[Particle descriptors](../../crates/content-reader-mesh/src/particles.rs) · [Shader declarations](../../crates/content-reader-gui/src/pdxshader/mod.rs) · [Shader programs](../../crates/content-reader-gui/src/pdxshader/program.rs)

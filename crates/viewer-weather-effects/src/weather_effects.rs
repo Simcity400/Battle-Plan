@@ -11,7 +11,9 @@ mod motion;
 mod native;
 mod sort;
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, parser, parser::Item, parser::Value, particles::Catalog};
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::parser::{self, Item, Value};
+use content_reader_mesh::particles::Catalog;
 use content_reader_image::{dds, native::Decode};
 pub use fade::RegionProvinces;
 pub use native::EntitySimulations;
@@ -376,7 +378,7 @@ pub struct Emitter {
     leads: bool,
     delay: f32,
     local_space: bool,
-    render: content_reader_core::particles::RenderDescriptor,
+    render: content_reader_mesh::particles::RenderDescriptor,
     system_local_space: bool,
 }
 
@@ -723,7 +725,7 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
                 "nests particle subsystems, which the map cannot present".into(),
             ));
         }
-        let render = content_reader_core::particles::RenderDescriptor::read(s)?;
+        let render = content_reader_mesh::particles::RenderDescriptor::read(s)?;
         let param = |k, d| Parameter::read(s, k, d, &curves);
         let mut forces = Vec::new();
         let mut turbulent = 0;
@@ -780,7 +782,7 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
             .map(|k| param(k, 0.0)),
             color: ["x", "y", "z", "alpha"].map(|k| Parameter::read(col, k, 255.0, &curves)),
             emission: param("emission", 0.0),
-            max: content_reader_core::particles::subsystem_capacity(s)?,
+            max: content_reader_mesh::particles::subsystem_capacity(s)?,
             forces,
             noise_divisions: turbulence.clone(),
             leads: emitters.is_empty(),
@@ -857,7 +859,7 @@ pub struct CameraDefines {
 }
 
 impl CameraDefines {
-    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         let number = |key: &str| -> io::Result<f32> {
             let value = defines.number("NGraphics", key)? as f32;
             if value.is_finite() {
@@ -903,7 +905,7 @@ fn read_object(
     decode: Decode,
     document: &parser::Document,
     path: &str,
-    particle: &content_reader_core::particles::Particle,
+    particle: &content_reader_mesh::particles::Particle,
 ) -> io::Result<(f32, LocalEmitters)> {
     let root = particle_root(document, path, &particle.name, Pick::First)?;
     let mut textures = Vec::new();
@@ -955,7 +957,7 @@ fn read_pair(
 impl Assets {
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
         map: [u32; 2],
         region_provinces: RegionProvinces,
         decode: Decode,
@@ -978,7 +980,7 @@ impl Assets {
         };
         const POSITIONS: &str = "map/weatherpositions.txt";
         let (positions, skipped) = match layers.read_uncovered(POSITIONS) {
-            Ok(bytes) => content_reader_core::positions::parse_weather_positions(&bytes),
+            Ok(bytes) => content_reader_map::positions::parse_weather_positions(&bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 out.withheld
                     .push(format!("{POSITIONS} is missing, so no weather is placed"));
@@ -1086,8 +1088,8 @@ impl Assets {
             });
         }
         let mut by_file: BTreeMap<
-            content_reader_core::script_files::ScriptPath,
-            Vec<(String, content_reader_core::particles::Particle)>,
+            content_reader_layers::script_files::ScriptPath,
+            Vec<(String, content_reader_mesh::particles::Particle)>,
         > = BTreeMap::new();
         for object in catalog.objects() {
             match catalog.resolve(object) {
@@ -2169,9 +2171,9 @@ fn weather_packets(
                     e.local_space,
                     e.system_local_space,
                     e.scale,
-                    content_reader_core::mesh::Transform {
+                    content_reader_mesh::mesh::Transform {
                         translation: sim.anchor,
-                        ..content_reader_core::mesh::Transform::IDENTITY
+                        ..content_reader_mesh::mesh::Transform::IDENTITY
                     },
                 );
                 Member {

@@ -1,8 +1,8 @@
 
 use super::*;
-use content_reader_core::{
-    equipment::STAT_COUNT, equipment::stat_metadata, tokens::Token, unit_leader::Adjuster,
-};
+use content_reader_script::equipment_stats::{STAT_COUNT, stat_metadata};
+use content_reader_parser::tokens::Token;
+use content_reader_key_names::unit_leader::Adjuster;
 
 fn newline(text: &mut String) {
     if !text.is_empty() && !text.ends_with('\n') {
@@ -15,8 +15,8 @@ fn stats(items: &[Item]) -> [i64; STAT_COUNT] {
     for item in items {
         if let Some(index) = item
             .keyword()
-            .and_then(|key| content_reader_core::equipment::stat_index(&key.folded()))
-            && let Some(value) = content_reader_core::modifiers::read_fixed5(item)
+            .and_then(|key| content_reader_script::equipment_stats::stat_index(&key.folded()))
+            && let Some(value) = content_reader_script::modifiers::read_fixed5(item)
         {
             values[index] = value;
         }
@@ -40,7 +40,7 @@ fn adjuster(key: &str, items: &[Item]) -> Adjuster {
             } else {
                 continue;
             };
-            if let Some(value) = content_reader_core::modifiers::read_fixed5(item) {
+            if let Some(value) = content_reader_script::modifiers::read_fixed5(item) {
                 *target = value;
             }
         }
@@ -144,7 +144,7 @@ impl Renderer<'_, '_, '_> {
         name: &str,
         items: &[Item],
         category: bool,
-        units: &content_reader_core::unit_leader::SubUnits,
+        units: &content_reader_script::sub_units::SubUnits,
         scopes: Scopes,
     ) -> Result<String, String> {
         let icon = if category {
@@ -242,7 +242,7 @@ impl Renderer<'_, '_, '_> {
     fn units_bonus_multipliers(
         &self,
         items: &[Item],
-        units: &content_reader_core::unit_leader::SubUnits,
+        units: &content_reader_script::sub_units::SubUnits,
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut text = String::new();
@@ -273,8 +273,8 @@ impl Renderer<'_, '_, '_> {
                     }
                 } else if let Some(index) = item
                     .keyword()
-                    .and_then(|key| content_reader_core::equipment::stat_index(&key.folded()))
-                    && let Some(value) = content_reader_core::modifiers::read_fixed5(item)
+                    .and_then(|key| content_reader_script::equipment_stats::stat_index(&key.folded()))
+                    && let Some(value) = content_reader_script::modifiers::read_fixed5(item)
                     && value != 0
                 {
                     values.push((index, value));

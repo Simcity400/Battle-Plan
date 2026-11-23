@@ -261,7 +261,7 @@ pub(super) fn compose(region: bool, routes: Routes, below: impl FnOnce() -> Tool
 
 fn efficiency_text(value: i64) -> String {
     let colour = if value < 100_000 { 'R' } else { 'Y' };
-    format!("\u{11}{colour}{}\u{11}!", content_reader_core::fixed5::fixed5_percent(value, 0, true))
+    format!("\u{11}{colour}{}\u{11}!", content_reader_parser::fixed5::fixed5_percent(value, 0, true))
 }
 
 pub(super) fn describe(frame: &DecodedFrame, names: &Names<'_>, line: &TradeRouteLine) -> Described {

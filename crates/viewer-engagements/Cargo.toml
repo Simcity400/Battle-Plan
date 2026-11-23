@@ -13,7 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-defines.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 viewer-foundation.workspace = true

@@ -14,18 +14,18 @@ pub enum Kind {
     Offline,
 }
 
-impl From<content_reader_core::DiagnosticKind> for Kind {
-    fn from(kind: content_reader_core::DiagnosticKind) -> Self {
+impl From<content_reader_parser::DiagnosticKind> for Kind {
+    fn from(kind: content_reader_parser::DiagnosticKind) -> Self {
         match kind {
-            content_reader_core::DiagnosticKind::ParseFailure => Self::ParseFailure,
-            content_reader_core::DiagnosticKind::Misread => Self::Misread,
-            content_reader_core::DiagnosticKind::Unsettled => Self::Unsettled,
-            content_reader_core::DiagnosticKind::Unsupported => Self::Unsupported,
-            content_reader_core::DiagnosticKind::Refused => Self::Refused,
-            content_reader_core::DiagnosticKind::Ambiguous => Self::Ambiguous,
-            content_reader_core::DiagnosticKind::Fallback => Self::Fallback,
-            content_reader_core::DiagnosticKind::Logged => Self::Logged,
-            content_reader_core::DiagnosticKind::Warning => Self::Warning,
+            content_reader_parser::DiagnosticKind::ParseFailure => Self::ParseFailure,
+            content_reader_parser::DiagnosticKind::Misread => Self::Misread,
+            content_reader_parser::DiagnosticKind::Unsettled => Self::Unsettled,
+            content_reader_parser::DiagnosticKind::Unsupported => Self::Unsupported,
+            content_reader_parser::DiagnosticKind::Refused => Self::Refused,
+            content_reader_parser::DiagnosticKind::Ambiguous => Self::Ambiguous,
+            content_reader_parser::DiagnosticKind::Fallback => Self::Fallback,
+            content_reader_parser::DiagnosticKind::Logged => Self::Logged,
+            content_reader_parser::DiagnosticKind::Warning => Self::Warning,
         }
     }
 }
@@ -68,7 +68,7 @@ impl Finding {
         }
     }
 
-    pub fn reader(subject: &str, (kind, message): content_reader_core::Diagnostic) -> Self {
+    pub fn reader(subject: &str, (kind, message): content_reader_parser::Diagnostic) -> Self {
         Self::new(kind.into(), subject, message)
     }
 

@@ -723,7 +723,7 @@ impl<'h, 'f> Hour<'h, 'f> {
                     .into_iter()
                     .find(|(handle, _)| *handle == row.id)
                     .ok_or("the operative is not among its target's recorded counteroperatives")?;
-                Ok(content_reader_core::fixed5::fixed5_to_string(contribution.1, 2))
+                Ok(content_reader_parser::fixed5::fixed5_to_string(contribution.1, 2))
             }
             ROOT_OUT => {
                 let key = (
@@ -993,7 +993,7 @@ impl<'h, 'f> Hour<'h, 'f> {
     pub fn definition(
         &self,
         row: &OperationRow,
-    ) -> Result<&'h content_reader_core::intelligence::Operation, String> {
+    ) -> Result<&'h content_reader_military::intelligence::Operation, String> {
         let spelling =
             super::super::raids::spelling(self.world, row.definition_token, "operation")?;
         self.assets

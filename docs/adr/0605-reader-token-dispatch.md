@@ -10,4 +10,4 @@ The variable stores resolve built-ins on demand before stored keys. Names preser
 
 Layered reader tests create independent base and mod roots. Synthetic ZIP records can set the version-made-by host byte, general flags and stored or raw-deflated encoding. A synthetic self-extractor prefix precedes the archive without contributing to any ZIP offsets so the fixture reproduces relative offsets.
 
-[Token identity](../../crates/content-reader-core/src/tokens.rs) · [Trigger dispatch](../../crates/content-reader-core/src/trigger_keys.rs) · [Trigger bodies](../../crates/content-reader-core/src/triggers.rs) · [Built-in variables](../../crates/content-reader-core/src/variable_builtins.rs) · [Medal definitions](../../crates/content-reader-core/src/unit_medals.rs)
+[Token identity](../../crates/content-reader-parser/src/tokens.rs) · [Trigger dispatch](../../crates/content-reader-script/src/trigger_keys.rs) · [Trigger bodies](../../crates/content-reader-script/src/triggers.rs) · [Built-in variables](../../crates/content-reader-script/src/variable_builtins.rs) · [Medal definitions](../../crates/content-reader-military/src/unit_medals.rs)

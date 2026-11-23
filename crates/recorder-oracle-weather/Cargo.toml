@@ -10,7 +10,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-layers.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true

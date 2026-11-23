@@ -324,7 +324,7 @@ impl OrderPass {
         time: f32,
         bucket: &[native::Draw],
     ) -> io::Result<Vec<NativeDraw<'_>>> {
-        use content_reader_core::pdxshader::program::Stage;
+        use content_reader_gui::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let mut textures: BTreeMap<_, _> = native
             .textures

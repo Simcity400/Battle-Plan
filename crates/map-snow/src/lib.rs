@@ -2,7 +2,7 @@
 use std::time::Duration;
 use std::{io, time::Instant};
 
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use replay_data::{rows::Recorded, rows::TableId, rows::WeatherProvinceRow};
 use replay_frame::frame::DecodedFrame;
 
@@ -799,7 +799,7 @@ pub fn build(
 }
 
 pub fn permanent_mask(
-    definitions: &content_reader_core::terrain::TerrainDefinitions,
+    definitions: &content_reader_key_names::terrain::TerrainDefinitions,
     terrain: &content_reader_image::IndexedImage,
 ) -> Vec<bool> {
     terrain

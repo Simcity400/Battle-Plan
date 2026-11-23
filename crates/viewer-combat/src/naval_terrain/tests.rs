@@ -1,11 +1,11 @@
 use super::*;
-use content_reader_core::{modifiers::Modifier, modifiers::Modifiers};
+use content_reader_script::modifiers::{Modifier, Modifiers};
 use replay_data::rows::ModifierDefinitionRow;
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_terrain_shares_the_resolved_land_definitions() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!("hoi4_shared_terrain_{}", std::process::id()));
     let folder = root.join("common/terrain");
     std::fs::create_dir_all(&folder).unwrap();
@@ -15,7 +15,7 @@ fn naval_terrain_shares_the_resolved_land_definitions() {
     )
     .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let land = Arc::new(content_reader_core::terrain::read_definitions(&layers).unwrap());
+    let land = Arc::new(content_reader_key_names::terrain::read_definitions(&layers).unwrap());
     let naval = Content::load(&layers, &Defines::new().unwrap(), Arc::clone(&land)).unwrap();
     assert!(Arc::ptr_eq(&land, &naval.terrain));
     assert_eq!(naval.terrain.categories[0].movement_cost, 150_000);
@@ -139,13 +139,13 @@ fn naval_terrain_prefix_includes_minimum_and_class_before_weather() {
 
 #[test]
 fn naval_terrain_extra_fields_follow_native_category_reader() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!("hoi4_naval_terrain_{}", std::process::id()));
     let path = root.join("common/terrain");
     std::fs::create_dir_all(&path).unwrap();
     std::fs::write(path.join("a.txt"), b"@minimum = 250\ncategories = { water = { minimum_seazone_dominance = @minimum units = { attack = -0.1 } destroyer = { units = { movement = -0.2 } } } }").unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let read = content_reader_core::terrain::read_definitions(&layers).unwrap();
+    let read = content_reader_key_names::terrain::read_definitions(&layers).unwrap();
     assert_eq!(read.categories.len(), 1);
     assert_eq!(read.categories[0].minimum_seazone_dominance, 250 * ONE);
     assert_eq!(read.categories[0].common_adjuster.attack, -10_000);

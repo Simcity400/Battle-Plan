@@ -405,7 +405,7 @@ fn names(
                             .find(|country| country.canonical_slot == link.canonical_slot)
                     })
                     .ok_or("naval_formation_model_country: native model owner is unavailable")?;
-                content_reader_core::parser::text(content_reader_core::parser::c_string(&country.tag))
+                content_reader_parser::parser::text(content_reader_parser::parser::c_string(&country.tag))
                     .map_err(|error| format!("naval_formation_model_country: {error}"))
             };
             names.push(if reference {

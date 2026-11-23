@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::gui::native::{resources::SHIELD_OVERLAY_EFFECT, sprites::SpriteKind};
+use content_reader_gui::gui::native::{resources::SHIELD_OVERLAY_EFFECT, sprites::SpriteKind};
 use content_reader_image::dds;
 use shader_pipeline::artwork::Draw;
 

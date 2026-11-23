@@ -132,7 +132,7 @@ pub(crate) fn value_at(list: &[(i32, i32, i64)], hour: i32) -> Option<i64> {
 }
 
 pub(crate) fn token(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(content_reader_core::parser::c_string(bytes)).into_owned()
+    String::from_utf8_lossy(content_reader_parser::parser::c_string(bytes)).into_owned()
 }
 
 #[cfg(test)]

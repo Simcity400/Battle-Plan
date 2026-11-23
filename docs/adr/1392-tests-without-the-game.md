@@ -11,4 +11,4 @@ The fixture has three layers.
 - A crate whose readers dispatch on identities named in its own code declares the vocabulary bound to those identities beside that code. `content-reader-core` does this in `test_game` (enabled by `test-support`, so dependent crates reuse it). The effect, trigger, keyword, category, stat, rule and strategy rows bind test vocabulary to the reader addresses, token ids and category bits its code names. Bits a normalisation names are honoured, and all others are free. A test needing more declares it with `test_game::with`.
 
 [Synthetic tables and installations](../../crates/synthetic-game/src/executable.rs)
-[Content reader vocabulary](../../crates/content-reader-core/src/test_game.rs)
+[Content reader vocabulary](../../crates/content-reader-script/src/test_game.rs)

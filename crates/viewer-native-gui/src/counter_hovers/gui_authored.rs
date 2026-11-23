@@ -20,8 +20,9 @@ pub struct Authored {
 }
 
 impl Authored {
-    pub fn read(element: &content_reader_core::gui::native::Element, disabled: bool) -> Option<Self> {
-        use content_reader_core::{gui::native::FormattedLocalization, gui::native::tooltip_hash};
+    pub fn read(element: &content_reader_gui::gui::native::Element, disabled: bool) -> Option<Self> {
+        use content_reader_script::localization_binding::FormattedLocalization;
+        use content_reader_gui::gui::native::tooltip_hash;
         let common = &element.common;
         let mut out = Self {
             path: element.path.clone(),
@@ -87,19 +88,19 @@ impl Authored {
         for (body, key) in [(false, &self.title), (true, &self.body)] {
             let Some(key) = key else { continue };
             let text = (|| {
-                if content_reader_core::gui::native::tooltip_hash(&key.bytes) != key.hash {
+                if content_reader_gui::gui::native::tooltip_hash(&key.bytes) != key.hash {
                     return Err(format!(
                         "{} stored tooltip hash does not match its key",
                         self.path
                     ));
                 }
-                let text_key = std::str::from_utf8(content_reader_core::parser::c_string(&key.bytes))
+                let text_key = std::str::from_utf8(content_reader_parser::parser::c_string(&key.bytes))
                     .map_err(|_| format!("{} tooltip key is not UTF-8", self.path))?;
                 if key.bound {
                     localise(loc, text_key, &[]).map(Some)
                 } else {
                     Ok(loc.get(text_key).map(|text| {
-                        std::str::from_utf8(content_reader_core::parser::c_string(text.as_bytes()))
+                        std::str::from_utf8(content_reader_parser::parser::c_string(text.as_bytes()))
                             .expect("a UTF-8 string split at NUL remains UTF-8")
                             .to_owned()
                     }))
@@ -125,7 +126,7 @@ impl Authored {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::gui::native;
+    use content_reader_gui::gui::native;
 
     fn element(body: &str) -> native::Element {
         native::read(format!("guiTypes = {{ guiButtonType = {{ name = w {body} }} }}").as_bytes())
@@ -136,7 +137,7 @@ mod tests {
 
     #[test]
     fn authored_disabled_hashes_fall_back_independently_to_each_normal_field() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let parsed = element(
             "pdx_tooltip = TITLE pdx_tooltip_delayed = BODY pdx_disabled_tooltip = DISABLED",
         );
@@ -160,7 +161,7 @@ mod tests {
 
     #[test]
     fn empty_context_tree_keeps_callback_and_occupied_bound_text_overrides_normal_keys() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let empty = element("context_aware_tooltip = { } ");
         assert!(empty.common.bound_tooltip.is_empty());
         assert!(Authored::read(&empty, false).is_none());

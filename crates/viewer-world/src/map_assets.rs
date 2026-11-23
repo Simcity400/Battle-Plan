@@ -1,4 +1,5 @@
-use content_reader_core::{ResolvedLayers, terrain::DefaultMap, terrain::TerrainDefinitions};
+use content_reader_layers::ResolvedLayers;
+use content_reader_key_names::terrain::{DefaultMap, TerrainDefinitions};
 use content_reader_image::native::Decode;
 #[cfg(test)]
 use content_reader_image::bmp;
@@ -15,8 +16,8 @@ use viewer_scene_base::post::PostAssets;
 pub fn load_with_products(
     products: Option<&map_content::loader::Loader>,
     layers: &ResolvedLayers,
-    defines: &content_reader_core::defines::Defines,
-    art_defines: &content_reader_core::defines::Defines,
+    defines: &content_reader_defines::defines::Defines,
+    art_defines: &content_reader_defines::defines::Defines,
     map: MapSize,
     definitions: &TerrainDefinitions,
     default_map: &DefaultMap,
@@ -66,16 +67,16 @@ pub fn load_with_products(
             }
         })
     };
-    let terrain = content_reader_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.terrain))?;
+    let terrain = content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.terrain))?;
     let heightmap = match products {
         Some(products) => products.heightmap(default_map)?,
-        None => content_reader_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.heightmap))?,
+        None => content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.heightmap))?,
     };
     let height_texture =
         sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, &heightmap);
     let world_normal = world_normal(layers, decode)?;
-    let rivers = content_reader_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.rivers))?;
-    let trees = content_reader_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.tree_definition))?;
+    let rivers = content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.rivers))?;
+    let trees = content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.tree_definition))?;
     expect_size(
         "map/terrain.bmp",
         terrain.width,
@@ -198,16 +199,16 @@ fn world_normal(
     decode: Decode,
 ) -> io::Result<content_reader_image::SharedRgba8Image> {
     layers.artwork("map/world_normal.bmp", |stack| {
-        content_reader_core::terrain::read_world_normal(stack, decode)
+        content_reader_map::terrain_images::read_world_normal(stack, decode)
     })
 }
 
 pub fn graphics_define<T>(
     layers: &ResolvedLayers,
     name: &str,
-    art_defines: &content_reader_core::defines::Defines,
-    defines: &content_reader_core::defines::Defines,
-    read: impl Fn(&content_reader_core::defines::Defines) -> io::Result<T>,
+    art_defines: &content_reader_defines::defines::Defines,
+    defines: &content_reader_defines::defines::Defines,
+    read: impl Fn(&content_reader_defines::defines::Defines) -> io::Result<T>,
 ) -> io::Result<T> {
     if layers.presentation_defines().is_none() {
         return read(defines);
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn a_mods_world_normal_map_is_drawn() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_world_normal_{}_{:?}",
             std::process::id(),
@@ -267,7 +268,7 @@ mod tests {
             );
         }
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = content_reader_core::ResolveOptions {
+        let options = content_reader_layers::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -276,11 +277,11 @@ mod tests {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let normal = |name: &str| {
             let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-            let selected = [content_reader_core::content::visual::Choice {
+            let selected = [content_reader_layers::content::visual::Choice {
                 id: format!("mod/{name}.mod"),
                 name: name.into(),
             }];
-            content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+            content_reader_layers::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
                 .unwrap();
             let normal = world_normal(&layers, Decode::default()).unwrap();
             (normal, layers.read_warnings().overlay_refusals())
@@ -322,7 +323,7 @@ mod tests {
             &format!("name=\"Art\"\npath=\"{art}\"\n"),
         );
         std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-        let options = content_reader_core::ResolveOptions {
+        let options = content_reader_layers::ResolveOptions {
             game_dir: root.join("steamapps/common/Game"),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -330,9 +331,9 @@ mod tests {
         let base = root.join("base");
         let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
         let read = |layers: &ResolvedLayers, name: &str| {
-            let defines = content_reader_core::defines::read(layers).unwrap();
+            let defines = content_reader_defines::defines::read(layers).unwrap();
             let art =
-                content_reader_core::defines::read(layers.presentation_defines().unwrap_or(layers))
+                content_reader_defines::defines::read(layers.presentation_defines().unwrap_or(layers))
                     .unwrap();
             graphics_define(layers, name, &art, &defines, |defines| {
                 defines.number("NGraphics", name)
@@ -340,12 +341,12 @@ mod tests {
             .unwrap()
         };
         assert_eq!(read(&layers, "SIZE"), 2.0);
-        let selected = [content_reader_core::content::visual::Choice {
+        let selected = [content_reader_layers::content::visual::Choice {
             id: "mod/art.mod".into(),
             name: "Art".into(),
         }];
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
+        content_reader_layers::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
             .unwrap();
         assert!(layers.presentation_defines().is_some());
         assert!(layers.read_warnings().overlay_refusals().is_none());

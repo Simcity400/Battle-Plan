@@ -1,7 +1,7 @@
 use super::*;
 
 fn parse_text(bytes: &[u8]) -> io::Result<Pack> {
-    parse(&content_reader_core::parser::parse(bytes)?.items)
+    parse(&content_reader_parser::parser::parse(bytes)?.items)
 }
 
 const ORDER_OF_BATTLE: &[u8] = br#"countries={GER={theatres={theatre={

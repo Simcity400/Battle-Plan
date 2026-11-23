@@ -1,6 +1,6 @@
 use std::{cell::OnceCell, collections::BTreeMap};
 
-use content_reader_core::buildings::Buildings;
+use content_reader_key_names::buildings::Buildings;
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     BranchId, rows::MapEvent, rows::MapEventBuildingReason, rows::MapEventFamily,

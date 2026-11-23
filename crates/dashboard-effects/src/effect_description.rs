@@ -1,3 +1,4 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 
 use std::{
@@ -7,12 +8,11 @@ use std::{
     sync::Arc,
 };
 
-use crate::triggers::{NULL_STATE, Scope, Selected, Selector, scope_selector};
-use crate::{
-    scripted_text::{EffectDescriber, EventObject, EventScopes, ExpansionScopes, Link, ScriptedContent, ScriptedText},
-    triggers::{Evaluator, Scopes, World},
-};
-use content_reader_core::{parser::Item, scope::Keyword, scope::Scope as Parsed};
+use content_reader_script::triggers::{NULL_STATE, Scope, Selected, Selector, scope_selector};
+use crate::scripted_text::{EffectDescriber, EventObject, EventScopes, ExpansionScopes, Link, ScriptedContent, ScriptedText};
+use content_reader_script::triggers::{Evaluator, Scopes, World};
+use content_reader_parser::parser::Item;
+use content_reader_script::scope::{Keyword, Scope as Parsed};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::{
     GlobalSavedEventTargetRow, PoliticalPartyRow, RowCodec, StateResistanceRow, StateRow,
@@ -116,7 +116,7 @@ const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
 ];
 
 pub fn recorded_tables() -> impl Iterator<Item = replay_data::rows::TableId> {
-    crate::triggers::RECORDED_TABLES
+    content_reader_script::triggers::RECORDED_TABLES
         .iter()
         .chain(OPERAND_TABLES)
         .copied()
@@ -160,25 +160,25 @@ pub type EventLookup<'a> =
 
 #[derive(Default, Clone, Copy)]
 pub struct Content<'a> {
-    pub doctrines: Option<&'a content_reader_core::doctrines::Database>,
-    pub decisions: Option<&'a content_reader_core::decisions::Database>,
-    pub ideas: Option<&'a content_reader_core::ideas::IdeaContent>,
-    pub static_modifiers: Option<&'a content_reader_core::static_modifiers::Descriptions>,
-    pub dynamic_modifiers: Option<&'a content_reader_core::dynamic_modifiers::Database>,
-    pub opinion_modifiers: Option<&'a content_reader_core::opinion_modifiers::Database>,
-    pub power_balances: Option<&'a content_reader_core::power_balance::Database>,
-    pub name_lists: Option<&'a content_reader_core::names::NameLists>,
+    pub doctrines: Option<&'a content_reader_military::doctrines::Database>,
+    pub decisions: Option<&'a content_reader_politics::decisions::Database>,
+    pub ideas: Option<&'a content_reader_politics::ideas::IdeaContent>,
+    pub static_modifiers: Option<&'a content_reader_politics::static_modifiers::Descriptions>,
+    pub dynamic_modifiers: Option<&'a content_reader_politics::dynamic_modifiers::Database>,
+    pub opinion_modifiers: Option<&'a content_reader_politics::opinion_modifiers::Database>,
+    pub power_balances: Option<&'a content_reader_politics::power_balance::Database>,
+    pub name_lists: Option<&'a content_reader_politics::names::NameLists>,
     pub events: Option<&'a EventLookup<'a>>,
-    pub key_names: Option<&'a content_reader_core::key_names::KeyNames>,
-    pub scripted_effects: Option<&'a content_reader_core::scripted_effects::ScriptedEffects>,
-    pub industrial_organisations: Option<&'a content_reader_core::industrial_organisations::Database>,
-    pub collections: Option<&'a content_reader_core::collections::Database>,
-    pub country_scorers: Option<&'a content_reader_core::country_scorers::Database>,
-    pub buildings: Option<&'a content_reader_core::buildings::Buildings>,
-    pub resources: Option<&'a [content_reader_core::resources::Resource]>,
+    pub key_names: Option<&'a content_reader_script::key_names::KeyNames>,
+    pub scripted_effects: Option<&'a content_reader_key_names::scripted_effects::ScriptedEffects>,
+    pub industrial_organisations: Option<&'a content_reader_military::industrial_organisations::Database>,
+    pub collections: Option<&'a content_reader_politics::collections::Database>,
+    pub country_scorers: Option<&'a content_reader_politics::country_scorers::Database>,
+    pub buildings: Option<&'a content_reader_key_names::buildings::Buildings>,
+    pub resources: Option<&'a [content_reader_key_names::resources::Resource]>,
     pub max_railway_level: Option<i32>,
-    pub equipment: Option<&'a content_reader_core::equipment::Database>,
-    pub autonomy_states: Option<&'a content_reader_core::autonomy::AutonomyStates>,
+    pub equipment: Option<&'a content_reader_key_names::equipment::Database>,
+    pub autonomy_states: Option<&'a content_reader_politics::autonomy::AutonomyStates>,
     pub state_categories: Option<&'a content_reader_state_categories::state_categories::Database>,
     pub division_names: Option<&'a content_reader_division_names::division_names::Database>,
     pub wargoals: Option<&'a content_reader_wargoals::wargoals::Database>,
@@ -188,27 +188,27 @@ pub struct Content<'a> {
 pub struct CachedContent {
     politics: politics::PoliticsContent,
     characters: characters::CharacterContent,
-    doctrines: Option<content_reader_core::doctrines::Database>,
-    decisions: Option<content_reader_core::decisions::Database>,
-    ideas: Option<content_reader_core::ideas::IdeaContent>,
-    static_modifiers: Arc<content_reader_core::static_modifiers::Descriptions>,
-    dynamic_modifiers: Option<content_reader_core::dynamic_modifiers::Database>,
-    opinion_modifiers: Option<content_reader_core::opinion_modifiers::Database>,
-    power_balances: Option<content_reader_core::power_balance::Database>,
-    pub advisor_templates: Option<content_reader_core::characters::Characters>,
-    name_lists: Option<content_reader_core::names::NameLists>,
-    key_names: Option<std::sync::Arc<content_reader_core::key_names::KeyNames>>,
-    scripted_effects: Option<content_reader_core::scripted_effects::ScriptedEffects>,
-    industrial_organisations: Option<content_reader_core::industrial_organisations::Database>,
-    collections: Option<content_reader_core::collections::Database>,
-    country_scorers: Option<content_reader_core::country_scorers::Database>,
-    buildings: Option<content_reader_core::buildings::Buildings>,
-    resources: Option<Vec<content_reader_core::resources::Resource>>,
+    doctrines: Option<content_reader_military::doctrines::Database>,
+    decisions: Option<content_reader_politics::decisions::Database>,
+    ideas: Option<content_reader_politics::ideas::IdeaContent>,
+    static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,
+    dynamic_modifiers: Option<content_reader_politics::dynamic_modifiers::Database>,
+    opinion_modifiers: Option<content_reader_politics::opinion_modifiers::Database>,
+    power_balances: Option<content_reader_politics::power_balance::Database>,
+    pub advisor_templates: Option<content_reader_key_names::characters::Characters>,
+    name_lists: Option<content_reader_politics::names::NameLists>,
+    key_names: Option<std::sync::Arc<content_reader_script::key_names::KeyNames>>,
+    scripted_effects: Option<content_reader_key_names::scripted_effects::ScriptedEffects>,
+    industrial_organisations: Option<content_reader_military::industrial_organisations::Database>,
+    collections: Option<content_reader_politics::collections::Database>,
+    country_scorers: Option<content_reader_politics::country_scorers::Database>,
+    buildings: Option<content_reader_key_names::buildings::Buildings>,
+    resources: Option<Vec<content_reader_key_names::resources::Resource>>,
     max_railway_level: Option<i32>,
     raids:
-        content_reader_core::content::diagnostics::Once<Result<content_reader_raids::raids::Catalog, String>>,
-    equipment: Option<content_reader_core::equipment::Database>,
-    autonomy_states: Option<content_reader_core::autonomy::AutonomyStates>,
+        content_reader_layers::content::diagnostics::Once<Result<content_reader_raids::raids::Catalog, String>>,
+    equipment: Option<content_reader_key_names::equipment::Database>,
+    autonomy_states: Option<content_reader_politics::autonomy::AutonomyStates>,
     state_categories: Option<content_reader_state_categories::state_categories::Database>,
     division_names: Option<content_reader_division_names::division_names::Database>,
     wargoals: Option<content_reader_wargoals::wargoals::Database>,
@@ -220,29 +220,29 @@ fn alongside<'s, T: Send + 's>(
     threads: &'s std::thread::Scope<'s, '_>,
     read: impl FnOnce() -> T + Send + 's,
 ) -> std::thread::ScopedJoinHandle<'s, (T, crate::catalogue::OwnRefusals)> {
-    content_reader_core::parallel::spawn(threads, move || crate::catalogue::capture(read))
+    content_reader_layers::parallel::spawn(threads, move || crate::catalogue::capture(read))
 }
 
 fn joined<T>(read: std::thread::ScopedJoinHandle<'_, (T, crate::catalogue::OwnRefusals)>) -> T {
-    let (value, noted) = content_reader_core::parallel::join(read);
+    let (value, noted) = content_reader_layers::parallel::join(read);
     crate::catalogue::credit(&noted);
     value
 }
 
 impl CachedContent {
     pub(crate) fn read(
-        layers: &content_reader_core::ResolvedLayers,
+        layers: &content_reader_layers::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
-        static_modifiers: Arc<content_reader_core::static_modifiers::Descriptions>,
+        static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,
     ) -> std::io::Result<Self> {
         std::thread::scope(|threads| Self::read_with(threads, layers, environment, static_modifiers))
     }
 
     fn read_with<'s>(
         threads: &'s std::thread::Scope<'s, '_>,
-        layers: &'s content_reader_core::ResolvedLayers,
+        layers: &'s content_reader_layers::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
-        static_modifiers: Arc<content_reader_core::static_modifiers::Descriptions>,
+        static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,
     ) -> std::io::Result<Self> {
         fn keep<T>(
             read: std::io::Result<T>,
@@ -255,8 +255,8 @@ impl CachedContent {
             .ok()
         }
         let mut gaps = BTreeMap::new();
-        let doctrines = alongside(threads, || content_reader_core::doctrines::read(layers));
-        let decisions = alongside(threads, || content_reader_core::decisions::read(layers));
+        let doctrines = alongside(threads, || content_reader_military::doctrines::read(layers));
+        let decisions = alongside(threads, || content_reader_politics::decisions::read(layers));
         let division_names = alongside(threads, || {
             content_reader_division_names::division_names::read_directories::<String>(
                 layers,
@@ -265,42 +265,42 @@ impl CachedContent {
         });
         let politics = alongside(threads, || politics::PoliticsContent::read(layers));
         let dynamic_modifiers =
-            alongside(threads, || content_reader_core::dynamic_modifiers::read(layers));
+            alongside(threads, || content_reader_politics::dynamic_modifiers::read(layers));
         let power_balances = alongside(threads, || {
-            content_reader_core::power_balance::read_descriptions(layers)
+            content_reader_politics::power_balance::read_descriptions(layers)
         });
         let equipment = alongside(threads, || {
-            content_reader_core::equipment::Database::load_complete(layers)
+            content_reader_key_names::equipment::Database::load_complete(layers)
         });
-        let autonomy_states = alongside(threads, || content_reader_core::autonomy::read(layers));
+        let autonomy_states = alongside(threads, || content_reader_politics::autonomy::read(layers));
         let state_categories = alongside(threads, || {
             content_reader_state_categories::state_categories::read(layers)
         });
         let wargoals = alongside(threads, || content_reader_wargoals::wargoals::read(layers));
-        let name_lists = alongside(threads, || content_reader_core::names::read(layers));
+        let name_lists = alongside(threads, || content_reader_politics::names::read(layers));
         let named = alongside(threads, || {
             let key_names = layers.key_names();
             let read = key_names.as_ref().ok().map(|names| {
                 (
-                    content_reader_core::scripted_effects::read(layers, names),
-                    content_reader_core::industrial_organisations::read(layers, names),
-                    content_reader_core::collections::read(layers, names),
-                    content_reader_core::country_scorers::read(layers, names),
+                    content_reader_key_names::scripted_effects::read(layers, names),
+                    content_reader_military::industrial_organisations::read(layers, names),
+                    content_reader_politics::collections::read(layers, names),
+                    content_reader_politics::country_scorers::read(layers, names),
                 )
             });
             (key_names, read)
         });
-        let buildings = alongside(threads, || content_reader_core::buildings::read(layers));
-        let resources = alongside(threads, || content_reader_core::resources::read(layers));
+        let buildings = alongside(threads, || content_reader_key_names::buildings::read(layers));
+        let resources = alongside(threads, || content_reader_key_names::resources::read(layers));
         let defines = environment.defines();
         let opinion_modifiers = keep(
-            content_reader_core::opinion_modifiers::read(layers, defines),
+            content_reader_politics::opinion_modifiers::read(layers, defines),
             "opinion modifiers",
             &mut gaps,
         );
         let read_ideas = || {
             let officers = defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-            content_reader_core::ideas::read(layers, &officers)
+            content_reader_politics::ideas::read(layers, &officers)
         };
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
         let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
@@ -401,10 +401,10 @@ impl CachedContent {
                     || warnings.iter().any(|(kind, _)| {
                         matches!(
                             kind,
-                            content_reader_core::DiagnosticKind::ParseFailure
-                                | content_reader_core::DiagnosticKind::Unsettled
-                                | content_reader_core::DiagnosticKind::Unsupported
-                                | content_reader_core::DiagnosticKind::Refused
+                            content_reader_parser::DiagnosticKind::ParseFailure
+                                | content_reader_parser::DiagnosticKind::Unsettled
+                                | content_reader_parser::DiagnosticKind::Unsupported
+                                | content_reader_parser::DiagnosticKind::Refused
                         )
                     });
                 if refused {
@@ -443,7 +443,7 @@ impl CachedContent {
             buildings,
             resources,
             max_railway_level,
-            raids: content_reader_core::content::diagnostics::Once::new(),
+            raids: content_reader_layers::content::diagnostics::Once::new(),
             equipment,
             autonomy_states,
             state_categories,
@@ -454,7 +454,7 @@ impl CachedContent {
         })
     }
 
-    pub fn technologies(&self) -> Result<&content_reader_core::technology::Catalog, String> {
+    pub fn technologies(&self) -> Result<&content_reader_military::technology::Catalog, String> {
         self.doctrines
             .as_ref()
             .ok_or_else(|| {
@@ -499,7 +499,7 @@ impl CachedContent {
 
 #[derive(Default)]
 struct Describer {
-    cache: content_reader_core::content::diagnostics::Once<Result<CachedContent, String>>,
+    cache: content_reader_layers::content::diagnostics::Once<Result<CachedContent, String>>,
 }
 
 pub fn effect_describer() -> Box<dyn EffectDescriber> {
@@ -579,7 +579,7 @@ impl ScriptedEffects for ScriptedContent {
 pub struct Context<'c, 'f> {
     text: &'c ScriptedText<'f>,
     localisation: &'c Localisation,
-    session: RefCell<Option<crate::triggers::VariableSession>>,
+    session: RefCell<Option<content_reader_script::triggers::VariableSession>>,
     nested_session: bool,
     expansion: Option<&'c ExpansionScopes<'c, 'f>>,
     perspective: u32,
@@ -616,7 +616,7 @@ impl<'c, 'f> Context<'c, 'f> {
 
     pub(crate) fn with_variable_session(
         mut self,
-        session: &crate::triggers::VariableSession,
+        session: &content_reader_script::triggers::VariableSession,
     ) -> Self {
         self.session.replace(Some(session.clone()));
         self.nested_session = true;
@@ -628,7 +628,7 @@ impl<'c, 'f> Context<'c, 'f> {
         self
     }
 
-    pub(crate) fn variable_session(&self) -> Option<crate::triggers::VariableSession> {
+    pub(crate) fn variable_session(&self) -> Option<content_reader_script::triggers::VariableSession> {
         self.session.borrow().clone()
     }
 }
@@ -649,7 +649,7 @@ pub fn describe(
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
+    let projected = content_reader_script::triggers::event_scopes::project(&out.graph.borrow(), 0);
     match projected {
         Ok(scopes) => {
             out.out.text = out.group(items, scopes, 0);
@@ -660,7 +660,7 @@ pub fn describe(
                     out.refuse("description cleanup", why.to_string());
                 }
             } else if !context.nested_session {
-                let result = crate::triggers::event_scopes::cleanup_description(
+                let result = content_reader_script::triggers::event_scopes::cleanup_description(
                     &mut out.graph.borrow_mut(),
                     0,
                 );
@@ -717,14 +717,14 @@ pub(super) fn fixed_field(items: &[Item], name: &str, default: i64) -> i64 {
     items
         .iter()
         .filter(|item| item.keyword_is(name))
-        .filter_map(|item| content_reader_core::fixed5::script_fixed5(item.value.scalar()?))
+        .filter_map(|item| content_reader_parser::fixed5::script_fixed5(item.value.scalar()?))
         .next_back()
         .unwrap_or(default)
 }
 
 fn integer(text: &[u8]) -> i32 {
-    match content_reader_core::crt::scan_i32(text) {
-        content_reader_core::crt::Scanned::Stored(value) => value,
+    match content_reader_parser::crt::scan_i32(text) {
+        content_reader_parser::crt::Scanned::Stored(value) => value,
         _ => 0,
     }
 }
@@ -813,10 +813,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         } else {
             let token = item
                 .keyword()
-                .and_then(|key| content_reader_core::effect_keys::registered(&key.folded()));
+                .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()));
             if !token.is_some_and(|token| {
-                content_reader_core::effect_keys::is_own_field(token, b"target")
-                    || content_reader_core::effect_keys::class(token).is_some_and(
+                content_reader_script::effect_keys::is_own_field(token, b"target")
+                    || content_reader_script::effect_keys::class(token).is_some_and(
                         |(value_reader, key_reader)| {
                             value_reader == 0x1403C2880
                                 || matches!(
@@ -910,7 +910,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .context
                     .text
                     .recorded()
-                    .saved_country(row.country, content_reader_core::parser::c_string(name))
+                    .saved_country(row.country, content_reader_parser::parser::c_string(name))
                     .map_err(|why| why.to_string())?,
                 _ => None,
             },
@@ -930,8 +930,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let mut fields = children(item).iter().filter(|field| field.keyword_is(name));
         let chains = item
             .keyword()
-            .and_then(|key| content_reader_core::effect_keys::registered(&key.folded()))
-            .and_then(content_reader_core::effect_keys::class)
+            .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()))
+            .and_then(content_reader_script::effect_keys::class)
             .is_some_and(|(_, reader)| reader == 0x1403C8220);
         if fields.clone().nth(1).is_some()
             && fields.clone().any(|field| {
@@ -970,7 +970,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         name: &[u8],
         scopes: Scopes,
     ) -> Result<Option<EffectSavedTarget<'_>>, String> {
-        let name = content_reader_core::parser::c_string(name);
+        let name = content_reader_parser::parser::c_string(name);
         if let Some(mut at) = scopes.cursor {
             let graph = self.graph.borrow();
             let mut steps = 0;
@@ -1056,7 +1056,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
         let recorded = self.context.text.recorded();
         match recorded.saved_target(name).map_err(|why| why.to_string())? {
-            Some(row) if crate::scope::valid_saved_target(&row) => {
+            Some(row) if content_reader_script::scope::valid_saved_target(&row) => {
                 Ok(Some(EffectSavedTarget::Recorded(row)))
             }
             _ => Ok(None),
@@ -1336,7 +1336,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn effect_children(&mut self, item: &Item) -> Vec<Item> {
-        match content_reader_core::effect_keys::description_fields(item) {
+        match content_reader_script::effect_keys::description_fields(item) {
             Ok(body) => body,
             Err(why) => {
                 self.refuse(&key(item), why);
@@ -1378,7 +1378,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 }
 
 pub fn project_output_description(
-    output: &content_reader_core::special_projects::Output,
+    output: &content_reader_military::special_projects::Output,
     context: &Context<'_, '_>,
     owner: u32,
     id: u32,
@@ -1398,8 +1398,8 @@ pub fn project_output_description(
         key: None,
         key_quoted: false,
         operator: Default::default(),
-        value: content_reader_core::parser::Value::Block(Vec::new()),
-        kind: content_reader_core::parser::Kind::Open,
+        value: content_reader_parser::parser::Value::Block(Vec::new()),
+        kind: content_reader_parser::parser::Kind::Open,
     };
     match renderer.project_output_body(
         output,

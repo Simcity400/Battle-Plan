@@ -9,7 +9,7 @@ mod plans;
 mod plan_tail;
 use crate::mesh_pose;
 use viewer_scene_base::{mesh_shader, shader_scene};
-use content_reader_core::pdxshader::program::Stage;
+use content_reader_gui::pdxshader::program::Stage;
 use shader_pipeline::{
     binding,
     gpu::{CONSTANT_BINDINGS, TEXTURE_BINDINGS},
@@ -1183,8 +1183,8 @@ fn selection_suffix(skinned: bool, caster: bool) -> &'static str {
 }
 
 fn material_flags(
-    lit: &content_reader_core::pdxshader::BlendState,
-    shadow: &content_reader_core::pdxshader::BlendState,
+    lit: &content_reader_gui::pdxshader::BlendState,
+    shadow: &content_reader_gui::pdxshader::BlendState,
     diffuse: bool,
 ) -> (bool, bool) {
     let mut textured = diffuse && (lit.enable || lit.alpha_test);
@@ -3080,9 +3080,9 @@ mod tests {
             Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, gpu,
         };
         use viewer_gpu::gpu_contract::{buffer, read_texture};
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
-        let program = content_reader_core::pdxshader::program::read_with(b"slices.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"slices.shader", &|path| {
             Some(if path == b"slices.shader" {
                 b"Effect Draw { }".to_vec()
             } else {
@@ -3414,7 +3414,7 @@ mod tests {
 
     #[test]
     fn shadow_alpha_state_can_admit_an_alternate_material() {
-        use content_reader_core::pdxshader::BlendState;
+        use content_reader_gui::pdxshader::BlendState;
         let opaque = BlendState::default();
         let cutout = BlendState {
             enable: false,

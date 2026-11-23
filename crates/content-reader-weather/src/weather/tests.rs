@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use super::*;
 
 #[test]
@@ -339,7 +340,7 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
 
 #[test]
 fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!("hoi4-weather-consumer-{}", std::process::id()));
     std::fs::create_dir_all(root.join("common/modifiers")).unwrap();
     std::fs::write(
@@ -354,7 +355,7 @@ fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
     )
     .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    let notes = crate::static_modifiers::read_identifiers(&layers, &TEMPERATURE_MODIFIERS)
+    let notes = content_reader_politics::static_modifiers::read_identifiers(&layers, &TEMPERATURE_MODIFIERS)
         .unwrap()
         .notes;
     assert!(!notes.is_empty());

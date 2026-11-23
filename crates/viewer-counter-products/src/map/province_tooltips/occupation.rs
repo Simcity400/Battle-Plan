@@ -85,7 +85,7 @@ fn resistance_rate(
 pub(super) fn base_value(value: i64, colour: char) -> String {
     format!(
         "\u{11}{colour}{}%\u{11}!",
-        content_reader_core::fixed5::fixed5_to_string(value, 3)
+        content_reader_parser::fixed5::fixed5_to_string(value, 3)
     )
 }
 

@@ -84,14 +84,14 @@ fn building_tokens_fold_like_the_lexer_and_refuse_ambiguity() {
 
 #[test]
 fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
-    content_reader_core::test_game::enter();
-    let buildings = content_reader_core::buildings::parse(
+    content_reader_script::test_game::enter();
+    let buildings = content_reader_key_names::buildings::parse(
         b"buildings={
             Dock={naval_headquarter=yes} dock={show_on_map=1}
             Yard={specialization={specialization_air}} yard={show_on_map=1}
             hq={naval_headquarter=yes} fac={specialization={specialization_naval}}
         }",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     let provinces = ProvinceMap {
@@ -163,8 +163,8 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
 
 #[test]
 fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
-    content_reader_core::test_game::enter();
-    let buildings = content_reader_core::buildings::parse(
+    content_reader_script::test_game::enter();
+    let buildings = content_reader_key_names::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=SHARED}
             hq={naval_headquarter=yes spawn_point=shared}
@@ -175,7 +175,7 @@ fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
             hq_elsewhere={naval_headquarter=yes spawn_point=lone}
         }
         spawn_points={shared={} facility_spawn={} lone={}}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     assert!(!buildings.types["port"].is_port);
@@ -248,15 +248,15 @@ fn building(location: u32, building_type: u32, ordinal: u32, level: i16) -> Buil
 
 #[test]
 fn repeated_icon_templates_are_refused_by_name() {
-    content_reader_core::test_game::enter();
-    let buildings = content_reader_core::buildings::parse(
+    content_reader_script::test_game::enter();
+    let buildings = content_reader_key_names::buildings::parse(
         b"buildings={
             hq={naval_headquarter=yes} later_hq={naval_headquarter=yes}
             dock={specialization={specialization_naval}} yard={specialization={specialization_air}}
             hq={show_on_map=1}
             yard={specialization={specialization_air} show_on_map=2}
         }",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     let provinces = ProvinceMap {
@@ -320,8 +320,8 @@ fn repeated_icon_templates_are_refused_by_name() {
 
 #[test]
 fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
-    content_reader_core::test_game::enter();
-    let buildings = content_reader_core::buildings::parse(
+    content_reader_script::test_game::enter();
+    let buildings = content_reader_key_names::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=Port_Spawn}
             hq_at_port={naval_headquarter=yes only_costal=yes spawn_point=port_spawn}
@@ -329,7 +329,7 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
             facility={specialization={specialization_air second} spawn_point=FACILITY_SPAWN}
         }
         spawn_points={port_spawn={} Facility_Spawn={}}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     let ids = [7, 8];
@@ -371,12 +371,11 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
 
 #[test]
 fn icons_anchor_only_at_records_the_loader_admits() {
-    content_reader_core::test_game::enter();
-    use content_reader_core::{
-        map::CountryColors, map::MapData, map::ProvinceDefinition, map::ProvinceKind, mesh::Roster,
-    };
+    content_reader_script::test_game::enter();
+    use content_reader_map::map::{CountryColors, MapData, ProvinceDefinition, ProvinceKind};
+    use content_reader_mesh::mesh::Roster;
     use content_reader_states::states::StateDefinition;
-    let buildings = content_reader_core::buildings::parse(
+    let buildings = content_reader_key_names::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=port_spawn}
             hq={naval_headquarter=yes spawn_point=port_spawn}
@@ -385,7 +384,7 @@ fn icons_anchor_only_at_records_the_loader_admits() {
             lone_port={is_port=yes spawn_point=lone_spawn}
         }
         spawn_points={port_spawn={} facility_spawn={} lone_spawn={}}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     let definition = |id, kind| ProvinceDefinition {
@@ -488,7 +487,7 @@ fn base_prohibition_lists_keep_raw_zero_and_nonzero_country_aliases() {
 
 #[test]
 fn cached_base_joins_equal_fresh_hour_derivations() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use replay_data::rows::{AirBaseRow, ProvinceRow, TableRows};
     use viewer_foundation::test_support::{test_frame, test_put};
     super::super::tests::with_counter_inputs_fixture(
@@ -630,8 +629,8 @@ fn memoized_building_tokens_equal_a_fresh_build_hour_by_hour() {
 
 #[test]
 fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_none_is_drawn() {
-    content_reader_core::test_game::enter();
-    use crate::map::counters::preparation::plan_probe;
+    content_reader_script::test_game::enter();
+    use content_reader_map::map::counters::preparation::plan_probe;
     use building_facts::{AIR_BASE, ICON_KINDS, IconAnchor, RADAR, SiteIcon};
     use replay_data::rows::{TableId, TableRows};
     use replay_frame::frame::TableView;

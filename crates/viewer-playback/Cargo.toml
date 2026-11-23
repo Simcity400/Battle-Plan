@@ -12,7 +12,7 @@ doctest = false
 [features]
 test-support = [
     "dep:recorder-derive",
-    "content-reader-core/test-support",
+    "content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support",
     "content-reader-country-names/test-support",
     "content-reader-gfx/test-support",
     "content-reader-image/test-support",
@@ -62,8 +62,15 @@ test-support = [
 ]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-gui.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 recorder-derive = { workspace = true, optional = true }
-content-reader-core = { workspace = true }
 content-reader-country-names = { workspace = true }
 content-reader-gfx = { workspace = true }
 content-reader-image = { workspace = true }

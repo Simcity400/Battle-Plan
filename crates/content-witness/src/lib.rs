@@ -1,5 +1,5 @@
-use content_reader_core::ResolvedLayers;
-use content_reader_core::content::{ContentRead, LayerSource, ReadOutcome};
+use content_reader_layers::ResolvedLayers;
+use content_reader_layers::content::{ContentRead, LayerSource, ReadOutcome};
 use product_codec::Product;
 use sha2::{Digest, Sha256};
 use std::{

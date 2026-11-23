@@ -1,8 +1,5 @@
 use content_witness::{Recorder, Witness};
-use content_reader_core::{
-    ResolvedLayers,
-    content::{ContentRead, ReadOutcome},
-};
+use content_reader_layers::{ResolvedLayers, content::{ContentRead, ReadOutcome}};
 use sha2::{Digest, Sha256};
 use std::{io, sync::Arc};
 

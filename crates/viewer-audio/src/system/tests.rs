@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Emitter, Group, Listener};
-use content_reader_core::test_support::Stack;
+use content_reader_layers::test_support::Stack;
 
 const ASSETS: &str = r#"
     sound = { name = tone file = "tone.wav" }

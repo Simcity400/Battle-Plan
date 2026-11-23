@@ -2129,7 +2129,7 @@ impl Scene {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        map: &content_reader_core::map::MapData,
+        map: &content_reader_map::map::MapData,
         strategic_regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
         field: &viewer_gpu::gradient_math::FieldDefines,
         cache: &viewer_map_modes::political_gpu::Cache,

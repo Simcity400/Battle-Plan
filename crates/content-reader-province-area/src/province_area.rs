@@ -1,8 +1,9 @@
 #[cfg(any(test, feature = "test-support"))]
-use crate::province_geometry::engine_map_checked;
+use content_reader_map::province_geometry::engine_map_checked;
 #[cfg(any(test, feature = "test-support"))]
-use content_reader_core::fields::invalid;
-use crate::{ResolvedLayers, province_geometry::land_areas::LandAreas};
+use content_reader_parser::fields::invalid;
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::province_geometry::land_areas::LandAreas;
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
@@ -38,7 +39,7 @@ impl ProvinceAreas {
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         check()?;
-        let files = crate::terrain::read_default_map(layers)?;
+        let files = content_reader_key_names::terrain::read_default_map(layers)?;
         let definition = files.file("definitions")?;
         let provinces = files.file("provinces")?;
         check()?;
@@ -53,7 +54,7 @@ impl ProvinceAreas {
     }
 
     fn stream_checked(
-        definitions: content_reader_core::content::Bytes,
+        definitions: content_reader_layers::content::Bytes,
         raster: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
@@ -89,7 +90,7 @@ impl ProvinceAreas {
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         check()?;
-        let rows = content_reader_core::map::definition_rows(definitions)?;
+        let rows = content_reader_map::map::definition_rows(definitions)?;
         for (index, row) in rows.iter().enumerate() {
             if index % 4096 == 0 {
                 check()?;
@@ -106,7 +107,7 @@ impl ProvinceAreas {
 
     #[cfg(any(test, feature = "test-support"))]
     fn from_map_checked(
-        map: crate::province_geometry::EngineMap,
+        map: content_reader_map::province_geometry::EngineMap,
         check: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         check()?;
@@ -173,7 +174,7 @@ mod tests {
 
     #[test]
     fn area_count_cancels_after_processing_part_of_the_raster() {
-        let map = crate::province_geometry::EngineMap {
+        let map = content_reader_map::province_geometry::EngineMap {
             ids: vec![1; 9000],
             width: 9000,
             height: 1,

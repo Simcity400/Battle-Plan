@@ -17,7 +17,7 @@ pub fn balance(
             let names: Vec<_> = row
                 .sources
                 .iter()
-                .map(|name| content_reader_core::parser::c_string(name))
+                .map(|name| content_reader_parser::parser::c_string(name))
                 .collect();
             if names
                 .iter()
@@ -57,7 +57,7 @@ mod tests {
                 TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
             }),
         };
-        let pack = save::governance::parse(&content_reader_core::parser::parse(b"countries={} power_balance={power_balances={{template=x value=0 left_side=l right_side=r trending_side=r modifier=b modifier=a modifier=b}}}").unwrap().items).unwrap();
+        let pack = save::governance::parse(&content_reader_parser::parser::parse(b"countries={} power_balance={power_balances={{template=x value=0 left_side=l right_side=r trending_side=r modifier=b modifier=a modifier=b}}}").unwrap().items).unwrap();
         let row = |sources| PowerBalanceModifierBreakdownRow {
             record: 0,
             sources,

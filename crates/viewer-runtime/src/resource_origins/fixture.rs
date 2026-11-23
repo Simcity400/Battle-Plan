@@ -32,14 +32,14 @@ pub const GIVEN: u32 = 7;
 pub const ALIASED: u32 = 8;
 
 pub fn content() -> Content {
-    let mut buildings = content_reader_core::buildings::Buildings::default();
+    let mut buildings = content_reader_key_names::buildings::Buildings::default();
     for (name, grants) in [
         ("infrastructure", Vec::new()),
         ("refinery", vec![("oil".to_owned(), 100_000)]),
     ] {
         buildings.types.insert(
             name.to_owned(),
-            content_reader_core::buildings::BuildingType {
+            content_reader_key_names::buildings::BuildingType {
                 name: name.to_owned(),
                 local_resources: grants,
                 ..Default::default()
@@ -50,7 +50,7 @@ pub fn content() -> Content {
         resources: ["oil", "steel", "rubber"]
             .into_iter()
             .enumerate()
-            .map(|(at, token)| content_reader_core::resources::Resource {
+            .map(|(at, token)| content_reader_key_names::resources::Resource {
                 token: token.to_owned(),
                 icon_frame: Some(at as u32 + 1),
             })

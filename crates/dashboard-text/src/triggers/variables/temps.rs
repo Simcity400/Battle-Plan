@@ -1,7 +1,7 @@
-use crate::triggers::Failure;
+use content_reader_script::triggers::Failure;
 
 use super::*;
-use content_reader_core::parser::Value as ParsedValue;
+use content_reader_parser::parser::Value as ParsedValue;
 
 enum Right<'v> {
     Scalar(Box<ScopedVariable>),
@@ -16,7 +16,7 @@ struct Operands<'v> {
     if_zero: ScopedVariable,
 }
 
-pub(in crate::triggers) fn assign(
+pub(in content_reader_script::triggers) fn assign(
     evaluator: &Evaluator,
     operand: &mut ScopedVariable,
     text: &[u8],
@@ -30,7 +30,7 @@ pub(in crate::triggers) fn assign(
             operand.literal = next.literal;
             return Ok(());
         }
-        return Err(crate::triggers::refusal::refused(format!(
+        return Err(content_reader_script::triggers::refusal::refused(format!(
             "repeated variable operand {} keeps fields from its earlier read, which is not reproduced",
             String::from_utf8_lossy(text)
         )));
@@ -39,7 +39,7 @@ pub(in crate::triggers) fn assign(
     Ok(())
 }
 
-pub(in crate::triggers) fn zero() -> ScopedVariable {
+pub(in content_reader_script::triggers) fn zero() -> ScopedVariable {
     ScopedVariable {
         literal: Some(0),
         ..ScopedVariable::default()
@@ -47,7 +47,7 @@ pub(in crate::triggers) fn zero() -> ScopedVariable {
 }
 
 impl Evaluator<'_, '_> {
-    pub(in crate::triggers) fn temp_operation(
+    pub(in content_reader_script::triggers) fn temp_operation(
         &self,
         name: &str,
         item: &Item,
@@ -69,7 +69,7 @@ impl Evaluator<'_, '_> {
             return None;
         }
         if uncertain && !self.in_colour_callback() {
-            let why = crate::triggers::refusal::refused(format!(
+            let why = content_reader_script::triggers::refusal::refused(format!(
                 "{name}: its execution depends on an unknown earlier condition"
             ));
             self.taint_temps(why);
@@ -134,7 +134,7 @@ impl Evaluator<'_, '_> {
                     match &mut right {
                         Right::Scalar(operand) => assign(self, operand, scalar)?,
                         Right::Expression(_) => {
-                            return Err(crate::triggers::refusal::refused(
+                            return Err(content_reader_script::triggers::refusal::refused(
                                 "scalar RHS after an expression has an incompatible value form",
                             ));
                         }
@@ -158,7 +158,7 @@ impl Evaluator<'_, '_> {
         index: Option<&ScopedVariable>,
     ) -> Result<Vec<u8>, Failure> {
         if var.literal.is_some() || var.token.is_some() || var.random || var.ai_random {
-            return Err(crate::triggers::refusal::refused(
+            return Err(content_reader_script::triggers::refusal::refused(
                 "temp destination is read-only; mutable lookup asserts",
             ));
         }
@@ -169,7 +169,7 @@ impl Evaluator<'_, '_> {
                 .and_then(|v| self.raw(v))?,
             None => 0,
         };
-        let current = crate::triggers::refusal::deferred(|| {
+        let current = content_reader_script::triggers::refusal::deferred(|| {
             self.temp(&key, scopes).and_then(|v| match v {
                 Some(v) => self.raw(v),
                 None => Ok(initial),
@@ -394,7 +394,7 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         let random = self.next_variable_random(scopes)?;
-        let integer = content_reader_core::parser::read_bool_field(
+        let integer = content_reader_parser::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "integer",
             false,
@@ -431,7 +431,7 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         self.store_description_temp(destination.clone(), 0);
-        let need = content_reader_core::parser::read_bool_field(
+        let need = content_reader_parser::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "need",
             false,
@@ -507,7 +507,7 @@ impl Evaluator<'_, '_> {
             return self.scoped_value(expression.scalar().unwrap_or_default(), scopes);
         };
         let Some(first) = fields.first().filter(|field| field.keyword_is("value")) else {
-            return Err(crate::triggers::refusal::refused(
+            return Err(content_reader_script::triggers::refusal::refused(
                 "expression without its initial value",
             ));
         };
@@ -515,7 +515,7 @@ impl Evaluator<'_, '_> {
         for field in &fields[1..] {
             let key = field.keyword().map(|key| key.folded()).unwrap_or_default();
             if matches!(key.as_slice(), b"round" | b"not") && field.value.scalar() != Some(b"yes") {
-                return Err(crate::triggers::refusal::refused(format!(
+                return Err(content_reader_script::triggers::refusal::refused(format!(
                     "expression unary {} requires yes",
                     String::from_utf8_lossy(&key)
                 )));
@@ -565,7 +565,7 @@ impl Evaluator<'_, '_> {
                     | b"equals"
                     | b"not_equals"
             ) {
-                return Err(crate::triggers::refusal::refused(format!(
+                return Err(content_reader_script::triggers::refusal::refused(format!(
                     "expression operator {} is not reproduced",
                     String::from_utf8_lossy(&key)
                 )));
@@ -619,6 +619,6 @@ fn quotient(value: i64, rhs: i64) -> Result<i64, Failure> {
         .wrapping_mul(ONE)
         .checked_div(rhs)
         .ok_or_else(|| -> Failure {
-            crate::triggers::refusal::refused("fixed5 divide faults on signed quotient overflow")
+            content_reader_script::triggers::refusal::refused("fixed5 divide faults on signed quotient overflow")
         })
 }

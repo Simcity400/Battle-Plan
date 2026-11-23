@@ -24,10 +24,10 @@ provinces={{}}
 const CLEAN: &str = "refresh=8 production={ dirty=no }";
 
 fn content(extra: &str) -> Buildings {
-    content_reader_core::buildings::parse(
+    content_reader_key_names::buildings::parse(
         format!("buildings={{ civ={{general_production=1}} arms={{military_production=1}} yard={{naval_production=1}} infrastructure={{}} both={{military_production=1 general_production=1}} {extra} }}")
             .as_bytes(),
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap()
 }
@@ -103,7 +103,7 @@ fn run_with_states(
 
 #[test]
 fn unowned_state_factories_follow_positive_control_and_never_charge_null_control() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut saved = save(CLEAN, CLEAN);
     let state = saved.states.get_mut(&2).unwrap();
     state.owner = None;
@@ -142,7 +142,7 @@ fn unowned_state_factories_follow_positive_control_and_never_charge_null_control
 
 #[test]
 fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -173,7 +173,7 @@ fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
 
 #[test]
 fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_is_reported() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -204,7 +204,7 @@ fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_i
 
 #[test]
 fn an_excluded_state_without_factory_inputs_does_not_skip_a_country() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -231,7 +231,7 @@ fn an_excluded_state_without_factory_inputs_does_not_skip_a_country() {
 
 #[test]
 fn history_building_effects_compare_saved_levels_without_waiving_a_difference() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let membership = super::super::fixtures::membership(
         "state={id=1 provinces={1} history={buildings={civ=99} \
          1936.1.1={IF={limit={} remove_building={type=civ level=2} \
@@ -253,7 +253,7 @@ fn history_building_effects_compare_saved_levels_without_waiving_a_difference() 
 
 #[test]
 fn controlled_and_offsite_levels_compare_per_group() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let saved = save(CLEAN, CLEAN);
     let rows = vec![row(5, [1 + 2, 3, 5 + 2]), row(6, [1, 0, 1])];
     let report = run(&saved, &content(""), rows.clone()).unwrap();
@@ -268,7 +268,7 @@ fn controlled_and_offsite_levels_compare_per_group() {
 
 #[test]
 fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let rows = || vec![row(5, [0; 3]), row(6, [0; 3])];
     for ger in [
         "refresh=10 production={ dirty=no }",
@@ -297,7 +297,7 @@ fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
 
 #[test]
 fn missing_rows_inputs_or_content_are_not_silently_compared() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let report = run(&save(CLEAN, CLEAN), &content(""), vec![row(5, [3, 3, 7])]).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     let rows = || vec![row(5, [3, 3, 7]), row(6, [1, 0, 1])];
@@ -310,9 +310,9 @@ fn missing_rows_inputs_or_content_are_not_silently_compared() {
         .is_err()
     );
     assert!(run(&save("refresh=0", CLEAN), &content(""), rows()).is_err());
-    let undeclared = content_reader_core::buildings::parse(
+    let undeclared = content_reader_key_names::buildings::parse(
         b"buildings={ civ={} arms={} yard={} infrastructure={} }",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     assert!(run(&save(CLEAN, CLEAN), &undeclared, rows()).is_err());

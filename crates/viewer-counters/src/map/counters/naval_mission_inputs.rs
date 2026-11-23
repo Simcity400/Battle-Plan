@@ -19,7 +19,7 @@ type RegionTopology = (
 );
 
 pub(super) struct Content {
-    terrain: content_reader_core::terrain::TerrainDefinitions,
+    terrain: content_reader_key_names::terrain::TerrainDefinitions,
     pub(super) allegiance_group_cutoff: f32,
     naval_terrain: BTreeMap<u32, Vec<u8>>,
     efficiencies: derive::Defines,
@@ -36,10 +36,10 @@ pub(super) struct Content {
 
 impl Content {
     pub(super) fn read(
-        terrain: content_reader_core::terrain::TerrainDefinitions,
+        terrain: content_reader_key_names::terrain::TerrainDefinitions,
         layers: &ResolvedLayers,
         regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
-        defines: &content_reader_core::defines::Defines,
+        defines: &content_reader_defines::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
             allegiance_group_cutoff: defines.number(
@@ -71,7 +71,7 @@ impl Content {
         })
     }
 
-    fn terrain(&self, region: Option<u32>) -> Fact<&content_reader_core::terrain::TerrainCategory> {
+    fn terrain(&self, region: Option<u32>) -> Fact<&content_reader_key_names::terrain::TerrainCategory> {
         let at = region
             .and_then(|id| self.naval_terrain.get(&id))
             .and_then(|name| self.terrain.category(name))
@@ -86,8 +86,8 @@ fn data<T: TableSchema>(frame: &DecodedFrame) -> Fact<&[T::Row]> {
 }
 
 type Topology<'a> = Fact<(
-    &'a content_reader_core::province_graph::ProvinceGraph,
-    &'a content_reader_core::province_geometry::ProvinceGeometry,
+    &'a content_reader_map::province_graph::ProvinceGraph,
+    &'a content_reader_map::province_geometry::ProvinceGeometry,
 )>;
 
 pub(super) struct Hour<'a> {
@@ -308,7 +308,7 @@ impl<'a> Hour<'a> {
         let key_name = names
             .name(definition.token)
             .map_err(|error| error.to_string())?;
-        let raw = |block: &content_reader_core::modifiers::Modifiers| -> Fact<Option<i64>> {
+        let raw = |block: &content_reader_script::modifiers::Modifiers| -> Fact<Option<i64>> {
             if let Some(reason) = block.unheld.cause() {
                 return Err(format!(
                     "terrain {} modifier {key_name}: {reason}",
@@ -741,7 +741,7 @@ impl<'a> Hour<'a> {
 
     fn admits(&self, name: &str, owner: u32, submarine: bool) -> Fact<bool> {
         let (graph, _) = self.topology.as_ref().map_err(Clone::clone)?;
-        let rule = content_reader_core::adjacency_rules::find(&graph.rules, name)
+        let rule = content_reader_map::adjacency_rules::find(&graph.rules, name)
             .ok_or_else(|| format!("naval adjacency rule {name} is undefined"))?;
         self.moves
             .as_ref()

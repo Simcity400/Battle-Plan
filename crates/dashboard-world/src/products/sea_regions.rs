@@ -1,7 +1,7 @@
 
 use dashboard_base::products::LoadContext;
 use dashboard_base::Source;
-use content_reader_core::content::ResolvedContent;
+use content_reader_layers::content::ResolvedContent;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -46,15 +46,15 @@ impl SeaContent {
         let regions = dashboard_base::content::strategic_regions(layers)?;
         let mut notes = regions.notes.clone();
         let sea = (|| -> io::Result<BTreeSet<u32>> {
-            let files = content_reader_core::terrain::read_default_map(layers)?;
-            let definitions = content_reader_core::map::read_definitions(&layers.read(&files.file("definitions")?)?)?;
-            Ok(definitions.provinces.values().filter(|province| province.kind == content_reader_core::map::ProvinceKind::Sea).map(|province| province.id).collect())
+            let files = content_reader_key_names::terrain::read_default_map(layers)?;
+            let definitions = content_reader_map::map::read_definitions(&layers.read(&files.file("definitions")?)?)?;
+            Ok(definitions.provinces.values().filter(|province| province.kind == content_reader_map::map::ProvinceKind::Sea).map(|province| province.id).collect())
         })()
         .map_err(|error| error.to_string());
         if let Err(why) = &sea {
             notes.push(format!("1 naval region membership unavailable: {why}"));
         }
-        let terrain = content_reader_core::terrain::read_definitions(layers).map_err(|error| error.to_string());
+        let terrain = content_reader_key_names::terrain::read_definitions(layers).map_err(|error| error.to_string());
         if let Ok(terrain) = &terrain {
             notes.extend(terrain.skipped.iter().map(|why| format!("1 naval terrain content refusal: {why}")));
         }
@@ -75,7 +75,7 @@ impl SeaContent {
             })
             .collect();
         let sea = sea.map(|sea| regions.regions.iter().filter(|(_, region)| region.provinces.iter().any(|province| sea.contains(province))).map(|(&id, _)| id).collect());
-        let ratio = content_reader_core::defines::read(layers).and_then(|defines| defines.fixed5("NNavy", "DOMINANCE_CONTROLLED_THRESHOLD_RATIO")).map_err(|error| error.to_string());
+        let ratio = content_reader_defines::defines::read(layers).and_then(|defines| defines.fixed5("NNavy", "DOMINANCE_CONTROLLED_THRESHOLD_RATIO")).map_err(|error| error.to_string());
         let content = Arc::new(Self { sea, minima, ratio, notes });
         state.held = Some((resolved, Arc::clone(&content)));
         Ok(content)

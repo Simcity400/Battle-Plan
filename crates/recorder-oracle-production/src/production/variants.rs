@@ -66,7 +66,7 @@ pub(super) fn compare_variants(
 
 pub fn compare_variant_archetypes(
     frame: &DecodedFrame,
-    equipment: &content_reader_core::equipment::Database,
+    equipment: &content_reader_key_names::equipment::Database,
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {

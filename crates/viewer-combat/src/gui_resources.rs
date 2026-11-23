@@ -1,5 +1,5 @@
 use super::{Assets, Values, binding::Bindings, gui::CombatResources};
-use content_reader_core::gui::native;
+use content_reader_gui::gui::native;
 use content_reader_localisation::localisation::Localisation;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_native_gui::native_flags::resolved_flag_cell;

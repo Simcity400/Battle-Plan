@@ -3,7 +3,7 @@ use replay_data::rows::VariantDefinitionRow;
 
 #[test]
 fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     fn facts_content(replaced: bool) -> model_selection::Content {
         let prefix = if replaced {
             b"equipments = { padding = { is_archetype = yes } }".as_slice()

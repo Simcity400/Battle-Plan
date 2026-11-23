@@ -1,4 +1,5 @@
-use content_reader_core::{ResolveOptions, ResolvedLayers, flags::FlagSet};
+use content_reader_layers::{ResolveOptions, ResolvedLayers};
+use content_reader_gui::flags::FlagSet;
 use content_reader_image::Rgba8Image;
 use replay_data::identity::Identity;
 use serde::Serialize;
@@ -59,8 +60,8 @@ pub struct FlagContent {
 
 impl FlagContent {
     pub fn load(identity: &Identity, options: &ResolveOptions) -> io::Result<Self> {
-        let content = content_reader_core::resolve(identity, options)?.exact()?;
-        let defines = content_reader_core::defines::read(&content.layers)?;
+        let content = content_reader_layers::resolve(identity, options)?.exact()?;
+        let defines = content_reader_defines::defines::read(&content.layers)?;
         Ok(Self {
             cell: FlagSet::Normal.cell(&defines)?,
             layers: content.layers,
@@ -69,7 +70,7 @@ impl FlagContent {
 
     pub fn find(&self, keys: &[String]) -> io::Result<Option<FlagImage>> {
         search(keys, |asset| match self.layers.read_uncovered(asset) {
-            Ok(bytes) => Ok(content_reader_core::flags::decode_checked(&bytes, self.cell).ok()),
+            Ok(bytes) => Ok(content_reader_gui::flags::decode_checked(&bytes, self.cell).ok()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         })

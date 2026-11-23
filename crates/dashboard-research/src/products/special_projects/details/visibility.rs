@@ -3,7 +3,7 @@ use super::{Context, ProjectContent};
 use dashboard_base::products::at_hour::{self, Read};
 use dashboard_query::Query;
 use dashboard_text::triggers::{Eval, Evaluator, Scope, Scopes};
-use content_reader_core::characters::ScientistVisibilityTemplate;
+use content_reader_key_names::characters::ScientistVisibilityTemplate;
 use replay_data::rows::{Recorded, ScientistDailyRow};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -28,7 +28,7 @@ fn without_world(row: &ScientistDailyRow) -> Result<Option<bool>, String> {
     }
 }
 
-fn retained_triggers(templates: &[ScientistVisibilityTemplate], line: u32) -> Result<&content_reader_core::triggers::Triggers, String> {
+fn retained_triggers(templates: &[ScientistVisibilityTemplate], line: u32) -> Result<&content_reader_script::triggers::Triggers, String> {
     let mut found = templates.iter().filter(|template| template.line == line);
     let template = found.next().ok_or("Scientist visibility: retained role origin is absent from recorded content")?;
     if found.next().is_some() {
@@ -48,7 +48,7 @@ fn templates(cache: &Cache, content: &ProjectContent, path: &str) -> Templates {
                 .layers
                 .read(path)
                 .map_err(|why| format!("Scientist visibility: {path}: {why}"))
-                .and_then(|bytes| content_reader_core::characters::parse_scientist_visibility_templates(&bytes).map(Arc::new).map_err(|why| format!("Scientist visibility: {path}: {why}")))
+                .and_then(|bytes| content_reader_key_names::characters::parse_scientist_visibility_templates(&bytes).map(Arc::new).map_err(|why| format!("Scientist visibility: {path}: {why}")))
         })
         .clone()
 }
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn replacement_role_uses_its_own_visible_origin_instead_of_the_character_template() {
-        let bodies = content_reader_core::characters::parse_scientist_visibility_templates(
+        let bodies = content_reader_key_names::characters::parse_scientist_visibility_templates(
             br#"
 characters={ original={scientist={visible={always=yes}}} }
 effect={add_scientist_role={scientist={visible={always=no}}}}

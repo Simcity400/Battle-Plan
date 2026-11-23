@@ -293,7 +293,7 @@ mod tests {
         )
         .unwrap();
 
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
             .unwrap();
         let read = |path: &str| layers.read_uncovered(path);
 

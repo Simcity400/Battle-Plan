@@ -13,7 +13,7 @@ doctest = false
 test-support = ["recorder-derive-framework/test-support"]
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-parser.workspace = true
 content-reader-country-names.workspace = true
 engine-native.workspace = true
 recorder-derive-framework.workspace = true

@@ -1,7 +1,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Combat {

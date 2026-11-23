@@ -4,7 +4,7 @@ use std::{
 };
 
 use eframe::wgpu;
-use content_reader_core::{pdxshader::DepthStencilState, pdxshader::program::Stage};
+use content_reader_gui::pdxshader::{DepthStencilState, program::Stage};
 use shader_pipeline::{
     ScalarKind, VertexInput, binding, gpu,
     library::{Effect, Selection},
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn offscreen_bucket_applies_program_transition_without_geometry_upload() {
-        use content_reader_core::{pdxshader::program::Program, pdxshader::program::Technique};
+        use content_reader_gui::pdxshader::program::{Program, Technique};
 
         let missing = Effect::from_compiled(Arc::new(Program::default()), vec![], vec![]);
         let previous = Selection {

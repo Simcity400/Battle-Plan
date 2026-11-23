@@ -1,5 +1,5 @@
 use super::{LandSpeedContent, MovementContent, MovementMap, RailMovementDefines};
-use content_reader_core::movement::{Neighbour, ProvinceTerrain};
+use content_reader_map::movement::{Neighbour, ProvinceTerrain};
 use replay_data::rows::{DivisionMovementRow, DivisionPanelStatsRow, DivisionRow, ProvinceRow};
 use replay_derive::eta_derive::Defines;
 use replay_frame::frame::Metrics;
@@ -156,7 +156,7 @@ pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
     put(frame, TableRows::CountryUnitSpeedEntries(vec![]));
     put(frame, TableRows::DivisionTransportSpeeds(vec![]));
     if !engine_executable::executable_tables::is_initialized() {
-        crate::test_support::enter_fixed_modifier_tables();
+        content_reader_layers::test_support::enter_fixed_modifier_tables();
     }
     let mut keys = engine_executable::modifier_keys::all()
         .unwrap()

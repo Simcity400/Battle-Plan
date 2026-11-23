@@ -3126,19 +3126,29 @@ name = "content-reader"
 version = "0.1.0"
 dependencies = [
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
  "content-reader-equipment-graphics",
  "content-reader-events",
  "content-reader-focus",
  "content-reader-gfx",
+ "content-reader-gui",
+ "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-military",
  "content-reader-naval-combat-defines",
  "content-reader-naval-path",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-scripted-localisation",
  "content-reader-settings",
  "content-reader-state-categories",
@@ -3157,40 +3167,19 @@ name = "content-reader-abilities"
 version = "0.1.0"
 dependencies = [
  "content-reader-abilities",
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "engine-allocation",
  "replay-identity",
  "test-unify",
-]
-
-[[package]]
-name = "content-reader-core"
-version = "0.1.0"
-dependencies = [
- "content-reader-core",
- "content-reader-image",
- "engine-allocation",
- "engine-executable",
- "engine-heap",
- "job-priority",
- "miniz_oxide 0.8.9",
- "mlua",
- "replay-identity",
- "replay-spool",
- "serde",
- "serde_json",
- "sha2",
- "synthetic-game",
- "test-unify",
- "windows-sys 0.61.2",
- "zstd",
 ]
 
 [[package]]
 name = "content-reader-country-names"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
  "engine-allocation",
@@ -3203,11 +3192,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "content-reader-defines"
+version = "0.1.0"
+dependencies = [
+ "content-reader-layers",
+ "engine-heap",
+ "mlua",
+ "sha2",
+]
+
+[[package]]
 name = "content-reader-division-names"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-division-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "engine-allocation",
  "replay-identity",
  "test-unify",
@@ -3217,8 +3218,14 @@ dependencies = [
 name = "content-reader-equipment-graphics"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-states",
  "engine-allocation",
  "engine-executable",
@@ -3233,8 +3240,11 @@ dependencies = [
 name = "content-reader-events"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-events",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "engine-allocation",
  "replay-identity",
  "test-unify",
@@ -3244,8 +3254,12 @@ dependencies = [
 name = "content-reader-focus"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-focus",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "engine-allocation",
  "job-priority",
  "replay-identity",
@@ -3256,11 +3270,28 @@ dependencies = [
 name = "content-reader-gfx"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-gfx",
+ "content-reader-gui",
+ "content-reader-layers",
+ "content-reader-script",
  "engine-allocation",
  "replay-identity",
  "test-unify",
+]
+
+[[package]]
+name = "content-reader-gui"
+version = "0.1.0"
+dependencies = [
+ "content-reader-defines",
+ "content-reader-image",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
+ "engine-executable",
+ "engine-heap",
+ "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -3275,12 +3306,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "content-reader-key-names"
+version = "0.1.0"
+dependencies = [
+ "content-reader-defines",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
+ "engine-executable",
+ "engine-heap",
+ "replay-identity",
+ "replay-spool",
+ "serde",
+ "synthetic-game",
+ "zstd",
+]
+
+[[package]]
+name = "content-reader-layers"
+version = "0.1.0"
+dependencies = [
+ "content-reader-image",
+ "content-reader-parser",
+ "engine-allocation",
+ "engine-executable",
+ "engine-heap",
+ "job-priority",
+ "miniz_oxide 0.8.9",
+ "replay-identity",
+ "replay-spool",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synthetic-game",
+ "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
 name = "content-reader-localisation"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "content-reader-core",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "engine-allocation",
  "engine-executable",
  "replay-identity",
@@ -3288,10 +3358,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "content-reader-map"
+version = "0.1.0"
+dependencies = [
+ "content-reader-defines",
+ "content-reader-gui",
+ "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
+ "engine-executable",
+ "engine-heap",
+ "synthetic-game",
+]
+
+[[package]]
+name = "content-reader-mesh"
+version = "0.1.0"
+dependencies = [
+ "content-reader-defines",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
+ "engine-heap",
+ "sha2",
+]
+
+[[package]]
+name = "content-reader-military"
+version = "0.1.0"
+dependencies = [
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-politics",
+ "content-reader-script",
+ "engine-heap",
+]
+
+[[package]]
 name = "content-reader-naval-combat-defines"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-layers",
  "content-reader-naval-combat-defines",
  "engine-allocation",
  "engine-executable",
@@ -3303,7 +3414,7 @@ dependencies = [
 name = "content-reader-naval-path"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
  "content-reader-naval-path",
  "engine-allocation",
  "engine-executable",
@@ -3312,10 +3423,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "content-reader-parser"
+version = "0.1.0"
+dependencies = [
+ "engine-heap",
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "content-reader-politics"
+version = "0.1.0"
+dependencies = [
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
+ "engine-executable",
+ "engine-heap",
+]
+
+[[package]]
 name = "content-reader-province-area"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-province-area",
  "engine-allocation",
  "engine-executable",
@@ -3327,11 +3463,15 @@ dependencies = [
 name = "content-reader-raids"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-raids",
+ "content-reader-script",
  "engine-allocation",
  "replay-data",
  "replay-frame",
@@ -3343,7 +3483,8 @@ dependencies = [
 name = "content-reader-regions"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
+ "content-reader-parser",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
@@ -3356,7 +3497,12 @@ dependencies = [
 name = "content-reader-save"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-states",
  "engine-allocation",
  "replay-data",
@@ -3365,10 +3511,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "content-reader-script"
+version = "0.1.0"
+dependencies = [
+ "content-reader-layers",
+ "content-reader-parser",
+ "engine-executable",
+ "engine-heap",
+ "replay-spool",
+ "synthetic-game",
+]
+
+[[package]]
 name = "content-reader-scripted-localisation"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-scripted-localisation",
  "engine-allocation",
  "replay-identity",
@@ -3379,7 +3541,11 @@ dependencies = [
 name = "content-reader-settings"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-gui",
+ "content-reader-image",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-settings",
  "engine-allocation",
  "engine-executable",
@@ -3394,7 +3560,11 @@ dependencies = [
 name = "content-reader-sound"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-sound",
  "engine-allocation",
  "log",
@@ -3407,7 +3577,10 @@ dependencies = [
 name = "content-reader-state-categories"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-state-categories",
  "engine-allocation",
  "replay-identity",
@@ -3418,7 +3591,12 @@ dependencies = [
 name = "content-reader-states"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-states",
  "engine-allocation",
  "replay-identity",
@@ -3429,7 +3607,8 @@ dependencies = [
 name = "content-reader-unit-path"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-unit-path",
  "engine-allocation",
  "engine-executable",
@@ -3441,7 +3620,10 @@ dependencies = [
 name = "content-reader-wargoals"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-script",
  "content-reader-wargoals",
  "engine-allocation",
  "replay-identity",
@@ -3452,8 +3634,14 @@ dependencies = [
 name = "content-reader-weather"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-weather",
  "engine-allocation",
  "replay-data",
@@ -3465,7 +3653,7 @@ dependencies = [
 name = "content-witness"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
  "engine-allocation",
  "engine-executable",
  "product-codec",
@@ -3826,9 +4014,14 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "content-reader-core",
  "content-reader-country-names",
  "content-reader-equipment-graphics",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
+ "content-reader-script",
  "content-reader-wargoals",
  "content-reader-weather",
  "dashboard",
@@ -3886,10 +4079,16 @@ dependencies = [
 name = "dashboard-air"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
+ "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-weather",
  "dashboard-air",
  "dashboard-base",
@@ -3935,15 +4134,23 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-focus",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-settings",
  "content-reader-states",
  "dashboard-base",
@@ -3999,9 +4206,11 @@ dependencies = [
 name = "dashboard-core"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-settings",
@@ -4084,16 +4293,23 @@ name = "dashboard-effects"
 version = "0.1.0"
 dependencies = [
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
  "content-reader-equipment-graphics",
  "content-reader-events",
  "content-reader-focus",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-state-categories",
  "content-reader-wargoals",
  "dashboard-effects",
@@ -4151,10 +4367,14 @@ dependencies = [
 name = "dashboard-intelligence"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-military",
+ "content-reader-parser",
  "content-reader-raids",
+ "content-reader-script",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4193,9 +4413,16 @@ dependencies = [
 name = "dashboard-land"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-division-names",
+ "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-script",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4240,10 +4467,11 @@ dependencies = [
 name = "dashboard-naval"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-division-names",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-regions",
+ "content-reader-script",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4318,11 +4546,16 @@ name = "dashboard-politics"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-events",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
+ "content-reader-politics",
+ "content-reader-script",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4366,9 +4599,13 @@ dependencies = [
 name = "dashboard-production"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-gfx",
+ "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4437,8 +4674,11 @@ dependencies = [
 name = "dashboard-research"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-script",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4482,19 +4722,27 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
  "content-reader-equipment-graphics",
  "content-reader-events",
  "content-reader-focus",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-scripted-localisation",
  "content-reader-settings",
  "content-reader-state-categories",
@@ -4538,9 +4786,14 @@ dependencies = [
 name = "dashboard-wars"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-military",
+ "content-reader-politics",
+ "content-reader-script",
  "content-reader-wargoals",
  "dashboard-base",
  "dashboard-core",
@@ -4586,11 +4839,16 @@ name = "dashboard-world"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "dashboard-base",
@@ -7042,13 +7300,20 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 name = "map-content"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-states",
  "content-reader-unit-path",
@@ -7093,12 +7358,19 @@ dependencies = [
 name = "map-products"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-states",
  "content-reader-weather",
@@ -7148,8 +7420,12 @@ dependencies = [
 name = "map-snow"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-regions",
  "engine-allocation",
  "engine-executable",
@@ -8517,13 +8793,18 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
  "content-reader-division-names",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-scripted-localisation",
  "content-reader-settings",
  "content-reader-states",
@@ -8566,10 +8847,12 @@ version = "0.1.0"
 dependencies = [
  "app-update",
  "bitflags 1.3.2",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-raids",
@@ -8604,8 +8887,8 @@ dependencies = [
 name = "recorder-derive"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
@@ -8672,7 +8955,7 @@ dependencies = [
 name = "recorder-derive-equipment"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -8692,7 +8975,9 @@ dependencies = [
 name = "recorder-derive-framework"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -8761,9 +9046,9 @@ dependencies = [
 name = "recorder-derive-world"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -8781,9 +9066,15 @@ dependencies = [
 name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-weather",
  "engine-executable",
  "engine-native",
@@ -8823,7 +9114,9 @@ dependencies = [
 name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-layers",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-dlc",
@@ -8843,14 +9136,20 @@ dependencies = [
 name = "recorder-oracle"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "content-reader-weather",
  "engine-executable",
@@ -8915,9 +9214,10 @@ dependencies = [
 name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -8938,9 +9238,11 @@ dependencies = [
 name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -8982,7 +9284,9 @@ dependencies = [
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
+ "content-reader-military",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9003,7 +9307,7 @@ dependencies = [
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9045,12 +9349,13 @@ dependencies = [
 name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-native",
@@ -9069,7 +9374,8 @@ dependencies = [
 name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9089,7 +9395,7 @@ dependencies = [
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9109,7 +9415,7 @@ dependencies = [
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9129,7 +9435,7 @@ dependencies = [
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9211,10 +9517,11 @@ dependencies = [
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-native",
@@ -9254,7 +9561,7 @@ dependencies = [
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9293,10 +9600,13 @@ dependencies = [
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-land-inputs",
@@ -9316,7 +9626,9 @@ dependencies = [
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
+ "content-reader-military",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9337,7 +9649,7 @@ dependencies = [
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9359,7 +9671,7 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9379,10 +9691,11 @@ dependencies = [
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-native",
@@ -9403,7 +9716,7 @@ dependencies = [
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9423,7 +9736,7 @@ dependencies = [
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9443,7 +9756,7 @@ dependencies = [
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9503,7 +9816,7 @@ dependencies = [
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9527,9 +9840,9 @@ dependencies = [
 name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9549,7 +9862,7 @@ dependencies = [
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9569,10 +9882,12 @@ dependencies = [
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-native",
@@ -9612,12 +9927,14 @@ dependencies = [
 name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-native",
@@ -9637,7 +9954,8 @@ dependencies = [
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9658,7 +9976,7 @@ dependencies = [
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9678,7 +9996,7 @@ dependencies = [
 name = "recorder-oracle-relations"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9739,7 +10057,7 @@ dependencies = [
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9797,7 +10115,7 @@ dependencies = [
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9817,10 +10135,13 @@ dependencies = [
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "engine-executable",
  "engine-native",
@@ -9894,10 +10215,12 @@ dependencies = [
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "content-reader-weather",
  "engine-native",
@@ -9997,8 +10320,9 @@ dependencies = [
 name = "recording-upgrade"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10231,9 +10555,9 @@ version = "0.1.0"
 dependencies = [
  "app-update",
  "bitflags 1.3.2",
- "content-reader-core",
  "content-reader-naval-combat-defines",
  "content-reader-naval-path",
+ "content-reader-script",
  "content-reader-settings",
  "content-reader-sound",
  "content-reader-weather",
@@ -10945,7 +11269,11 @@ name = "shader-pipeline"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-gui",
+ "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-script",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
@@ -12385,17 +12713,26 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
  "content-reader-focus",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-military",
  "content-reader-naval-combat-defines",
  "content-reader-naval-path",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-raids",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-scripted-localisation",
  "content-reader-settings",
  "content-reader-sound",
@@ -12485,11 +12822,18 @@ name = "viewer-aircraft"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-states",
  "dashboard-core",
  "dashboard-text",
@@ -12530,7 +12874,7 @@ dependencies = [
 name = "viewer-audio"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-layers",
  "content-reader-sound",
  "cpal",
  "engine-allocation",
@@ -12550,8 +12894,11 @@ name = "viewer-borders"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
@@ -12588,9 +12935,15 @@ name = "viewer-buildings"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-states",
  "content-reader-unit-path",
  "dashboard-text",
@@ -12625,15 +12978,23 @@ dependencies = [
 name = "viewer-combat"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
  "content-reader-events",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
  "content-reader-naval-combat-defines",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-weather",
  "dashboard-base",
@@ -12677,12 +13038,19 @@ name = "viewer-counter-products"
 version = "0.1.0"
 dependencies = [
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-division-names",
+ "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-states",
  "content-reader-unit-path",
  "content-reader-weather",
@@ -12729,14 +13097,22 @@ name = "viewer-counters"
 version = "0.1.0"
 dependencies = [
  "content-reader-abilities",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-settings",
  "content-reader-sound",
  "content-reader-states",
@@ -12780,7 +13156,7 @@ dependencies = [
 name = "viewer-engagements"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-province-area",
  "content-reader-unit-path",
  "dpi",
@@ -12810,14 +13186,23 @@ dependencies = [
 name = "viewer-foundation"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
+ "content-reader-script",
  "content-reader-states",
  "content-reader-unit-path",
  "dashboard-core",
@@ -12851,8 +13236,13 @@ name = "viewer-gpu"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-settings",
@@ -12890,7 +13280,7 @@ dependencies = [
 name = "viewer-layer-core"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
  "content-reader-naval-path",
  "content-reader-province-area",
  "content-reader-sound",
@@ -12952,9 +13342,10 @@ dependencies = [
 name = "viewer-layers-counters"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
  "content-reader-naval-path",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-weather",
  "dashboard-effects",
@@ -13001,8 +13392,9 @@ dependencies = [
 name = "viewer-layers-forces"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-map",
  "content-reader-naval-path",
+ "content-reader-parser",
  "content-reader-sound",
  "content-reader-weather",
  "dashboard-base",
@@ -13052,8 +13444,9 @@ name = "viewer-layers-infrastructure"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-naval-path",
  "content-reader-province-area",
  "content-reader-sound",
@@ -13107,11 +13500,15 @@ dependencies = [
 name = "viewer-layers-political"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-naval-path",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-weather",
  "dashboard-effects",
@@ -13161,10 +13558,15 @@ dependencies = [
 name = "viewer-map-icons"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
+ "content-reader-gui",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-politics",
  "content-reader-province-area",
+ "content-reader-script",
  "dpi",
  "engine-heap",
  "indexmap 2.14.2",
@@ -13199,10 +13601,15 @@ name = "viewer-map-modes"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-state-categories",
  "dashboard-text",
  "dpi",
@@ -13242,12 +13649,18 @@ name = "viewer-map-text"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "dashboard-text",
  "dpi",
  "eframe",
@@ -13287,9 +13700,13 @@ name = "viewer-models"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-unit-path",
  "dashboard-text",
  "dpi",
@@ -13327,11 +13744,15 @@ name = "viewer-native-gui"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-settings",
  "dpi",
  "eframe",
@@ -13366,14 +13787,21 @@ dependencies = [
 name = "viewer-playback"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-gfx",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-naval-combat-defines",
  "content-reader-naval-path",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-settings",
  "content-reader-sound",
  "content-reader-state-categories",
@@ -13450,13 +13878,21 @@ dependencies = [
 name = "viewer-raids"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
+ "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-military",
+ "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-states",
  "content-reader-unit-path",
@@ -13500,10 +13936,17 @@ name = "viewer-rail"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-unit-path",
  "dashboard-text",
  "dpi",
@@ -13540,8 +13983,11 @@ dependencies = [
 name = "viewer-runtime"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-settings",
  "dashboard-core",
@@ -13579,10 +14025,16 @@ name = "viewer-scene-base"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "dpi",
  "eframe",
  "engine-executable",
@@ -13620,9 +14072,13 @@ name = "viewer-terrain"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
+ "content-reader-mesh",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-unit-path",
  "dpi",
  "eframe",
@@ -13655,8 +14111,11 @@ name = "viewer-unit-history"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-province-area",
+ "content-reader-script",
  "dpi",
  "engine-heap",
  "indexmap 2.14.2",
@@ -13687,12 +14146,18 @@ name = "viewer-unit-models"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
  "content-reader-equipment-graphics",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-raids",
+ "content-reader-script",
  "dashboard-core",
  "dashboard-text",
  "dpi",
@@ -13728,10 +14193,15 @@ dependencies = [
 name = "viewer-unit-reads"
 version = "0.1.0"
 dependencies = [
- "content-reader-core",
  "content-reader-country-names",
+ "content-reader-defines",
+ "content-reader-key-names",
+ "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-parser",
  "content-reader-province-area",
+ "content-reader-script",
  "content-reader-states",
  "content-reader-unit-path",
  "dashboard-text",
@@ -13766,10 +14236,16 @@ name = "viewer-weather-effects"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-weather",
  "dpi",
  "eframe",
@@ -13807,10 +14283,16 @@ name = "viewer-world"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "content-reader-core",
+ "content-reader-defines",
+ "content-reader-gui",
  "content-reader-image",
+ "content-reader-key-names",
+ "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-province-area",
  "content-reader-regions",
+ "content-reader-script",
  "content-reader-sound",
  "content-reader-weather",
  "dashboard-core",

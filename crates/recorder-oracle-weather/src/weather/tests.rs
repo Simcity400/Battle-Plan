@@ -533,11 +533,11 @@ fn static_list(
     }))
 }
 
-fn statics(values: &[(&str, i64)]) -> content_reader_core::modifiers::Modifiers {
-    let mut block = content_reader_core::modifiers::Modifiers::default();
+fn statics(values: &[(&str, i64)]) -> content_reader_script::modifiers::Modifiers {
+    let mut block = content_reader_script::modifiers::Modifiers::default();
     block.values = values
         .iter()
-        .map(|&(name, value)| content_reader_core::modifiers::Modifier {
+        .map(|&(name, value)| content_reader_script::modifiers::Modifier {
             key: name.to_owned(),
             name: name.to_ascii_lowercase(),
             text: String::new(),

@@ -1,6 +1,6 @@
 #[test]
 fn a_program_reading_the_screen_buffer_by_texel_keeps_it_full_size() {
-    use content_reader_core::pdxshader::program::Stage;
+    use content_reader_gui::pdxshader::program::Stage;
     use shader_pipeline::binding;
     use viewer_scene_base::shadow::texel_reads;
     let reads = |slot: u32, technique: &str, body: &str| {

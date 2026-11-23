@@ -1,10 +1,10 @@
-use content_reader_core::ResolvedLayers;
-use content_reader_core::scripted_map_modes::LayerType;
+use content_reader_layers::ResolvedLayers;
+use content_reader_map::scripted_map_modes::LayerType;
 use std::{collections::BTreeSet, io};
 
 fn reaches_sharing(
-    items: &[content_reader_core::parser::Item],
-    templates: &content_reader_core::scripted_triggers::ScriptedTriggers,
+    items: &[content_reader_parser::parser::Item],
+    templates: &content_reader_script::scripted_trigger_grammar::ScriptedTriggers,
     visited: &mut BTreeSet<Vec<u8>>,
 ) -> bool {
     items.iter().any(|item| {
@@ -36,11 +36,11 @@ fn reaches_sharing(
 
 pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_json::Value> {
     let language = language.strip_prefix("l_").unwrap_or(language);
-    let modes = content_reader_core::scripted_map_modes::read(layers)?;
+    let modes = content_reader_map::scripted_map_modes::read(layers)?;
     let templates = if modes.modes.is_empty() {
         Default::default()
     } else {
-        content_reader_core::scripted_triggers::read(layers)?
+        content_reader_key_names::scripted_triggers::read(layers)?
     };
     let mut sharing_roster = false;
     let mut all_controllers = false;
@@ -58,7 +58,7 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
                 all_controllers = true;
                 continue;
             };
-            let targets = content_reader_core::country_scorers::script_targets(block);
+            let targets = content_reader_politics::country_scorers::script_targets(block);
             if !targets.arrays.is_empty() {
                 all_controllers = true;
             }
@@ -160,7 +160,7 @@ mod tests {
     use super::*;
     #[test]
     fn scripted_map_demand_empty_controller_targets_need_every_state_cache() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("scripted-empty-targets-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/map_modes")).unwrap();
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn scripted_map_demand_follows_hover_alternatives_and_limits_static_state_targets() {
         use engine_executable::executable_tables::TriggerReader;
-        content_reader_core::test_game::with(|game| {
+        content_reader_script::test_game::with(|game| {
             game.trigger("is_in_tech_sharing_group", 0, TriggerReader::Assign, 0)
         });
         let root = std::env::temp_dir().join(format!("scripted-map-demand-{}", std::process::id()));

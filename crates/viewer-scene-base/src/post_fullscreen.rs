@@ -2,7 +2,7 @@ use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::{collections::BTreeMap, sync::Arc};
 
 use eframe::wgpu::{self, util::DeviceExt};
-use content_reader_core::pdxshader::program::Stage;
+use content_reader_gui::pdxshader::program::Stage;
 use shader_pipeline::{
     binding, gpu,
     library::{Effect, Selection},

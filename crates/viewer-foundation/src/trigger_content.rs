@@ -1,20 +1,20 @@
 
 use crate::movement_timing::MovementContent;
 use dashboard_text::triggers::{ContentFacts, LeaderRoles};
-use content_reader_core::buildings::Buildings;
+use content_reader_key_names::buildings::Buildings;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct TriggerContent {
-    pub triggers: Arc<content_reader_core::trigger_keys::TriggerNames>,
-    pub ideologies: Option<content_reader_core::ideologies::Ideologies>,
+    pub triggers: Arc<content_reader_script::trigger_keys::TriggerNames>,
+    pub ideologies: Option<content_reader_key_names::ideologies::Ideologies>,
     pub continents: Result<Vec<String>, String>,
     pub character_traits: Option<(
-        content_reader_core::unit_leader::Traits,
-        Result<Arc<content_reader_core::leader_traits::LeaderTraits>, String>,
+        content_reader_key_names::unit_leader::Traits,
+        Result<Arc<content_reader_military::leader_traits::LeaderTraits>, String>,
     )>,
-    pub tag_aliases: Arc<content_reader_core::tag_aliases::TagAliases>,
+    pub tag_aliases: Arc<content_reader_key_names::tag_aliases::TagAliases>,
     pub buildings: Buildings,
     pub dlcs: BTreeSet<String>,
     pub state_provinces: BTreeMap<u32, Vec<u32>>,
@@ -24,7 +24,7 @@ pub struct TriggerContent {
     pub resource_bonuses: [i64; 2],
     pub leader_roles: Result<Arc<LeaderRoles>, String>,
     pub invasion_prepare_days: Result<i32, String>,
-    pub script_constants: Result<content_reader_core::script_constants::Constants, String>,
+    pub script_constants: Result<content_reader_politics::script_constants::Constants, String>,
 }
 
 impl TriggerContent {

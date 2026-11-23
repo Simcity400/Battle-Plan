@@ -151,7 +151,7 @@ fn frame() -> DecodedFrame {
 
 #[test]
 fn counter_members_use_the_shared_summary_without_other_province_units() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let frame = frame();
     let content = content();
     let links = BTreeMap::from([(11, 1), (22, 2)]);
@@ -222,7 +222,7 @@ fn exact_counter_members_refuse_missing_inputs_without_a_province_label() {
 
 #[test]
 fn composition_aggregates_globally_in_first_encounter_and_keeps_clones_separate() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = content();
     let token_rows = [
         LexicalTokenRow {
@@ -287,7 +287,7 @@ fn composition_aggregates_globally_in_first_encounter_and_keeps_clones_separate(
 
 #[test]
 fn native_type_mask_and_nato_frame_select_ship_prefix_and_native_range_key() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = content();
     let entries = [Entry {
         name: "Boat".into(),
@@ -302,7 +302,7 @@ fn native_type_mask_and_nato_frame_select_ship_prefix_and_native_range_key() {
 
 #[test]
 fn count_ranges_are_exact_at_full_intel_and_clamp_nonpositive_counts() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let d = content().defines;
     assert_eq!(count_range(9, 1, 75_000, 123, 60_827_914, d), [9, 9]);
     assert_eq!(count_range(-9, 1, 0, 123, 60_827_914, d), [0, 0]);
@@ -328,7 +328,7 @@ fn count_ranges_are_exact_at_full_intel_and_clamp_nonpositive_counts() {
 
 #[test]
 fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let d = content().defines;
     let range = count_range(100, 1, 40_000, 123, 60_827_914, d);
     assert!(range[0] < 100 && range[1] > 100);
@@ -339,7 +339,7 @@ fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
 
 #[test]
 fn seeded_count_range_preserves_composition_salt_and_separate_air_salt() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let d = content().defines;
     let law = [d.minimum, d.maximum, d.range];
     let hour = 60_827_914;
@@ -357,7 +357,7 @@ fn seeded_count_range_preserves_composition_salt_and_separate_air_salt() {
 
 #[test]
 fn seeded_count_range_keeps_wrapping_native_salt() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let d = content().defines;
     let law = [d.minimum, d.maximum, d.range];
     let hour = 60_827_914;
@@ -373,18 +373,18 @@ fn seeded_count_range_keeps_wrapping_native_salt() {
 
 #[test]
 fn content_reader_keeps_native_category_reset_and_unknown_tail_refusals() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut content = content();
     assert_eq!(
         content.subunits.category(b"Boat").unwrap(),
-        content_reader_core::test_game::category("screen_ship")
+        content_reader_script::test_game::category("screen_ship")
     );
     content
         .subunits
         .read(b"sub_units={boat={type=infantry}}", "replaced.txt");
     assert_eq!(
         content.subunits.category(b"Boat").unwrap(),
-        content_reader_core::test_game::category("infantry")
+        content_reader_script::test_game::category("infantry")
     );
     content.subunits.read(
         b"sub_units={bad={weights={x @variable=1}}}",

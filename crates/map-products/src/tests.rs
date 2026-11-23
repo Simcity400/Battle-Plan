@@ -1,11 +1,8 @@
 use super::tables;
 use super::*;
 use content_witness::{Entry, Outcome};
-use content_reader_core::{
-    content::ResolvedLayers,
-    map::{ProvinceDefinition, ProvinceKind},
-    test_support::Stack,
-};
+use content_reader_layers::{content::ResolvedLayers, test_support::Stack};
+use content_reader_map::map::{ProvinceDefinition, ProvinceKind};
 use replay_data::rows::*;
 use replay_frame::frame::{Metrics, TableView};
 use sha2::Digest;
@@ -166,7 +163,7 @@ fn display_content_pressure_is_retryable_without_changing_source_evidence() {
 #[test]
 fn building_bank_survives_dependency_binding_changes_and_replacement() {
     use viewer_buildings::map_buildings::{CityTerrain, MapBuildingAssets};
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let stack = fixture("building_bank_immutable_binding");
     stack.write(
         &stack.base(),
@@ -187,7 +184,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
     );
     let content = content(&stack);
     let layers = stack.layers(&[]);
-    let defines = content_reader_core::defines::read(&layers).unwrap();
+    let defines = content_reader_defines::defines::read(&layers).unwrap();
     let load_bank = || {
         MapBuildingAssets::load(
             &layers,
@@ -340,7 +337,7 @@ fn witness_is_a_canonical_set_including_misses_errors_and_retained_reads() {
         })
         .unwrap();
     assert_eq!(before, other.witness().unwrap());
-    let result: io::Result<content_reader_core::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
+    let result: io::Result<content_reader_layers::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
     retained.read("map/later.txt").unwrap();
     assert_ne!(before, reads.witness().unwrap());
@@ -548,7 +545,7 @@ fn witness_changes_on_mod_order_replace_paths_and_a_new_higher_layer_file() {
         let mut layers = ResolvedLayers::from_folders(folders).unwrap();
         for layer in &mut layers.layers {
             layer.id = match &layer.source {
-                content_reader_core::content::LayerSource::Folder(root) => {
+                content_reader_layers::content::LayerSource::Folder(root) => {
                     root.file_name().unwrap().to_string_lossy().into_owned()
                 }
                 _ => unreachable!(),

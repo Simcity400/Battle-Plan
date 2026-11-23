@@ -21,7 +21,7 @@ fn aliases_share_one_class_dispatch() {
         Content::default(),
     );
     let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-    let scopes = crate::triggers::event_scopes::project(&graph, 0).unwrap();
+    let scopes = content_reader_script::triggers::event_scopes::project(&graph, 0).unwrap();
     let mut renderer = Renderer {
         context: &context,
         graph: Rc::new(RefCell::new(graph)),
@@ -29,7 +29,7 @@ fn aliases_share_one_class_dispatch() {
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let items = content_reader_core::parser::parse(
+    let items = content_reader_parser::parser::parse(
         b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}",
     )
     .unwrap()

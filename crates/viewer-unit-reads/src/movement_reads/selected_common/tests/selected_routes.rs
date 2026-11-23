@@ -198,7 +198,7 @@ fn selected_army_route_takes_the_owner_area_early_accept_before_later_operands()
     let mut assets = assets();
     assets.geometry.land.extend([1, 2, 3]);
     assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
-        &content_reader_core::province_graph::ProvinceGraph::default(),
+        &content_reader_map::province_graph::ProvinceGraph::default(),
         &assets.geometry,
     ));
     let world = World::read(&frame, assets.trigger_content.facts());

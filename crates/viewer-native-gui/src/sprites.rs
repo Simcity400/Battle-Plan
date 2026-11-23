@@ -13,7 +13,8 @@ use std::{collections::HashMap, io, sync::Arc};
 pub(super) mod oracle;
 
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, gui::native::resources};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::gui::native::resources;
 use content_reader_gfx::gfx;
 use content_reader_image::{dds, native::Decode};
 
@@ -60,7 +61,7 @@ impl SpriteSheet {
 }
 
 pub struct Interface {
-    pub registry: content_reader_core::gui::native::resources::Registry,
+    pub registry: content_reader_gui::gui::native::resources::Registry,
     pub sprites: gfx::SpriteSet,
     pub decode: Decode,
 }
@@ -752,7 +753,7 @@ pub struct SpritePass {
     retained: Option<retained::Upload>,
     retained_valid: bool,
     prepared_packets: Vec<Option<shader_pipeline::gpu::batch::Data>>,
-    retained_diagnostics: content_reader_core::content::diagnostics::Diagnostics,
+    retained_diagnostics: content_reader_layers::content::diagnostics::Diagnostics,
     packets: packets::Cache,
     packet_views: Vec<(u32, View)>,
     bake_views: Vec<(u32, View)>,
@@ -1185,7 +1186,7 @@ impl SpritePass {
         size: [u32; 2],
         ui_scale: f32,
     ) {
-        let ((), diagnostics) = content_reader_core::content::diagnostics::capture(|| {
+        let ((), diagnostics) = content_reader_layers::content::diagnostics::capture(|| {
             self.upload_inner(device, queue, arena, batch, size, ui_scale)
         });
         diagnostics.credit();
@@ -2189,7 +2190,7 @@ impl SpritePass {
         arena: &shader_pipeline::gpu::Arena,
         bake: &Arc<super::native_shader::draw::Bake>,
     ) -> Result<wgpu::TextureView, String> {
-        let (result, diagnostics) = content_reader_core::content::diagnostics::capture(|| {
+        let (result, diagnostics) = content_reader_layers::content::diagnostics::capture(|| {
             self.prepare_bake_inner(device, queue, arena, bake)
         });
         diagnostics.credit();
@@ -2409,12 +2410,12 @@ struct CachedBake {
     revision: u64,
     view: wgpu::TextureView,
     used: bool,
-    diagnostics: content_reader_core::content::diagnostics::Diagnostics,
+    diagnostics: content_reader_layers::content::diagnostics::Diagnostics,
 }
 
 fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
     use shader_pipeline::binding;
-    use content_reader_core::pdxshader::program::Stage;
+    use content_reader_gui::pdxshader::program::Stage;
     let Ok(Some(selection)) = draw.effect.asset.select(&draw.effect.technique) else {
         return false;
     };
@@ -2493,7 +2494,7 @@ fn bind_draw(
         ..
     }: &Output,
 ) -> (packets::Text, Option<String>) {
-    use content_reader_core::pdxshader::program::Stage;
+    use content_reader_gui::pdxshader::program::Stage;
     let packets::Metadata { label, selection } = packets.metadata(draw);
     let mut refused = baked
         .as_ref()
@@ -2713,7 +2714,7 @@ impl Stream {
 }
 
 static TRANSFORM_BINDINGS: std::sync::LazyLock<[u32; 2]> = std::sync::LazyLock::new(|| {
-    use content_reader_core::pdxshader::program::Stage;
+    use content_reader_gui::pdxshader::program::Stage;
     [
         shader_pipeline::binding(0, Stage::Vertex),
         shader_pipeline::binding(0, Stage::Pixel),
@@ -3010,7 +3011,7 @@ mod tests {
 
     #[test]
     fn counter_sheet_uses_the_native_texture_decoder_and_client_setting() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_native_texture_{}",
             std::process::id()
@@ -3021,7 +3022,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = gfx::SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            content_reader_core::gui::native::sprites::read_sprites(
+            content_reader_gui::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_test texturefile = gfx/test.tga } }",
             ),
         )]);
@@ -3068,7 +3069,7 @@ mod tests {
 
     #[test]
     fn layer_keys_stay_distinct_and_ordered_past_62500_icons() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         assert_ne!(layer(5, 62_500, 0), layer(6, 0, 0));
         assert!(layer(5, 62_500, 0) < layer(6, 0, 0));
         assert!(layer(5, u32::MAX, CHILD_SLOTS - 1) < layer(6, 0, 0));
@@ -3087,7 +3088,7 @@ mod tests {
 
     #[test]
     fn priorities_are_the_defines_signed_low_byte_in_order_under_the_gui() {
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines
             .load(
                 "mod.lua",

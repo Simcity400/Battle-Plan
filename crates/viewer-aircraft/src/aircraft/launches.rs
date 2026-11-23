@@ -1,7 +1,10 @@
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
-use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, mesh};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::MapData;
+use content_reader_mesh::mesh;
 use viewer_foundation::building_facts::{self, SiteSlots, SlotAdmission, admit_slot};
 use viewer_gpu::province_map::ProvinceMap;
 
@@ -33,14 +36,14 @@ impl Content {
         map: &MapData,
         (defines, graphics): (&Defines, &Defines),
         roster: &mesh::Roster,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> Self {
         let sites = sites(layers, map, defines, roster).map_err(|error| error.to_string());
         let sites = match sites {
             Ok((sites, refused)) => {
                 for (name, count) in refused {
                     warnings.push((
-                        content_reader_core::DiagnosticKind::Refused,
+                        content_reader_parser::DiagnosticKind::Refused,
                         format!(
                             "Building slot {name} ({count} admitted records) is refused for state base positions: it names a building declared more than once differently, which could change where its state's base stands"
                         ),
@@ -52,7 +55,7 @@ impl Content {
         };
         if let Err(reason) = &sites {
             warnings.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!(
                     "State air bases, rocket sites and gun emplacements have no position, so their flights and launch effects are not drawn: the building sites do not read: {reason}"
                 ),
@@ -110,7 +113,7 @@ fn sites(
     defines: &Defines,
     roster: &mesh::Roster,
 ) -> io::Result<(Sites, BTreeMap<String, usize>)> {
-    let types = content_reader_core::buildings::read(layers)?;
+    let types = content_reader_key_names::buildings::read(layers)?;
     let (states, _) = content_reader_states::states::read(layers, defines, &map.definitions)?;
     let provinces = ProvinceMap {
         width: map.width,
@@ -118,7 +121,7 @@ fn sites(
         ids: &map.province_ids,
     };
     let slots = SiteSlots::build(
-        &content_reader_core::positions::read_buildings(layers)?,
+        &content_reader_map::positions::read_buildings(layers)?,
         &types,
         |x, z| provinces.at(x, z),
         |spawn, position, province| {

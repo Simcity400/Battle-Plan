@@ -24,7 +24,7 @@ recorder-derive-politics.workspace = true
 recorder-derive-world.workspace = true
 
 [dev-dependencies]
-content-reader-core.workspace = true
+content-reader-key-names.workspace = true
 recorder-derive-framework = { workspace = true, features = ["test-support"] }
 replay-columnar.workspace = true
 replay-data.workspace = true

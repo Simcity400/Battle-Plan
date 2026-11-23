@@ -1,7 +1,7 @@
 
 use viewer_gpu::province_geometry::{Centers, province_at};
 
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 
 use super::fixed::{self, Point, SCALE};
 

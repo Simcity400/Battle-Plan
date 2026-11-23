@@ -1,6 +1,6 @@
 use super::*;
 pub(super) use super::complete_test_frame as complete_frame;
-use crate::scope::tests::positive_frame as frame;
+use content_reader_script::scope::tests::positive_frame as frame;
 use replay_data::{
     rows::FactionMemberRow, rows::PoliticalPartyRow, rows::TableId, rows::TableRows,
 };
@@ -157,7 +157,7 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
     bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
     bmp[54..57].copy_from_slice(&[0, 0, 1]);
     std::fs::write(folder.0.join("map/provinces.bmp"), bmp).unwrap();
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     let cat = crate::catalogue::tests::layers_catalogue(layers);
     let content = cat.scripted_content().unwrap();
     let mut f = complete_frame();
@@ -617,7 +617,7 @@ fn numeric_brackets_use_the_country_the_text_is_shown_for() {
     for (country, expected) in [(1, "1.2"), (2, "2.7")] {
         let text = ScriptedText::new(&frame, &catalogue.localisation, content, country);
         let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(country))]);
-        let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
+        let evaluator = content_reader_script::triggers::Evaluator::new(text.world().unwrap(), None);
         assert_eq!(
             text.expand_in_session("[?my_var|1]", &scopes, 0, &evaluator),
             Ok(expected.into())
@@ -1090,16 +1090,16 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
     assert!(text.world().is_err());
     let world = text.trigger_world().unwrap();
-    let parsed = content_reader_core::triggers::read(
+    let parsed = content_reader_script::triggers::read(
         b"has_government=mod_group has_country_flag=occupation_flag has_completed_focus=occupation_focus has_country_leader_ideology=FIRST_SUBTYPE",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     );
     assert_eq!(
         world.evaluate(
             &parsed.items,
-            crate::triggers::Scopes::of(crate::triggers::Scope::Country(1))
+            content_reader_script::triggers::Scopes::of(content_reader_script::triggers::Scope::Country(1))
         ),
-        crate::triggers::Eval::True
+        content_reader_script::triggers::Eval::True
     );
     assert!(world.state_order(64).is_err());
     assert!(text.world().is_err());

@@ -509,7 +509,7 @@ pub fn replay(frames: Vec<DecodedFrame>) -> replay::campaign::Replay {
     replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
 
-pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_core::equipment::Database> {
+pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_key_names::equipment::Database> {
     let texts: Vec<String> = texts
         .iter()
         .map(|text| String::from_utf8(text.to_vec()).unwrap())
@@ -522,7 +522,7 @@ pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_core::
         .zip(&texts)
         .map(|(path, text)| (path.as_str(), text.as_str()))
         .collect();
-    let (database, _) = content_reader_core::equipment::fixture::load(&files);
+    let (database, _) = content_reader_key_names::equipment::fixture::load(&files);
     match &database.lost {
         Some(reason) => Err(std::io::Error::other(reason.clone())),
         None => Ok(database),

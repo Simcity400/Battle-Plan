@@ -1,13 +1,8 @@
-use crate::{
-    ResolvedContent, ResolvedLayers,
-    key_names::KeyNames,
-    script_files::ScriptPath,
-    parser::{
-        Item,
-        native::{self, Shape},
-    },
-};
-use content_reader_core::content::diagnostics::Observed;
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
+use content_reader_layers::{ResolvedContent, ResolvedLayers, script_files::ScriptPath};
+use content_reader_script::{key_names::KeyNames, native::{self, Shape}};
+use content_reader_parser::parser::Item;
+use content_reader_layers::content::diagnostics::Observed;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,
@@ -34,7 +29,7 @@ pub struct Event {
 
 impl Event {
     fn title_key(item: &Item) -> &[u8] {
-        crate::parser::c_string(
+        content_reader_parser::parser::c_string(
             item.value
                 .scalar()
                 .or_else(|| {
@@ -152,7 +147,7 @@ enum Node {
 }
 
 pub fn identifier_key(id: &[u8]) -> Result<Vec<u8>, String> {
-    let id = crate::parser::c_string(id);
+    let id = content_reader_parser::parser::c_string(id);
     let dot = id.iter().rposition(|byte| *byte == b'.').ok_or_else(|| {
         format!(
             "event {} has no namespace; event lookup cannot resolve it",
@@ -240,7 +235,7 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                     }
                     let scope = field
                         .keyword_is("operative_leader_event")
-                        .then_some(crate::scope::ScopeKind::Character.bit());
+                        .then_some(content_reader_script::scope::ScopeKind::Character.bit());
                     Shape::Object(Node::Event(scope))
                 }
                 Some(b"add_namespace") => Shape::One,
@@ -274,7 +269,7 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                         effect_scope: scope.or(field.effect_scope),
                         ..*field
                     };
-                    crate::effect_keys::shape(Some(names), &field).map(|_| Node::Option(scope))
+                    content_reader_script::effect_keys::shape(Some(names), &field).map(|_| Node::Option(scope))
                 }
             },
             Node::Mtth => native::mean_time_to_happen(field),
@@ -305,12 +300,12 @@ fn string_field<'a>(fields: &'a [Item], key: &str) -> &'a [u8] {
         .iter()
         .rfind(|field| field.keyword_is(key))
         .and_then(|field| field.value.scalar())
-        .map(crate::parser::c_string)
+        .map(content_reader_parser::parser::c_string)
         .unwrap_or_default()
 }
 
 fn option_name(fields: &[Item]) -> &[u8] {
-    crate::parser::read_string(string_field(fields, "name"))
+    content_reader_parser::parser::read_string(string_field(fields, "name"))
 }
 
 fn namespaces(read: &native::Read) -> BTreeSet<Vec<u8>> {
@@ -318,7 +313,7 @@ fn namespaces(read: &native::Read) -> BTreeSet<Vec<u8>> {
         .iter()
         .filter(|item| item.keyword_is("add_namespace"))
         .filter_map(|item| item.value.scalar())
-        .map(|name| crate::parser::c_string(name).to_ascii_lowercase())
+        .map(|name| content_reader_parser::parser::c_string(name).to_ascii_lowercase())
         .collect()
 }
 
@@ -331,8 +326,8 @@ impl EventRead {
         let item = &mut read.items[item_index];
         let operative = item.keyword_is("operative_leader_event");
         let fields =
-            match std::mem::replace(&mut item.value, crate::parser::Value::Block(Vec::new())) {
-                crate::parser::Value::Block(fields) => fields,
+            match std::mem::replace(&mut item.value, content_reader_parser::parser::Value::Block(Vec::new())) {
+                content_reader_parser::parser::Value::Block(fields) => fields,
                 _ => Vec::new(),
             };
         let mut event = Event {
@@ -343,9 +338,9 @@ impl EventRead {
         };
         let blockers: Vec<_> = read.item_misreads.get(item_index).into_iter().flatten()
             .chain(&read.unattributed_misreads)
-            .filter(|note| matches!(note.kind, crate::DiagnosticKind::ParseFailure
-                | crate::DiagnosticKind::Unsettled | crate::DiagnosticKind::Unsupported
-                | crate::DiagnosticKind::Refused))
+            .filter(|note| matches!(note.kind, content_reader_parser::DiagnosticKind::ParseFailure
+                | content_reader_parser::DiagnosticKind::Unsettled | content_reader_parser::DiagnosticKind::Unsupported
+                | content_reader_parser::DiagnosticKind::Refused))
             .map(|note| {
                 let description = note.to_string();
                 if operative
@@ -378,14 +373,14 @@ impl EventRead {
                 continue;
             }
             if field.keyword_is("immediate") {
-                if let crate::parser::Value::Block(body) = field.value {
+                if let content_reader_parser::parser::Value::Block(body) = field.value {
                     event.immediate.extend(body);
                 }
                 continue;
             }
             if field.keyword_is("option") {
                 let option = match field.value {
-                    crate::parser::Value::Block(body) => body,
+                    content_reader_parser::parser::Value::Block(body) => body,
                     _ => Vec::new(),
                 };
                 event.option_names.push(option_name(&option).to_vec());
@@ -402,7 +397,7 @@ impl EventRead {
                         .iter()
                         .any(|item| item.keyword_is("original_recipient_only"))
                         .then(|| {
-                            crate::parser::read_bool_field(
+                            content_reader_parser::parser::read_bool_field(
                                 &option,
                                 "original_recipient_only",
                                 false,
@@ -879,7 +874,7 @@ impl LazyEvents {
     }
 
     pub fn options(&self, name: &[u8]) -> Result<Vec<(Arc<Event>, usize)>, String> {
-        let name = crate::parser::c_string(name);
+        let name = content_reader_parser::parser::c_string(name);
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
         self.index(&mut cache)?;
         let references = cache

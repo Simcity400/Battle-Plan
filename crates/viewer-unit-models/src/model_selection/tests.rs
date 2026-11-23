@@ -151,7 +151,7 @@ fn equipment(handle: u64, amount_raw: i64, ordinal: u32) -> DivisionEquipmentRow
 
 #[test]
 fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = content();
     let template = content
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
@@ -175,7 +175,7 @@ fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
 
 #[test]
 fn without_a_category_the_representative_largest_need_filters_by_quantity_then_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = content();
     let template = content
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
@@ -205,8 +205,8 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
 
 #[test]
 fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
-    content_reader_core::test_game::enter();
-    let category = content_reader_core::test_game::category;
+    content_reader_script::test_game::enter();
+    let category = content_reader_script::test_game::category;
     let content = content();
     let template = content
         .template(&row((3, 0), &[(2, 0, 1), (1, 0, 2)]), &sources(&[]))
@@ -245,13 +245,13 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
 
 #[test]
 fn country_override_requires_exact_category_and_signed_positive_origin() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = content();
     let subunit = content.subunit("armor").unwrap();
     let mut variant = VariantDefinitionRow {
         origin_link: u32::MAX,
         creator_link: 7,
-        classifier_flags: content_reader_core::test_game::category("armor"),
+        classifier_flags: content_reader_script::test_game::category("armor"),
         ..Default::default()
     };
     assert_eq!(variant_country(&variant, subunit, 9), 7);
@@ -263,7 +263,7 @@ fn country_override_requires_exact_category_and_signed_positive_origin() {
 
 #[test]
 fn a_local_representatives_recorded_need_selects_its_equipment_without_rescoring() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let content = content();
     let local = sources(&[((7, 1), vec![(5, 200_000)])]);
     let template = content
@@ -288,8 +288,8 @@ fn a_local_representatives_recorded_need_selects_its_equipment_without_rescoring
 
 #[test]
 fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
-    content_reader_core::test_game::enter();
-    let armor = content_reader_core::test_game::category("armor");
+    content_reader_script::test_game::enter();
+    let armor = content_reader_script::test_game::category("armor");
     let content = content();
     let source = sources(&[]);
     let template = content
@@ -409,8 +409,8 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
 fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_demand() {
     use replay_data::rows::{TableId, TableRows};
     use replay_frame::frame::{DecodedFrame, SharedView, TableView};
-    content_reader_core::test_game::enter();
-    let armor = content_reader_core::test_game::category("armor");
+    content_reader_script::test_game::enter();
+    let armor = content_reader_script::test_game::category("armor");
     let mut content = content();
     let mut held = DecodedFrame {
         branch: 1,

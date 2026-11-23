@@ -1,6 +1,6 @@
 use super::{Content, DecodedFrame, Vision, bind_hover, loc};
 use crate::binding::Bindings;
-use content_reader_core::fixed5::{fixed5_percent, fixed5_to_string};
+use content_reader_parser::fixed5::{fixed5_percent, fixed5_to_string};
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{AirPowerMenu, tables};
 use std::{cmp::Ordering, collections::BTreeMap};

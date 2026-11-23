@@ -1,7 +1,7 @@
-use crate::triggers::Failure;
+use content_reader_script::triggers::Failure;
 
-use content_reader_core::{scope::Keyword, scope::Names, scope::Scope, scope::ScopeKind};
-use content_reader_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
+use content_reader_script::scope::{Keyword, Names, Scope, ScopeKind};
+use content_reader_key_names::tag_aliases::{TagAlias, TagAliases};
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
     rows::CountryRow, rows::FactionMemberRow, rows::GlobalSavedEventTargetRow, rows::PoliticsRow,
@@ -99,12 +99,12 @@ pub struct RecordedScopes<'a> {
     countries_complete: bool,
     slots: OnceLock<BTreeMap<String, u32>>,
     states: OnceLock<BTreeMap<u32, (u32, u32)>>,
-    capitals: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
-    overlords: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
+    capitals: OnceLock<content_reader_script::triggers::refusal::Resolved<CountryValues>>,
+    overlords: OnceLock<content_reader_script::triggers::refusal::Resolved<CountryValues>>,
     faction_members_complete: bool,
-    characters: OnceLock<crate::triggers::refusal::Resolved<CharactersByToken>>,
+    characters: OnceLock<content_reader_script::triggers::refusal::Resolved<CharactersByToken>>,
     characters_complete: bool,
-    owned: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
+    owned: OnceLock<content_reader_script::triggers::refusal::Resolved<CountryValues>>,
     original_tags: OriginalTagLists<'a>,
     aliases: Arc<TagAliases>,
     saved_targets_complete: bool,
@@ -136,7 +136,7 @@ pub fn status_gap(status: OperandStatus<'_>) -> String {
 }
 
 fn held_rows<'a, T: TableSchema>(frame: Option<HourFrame<'a>>, mask: u64) -> Rowset<'a, T::Row> {
-    crate::triggers::inputs::unrecorded(|| match frame {
+    content_reader_script::triggers::inputs::unrecorded(|| match frame {
         Some(frame)
             if !matches!(
                 frame.status(T::ID),
@@ -146,14 +146,14 @@ fn held_rows<'a, T: TableSchema>(frame: Option<HourFrame<'a>>, mask: u64) -> Row
             frame.held::<T>(mask)
         }
         _ => {
-            crate::triggers::refusal::missing_reference(T::ID, None).resolution_failed();
+            content_reader_script::triggers::refusal::missing_reference(T::ID, None).resolution_failed();
             Rowset::Decoded(&[])
         }
     })
 }
 
 fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
-    crate::triggers::refusal::input_error(T::ID, why)
+    content_reader_script::triggers::refusal::input_error(T::ID, why)
 }
 
 pub(crate) fn table_in<'a, T: TableSchema>(
@@ -201,7 +201,7 @@ pub fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> b
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Query {
     SavedTarget(Vec<u8>),
-    SavedSelection(Vec<u8>, crate::triggers::saved_event_targets::Reader),
+    SavedSelection(Vec<u8>, content_reader_script::triggers::saved_event_targets::Reader),
     SavedCountry(i32, Vec<u8>),
     ResolveTag(String),
     RawSlot(u32),
@@ -225,8 +225,8 @@ pub enum Query {
 }
 
 impl Query {
-    pub(crate) fn dependence(&self) -> Option<Vec<crate::triggers::inputs::TableRead>> {
-        use crate::triggers::inputs::TableRead;
+    pub(crate) fn dependence(&self) -> Option<Vec<content_reader_script::triggers::inputs::TableRead>> {
+        use content_reader_script::triggers::inputs::TableRead;
         use replay_data::rows::TableId;
         let link = |raw: u32| {
             TableRead::fields(TableId::CountryLinks, &["canonical_slot"]).row(raw.into())
@@ -279,8 +279,8 @@ impl Query {
         })
     }
 
-    fn tag_dependence() -> Vec<crate::triggers::inputs::TableRead> {
-        use crate::triggers::inputs::TableRead;
+    fn tag_dependence() -> Vec<content_reader_script::triggers::inputs::TableRead> {
+        use content_reader_script::triggers::inputs::TableRead;
         use replay_data::rows::TableId;
         vec![
             TableRead::fields(TableId::Countries, &["canonical_slot", "tag"]),
@@ -306,61 +306,61 @@ impl std::hash::Hash for ScopeKey {
 
 impl RecordedScopes<'_> {
     pub fn reread(&self, query: &Query) -> u64 {
-        crate::triggers::inputs::resolved_digest(|| match query {
+        content_reader_script::triggers::inputs::resolved_digest(|| match query {
             Query::SavedTarget(name) => {
-                crate::triggers::inputs::digest_debug(&self.saved_target_unrecorded(name))
+                content_reader_script::triggers::inputs::digest_debug(&self.saved_target_unrecorded(name))
             }
-            Query::SavedSelection(name, reader) => crate::triggers::inputs::digest_debug(
+            Query::SavedSelection(name, reader) => content_reader_script::triggers::inputs::digest_debug(
                 &self.saved_selection_unrecorded(name, *reader),
             ),
             Query::SavedCountry(raw, name) => {
-                crate::triggers::inputs::digest(&self.saved_country_unrecorded(*raw, name))
+                content_reader_script::triggers::inputs::digest(&self.saved_country_unrecorded(*raw, name))
             }
             Query::ResolveTag(tag) => {
-                crate::triggers::inputs::digest(&self.resolve_tag_unrecorded(tag))
+                content_reader_script::triggers::inputs::digest(&self.resolve_tag_unrecorded(tag))
             }
-            Query::RawSlot(raw) => crate::triggers::inputs::digest(&self.raw_slot_unrecorded(*raw)),
+            Query::RawSlot(raw) => content_reader_script::triggers::inputs::digest(&self.raw_slot_unrecorded(*raw)),
             Query::PositiveCountry(raw) => {
-                crate::triggers::inputs::digest(&self.positive_country_unrecorded(*raw))
+                content_reader_script::triggers::inputs::digest(&self.positive_country_unrecorded(*raw))
             }
             Query::OriginalBucket(selected) => {
-                crate::triggers::inputs::digest(&self.original_bucket_unrecorded(*selected))
+                content_reader_script::triggers::inputs::digest(&self.original_bucket_unrecorded(*selected))
             }
-            Query::Alias(tag) => crate::triggers::inputs::digest(&self.alias_unrecorded(tag)),
+            Query::Alias(tag) => content_reader_script::triggers::inputs::digest(&self.alias_unrecorded(tag)),
             Query::AliasEntry(tag) => {
-                crate::triggers::inputs::digest_debug(&self.alias_entry_unrecorded(tag))
+                content_reader_script::triggers::inputs::digest_debug(&self.alias_entry_unrecorded(tag))
             }
             Query::OwnedStates(slot) => {
-                crate::triggers::inputs::digest(&self.owned_states_unrecorded(*slot))
+                content_reader_script::triggers::inputs::digest(&self.owned_states_unrecorded(*slot))
             }
             Query::OriginalTags => {
-                crate::triggers::inputs::digest_debug(&self.original_tags_unrecorded())
+                content_reader_script::triggers::inputs::digest_debug(&self.original_tags_unrecorded())
             }
-            Query::Tag(slot) => crate::triggers::inputs::digest(&self.tag_unrecorded(*slot)),
-            Query::Country(tag) => crate::triggers::inputs::digest(&self.country_unrecorded(tag)),
-            Query::Slot(link) => crate::triggers::inputs::digest(&self.slot_unrecorded(*link)),
+            Query::Tag(slot) => content_reader_script::triggers::inputs::digest(&self.tag_unrecorded(*slot)),
+            Query::Country(tag) => content_reader_script::triggers::inputs::digest(&self.country_unrecorded(tag)),
+            Query::Slot(link) => content_reader_script::triggers::inputs::digest(&self.slot_unrecorded(*link)),
             Query::Faction(slot) => {
-                crate::triggers::inputs::digest(&self.faction_unrecorded(*slot))
+                content_reader_script::triggers::inputs::digest(&self.faction_unrecorded(*slot))
             }
             Query::FactionFirstRaw(faction) => {
-                crate::triggers::inputs::digest(&self.faction_first_raw_unrecorded(*faction))
+                content_reader_script::triggers::inputs::digest(&self.faction_first_raw_unrecorded(*faction))
             }
             Query::FactionLeaderRaw(slot) => {
-                crate::triggers::inputs::digest(&self.faction_leader_raw_unrecorded(*slot))
+                content_reader_script::triggers::inputs::digest(&self.faction_leader_raw_unrecorded(*slot))
             }
             Query::FactionLeader(slot) => {
-                crate::triggers::inputs::digest(&self.faction_leader_unrecorded(*slot))
+                content_reader_script::triggers::inputs::digest(&self.faction_leader_unrecorded(*slot))
             }
-            Query::ResolveText(text, quoted, context) => crate::triggers::inputs::digest_debug(
+            Query::ResolveText(text, quoted, context) => content_reader_script::triggers::inputs::digest_debug(
                 &self.resolve_text_unrecorded(text, *quoted, context),
             ),
             Query::Resolve(scope, context) => {
-                crate::triggers::inputs::digest_debug(&self.resolve_unrecorded(&scope.0, context))
+                content_reader_script::triggers::inputs::digest_debug(&self.resolve_unrecorded(&scope.0, context))
             }
             Query::Describe(target) => {
-                crate::triggers::inputs::digest(&self.describe_unrecorded(*target))
+                content_reader_script::triggers::inputs::digest(&self.describe_unrecorded(*target))
             }
-            Query::Roster => crate::triggers::inputs::digest(
+            Query::Roster => content_reader_script::triggers::inputs::digest(
                 &self.roster_unrecorded().map(Iterator::collect::<Vec<u32>>),
             ),
         })
@@ -425,7 +425,7 @@ impl<'a> RecordedScopes<'a> {
     fn input<T: TableSchema>(
         &self,
         field: &str,
-        scope: Option<crate::triggers::Store>,
+        scope: Option<content_reader_script::triggers::Store>,
         message: impl Into<String>,
     ) -> Failure {
         let (field, scope) = if self.complete(T::ID) {
@@ -516,9 +516,9 @@ impl<'a> RecordedScopes<'a> {
         &self,
         mask: u64,
         value: impl Fn(&T::Row) -> (u32, i32),
-    ) -> crate::triggers::refusal::Resolved<CountryValues> {
-        crate::triggers::refusal::Resolved::new(|| {
-            crate::triggers::refusal::deferred(|| {
+    ) -> content_reader_script::triggers::refusal::Resolved<CountryValues> {
+        content_reader_script::triggers::refusal::Resolved::new(|| {
+            content_reader_script::triggers::refusal::deferred(|| {
                 let mut out = CountryValues::default();
                 for row in self.rows::<T>(mask).iter() {
                     let row = match row {
@@ -580,7 +580,7 @@ impl<'a> RecordedScopes<'a> {
     fn characters(&self) -> &CharactersByToken {
         self.characters
             .get_or_init(|| {
-                crate::triggers::refusal::Resolved::new(|| {
+                content_reader_script::triggers::refusal::Resolved::new(|| {
                     let lexical = self.rows::<tables::LexicalTokens>(0);
                     let characters =
                         self.rows::<tables::Characters>(CHARACTER);
@@ -625,8 +625,8 @@ impl<'a> RecordedScopes<'a> {
         &self,
         name: &[u8],
     ) -> Result<Option<Cow<'a, GlobalSavedEventTargetRow>>, Failure> {
-        crate::triggers::inputs::query_debug_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::SavedTarget(name.to_vec())),
+        content_reader_script::triggers::inputs::query_debug_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::SavedTarget(name.to_vec())),
             || self.saved_target_unrecorded(name),
         )
     }
@@ -661,10 +661,10 @@ impl<'a> RecordedScopes<'a> {
     pub(crate) fn saved_selection(
         &self,
         name: &[u8],
-        reader: crate::triggers::saved_event_targets::Reader,
-    ) -> Result<crate::triggers::saved_event_targets::Selected, Failure> {
-        crate::triggers::inputs::query_debug_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::SavedSelection(name.to_vec(), reader)),
+        reader: content_reader_script::triggers::saved_event_targets::Reader,
+    ) -> Result<content_reader_script::triggers::saved_event_targets::Selected, Failure> {
+        content_reader_script::triggers::inputs::query_debug_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::SavedSelection(name.to_vec(), reader)),
             || self.saved_selection_unrecorded(name, reader),
         )
     }
@@ -672,17 +672,17 @@ impl<'a> RecordedScopes<'a> {
     fn saved_selection_unrecorded(
         &self,
         name: &[u8],
-        reader: crate::triggers::saved_event_targets::Reader,
-    ) -> Result<crate::triggers::saved_event_targets::Selected, Failure> {
-        use crate::triggers::saved_event_targets::{Selected, select};
+        reader: content_reader_script::triggers::saved_event_targets::Reader,
+    ) -> Result<content_reader_script::triggers::saved_event_targets::Selected, Failure> {
+        use content_reader_script::triggers::saved_event_targets::{Selected, select};
         Ok(self
             .saved_target(name)?
             .map_or(Selected::Missing, |r| select(&r, reader)))
     }
 
     pub fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::SavedCountry(raw, name.to_vec())),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::SavedCountry(raw, name.to_vec())),
             || self.saved_country_unrecorded(raw, name),
         )
     }
@@ -701,8 +701,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn resolve_tag(&self, tag: &str) -> Result<u32, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::ResolveTag(tag.to_owned())),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::ResolveTag(tag.to_owned())),
             || self.resolve_tag_unrecorded(tag),
         )
     }
@@ -720,7 +720,7 @@ impl<'a> RecordedScopes<'a> {
         let raw = *self.raw_ids().get(&slot).ok_or_else(|| -> Failure {
             self.input::<tables::Countries>(
                 "id",
-                Some(crate::triggers::Store::Country(slot)),
+                Some(content_reader_script::triggers::Store::Country(slot)),
                 format!("country slot {slot} has no own raw tag"),
             )
         })?;
@@ -734,7 +734,7 @@ impl<'a> RecordedScopes<'a> {
                     *self.raw_ids().get(&member).ok_or_else(|| -> Failure {
                         self.input::<tables::Countries>(
                             "id",
-                            Some(crate::triggers::Store::Country(member)),
+                            Some(content_reader_script::triggers::Store::Country(member)),
                             format!("country slot {member} has no own raw tag"),
                         )
                     })? as i32
@@ -746,8 +746,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn raw_slot(&self, raw: u32) -> Result<u32, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::RawSlot(raw)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::RawSlot(raw)),
             || self.raw_slot_unrecorded(raw),
         )
     }
@@ -766,8 +766,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub(crate) fn positive_country(&self, raw: u32) -> Result<Option<u32>, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::PositiveCountry(raw)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::PositiveCountry(raw)),
             || self.positive_country_unrecorded(raw),
         )
     }
@@ -780,7 +780,7 @@ impl<'a> RecordedScopes<'a> {
             *self.raw_ids().get(&slot).ok_or_else(|| -> Failure {
                 self.input::<tables::Countries>(
                     "id",
-                    Some(crate::triggers::Store::Country(slot)),
+                    Some(content_reader_script::triggers::Store::Country(slot)),
                     format!("country slot {slot} has no Countries row for its own raw tag"),
                 )
             })?
@@ -789,8 +789,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn original_bucket(&self, selected: i32) -> Result<&[u32], Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::OriginalBucket(selected)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::OriginalBucket(selected)),
             || self.original_bucket_unrecorded(selected),
         )
     }
@@ -803,8 +803,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn alias(&self, tag: &str) -> Option<String> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Alias(tag.to_owned())),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Alias(tag.to_owned())),
             || self.alias_unrecorded(tag),
         )
     }
@@ -815,7 +815,7 @@ impl<'a> RecordedScopes<'a> {
         }
         if self.aliases.get(tag).is_some() {
             return Some(format!(
-                "tag alias {tag}: its triggers run in the trigger evaluator (crate::triggers), not in a scope read alone"
+                "tag alias {tag}: its triggers run in the trigger evaluator (content_reader_script::triggers), not in a scope read alone"
             ));
         }
         (tag.len() == 3 && !self.aliases.unknown.is_empty()).then(|| {
@@ -827,8 +827,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn alias_entry(&self, tag: &str) -> Option<&TagAlias> {
-        crate::triggers::inputs::query_debug_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::AliasEntry(tag.to_owned())),
+        content_reader_script::triggers::inputs::query_debug_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::AliasEntry(tag.to_owned())),
             || self.alias_entry_unrecorded(tag),
         )
     }
@@ -841,8 +841,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, Failure> {
-        let roster = crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Roster),
+        let roster = content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Roster),
             || self.roster_unrecorded().map(Iterator::collect::<Vec<u32>>),
         );
         roster.map(Vec::into_iter)
@@ -863,8 +863,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn owned_states(&self, slot: u32) -> Result<i32, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::OwnedStates(slot)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::OwnedStates(slot)),
             || self.owned_states_unrecorded(slot),
         )
     }
@@ -879,15 +879,15 @@ impl<'a> RecordedScopes<'a> {
         if let Some(raw) = self.raw_ids().get(&slot) {
             self.raw_slot(*raw)?;
         }
-        Err(self.input::<tables::CountryCounterInputs>("owned_state_count", Some(crate::triggers::Store::Country(slot)), format!(
+        Err(self.input::<tables::CountryCounterInputs>("owned_state_count", Some(content_reader_script::triggers::Store::Country(slot)), format!(
             "the owned state count of {} is not recorded: {}",
             self.describe(Target::Country(slot)), self.gaps.get("CountryCounterInputs").cloned().unwrap_or_default()
         )))
     }
 
     pub fn original_tags(&self) -> &OriginalTagLists<'a> {
-        crate::triggers::inputs::query_debug_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::OriginalTags),
+        content_reader_script::triggers::inputs::query_debug_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::OriginalTags),
             || self.original_tags_unrecorded(),
         )
     }
@@ -897,20 +897,20 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn tag(&self, slot: u32) -> Option<&str> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Tag(slot)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Tag(slot)),
             || self.tag_unrecorded(slot),
         )
     }
 
     fn tag_unrecorded(&self, slot: u32) -> Option<&str> {
-        crate::triggers::refusal::reference(
+        content_reader_script::triggers::refusal::reference(
             self.tags().get(&slot).map(String::as_str),
             slot != 0,
             || {
                 self.input::<tables::Countries>(
                     "",
-                    Some(crate::triggers::Store::Country(slot)),
+                    Some(content_reader_script::triggers::Store::Country(slot)),
                     "country tag is not recorded",
                 )
             },
@@ -918,23 +918,23 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn country(&self, tag: &str) -> Option<u32> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Country(tag.to_owned())),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Country(tag.to_owned())),
             || self.country_unrecorded(tag),
         )
     }
 
     fn country_unrecorded(&self, tag: &str) -> Option<u32> {
         let found = self.slots().get(tag).copied();
-        crate::triggers::refusal::membership(found.is_some(), self.countries_complete, || {
+        content_reader_script::triggers::refusal::membership(found.is_some(), self.countries_complete, || {
             self.input::<tables::Countries>("", None, "country-tag membership is not complete")
         });
         found
     }
 
     pub fn slot(&self, link: u32) -> Option<u32> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Slot(link)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Slot(link)),
             || self.slot_unrecorded(link),
         )
     }
@@ -953,8 +953,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub(crate) fn faction(&self, slot: u32) -> Result<Option<u64>, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Faction(slot)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Faction(slot)),
             || self.faction_unrecorded(slot),
         )
     }
@@ -992,8 +992,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub(crate) fn faction_first_raw(&self, faction: u64) -> Result<u32, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::FactionFirstRaw(faction)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::FactionFirstRaw(faction)),
             || self.faction_first_raw_unrecorded(faction),
         )
     }
@@ -1020,8 +1020,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub(crate) fn faction_leader_raw(&self, slot: u32) -> Result<Option<u32>, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::FactionLeaderRaw(slot)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::FactionLeaderRaw(slot)),
             || self.faction_leader_raw_unrecorded(slot),
         )
     }
@@ -1033,8 +1033,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, Failure> {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::FactionLeader(slot)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::FactionLeader(slot)),
             || self.faction_leader_unrecorded(slot),
         )
     }
@@ -1059,9 +1059,9 @@ impl<'a> RecordedScopes<'a> {
         quoted: bool,
         context: &Context,
     ) -> Result<Target, Unresolved> {
-        crate::triggers::inputs::query_debug_resolved(
+        content_reader_script::triggers::inputs::query_debug_resolved(
             || {
-                crate::triggers::inputs::Key::Scopes(Query::ResolveText(
+                content_reader_script::triggers::inputs::Key::Scopes(Query::ResolveText(
                     text.to_owned(),
                     quoted,
                     *context,
@@ -1077,13 +1077,13 @@ impl<'a> RecordedScopes<'a> {
         quoted: bool,
         context: &Context,
     ) -> Result<Target, Unresolved> {
-        self.resolve(&content_reader_core::scope::parse(text, quoted, self), context)
+        self.resolve(&content_reader_script::scope::parse(text, quoted, self), context)
     }
 
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
-        crate::triggers::inputs::query_debug_resolved(
+        content_reader_script::triggers::inputs::query_debug_resolved(
             || {
-                crate::triggers::inputs::Key::Scopes(Query::Resolve(
+                content_reader_script::triggers::inputs::Key::Scopes(Query::Resolve(
                     ScopeKey(scope.clone()),
                     *context,
                 ))
@@ -1104,7 +1104,7 @@ impl<'a> RecordedScopes<'a> {
                 } else {
                     Err(Missing(self.input::<tables::States>(
                         "",
-                        Some(crate::triggers::Store::State(id)),
+                        Some(content_reader_script::triggers::Store::State(id)),
                         format!("state {id} has no recorded States row: {}", gap("States")),
                     )))
                 }
@@ -1144,7 +1144,7 @@ impl<'a> RecordedScopes<'a> {
                     } else {
                         Missing(self.input::<tables::Characters>(
                             "",
-                            Some(crate::triggers::Store::Country(country)),
+                            Some(content_reader_script::triggers::Store::Country(country)),
                             format!("{why} in the recording: {}", gap("Characters")),
                         ))
                     }
@@ -1212,7 +1212,7 @@ impl<'a> RecordedScopes<'a> {
             Keyword::Owner | Keyword::Controller => match this()? {
                 Target::State(id) => {
                     let (owner, controller) = self.states().get(&id).copied().ok_or_else(|| {
-                        Missing(self.input::<tables::States>("", Some(crate::triggers::Store::State(id)), format!(
+                        Missing(self.input::<tables::States>("", Some(content_reader_script::triggers::Store::State(id)), format!(
                             "{name}: state {id} has no recorded States row: {}",
                             self.gaps["States"]
                         )))
@@ -1232,7 +1232,7 @@ impl<'a> RecordedScopes<'a> {
             Keyword::CapitalScope => match this()? {
                 Target::Country(slot) => {
                     let capital = self.capitals().get(slot).map_err(Missing)?.ok_or_else(|| {
-                        Missing(self.input::<tables::Politics>("capital", Some(crate::triggers::Store::Country(slot)), format!(
+                        Missing(self.input::<tables::Politics>("capital", Some(content_reader_script::triggers::Store::Country(slot)), format!(
                             "{name}: {} has no recorded Politics row: {}",
                             self.describe(Target::Country(slot)),
                             self.gaps["Politics"]
@@ -1257,7 +1257,7 @@ impl<'a> RecordedScopes<'a> {
             Keyword::Overlord => match this()? {
                 Target::Country(slot) => {
                     let overlord = self.overlords().get(slot).map_err(Missing)?.ok_or_else(|| {
-                        Missing(self.input::<tables::CountryAppearance>("overlord", Some(crate::triggers::Store::Country(slot)), format!(
+                        Missing(self.input::<tables::CountryAppearance>("overlord", Some(content_reader_script::triggers::Store::Country(slot)), format!(
                             "{name}: {} has no recorded country appearance row: {}",
                             self.describe(Target::Country(slot)),
                             self.gaps["CountryAppearance"]
@@ -1285,7 +1285,7 @@ impl<'a> RecordedScopes<'a> {
                     )));
                 };
                 if raw == 0 {
-                    Ok(Target::State(crate::triggers::NULL_STATE))
+                    Ok(Target::State(content_reader_script::triggers::NULL_STATE))
                 } else {
                     self.slot(raw).map(Target::Country).ok_or_else(|| {
                         Missing(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
@@ -1304,8 +1304,8 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn describe(&self, target: Target) -> String {
-        crate::triggers::inputs::query_resolved(
-            || crate::triggers::inputs::Key::Scopes(Query::Describe(target)),
+        content_reader_script::triggers::inputs::query_resolved(
+            || content_reader_script::triggers::inputs::Key::Scopes(Query::Describe(target)),
             || self.describe_unrecorded(target),
         )
     }
@@ -1336,8 +1336,8 @@ impl Names for RecordedScopes<'_> {
                 tables::LexicalTokens::ID,
             ),
         ] {
-            crate::triggers::refusal::membership(found, complete, || {
-                crate::triggers::refusal::missing_reference(table, None)
+            content_reader_script::triggers::refusal::membership(found, complete, || {
+                content_reader_script::triggers::refusal::missing_reference(table, None)
             });
         }
         found
@@ -1733,7 +1733,7 @@ pub mod tests {
 
     #[test]
     fn a_target_is_its_scope_kind_for_the_trigger_check() {
-        use content_reader_core::scope::TriggerScopes;
+        use content_reader_script::scope::TriggerScopes;
         let country = Target::Country(0);
         assert!(TriggerScopes(0x4).accepts(|kind| kind == country.kind()));
         assert!(!TriggerScopes(0x2).accepts(|kind| kind == country.kind()));
@@ -1862,9 +1862,9 @@ pub mod tests {
     fn a_tag_alias_scope_is_refused_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let aliases = content_reader_core::tag_aliases::parse(
+        let aliases = content_reader_key_names::tag_aliases::parse(
             &[("a.txt", b"SPA = { }")],
-            &content_reader_core::key_names::KeyNames::default(),
+            &content_reader_script::key_names::KeyNames::default(),
         );
         let frame = positive_frame();
         let scopes = RecordedScopes::read(&frame, Arc::new(aliases));
@@ -1872,7 +1872,7 @@ pub mod tests {
         assert_eq!(
             scopes.resolve_text("SPA", false, &sov),
             Err(Unresolved::Missing(
-                "tag alias SPA: its triggers run in the trigger evaluator (crate::triggers), not in a scope read alone"
+                "tag alias SPA: its triggers run in the trigger evaluator (content_reader_script::triggers), not in a scope read alone"
                     .into()
             ))
         );

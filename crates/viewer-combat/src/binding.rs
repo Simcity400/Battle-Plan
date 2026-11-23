@@ -555,12 +555,12 @@ impl Bindings {
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_positioning"),
-                content_reader_core::fixed5::fixed5_percent(positioning, 0, true),
+                content_reader_parser::fixed5::fixed5_percent(positioning, 0, true),
             );
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_anti_air"),
-                content_reader_core::fixed5::fixed5_to_string(anti_air, 1),
+                content_reader_parser::fixed5::fixed5_to_string(anti_air, 1),
             );
             for member in members {
                 let ship = ships.get(&member.ship).copied();

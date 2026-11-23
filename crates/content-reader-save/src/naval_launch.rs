@@ -1,7 +1,7 @@
 
 use std::io;
 
-use content_reader_core::{parser::Item, parser::Operator, parser::Value};
+use content_reader_parser::parser::{Item, Operator, Value};
 
 use super::{block, integer, invalid};
 
@@ -116,7 +116,7 @@ mod tests {
     use super::*;
 
     fn project(text: &[u8]) -> io::Result<Vec<CountryNavalLaunchOccurrence>> {
-        parse_country_occurrences(&content_reader_core::parser::parse(text)?.items)
+        parse_country_occurrences(&content_reader_parser::parser::parse(text)?.items)
     }
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn ordered_projection_does_not_relax_full_save_duplicate_refusal() {
         let text = b"HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 states={} provinces={} countries={A={strategic_navy={}} A={strategic_navy={}}}";
-        let document = content_reader_core::parser::parse(text).unwrap();
+        let document = content_reader_parser::parser::parse(text).unwrap();
         let countries = super::super::required_block(&document.items, b"countries").unwrap();
         assert_eq!(parse_country_occurrences(countries).unwrap().len(), 2);
         assert!(

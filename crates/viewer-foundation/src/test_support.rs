@@ -376,9 +376,9 @@ pub fn enter_fixed_modifier_tables() {
 
     static TABLES: std::sync::OnceLock<tables::Tables> = std::sync::OnceLock::new();
     let tables = TABLES.get_or_init(|| {
-        let defaults = content_reader_core::test_game::tables();
+        let defaults = content_reader_script::test_game::tables();
         let first = defaults.keywords.as_ref().unwrap().modifier_names.len();
-        content_reader_core::test_game::executable()
+        content_reader_script::test_game::executable()
             .modifiers(
                 (first..FIXED_MODIFIER_GAP as usize).map(|index| format!("fixture_modifier_{index}")),
             )
@@ -388,7 +388,7 @@ pub fn enter_fixed_modifier_tables() {
     tables::enter(Some(tables));
 }
 
-pub fn equipment_from_documents(documents: &[&[u8]]) -> content_reader_core::equipment::Database {
+pub fn equipment_from_documents(documents: &[&[u8]]) -> content_reader_key_names::equipment::Database {
     let paths: Vec<String> = (0..documents.len())
         .map(|index| format!("common/units/equipment/{index:03}.txt"))
         .collect();
@@ -397,7 +397,7 @@ pub fn equipment_from_documents(documents: &[&[u8]]) -> content_reader_core::equ
         .zip(documents)
         .map(|(path, text)| (path.as_str(), std::str::from_utf8(text).unwrap()))
         .collect();
-    let (equipment, _) = content_reader_core::equipment::fixture::load(&files);
+    let (equipment, _) = content_reader_key_names::equipment::fixture::load(&files);
     assert!(equipment.lost.is_none(), "{:?}", equipment.lost);
     equipment
 }

@@ -1,7 +1,8 @@
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, pdxshader::program::Stage};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::pdxshader::program::Stage;
 use content_reader_image::native::Decode;
 use shader_pipeline::{binding, gpu, library::Effect};
 

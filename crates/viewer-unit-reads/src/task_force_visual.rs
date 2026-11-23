@@ -254,9 +254,7 @@ mod tests {
 
     #[test]
     fn partial_invalid_route_uses_the_sample_count_for_port_admission() {
-        use content_reader_core::{
-            movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
-        };
+        use content_reader_map::movement::{MovementMap, Neighbour, ProvinceTerrain};
         let terrain = ProvinceTerrain { flags: 1, index: 1 };
         let neighbours = |to: u32| {
             vec![Neighbour {
@@ -284,7 +282,7 @@ mod tests {
                 noncore_supply: [None; 2],
                 combat_movement: None,
             },
-            rail: Ok(content_reader_core::movement::RailMovementDefines {
+            rail: Ok(content_reader_map::movement::RailMovementDefines {
                 speed: [0; 4],
                 maximum_level: 0,
             }),

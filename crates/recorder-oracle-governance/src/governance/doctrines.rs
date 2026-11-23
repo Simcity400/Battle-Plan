@@ -3,7 +3,7 @@ use super::*;
 fn token(tokens: &TokenNames<'_>, id: u32) -> io::Result<Vec<u8>> {
     tokens
         .get(&id)
-        .map(|bytes| content_reader_core::parser::c_string(bytes).to_vec())
+        .map(|bytes| content_reader_parser::parser::c_string(bytes).to_vec())
         .ok_or_else(|| {
             invalid(format!(
                 "doctrine token {id} missing from recorded dictionary"
@@ -191,7 +191,7 @@ pub(super) fn compare_doctrines(
                 if valid {
                     Some((
                         row.uses,
-                        content_reader_core::parser::c_string(&row.name).to_vec(),
+                        content_reader_parser::parser::c_string(&row.name).to_vec(),
                         row.cost_factor,
                         token(tokens, row.folder.expect("valid folder"))?,
                     ))
@@ -220,7 +220,7 @@ pub(super) fn compare_doctrines(
                     Some((
                         row.name
                             .as_deref()
-                            .map(content_reader_core::parser::c_string)
+                            .map(content_reader_parser::parser::c_string)
                             .map(<[u8]>::to_vec),
                         (
                             optional_token(tokens, filter.track)?,
@@ -336,7 +336,7 @@ mod tests {
                 }
             }}}}
         }}}";
-        let pack = saved::parse(&content_reader_core::parser::parse(save).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(save).unwrap().items).unwrap();
         let mut leaders = Vec::new();
         for (ordinal, (reference_type, id)) in [
             (0x1122_3344u32, 0x89ab_cdefu32),
@@ -411,7 +411,7 @@ mod tests {
             daily_mastery={{name=grant relevant_tracks={folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track=mod_track track_index=0} daily_mastery=0.125 bonus=-0.5 days=5} {}}
             equipment_bonus={{id=4294967295 index=-1 equipment_bonus=4}}
         }}}"#;
-        let pack = saved::parse(&content_reader_core::parser::parse(save).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(save).unwrap().items).unwrap();
         let tokens = BTreeMap::from([
             (1, b"mod_folder".as_slice()),
             (2, b"mod_grand".as_slice()),

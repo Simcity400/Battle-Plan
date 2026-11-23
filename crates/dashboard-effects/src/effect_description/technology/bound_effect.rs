@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::{parser::c_string, tokens::Token};
+use content_reader_parser::{parser::c_string, tokens::Token};
 
 const TECHNOLOGY_ID: u64 = mask::<replay_data::rows::TechnologyDefinitionRow>(&["id"]);
 
@@ -112,7 +112,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn technology_enabled_equipment(
         &self,
-        template: &content_reader_core::technology::Definition,
+        template: &content_reader_military::technology::Definition,
     ) -> Result<Vec<usize>, String> {
         let catalog = self.technology_catalog()?;
         let mut equipment = Vec::new();
@@ -150,7 +150,7 @@ impl Renderer<'_, '_, '_> {
     fn technology_unlock_description(
         &mut self,
         out: &mut String,
-        template: &content_reader_core::technology::Definition,
+        template: &content_reader_military::technology::Definition,
         country: u32,
         scopes: Scopes,
     ) {
@@ -314,7 +314,7 @@ impl Renderer<'_, '_, '_> {
 
     fn technology_tactic_names(
         &self,
-        template: &content_reader_core::technology::Definition,
+        template: &content_reader_military::technology::Definition,
         scopes: Scopes,
     ) -> Result<String, String> {
         if template.tactics.is_empty() {
@@ -386,9 +386,9 @@ impl Renderer<'_, '_, '_> {
                 let operand = std::str::from_utf8(c_string(operand))
                     .map_err(|_| "sub-unit unlock name is not UTF-8")?;
                 let index = match database.get(operand) {
-                    content_reader_core::unit_leader::SubUnit::Index(index) => index,
-                    content_reader_core::unit_leader::SubUnit::Unknown => continue,
-                    content_reader_core::unit_leader::SubUnit::Uncertain(why) => return Err(why.into()),
+                    content_reader_script::sub_units::SubUnit::Index(index) => index,
+                    content_reader_script::sub_units::SubUnit::Unknown => continue,
+                    content_reader_script::sub_units::SubUnit::Uncertain(why) => return Err(why.into()),
                 };
                 let name = database
                     .name(index)
@@ -416,7 +416,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn technology_module_allowed(
         &self,
-        equipment: &content_reader_core::equipment::Database,
+        equipment: &content_reader_key_names::equipment::Database,
         token: &[u8],
         country: u32,
     ) -> Result<bool, String> {

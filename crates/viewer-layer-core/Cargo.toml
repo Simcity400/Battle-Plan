@@ -12,7 +12,6 @@ doctest = false
 [features]
 test-support = [
     "dep:recorder-derive",
-    "content-reader-core/test-support",
     "dashboard-core/test-support",
     "dashboard-text/test-support",
     "engine-executable/test-support",
@@ -39,8 +38,8 @@ test-support = [
 ]
 
 [dependencies]
+content-reader-map.workspace = true
 recorder-derive = { workspace = true, optional = true }
-content-reader-core = { workspace = true }
 dashboard-core = { workspace = true }
 dashboard-follow = { path = "../dashboard-follow" }
 dashboard-text = { workspace = true }

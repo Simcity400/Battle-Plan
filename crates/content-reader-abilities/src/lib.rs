@@ -1,8 +1,9 @@
 
 #[cfg(test)]
-use content_reader_core::DiagnosticKind;
-use content_reader_core::{
-    Diagnostic, ResolvedLayers, fields, key_names, modifiers, parser, scope, terrain, unit_leader,
-};
+use content_reader_parser::DiagnosticKind;
+use content_reader_parser::{Diagnostic, fields, parser};
+use content_reader_layers::ResolvedLayers;
+use content_reader_script::{key_names, modifiers, scope};
+use content_reader_key_names::{terrain, unit_leader};
 
 pub mod abilities;

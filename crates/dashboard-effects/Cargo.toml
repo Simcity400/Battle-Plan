@@ -13,8 +13,15 @@ doctest = false
 test-support = ["dashboard-text/test-support"]
 
 [dependencies]
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-map.workspace = true
+content-reader-military.workspace = true
+content-reader-parser.workspace = true
+content-reader-politics.workspace = true
+content-reader-script.workspace = true
 content-reader-abilities.workspace = true
-content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-division-names.workspace = true
 content-reader-equipment-graphics.workspace = true
@@ -33,9 +40,10 @@ replay-data.workspace = true
 replay-frame.workspace = true
 
 [dev-dependencies]
+content-reader-layers = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 content-reader-abilities = { workspace = true, features = ["test-support"] }
-content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }

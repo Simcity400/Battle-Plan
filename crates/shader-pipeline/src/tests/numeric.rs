@@ -68,7 +68,7 @@ PixelShader = {{ MainCode P [[ float4 main(O v) : SV_TARGET {{ return {body}; }}
 Effect Numeric {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"numeric.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"numeric.shader", &|path| {
             Some(if path == b"numeric.shader" {
                 source.as_bytes().to_vec()
             } else {

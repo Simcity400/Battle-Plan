@@ -6,7 +6,7 @@ use crate::{
     products::ContentOptions,
     test_fixtures::{self, source_with_content},
 };
-use content_reader_core::content::visual::Choice;
+use content_reader_layers::content::visual::Choice;
 use content_reader_image::Rgba8Image;
 use std::{path::Path, sync::Arc};
 
@@ -153,7 +153,7 @@ fn the_gui_registry_is_read_ahead_in_the_mode_shields_read_it() {
     assert!(catalogue.content.layers.presentation().shows_visual_mods());
     crate::products::read_ahead::warm_guis(&catalogue);
     let loads = catalogue.content_loads();
-    let _ = content_reader_core::content::strict(|| catalogue.guis().is_ok());
+    let _ = content_reader_layers::content::strict(|| catalogue.guis().is_ok());
     assert_eq!(catalogue.content_loads(), loads);
 }
 
@@ -209,7 +209,7 @@ fn drawn(catalogue: &Catalogue, key: &str) -> ([u8; 4], Option<String>) {
     (image.pixels[..4].try_into().unwrap(), own.fallback_line())
 }
 
-fn text(layers: &content_reader_core::ResolvedLayers, path: &str) -> String {
+fn text(layers: &content_reader_layers::ResolvedLayers, path: &str) -> String {
     std::str::from_utf8(&layers.read(path).unwrap()).unwrap().to_owned()
 }
 
@@ -302,7 +302,7 @@ fn selection_changes_updates_and_removals_rebind_the_catalogue() {
 
 #[test]
 fn archive_mods_show_and_what_they_hide_is_drawn_from_the_recording_by_name() {
-    use content_reader_core::test_support::{Record, zip_records};
+    use content_reader_layers::test_support::{Record, zip_records};
     let (machine, source, mut options) = machine("archive");
     let png = png(GREEN);
     write(
@@ -510,14 +510,14 @@ fn a_selections_identity_depends_on_the_recordings_own_mods() {
     let selected = [choice("mod/art.mod", "Art")];
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let alone =
-        content_reader_core::content::visual::revision(&options.options, &selected, &[], &cancel)
+        content_reader_layers::content::visual::revision(&options.options, &selected, &[], &cancel)
             .unwrap();
-    let recorded = [content_reader_core::content::visual::RecordedMod {
+    let recorded = [content_reader_layers::content::visual::RecordedMod {
         id: "other".into(),
         name: "Art".into(),
     }];
     let beside =
-        content_reader_core::content::visual::revision(&options.options, &selected, &recorded, &cancel)
+        content_reader_layers::content::visual::revision(&options.options, &selected, &recorded, &cancel)
             .unwrap();
     assert_ne!(alone, beside);
     assert_eq!(
@@ -885,7 +885,7 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     .unwrap();
     let mut elsewhere = options.options.clone();
     elsewhere.user_dir = elsewhere.user_dir.join("elsewhere");
-    type Settings = Option<(content_reader_core::ResolveOptions, Presentation)>;
+    type Settings = Option<(content_reader_layers::ResolveOptions, Presentation)>;
     let run = |config: &Config<Settings>, change: Option<Box<dyn Fn(&Config<Settings>) + '_>>| {
         let derived = std::sync::atomic::AtomicUsize::new(0);
         rebind(
@@ -913,7 +913,7 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
         .unwrap();
         derived.load(std::sync::atomic::Ordering::SeqCst)
     };
-    let shows = |folders: &content_reader_core::ResolveOptions, presentation: &Presentation| {
+    let shows = |folders: &content_reader_layers::ResolveOptions, presentation: &Presentation| {
         source.binding().is_some_and(|binding| {
             binding.options.user_dir == folders.user_dir && binding.presentation == *presentation
         })
@@ -974,8 +974,8 @@ fn a_rebind_paused_across_shutdown_installs_nothing() {
     let (_machine, source, options) = machine("rebind_shutdown");
     let config = Config::new(Some(options.options.clone()));
     let never = std::sync::atomic::AtomicBool::new(false);
-    let install = |_: &Option<content_reader_core::ResolveOptions>,
-                   folders: Option<content_reader_core::ResolveOptions>| {
+    let install = |_: &Option<content_reader_layers::ResolveOptions>,
+                   folders: Option<content_reader_layers::ResolveOptions>| {
         source.bind(
             folders.as_ref().map(|folders| (folders, true)),
             Presentation::default(),
@@ -1004,7 +1004,7 @@ fn a_rebind_paused_across_shutdown_installs_nothing() {
     let error = rebind(
         &config,
         &never,
-        |_| -> std::io::Result<Option<content_reader_core::ResolveOptions>> {
+        |_| -> std::io::Result<Option<content_reader_layers::ResolveOptions>> {
             unreachable!("a closed configuration is not derived")
         },
         install,

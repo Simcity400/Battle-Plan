@@ -74,7 +74,7 @@ pub fn resources(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 .get(&row.token)
                 .ok_or_else(|| invalid("nonzero faction resource lacks token spelling"))?;
             report.scalar_checks += 1;
-            let spelling = content_reader_core::parser::c_string(spelling);
+            let spelling = content_reader_parser::parser::c_string(spelling);
             if spelling != name {
                 report.difference(format!("{label}[{index}] token"), spelling, name);
             }

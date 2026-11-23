@@ -10,4 +10,4 @@ Script fixed5 reads the whole part and at most five fractional digits with the i
 
 The generic Clausewitz field adapter reports a named error when a consumer cannot use a field. It takes the last matching assignment for scalar lookups and preserves source order for repeated values. It shares exact yes/no recognition with standalone token reads.
 
-[CRT scans](../../crates/content-reader-core/src/crt.rs) · [Fixed5](../../crates/content-reader-core/src/fixed5.rs) · [Field adapters](../../crates/content-reader-core/src/fields.rs)
+[CRT scans](../../crates/content-reader-parser/src/crt.rs) · [Fixed5](../../crates/content-reader-parser/src/fixed5.rs) · [Field adapters](../../crates/content-reader-parser/src/fields.rs)

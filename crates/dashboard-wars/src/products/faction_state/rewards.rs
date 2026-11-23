@@ -107,7 +107,7 @@ fn leader(frame: &DecodedFrame, faction: u64) -> Result<u32, String> {
 
 pub(super) fn rewards(frame: &DecodedFrame, faction: u64, goal: &str, cat: &Catalogue) -> io::Result<FactionGoalRewardsReply> {
     let mut reply = FactionGoalRewardsReply { goal: goal.to_owned(), text: None, reason: None, warnings: Vec::new() };
-    let definitions = content_reader_core::faction_goals::cached(&cat.content.layers).map_err(dashboard_core::refused)?;
+    let definitions = content_reader_politics::faction_goals::cached(&cat.content.layers).map_err(dashboard_core::refused)?;
     let definition = definitions
         .get(goal)
         .map_err(dashboard_core::refused)?

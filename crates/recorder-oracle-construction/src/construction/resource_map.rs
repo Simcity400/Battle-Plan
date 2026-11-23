@@ -973,7 +973,7 @@ mod market_route_tests {
 
     #[test]
     fn market_endpoints_compare_saved_land_and_naval_routes_through_contract_countries() {
-        let items = content_reader_core::parser::parse(br#"countries={
+        let items = content_reader_parser::parser::parse(br#"countries={
             AA={resources={delivery_routes={BB={type=1 from_state=11 to_state=22}}}}
             CC={resources={delivery_routes={DD={type=2 from_state=33 to_state=44 from_port=100 to_port=200}
                 BB={type=2 from_state=33 to_state=22}}}}

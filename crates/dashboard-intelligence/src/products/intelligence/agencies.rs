@@ -115,7 +115,7 @@ pub fn upgrades(rows: &[&AgencyUpgradeLevelRow], tokens: &HashMap<u32, String>, 
 }
 
 fn stored_name(row: &IntelligenceAgencyRow) -> Option<String> {
-    std::str::from_utf8(content_reader_core::parser::c_string(&row.name)).ok().and_then(|name| dashboard_base::catalogue::plain_text(name).ok())
+    std::str::from_utf8(content_reader_parser::parser::c_string(&row.name)).ok().and_then(|name| dashboard_base::catalogue::plain_text(name).ok())
 }
 
 pub fn agencies(frame: &DecodedFrame, include_uncreated: bool, content: Result<&AgencyContent, &str>, warnings: &mut Vec<String>) -> io::Result<(Vec<Agency>, Option<String>)> {

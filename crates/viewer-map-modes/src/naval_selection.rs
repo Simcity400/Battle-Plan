@@ -12,7 +12,7 @@ pub struct Colors {
     fade: f32,
 }
 impl Colors {
-    pub fn read(defines: &content_reader_core::defines::Defines) -> std::io::Result<Self> {
+    pub fn read(defines: &content_reader_defines::defines::Defines) -> std::io::Result<Self> {
         let read = |name| -> std::io::Result<[f32; 4]> {
             let values = defines.numbers("NGraphics", name)?;
             if values.len() < 4 {
@@ -32,7 +32,7 @@ impl Colors {
 }
 pub fn naval_fraction(
     members: &[u32],
-    geometry: &content_reader_core::province_geometry::ProvinceGeometry,
+    geometry: &content_reader_map::province_geometry::ProvinceGeometry,
 ) -> i64 {
     let (mut total, mut sea) = (0_i32, 0_i32);
     for &province in members {
@@ -52,7 +52,7 @@ pub fn naval_fraction(
 
 pub fn eligible_regions(
     regions: &BTreeMap<u32, Vec<u32>>,
-    geometry: &content_reader_core::province_geometry::ProvinceGeometry,
+    geometry: &content_reader_map::province_geometry::ProvinceGeometry,
 ) -> BTreeSet<u32> {
     regions
         .iter()
@@ -72,7 +72,7 @@ pub struct Field {
 fn stripe(count: i32, sources: i32) -> [u8; 4] {
     let ratio = (count as f32 / sources as f32).clamp(0.0, 1.0);
     let component = |start: f32, end: f32| {
-        content_reader_core::crt::truncate_f32((ratio * (end - start) + start) * 255.0) as u8
+        content_reader_parser::crt::truncate_f32((ratio * (end - start) + start) * 255.0) as u8
     };
     [
         component(0.0, 0.2),
@@ -443,7 +443,7 @@ mod tests {
     }
     #[test]
     fn naval_fraction_uses_valid_template_occurrences_and_inclusive_one_percent_threshold() {
-        use content_reader_core::province_geometry::ProvinceGeometry;
+        use content_reader_map::province_geometry::ProvinceGeometry;
         let geometry = ProvinceGeometry {
             centroids: [(1, [0, 0]), (2, [0, 0]), (3, [0, 0])].into(),
             land: [2].into(),

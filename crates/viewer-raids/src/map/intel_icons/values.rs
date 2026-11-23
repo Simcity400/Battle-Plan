@@ -1,6 +1,6 @@
 
 use super::{ActivityDefines, CounterDefines, IntelDefines, OperationState};
-use crate::map::raids::tooltips::intel as counter;
+use content_reader_map::map::raids::tooltips::intel as counter;
 use replay_data::{rows::OperationRow, rows::RaidIntelInputRow};
 use viewer_native_gui::native_text::COLOR;
 
@@ -212,11 +212,11 @@ pub fn preparation(row: &OperationRow) -> Result<i64, String> {
 }
 
 pub fn percent(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_percent(value, 0, true)
+    content_reader_parser::fixed5::fixed5_percent(value, 0, true)
 }
 
 pub fn percent_points(value: i64) -> String {
-    content_reader_core::fixed5::fixed5_percent(value, 0, false)
+    content_reader_parser::fixed5::fixed5_percent(value, 0, false)
 }
 
 pub fn coloured(code: char, text: &str) -> String {

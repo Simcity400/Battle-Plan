@@ -1,7 +1,6 @@
 use super::*;
-use content_reader_core::{
-    power_balance::rules, scope::Keyword, scope::Scope as Parsed, scripted_triggers::Template,
-};
+use content_reader_politics::power_balance::rules;
+use content_reader_script::{scope::{Keyword, Scope as Parsed}, scripted_trigger_grammar::Template};
 
 #[cfg(test)]
 mod tests;
@@ -44,7 +43,7 @@ impl Renderer<'_, '_, '_> {
                 let value = item
                     .value
                     .scalar()
-                    .and_then(content_reader_core::parser::read_bool)
+                    .and_then(content_reader_parser::parser::read_bool)
                     .unwrap_or(false);
                 text.push_str(&self.rule_prefix(value == fulfilled, scopes)?);
                 text.push(' ');
@@ -71,7 +70,7 @@ impl Renderer<'_, '_, '_> {
                 value = item
                     .value
                     .scalar()
-                    .and_then(content_reader_core::parser::read_bool)
+                    .and_then(content_reader_parser::parser::read_bool)
                     .unwrap_or(false);
             } else if !(item.keyword_is("target")
                 || item.keyword_is("trigger")
@@ -98,8 +97,8 @@ impl Renderer<'_, '_, '_> {
                         .as_ref()
                         .map_err(Clone::clone)?;
                     match database.lookup(name.as_bytes()) {
-                        content_reader_core::scripted_triggers::Lookup::Template(template) => template,
-                        content_reader_core::scripted_triggers::Lookup::Missing => {
+                        content_reader_script::scripted_trigger_grammar::Lookup::Template(template) => template,
+                        content_reader_script::scripted_trigger_grammar::Lookup::Missing => {
                             return Err(format!(
                                 "scripted relation target {name} is absent from recorded content"
                             ));
@@ -134,7 +133,7 @@ impl Renderer<'_, '_, '_> {
     fn relation_has_country_specifier(&self, fields: &[Item]) -> Result<bool, String> {
         let mut specified = false;
         for item in fields.iter().filter(|item| item.keyword_is("target")) {
-            let operand = content_reader_core::parser::c_string(item.value.scalar().unwrap_or_default());
+            let operand = content_reader_parser::parser::c_string(item.value.scalar().unwrap_or_default());
             if item.value_keyword().is_some_and(|word| {
                 [
                     "root",
@@ -390,7 +389,7 @@ impl Renderer<'_, '_, '_> {
         }
         let evaluator = self.evaluator()?;
         let parsed =
-            content_reader_core::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());
+            content_reader_script::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());
         if item.value.items().is_some() && !matches!(parsed, Parsed::Unknown(_)) {
             let entered = evaluator
                 .enter_scope(&parsed, scopes)

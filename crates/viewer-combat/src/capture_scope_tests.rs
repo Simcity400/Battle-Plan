@@ -1,6 +1,8 @@
 
 use super::*;
-use content_reader_core::{ResolvedLayers, flags::FlagSet, map::MapData};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::flags::FlagSet;
+use content_reader_map::map::MapData;
 use replay_data::rows::TableRows;
 use replay_data::rows::{TableId, tables};
 use viewer_foundation::test_support::{

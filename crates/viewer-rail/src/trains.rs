@@ -1,7 +1,8 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 
-use content_reader_core::{
-    ResolvedLayers, defines::Defines, train_gfx, train_gfx::Consist, train_gfx::Wagon,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_gui::train_gfx::{self, Consist, Wagon};
 use content_reader_image::native::Decode;
 use replay_data::{
     country_flags::original_tag_of, rows::CountryAppearanceRow, rows::CountryLinkRow,
@@ -102,7 +103,7 @@ pub struct TrainAssets {
     pub library: ModelLibrary,
     pub cultures: Cultures,
     database: train_gfx::Database,
-    equipment: content_reader_core::equipment::Database,
+    equipment: content_reader_key_names::equipment::Database,
     pub defines: TrainDefines,
     routes: RouteCache,
 }
@@ -158,7 +159,7 @@ impl TrainAssets {
         layers: &ResolvedLayers,
         decode: Decode,
         defines: &Defines,
-        warnings: &mut Vec<content_reader_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_parser::Diagnostic>,
     ) -> io::Result<Self> {
         let defines = TrainDefines::load(defines)?;
         let roster = layers.descriptor_roster()?;
@@ -166,7 +167,7 @@ impl TrainAssets {
         warnings.extend(
             index
                 .warning()
-                .map(|message| (content_reader_core::DiagnosticKind::Warning, message)),
+                .map(|message| (content_reader_parser::DiagnosticKind::Warning, message)),
         );
         let tags = index.files;
         let cultures = Cultures::read(layers)?;
@@ -182,14 +183,14 @@ impl TrainAssets {
         )?;
         if !database.diagnostics.is_empty() {
             warnings.push((
-                content_reader_core::DiagnosticKind::Refused,
+                content_reader_parser::DiagnosticKind::Refused,
                 format!(
                     "Train database entries the engine also rejects: {}.",
                     database.diagnostics.join("; ")
                 ),
             ));
         }
-        let equipment = content_reader_core::equipment::Database::load_complete(layers)?;
+        let equipment = content_reader_key_names::equipment::Database::load_complete(layers)?;
         let names: Vec<String> = database
             .wagons
             .iter()
@@ -210,7 +211,7 @@ impl TrainAssets {
         let at = self.equipment.get(spelling).ok_or_else(|| {
             format!(
                 "equipment {spelling} is not declared in {}",
-                content_reader_core::equipment::DIRECTORY
+                content_reader_key_names::equipment::DIRECTORY
             )
         })?;
         self.name(at)
@@ -244,7 +245,7 @@ impl TrainAssets {
     }
 }
 
-use content_reader_core::country_tags::country_tag_index;
+use content_reader_key_names::country_tags::country_tag_index;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cultures {
@@ -2308,7 +2309,7 @@ mod tests {
 
     #[test]
     fn frame_partition_and_backward_seek_do_not_change_departures() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let assets = assets();
         let mut direct = plan();
         direct.field(&assets, 45.0);
@@ -2376,7 +2377,7 @@ mod tests {
 
     #[test]
     fn token_spellings_name_declared_equipment_under_the_lexers_fold() {
-        let (equipment, _) = content_reader_core::equipment::fixture::load(&[(
+        let (equipment, _) = content_reader_key_names::equipment::fixture::load(&[(
             "common/units/equipment/trains.txt",
             "equipments = { train_equipment = { is_archetype = yes }
                 train_equipment_1 = { archetype = TRAIN_EQUIPMENT } orphan = { } }",
@@ -2391,7 +2392,7 @@ mod tests {
             assets.equipment_key("armored_train"),
             Err(format!(
                 "equipment armored_train is not declared in {}",
-                content_reader_core::equipment::DIRECTORY
+                content_reader_key_names::equipment::DIRECTORY
             ))
         );
         assert!(

@@ -10,10 +10,13 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["content-reader-core/test-support", "engine-native/test-support", "replay-data/test-support", "replay-frame/test-support"]
+test-support = ["content-reader-layers/test-support", "engine-native/test-support", "replay-data/test-support", "replay-frame/test-support"]
 
 [dependencies]
-content-reader-core.workspace = true
+content-reader-defines.workspace = true
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
+content-reader-parser.workspace = true
 content-reader-localisation.workspace = true
 content-reader-settings.workspace = true
 dashboard-core.workspace = true
@@ -29,7 +32,7 @@ shader-pipeline.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-layers = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }

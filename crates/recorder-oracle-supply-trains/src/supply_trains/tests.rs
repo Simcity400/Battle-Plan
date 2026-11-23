@@ -119,7 +119,7 @@ fn harbour_fixture(fields: &str, deployments: &[(i32, u8)]) -> (DecodedFrame, Sa
         "countries={{}} supply_system_2={{countries={{{}={{{fields}}}}}}}",
         String::from_utf8_lossy(&country.tag)
     );
-    let document = content_reader_core::parser::parse(input.as_bytes()).unwrap();
+    let document = content_reader_parser::parser::parse(input.as_bytes()).unwrap();
     save.economy = save::economy::parse(&document.items).unwrap();
     *frame.tables[TableId::TrainInventory.index()] =
         TableView::Complete(TableRows::TrainInventory(vec![TrainInventoryRow {

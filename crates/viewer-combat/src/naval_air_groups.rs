@@ -1,8 +1,7 @@
 use super::keyed::Keyed;
 use engine_executable::modifier_keys as keys;
-use content_reader_core::{
-    ResolvedLayers, static_modifiers, static_modifiers::Request, static_modifiers::Resolved,
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_politics::static_modifiers::{self, Request, Resolved};
 use content_reader_naval_combat_defines::naval_combat_defines::Defines;
 use replay_data::{
     rows::AirBaseRow, rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow,
@@ -20,14 +19,14 @@ const SORTIE_KEYS: [&str; 2] = ["sortie_efficiency", "fighter_sortie_efficiency"
 #[derive(Default)]
 pub(super) struct Content {
     screening: [[Option<i64>; 2]; 2],
-    equipment: Option<std::sync::Arc<content_reader_core::equipment::Database>>,
+    equipment: Option<std::sync::Arc<content_reader_key_names::equipment::Database>>,
 }
 
 impl Content {
     pub(super) fn load(
         layers: &ResolvedLayers,
         warnings: &mut Vec<String>,
-        equipment: content_reader_core::equipment::Database,
+        equipment: content_reader_key_names::equipment::Database,
     ) -> Self {
         let requests: Vec<_> = SCREENING_MODIFIERS
             .iter()
@@ -66,13 +65,13 @@ impl Content {
         content
     }
 
-    pub(super) fn equipment(&self) -> Option<&content_reader_core::equipment::Database> {
+    pub(super) fn equipment(&self) -> Option<&content_reader_key_names::equipment::Database> {
         self.equipment.as_deref()
     }
 
     pub(super) fn shared_equipment(
         &self,
-    ) -> Option<std::sync::Arc<content_reader_core::equipment::Database>> {
+    ) -> Option<std::sync::Arc<content_reader_key_names::equipment::Database>> {
         self.equipment.clone()
     }
 

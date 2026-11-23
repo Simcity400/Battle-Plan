@@ -402,7 +402,7 @@ struct Record<'e> {
 }
 
 fn efficiency_text(value: i64) -> String {
-    let text = content_reader_core::fixed5::fixed5_percent(value.clamp(0, 100_000), 0, true);
+    let text = content_reader_parser::fixed5::fixed5_percent(value.clamp(0, 100_000), 0, true);
     let code = COLOR;
     if value < 75_000 {
         format!("{code}R{text}{code}!")

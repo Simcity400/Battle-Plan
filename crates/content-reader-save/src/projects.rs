@@ -2,7 +2,7 @@ use super::{
     Decimal, GameDate, SavedDate, block, boolean, bytes, field, integer, invalid, required_block,
     required_bytes, scalar, typed_handle,
 };
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -689,12 +689,12 @@ pub(super) fn parse_with_countries(
 mod tests {
     use super::*;
     fn parsed(text: &[u8]) -> Pack {
-        parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap()
+        parse(&content_reader_parser::parser::parse(text).unwrap().items).unwrap()
     }
     #[test]
     fn gap_research_grants_project_runtime_save_reads_supports_timers_pending_reward_and_variables()
     {
-        let program = parse_program(&content_reader_core::parser::parse(br#"id={id=3 type=83} province=9 building=mod_facility unread_prototype_rewards=0
+        let program = parse_program(&content_reader_parser::parser::parse(br#"id={id=3 type=83} province=9 building=mod_facility unread_prototype_rewards=0
             scientist={scientist={id=7 type=73} delayed_unassigned_scientist={target=5 current=-2 timed=yes}}
             supportive_scientist={{scientist={id=8 type=73} delayed_unassigned_scientist={target=8 current=3 timed=no}} {}}"#).unwrap().items).unwrap();
         assert_eq!(program.assignments.len(), 3);
@@ -708,7 +708,7 @@ mod tests {
             (5, -2, true)
         );
         assert_eq!(program.assignments[2].scientist, 0);
-        let project = parse_project(b"mod_project", &content_reader_core::parser::parse(br#"id={id=4 type=84} start=yes completed=no multiple_choice=mod_reward
+        let project = parse_project(b"mod_project", &content_reader_parser::parser::parse(br#"id={id=4 type=84} start=yes completed=no multiple_choice=mod_reward
             variables={mod_value=-1.23456 random={123 456}}
             progress={current_state=24 prototype_state={phase_progress=0 project_progress=2 iterations=3} stopping_state={phase_progress=0}}"#).unwrap().items).unwrap();
         assert_eq!(project.pending_reward, Some(b"mod_reward".to_vec()));
@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(nukes[1].ready, i32::MAX);
         assert!(
             parse(
-                &content_reader_core::parser::parse(
+                &content_reader_parser::parser::parse(
                     br"countries={GER={nukes={{amount=0.000001 nukes_ready=0}}}}"
                 )
                 .unwrap()
@@ -739,7 +739,7 @@ mod tests {
     fn raid_target_statuses_refuse_unknown_and_keyed_entries() {
         let targets = |body: &str| {
             parse(
-                &content_reader_core::parser::parse(
+                &content_reader_parser::parser::parse(
                     format!("countries={{}} raids={{targets={{{body}}}}}").as_bytes(),
                 )
                 .unwrap()
@@ -792,7 +792,7 @@ mod tests {
     }
     #[test]
     fn context_keeps_optional_zero_and_signed_bit_patterns() {
-        let items = content_reader_core::parser::parse(br"province=-1 progress=-2147483648 country=-1 scientist=0 character={id=4294967295 type=73}").unwrap().items;
+        let items = content_reader_parser::parser::parse(br"province=-1 progress=-2147483648 country=-1 scientist=0 character={id=4294967295 type=73}").unwrap().items;
         let context = parse_context(&items).unwrap();
         assert_eq!(context.progress, i32::MIN);
         assert_eq!(context.country, Some(u32::MAX));

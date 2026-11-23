@@ -1,9 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use content_reader_core::{
-    pdxshader::Address, pdxshader::program::Filter, pdxshader::program::Sampler,
-    pdxshader::program::Stage,
-};
+use content_reader_gui::pdxshader::{Address, program::{Filter, Sampler, Stage}};
 use shader_pipeline::{
     ScalarKind, VertexInput, binding, gpu,
     vertices::{NativeBuffer, pack_native},
@@ -21,7 +18,7 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub fn from_mesh(sub: &content_reader_core::mesh::SubMesh, scale: f32) -> io::Result<Self> {
+    pub fn from_mesh(sub: &content_reader_mesh::mesh::SubMesh, scale: f32) -> io::Result<Self> {
         let count = sub.vertex_count();
         if count == 0 {
             return Err(io::Error::other("native mesh has no positions"));
@@ -540,7 +537,7 @@ mod tests {
 
     #[test]
     fn imported_geometry_preserves_local_streams_and_native_repairs() {
-        let sub = content_reader_core::mesh::SubMesh {
+        let sub = content_reader_mesh::mesh::SubMesh {
             positions: vec![[1., -2., 3.], [4., 5., 6.]],
             normals: vec![[0., -0., 0.], [1., 2., 3.]],
             tangents: vec![[0., 0., 0., -0.], [2., 3., 4., -1.]],
@@ -560,7 +557,7 @@ mod tests {
         assert_eq!(geometry.indices, sub.indices);
         assert!(geometry.skin.is_empty());
         let without_uv1 =
-            Geometry::from_mesh(&content_reader_core::mesh::SubMesh { uv1: None, ..sub }, 1.).unwrap();
+            Geometry::from_mesh(&content_reader_mesh::mesh::SubMesh { uv1: None, ..sub }, 1.).unwrap();
         assert_eq!(without_uv1.vertices.len(), 24);
         assert!(!without_uv1.uv1);
     }

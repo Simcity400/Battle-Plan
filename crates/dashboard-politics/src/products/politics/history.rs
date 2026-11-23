@@ -347,7 +347,7 @@ fn tokens(history: &History, runs: &[(i32, i32, Option<Cell>)], first: i32, last
 
 struct Presentation<'a> {
     catalogue: Option<&'a Catalogue>,
-    balances: Option<&'a content_reader_core::power_balance::Database>,
+    balances: Option<&'a content_reader_politics::power_balance::Database>,
 }
 
 impl Presentation<'_> {

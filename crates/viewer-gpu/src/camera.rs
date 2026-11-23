@@ -82,7 +82,7 @@ pub struct MapDefines {
 }
 
 impl MapDefines {
-    pub fn load(defines: &content_reader_core::defines::Defines, camera_tilt: f32) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_defines::defines::Defines, camera_tilt: f32) -> io::Result<Self> {
         let define = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
             if value.is_finite() {
@@ -233,7 +233,7 @@ pub struct MapSize {
 }
 
 impl MapSize {
-    pub fn of(map: &content_reader_core::map::MapData) -> Self {
+    pub fn of(map: &content_reader_map::map::MapData) -> Self {
         Self {
             width: map.width,
             height: map.height,

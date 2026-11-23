@@ -1,10 +1,7 @@
 
 use super::{Buffer, Compiled};
-use content_reader_core::content::diagnostics::{self, Diagnostics};
-use content_reader_core::pdxshader::{
-    Address, DepthStencilState, RasterizerState,
-    program::{Filter, Program, Sampler, Stage, Technique},
-};
+use content_reader_layers::content::diagnostics::{self, Diagnostics};
+use content_reader_gui::pdxshader::{Address, DepthStencilState, RasterizerState, program::{Filter, Program, Sampler, Stage, Technique}};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Condvar, Mutex, OnceLock},

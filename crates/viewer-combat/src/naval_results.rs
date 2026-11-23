@@ -599,7 +599,7 @@ fn ship_sprite(
         .ok_or_else(|| format!("stacked content lacks retained ship sprite {name}"))
 }
 
-pub(super) fn pride_color(defines: &content_reader_core::defines::Defines) -> Result<[f32; 4], String> {
+pub(super) fn pride_color(defines: &content_reader_defines::defines::Defines) -> Result<[f32; 4], String> {
     let values = defines
         .numbers("NGraphics", "PRIDE_OF_THE_FLEET_MODULATE")
         .map_err(|error| error.to_string())?;

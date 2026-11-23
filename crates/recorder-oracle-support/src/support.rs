@@ -12,12 +12,12 @@ use std::{
 
 pub type TokenNames<'a> = BTreeMap<u32, &'a [u8]>;
 
-pub type Spellings<'a> = BTreeMap<content_reader_core::tokens::Token, Option<&'a [u8]>>;
+pub type Spellings<'a> = BTreeMap<content_reader_parser::tokens::Token, Option<&'a [u8]>>;
 
 pub type ContentRead<'a, T> = Result<&'a T, String>;
 
 pub fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) -> &'a [u8] {
-    let text = content_reader_core::parser::c_string(bytes);
+    let text = content_reader_parser::parser::c_string(bytes);
     if text.len() < bytes.len() {
         report.limitation("native text serialization ends at the first NUL; captured trailing bytes are not save-comparable", field);
     }
@@ -27,9 +27,9 @@ pub fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) ->
 pub fn reverse_spellings<'a>(tokens: &TokenNames<'a>) -> Spellings<'a> {
     let mut spellings = BTreeMap::new();
     for literal in tokens.values() {
-        let literal = content_reader_core::parser::c_string(literal);
+        let literal = content_reader_parser::parser::c_string(literal);
         spellings
-            .entry(content_reader_core::tokens::Token::c_str(literal))
+            .entry(content_reader_parser::tokens::Token::c_str(literal))
             .and_modify(|spelling| {
                 if *spelling != Some(literal) {
                     *spelling = None;
@@ -46,12 +46,12 @@ pub fn token_spelling<'a>(
     name: &[u8],
     subject: &str,
 ) -> io::Result<&'a [u8]> {
-    let identity = content_reader_core::tokens::Token::c_str(name);
+    let identity = content_reader_parser::tokens::Token::c_str(name);
     let spelling = if identity.is_rejected() {
         tokens
             .get(&0)
             .copied()
-            .map(content_reader_core::parser::c_string)
+            .map(content_reader_parser::parser::c_string)
     } else {
         spellings.get(&identity).copied().ok_or_else(|| {
             invalid(format!(
@@ -255,7 +255,7 @@ pub const CONVOY_LIMIT: i64 = 0x53e2_d620_fb40;
 pub fn convoy_total(
     country: &content_reader_save::Country,
     save: &Save,
-    equipment: &content_reader_core::equipment::Database,
+    equipment: &content_reader_key_names::equipment::Database,
 ) -> Result<i64, String> {
     let pool = country
         .convoy_equipment
@@ -280,7 +280,7 @@ pub fn convoy_total(
 }
 
 pub fn convoy_variant(
-    equipment: &content_reader_core::equipment::Database,
+    equipment: &content_reader_key_names::equipment::Database,
     definition: &[u8],
 ) -> Result<bool, String> {
     let name = || String::from_utf8_lossy(definition).into_owned();
@@ -295,7 +295,7 @@ pub fn convoy_variant(
         flags &= allowed;
     }
     if kind.module_slots.is_empty() {
-        return Ok(content_reader_core::equipment::normalize_category(flags) & 1 != 0);
+        return Ok(content_reader_key_names::equipment::normalize_category(flags) & 1 != 0);
     }
     if flags & 1 == 0 && !equipment.modules_add(1) {
         return Ok(false);
@@ -323,7 +323,7 @@ pub fn equal<T: std::fmt::Debug + PartialEq>(
 }
 
 pub fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8]) {
-    let end = content_reader_core::parser::c_string(actual).len();
+    let end = content_reader_parser::parser::c_string(actual).len();
     equal(report, label, &actual[..end], saved);
     if end < actual.len() {
         report.limitation(
@@ -343,7 +343,7 @@ pub fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, actual: T
 pub fn country_items<'a>(
     document: &'a SaveDocument,
     frame: &DecodedFrame,
-) -> io::Result<Vec<&'a content_reader_core::parser::Item>> {
+) -> io::Result<Vec<&'a content_reader_parser::parser::Item>> {
     match country_emission_layout(frame) {
         Ok(Some(layout)) => document.representative_country_items(&layout),
         Ok(None) if document.has_repeated_country_tags()? => Err(invalid(

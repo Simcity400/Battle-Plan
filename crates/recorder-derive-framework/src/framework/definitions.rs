@@ -1,13 +1,7 @@
 
-use content_reader_core::{
-    content::{
-        ResolveOptions,
-        facts::{Pack, PackSource},
-        playback,
-    },
-    defines,
-    unit_leader::needs::SubUnitNeeds,
-};
+use content_reader_layers::content::{ResolveOptions, facts::{Pack, PackSource}, playback};
+use content_reader_defines::defines;
+use content_reader_key_names::unit_leader::needs::SubUnitNeeds;
 use content_reader_province_area::province_area::ProvinceAreas;
 use content_reader_regions::regions as strategic_regions;
 use replay_data::identity::Identity;
@@ -253,7 +247,7 @@ pub fn read(facts: &Facts, identity: &Identity, wanted: &[Definition]) -> Defini
             }
         }
         if wanted.contains(&Definition::SubUnitNeeds) {
-            out.needs = guarded(|| opened.sub_unit_needs());
+            out.needs = guarded(|| content_reader_key_names::equipment_facts::sub_unit_needs(&opened));
         }
         if wanted.contains(&Definition::StrategicRegions) {
             out.regions = guarded(|| {

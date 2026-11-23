@@ -740,7 +740,7 @@ impl<'r> Recorded<'r> {
         }
         let caller = job_priority::Caller::current();
         let cpu = replay_frame::cpu::Context::capture();
-        let diagnostics = content_reader_core::content::diagnostics::Context::capture();
+        let diagnostics = content_reader_layers::content::diagnostics::Context::capture();
         let memory = engine_allocation::labels::current();
         std::thread::scope(|scope| {
             std::thread::Builder::new()

@@ -124,7 +124,7 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     *fixture.frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
     };
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
     for (body, expected) in [
         ("add_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
         (
@@ -147,13 +147,13 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
         assert_eq!(result.text, expected);
         assert!(result.refusals.is_empty(), "{:?}", result.refusals);
     }
-    let file = content_reader_core::ideas::parse_ideas(
+    let file = content_reader_politics::ideas::parse_ideas(
         b"ideas={country={SYN_ADVISOR={name=SYN_ADVISOR}}}",
         &[],
         &Default::default(),
     );
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     for (body, expected) in [
         ("add_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
         (
@@ -480,7 +480,7 @@ fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
     *fixture.frame.tables[TableId::AdvisorRoles.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
     };
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
     let result = fixture.render(
         "add_ideas={SYN_ADVISOR SYN_ADVISOR}",
         &mut fresh(),

@@ -141,7 +141,7 @@ impl<'frame> Definitions<'frame> {
 
     pub(super) fn settle(
         definitions: Result<&Self, &Refusal>,
-        conditions: &[content_reader_core::unit_leader::Conditional],
+        conditions: &[content_reader_key_names::unit_leader::Conditional],
     ) -> Result<(), String> {
         for condition in conditions {
             let registered = definitions
@@ -212,7 +212,7 @@ pub(super) struct Block {
 impl Block {
     pub(super) fn build(
         definitions: &Definitions<'_>,
-        authored: &content_reader_core::modifiers::Modifiers,
+        authored: &content_reader_script::modifiers::Modifiers,
     ) -> Result<(Self, Vec<String>), Refusal> {
         let mut block = Self {
             added: !authored.children.is_empty(),

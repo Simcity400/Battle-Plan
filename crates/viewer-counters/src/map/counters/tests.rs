@@ -151,7 +151,7 @@ use super::*;
 
 #[test]
 fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(
         br#"guiTypes={
         containerWindowType={name=unit_counter_navy}
@@ -179,7 +179,7 @@ fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted
 
 #[test]
 fn off_grid_supply_threshold_uses_exact_ratio_and_withholds_ambiguous_historical_glyph() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(
         br#"guiTypes={
         containerWindowType={name=unit_counter_navy}
@@ -373,7 +373,7 @@ fn off_grid_supply_threshold_uses_exact_ratio_and_withholds_ambiguous_historical
 
 #[test]
 fn supply_glyph_and_gaps_work_without_bar_maxima_and_withhold_missing_movement() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(
         br#"guiTypes={
         containerWindowType={name=unit_counter_navy}
@@ -751,7 +751,7 @@ fn supply_glyph_and_gaps_work_without_bar_maxima_and_withhold_missing_movement()
 
 #[test]
 fn dump_census_excludes_combat_window_quads() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let shared = Arc::new(ResolvedLayers::from_folders(&[]).unwrap());
     let registry = native::resources::Registry::load(&shared).unwrap();
     let (assets, fonts) = counter_assets_fixture(
@@ -805,7 +805,7 @@ use replay_frame::{frame::Metrics, frame::TableView};
 
 #[test]
 fn window_size_applies_native_bounds_and_names_unsupported_constraints() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let guis = layout_gui(b"guiTypes={containerWindowType={name=test_icon size={width=20 height=30 min={width=40} max={height=15}}}}");
     assert_eq!(
         window_size(window(&guis, "test_icon").unwrap(), "test_icon").unwrap(),
@@ -827,9 +827,9 @@ fn layout_gui(bytes: &[u8]) -> native::Guis {
 
 #[test]
 fn port_slots_are_is_port_types_and_their_redirects() {
-    let definitions = content_reader_core::buildings::parse(
+    let definitions = content_reader_key_names::buildings::parse(
         b"buildings={Port={is_port=yes spawn_point=Harbour} depot={}} spawn_points={Harbour={}}",
-        &content_reader_core::key_names::KeyNames::default(),
+        &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
     assert_eq!(
@@ -1712,7 +1712,7 @@ fn sheet(name: &str, frames: u32, size: [u32; 2]) -> SpriteSheet {
 
 #[test]
 fn counter_action_anchor_draws_the_authored_child_frame_and_white_tint() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let strip = sheet("GFX_synthetic_actions", 12, [144, 13]);
     let action = counter_action::action_code(
         &replay_data::rows::DivisionMovementRow {
@@ -1901,7 +1901,7 @@ fn a_member_without_recorded_maxima_withholds_the_stack_bars() {
 
 #[test]
 fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_counter_inputs_fixture(
         action_gui(false),
         |_| {},
@@ -2117,7 +2117,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("not needed".into()),
         port_mission_defines: viewer_unit_reads::port_mission_defines::Defines::read(
-            &content_reader_core::defines::Defines::new().unwrap(),
+            &content_reader_defines::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(Default::default()),
         default_anchors: Arc::new(Default::default()),
@@ -2208,7 +2208,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
 
 #[test]
 fn stationary_counter_hovers_keep_hidden_members_at_both_zoom_levels() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut hidden = land_unit(7, 1, 10, 10, true);
     hidden.sight = Sight::Partial;
     let members = [hidden, land_unit(3, 1, 10, 10, true)];
@@ -2226,7 +2226,7 @@ fn stationary_counter_hovers_keep_hidden_members_at_both_zoom_levels() {
 
 #[test]
 fn counter_action_current_hour_ladder_and_struck_ladder_draw_through_the_plate() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let strip = sheet("GFX_synthetic_actions", 12, [144, 13]);
     for (modifier, code) in [(0, 6), (100_000, 11)] {
         let movement = replay_data::rows::DivisionMovementRow {
@@ -2394,7 +2394,7 @@ fn counter_action_layout_and_query_refusals_keep_other_movement_and_glyphs() {
         let frame = strategic_action_frame(rows.clone(), valid_layout);
         let hostility = counter_action::DestinationHostility::read(&frame, &links).unwrap();
         let actions = counter_action::Actions::read(&frame, &hostility, Some(1)).unwrap();
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         for (division, code) in [(1, 6), (2, 11), (4, 3)] {
             let mut unit = land_unit(1, 1, 10, 10, true);
             unit.action = actions.get(division);
@@ -2435,7 +2435,7 @@ fn counter_action_layout_and_query_refusals_keep_other_movement_and_glyphs() {
 
 #[test]
 fn counter_action_centered_child_refuses_only_the_action_glyph() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut unit = land_unit(1, 1, 10, 10, true);
     unit.action = Ok(8);
     let (regular, regular_report) =
@@ -2778,7 +2778,7 @@ fn gun_unit(id: u64, owner: u32, name: &str, join_action: u8, group: u64) -> Lan
 
 #[test]
 fn railway_gun_counters_keep_their_hover_at_both_zoom_levels() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let members = [
         gun_unit(5, 1, "synthetic_gun", 1, 0),
         gun_unit(9, 1, "synthetic_gun", 1, 0),
@@ -4613,7 +4613,7 @@ fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
 
 #[test]
 fn counter_defines_read_each_define_through_its_native_getter() {
-    let defines = content_reader_core::defines::Defines::new().unwrap();
+    let defines = content_reader_defines::defines::Defines::new().unwrap();
     let others = PriorityTable::ALL[1..]
         .iter()
         .enumerate()
@@ -4764,7 +4764,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
 
 #[test]
 fn children_take_their_declaration_order_and_their_font() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = layout_gui(
         br#"guiTypes = { containerWindowType = { name = "unit_counter"
             buttonType = { name = "count_bg" quadTextureSprite = "GFX_a" position = { x = 0 y = 0 } }
@@ -4808,7 +4808,7 @@ fn children_take_their_declaration_order_and_their_font() {
 
 #[test]
 fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = layout_gui(
         br#"guiTypes = {
             containerWindowType = { name = "unit_counter" size = { width = 81 height = 29 }
@@ -4856,7 +4856,7 @@ fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
 
 #[test]
 fn counter_button_sprite_aliases_and_frames_match_native_button_drawing() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use viewer_native_gui::native_gui::{PartKind, lifecycle::Instance};
     let plate_sheet = sheet("GFX_plate", 3, [60, 10]);
     let resources = Fixture::new(&[("GFX_plate", 3, [60, 10])], &[]);
@@ -5023,7 +5023,7 @@ fn retained_naval_icon_limits_reach_the_warnings_when_drawn() {
 
 #[test]
 fn active_ability_center_position_is_a_native_boolean() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     for (fields, expected) in [
         ("", false),
         ("centerPosition = YES", false),
@@ -5053,7 +5053,7 @@ fn active_ability_center_position_is_a_native_boolean() {
 
 #[test]
 fn the_gun_window_and_ability_grid_are_read_or_refused_by_name() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let document = layout_gui(
         br#"guiTypes = {
             containerWindowType = { name = "unit_counter"
@@ -5111,7 +5111,7 @@ fn the_gun_window_and_ability_grid_are_read_or_refused_by_name() {
 
 #[test]
 fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let layouts = layouts();
     let names = layouts.sprite_names();
     assert!(names.contains(&"GFX_onmap_action_icon"));
@@ -5148,7 +5148,7 @@ fn the_layouts_name_every_sprite_the_pass_has_to_load_once_each() {
 
 #[test]
 fn a_size_block_evaluates_as_the_native_evaluator_does() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let evaluate = |size: &str, parent: [i32; 2], position: [i32; 2]| {
         let gui = native_gui(format!(
             r#"guiTypes = {{ containerWindowType = {{ name = "w"
@@ -5305,7 +5305,7 @@ fn flag_fixture<const N: usize>(names: [&str; N]) -> Arc<LazyFlags> {
 
 #[test]
 fn hour_flag_warming_uses_recorded_candidates_at_all_three_sizes() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
     with_counter_inputs_fixture(
         action_gui(false),
@@ -5609,7 +5609,7 @@ fn an_icon_wholly_outside_the_viewport_and_its_pad_is_dropped() {
 
 #[test]
 fn air_base_icons_hide_only_on_an_answered_no() {
-    use content_reader_core::map::MapData;
+    use content_reader_map::map::MapData;
     let map = MapData {
         width: 4,
         height: 3,
@@ -5707,7 +5707,7 @@ fn air_base_icons_hide_only_on_an_answered_no() {
 
 #[test]
 fn province_lookup_truncates_and_rejects_what_is_not_a_province() {
-    use content_reader_core::map::MapData;
+    use content_reader_map::map::MapData;
     use std::collections::BTreeMap;
     let map = MapData {
         width: 4,
@@ -5792,7 +5792,7 @@ fn selected_air_base_frames_override_foreign_permission_and_keep_the_stationed_b
 
 #[test]
 fn counter_child_hovers_follow_presented_order_and_transparent_siblings() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = |transparent: &str, action_transparent: &str| {
         layout_gui(
             format!(
@@ -5870,7 +5870,7 @@ fn counter_child_hovers_follow_presented_order_and_transparent_siblings() {
 
 #[test]
 fn counter_sprite_aliases_keep_the_selected_sprites_hit_flags() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let gui = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_counter_navy}
         containerWindowType={name=naval_combat_mapicon}
@@ -5912,7 +5912,7 @@ fn counter_sprite_aliases_keep_the_selected_sprites_hit_flags() {
 
 #[test]
 fn active_ability_hovers_keep_individual_bound_records_and_transparency() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let abilities = AbilityInputs::read(
         &ability_frame(TableView::Complete(TableRows::ActiveAbilities(vec![
             ability(7, 13, Some(11), 0, b"first"),
@@ -6179,7 +6179,7 @@ fn a_view_shows_an_icon_family_below_its_own_cutoff_or_at_the_height_a_zoom_is_s
 #[test]
 fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
     use super::{Need, Shown};
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_counter_inputs_fixture(action_gui(false), |_| {}, |_| {}, |inputs| {
         let frame = DecodedFrame {
             branch: 1,

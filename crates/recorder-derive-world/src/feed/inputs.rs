@@ -102,7 +102,7 @@ pub(super) fn charges(hour: &Hour<'_>) -> io::Result<Option<HashMap<ChargeKey, [
             }
             None => false,
         };
-        let token = content_reader_core::parser::c_string(&change.identity.item_key);
+        let token = content_reader_parser::parser::c_string(&change.identity.item_key);
         if !covered || token.is_empty() {
             continue;
         }

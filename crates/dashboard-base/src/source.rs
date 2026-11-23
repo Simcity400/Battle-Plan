@@ -11,17 +11,12 @@ use std::{
     },
 };
 
-use content_reader_core::content::diagnostics::{self, Diagnostics};
-use content_reader_core::{ResolveOptions, content::ResolvedContent};
+use content_reader_layers::content::diagnostics::{self, Diagnostics};
+use content_reader_layers::{ResolveOptions, content::ResolvedContent};
 use replay::campaign::Replay;
 
-use crate::{
-    ReplayMetadata,
-    content::{ContentKey, content_key, name_localisation},
-    metadata::{self, MetadataRefusals, ResidentMetadata, Warnings},
-    presentation::{Admitted, Binding, Cancel, Presentation, Presented},
-    products::ContentOptions,
-};
+use crate::{ReplayMetadata, metadata::{self, MetadataRefusals, ResidentMetadata, Warnings}, presentation::{Admitted, Binding, Cancel, Presentation, Presented}, products::ContentOptions};
+use content_reader_layers::content::{ContentKey, content_key, name_localisation};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::localisation::Localisation;
 use replay::campaign::SeekResult;
@@ -168,7 +163,7 @@ pub struct Source {
     metadata: ResidentMetadata,
     named: Mutex<Option<(NamesKey, ResidentMetadata, Diagnostics)>>,
     content: Mutex<ContentCache>,
-    facts: std::sync::OnceLock<Result<Arc<content_reader_core::content::facts::Pack>, String>>,
+    facts: std::sync::OnceLock<Result<Arc<content_reader_layers::content::facts::Pack>, String>>,
     tables: std::sync::OnceLock<Option<engine_executable::executable_tables::Tables>>,
     binding: Mutex<Option<Arc<Binding>>>,
     state: Mutex<HashMap<TypeId, StateEntry>>,
@@ -186,7 +181,7 @@ fn country_observation(country: &crate::CountryMetadata) -> (&str, &str, &str, i
 }
 
 type Recorded = (
-    Result<Arc<content_reader_core::content::facts::Pack>, String>,
+    Result<Arc<content_reader_layers::content::facts::Pack>, String>,
     Option<engine_executable::executable_tables::Tables>,
 );
 
@@ -262,7 +257,7 @@ impl Source {
         &self.replay
     }
 
-    pub fn facts(&self) -> Result<Arc<content_reader_core::content::facts::Pack>, String> {
+    pub fn facts(&self) -> Result<Arc<content_reader_layers::content::facts::Pack>, String> {
         self.facts
             .get_or_init(|| crate::facts::recorded(&self.replay))
             .clone()
@@ -279,7 +274,7 @@ impl Source {
     }
 
     fn play(&self, options: &ResolveOptions) -> io::Result<ResolvedContent> {
-        content_reader_core::playback(&self.replay.identity, self.facts(), options)
+        content_reader_layers::playback(&self.replay.identity, self.facts(), options)
     }
     pub fn block_windows(&self, branch: u64) -> &[crate::span::HourSpan] {
         self.block_windows.get(&branch).map_or(&[], Vec::as_slice)
@@ -554,7 +549,7 @@ impl Source {
                 expected = current;
                 continue;
             }
-            let _generation = content_reader_core::content::Generation::enter();
+            let _generation = content_reader_layers::content::Generation::enter();
             let current = Arc::new(self.play(options)?);
             cache.bind(options, &current);
             drop(cache);
@@ -594,7 +589,7 @@ impl Source {
                     .name("content resolve".into())
                     .spawn_scoped_carried(
                         scope,
-                        content_reader_core::content::carry_generation(move || {
+                        content_reader_layers::content::carry_generation(move || {
                             caller.enter();
                             let _cpu = cpu.enter("content resolve");
                             let _memory = engine_allocation::labels::enter(
@@ -923,8 +918,8 @@ fn same_folders(old: &ResolveOptions, options: &ResolveOptions) -> bool {
 impl Source {
     pub fn set_test_content(
         &self,
-        options: content_reader_core::ResolveOptions,
-        content: Arc<content_reader_core::content::ResolvedContent>,
+        options: content_reader_layers::ResolveOptions,
+        content: Arc<content_reader_layers::content::ResolvedContent>,
     ) {
         self.content.lock().unwrap().bind(&options, &content);
     }

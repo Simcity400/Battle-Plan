@@ -158,8 +158,8 @@ fn definitions(fixture: &mut Fixture) -> &mut [ModifierDefinitionRow] {
 }
 
 fn describe(fixture: &Fixture, body: &str, options: ModifierListOptions<'_>) -> String {
-    let modifiers = content_reader_core::modifiers::values(
-        &content_reader_core::parser::parse(body.as_bytes())
+    let modifiers = content_reader_script::modifiers::values(
+        &content_reader_parser::parser::parse(body.as_bytes())
             .unwrap()
             .items,
     );
@@ -411,8 +411,8 @@ fn raw_description_leaves_scoped_expansion_to_the_caller() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let modifiers = content_reader_core::modifiers::values(
-        &content_reader_core::parser::parse(b"attack=1").unwrap().items,
+    let modifiers = content_reader_script::modifiers::values(
+        &content_reader_parser::parser::parse(b"attack=1").unwrap().items,
     );
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
@@ -432,11 +432,11 @@ fn raw_description_leaves_scoped_expansion_to_the_caller() {
     });
 }
 
-fn ideas() -> content_reader_core::ideas::IdeaContent {
-    let file = content_reader_core::ideas::parse_ideas(
+fn ideas() -> content_reader_politics::ideas::IdeaContent {
+    let file = content_reader_politics::ideas::parse_ideas(
         b"ideas={country={SYN_IDEA={research_bonus={industry=0.1} modifier={attack=1}} SECOND_IDEA={}}}",
         &[], &Default::default());
-    content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas)
+    content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas)
 }
 
 #[test]
@@ -445,7 +445,7 @@ fn ideas_single_details_and_multi_names_use_the_wrappers() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let ideas = ideas();
-    let names = content_reader_core::names::NameLists::default();
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -490,7 +490,7 @@ fn idea_targeted_operands_keep_case_and_resolve_in_the_empty_scope() {
                 ..Default::default()
             },
         ]));
-    let file = content_reader_core::ideas::parse_ideas(
+    let file = content_reader_politics::ideas::parse_ideas(
         b"ideas={country={
         TARGET_IDEA={targeted_modifier={tag=event_target:MixedCase attack=1}}
         NO_TARGET_IDEA={targeted_modifier={attack=1}}
@@ -499,8 +499,8 @@ fn idea_targeted_operands_keep_case_and_resolve_in_the_empty_scope() {
         &[],
         &Default::default(),
     );
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -561,10 +561,10 @@ fn bound_idea_names_use_fresh_country_carrier_and_details_keep_caller_scope() {
                 ..Default::default()
             },
         ]));
-    let file = content_reader_core::ideas::parse_ideas(
+    let file = content_reader_politics::ideas::parse_ideas(
         b"ideas={country={OWN_IDEA={name=NAME modifier={custom_modifier_tooltip=DETAIL}} SYN_IDEA={modifier={custom_modifier_tooltip=DETAIL}}}}",&[],&Default::default());
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -609,7 +609,7 @@ fn timed_idea_reuses_research_details_and_missing_duration_is_named() {
         reason: "timed ideas not recorded".into(),
     };
     let ideas = ideas();
-    let names = content_reader_core::names::NameLists::default();
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -680,7 +680,7 @@ fn format99_timed_idea_uses_first_stored_days_and_component_floors() {
             },
         ]));
     let ideas = ideas();
-    let names = content_reader_core::names::NameLists::default();
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -768,13 +768,13 @@ fn modify_timed_idea_keeps_spaced_colon_comma_that_add_timed_cleans() {
             days: 5,
             ..Default::default()
         }]));
-    let file = content_reader_core::ideas::parse_ideas(
+    let file = content_reader_politics::ideas::parse_ideas(
         b"ideas={country={SYN_IDEA={modifier={custom_modifier_tooltip=COLON_TIP}}}}",
         &[],
         &Default::default(),
     );
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -801,7 +801,7 @@ fn swap_ideas_uses_display_name_and_duration_branches() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
-    let names = content_reader_core::names::NameLists::default();
+    let names = content_reader_politics::names::NameLists::default();
     for (same, old, extra, expected) in [
         (false, -1, "", "Replace OLD/NEW"),
         (false, -1, "days=2", "Replace set OLD/NEW/2"),
@@ -816,8 +816,8 @@ fn swap_ideas_uses_display_name_and_duration_branches() {
             "ideas={{country={{A={{name=OLD}} B={{name={}}}}}}}",
             if same { "OLD" } else { "NEW" }
         );
-        let file = content_reader_core::ideas::parse_ideas(source.as_bytes(), &[], &Default::default());
-        let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+        let file = content_reader_politics::ideas::parse_ideas(source.as_bytes(), &[], &Default::default());
+        let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
         *fixture.frame.tables[TableId::TimedIdeas.index()] =
             TableView::Complete(TableRows::TimedIdeas(vec![TimedIdeaRow {
                 country: 100,
@@ -845,10 +845,10 @@ fn swap_ideas_differentials_keep_numeric_research_rules_and_equipment_order() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD modifier={attack=1} research_bonus={industry=0.1} equipment_bonus={synthetic_equipment={soft_attack=0.05}}} B={name=NEW modifier={attack=2 defense=0.5} research_bonus={industry=0.3} rule={can_send_volunteers=yes override={7=RULE_DESC}} equipment_bonus={synthetic_equipment={soft_attack=0.1 hard_attack=0.2}}}}}";
-    let file = content_reader_core::ideas::parse_ideas(source, &[], &Default::default());
+    let file = content_reader_politics::ideas::parse_ideas(source, &[], &Default::default());
     assert!(file.refused.is_none(), "{:?}", file.refused);
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -875,9 +875,9 @@ fn swap_ideas_targeted_blocks_use_first_match() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD targeted_modifier={tag=BBB attack=0.2}} B={name=NEW modifier={defense=1} targeted_modifier={tag=BBB attack=0.7} targeted_modifier={tag=BBB attack=99}}}}";
-    let file = content_reader_core::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let file = content_reader_politics::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let content = Content {
         ideas: Some(&ideas),
         name_lists: Some(&names),
@@ -916,10 +916,10 @@ fn swap_ideas_targeted_first_match_skips_unreached_variable_operands() {
         reason: "unreached target variable".into(),
     };
     let source = b"ideas={country={A={name=OLD targeted_modifier={} targeted_modifier={tag=AAA} targeted_modifier={tag=BBB attack=0.2} targeted_modifier={tag=var:missing}} B={name=NEW targeted_modifier={} targeted_modifier={tag=AAA defense=0.1} targeted_modifier={tag=BBB attack=0.7} targeted_modifier={tag=var:missing}}}}";
-    let file = content_reader_core::ideas::parse_ideas(source, &[], &Default::default());
+    let file = content_reader_politics::ideas::parse_ideas(source, &[], &Default::default());
     assert!(file.refused.is_none(), "{:?}", file.refused);
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -942,9 +942,9 @@ fn swap_ideas_keeps_available_fragments_when_numeric_definitions_are_unavailable
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let source = b"ideas={country={A={name=OLD} B={name=NEW modifier={defense=1} rule={can_send_volunteers=yes}}}}";
-    let file = content_reader_core::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let file = content_reader_politics::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
         reason: "numeric definitions unavailable".into(),
     };
@@ -975,9 +975,9 @@ fn swap_ideas_numeric_accumulator_drops_source_hidden_flags_children_and_tooltip
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD modifier={attack=0.5}} B={name=NEW modifier={hidden_modifier={attack=1} added_modifier={defense=99} custom_modifier_tooltip=TIP}}}}";
-    let file = content_reader_core::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let file = content_reader_politics::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -1000,9 +1000,9 @@ fn swap_ideas_rule_reset_keeps_blank_lines() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let source = b"ideas={country={A={name=OLD rule={can_send_volunteers=yes}} B={name=NEW}}}";
-    let file = content_reader_core::ideas::parse_ideas(source, &[], &Default::default());
-    let ideas = content_reader_core::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
-    let names = content_reader_core::names::NameLists::default();
+    let file = content_reader_politics::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = content_reader_politics::names::NameLists::default();
     let result = fixture.render(
         "swap_ideas={remove_idea=A add_idea=B}",
         &mut fresh(),
@@ -1021,8 +1021,8 @@ fn opinion_trade_reverse_and_removal_keep_sign_colours() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let mut opinions = content_reader_core::opinion_modifiers::Database::default();
-    opinions.definitions = content_reader_core::opinion_modifiers::parse(
+    let mut opinions = content_reader_politics::opinion_modifiers::Database::default();
+    opinions.definitions = content_reader_politics::opinion_modifiers::parse(
         b"opinion_modifiers={SYN_OPINION={value=12} TRADE={value=-3 trade=yes}}",
         [-100, 100],
     )
@@ -1064,10 +1064,10 @@ fn dynamic_scope_values_and_rounded_duration_share_the_evaluator() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let mut dynamic = content_reader_core::dynamic_modifiers::Database::default();
+    let mut dynamic = content_reader_politics::dynamic_modifiers::Database::default();
     dynamic.definitions.insert(
         "SYN_DYNAMIC".into(),
-        content_reader_core::dynamic_modifiers::Dynamic {
+        content_reader_politics::dynamic_modifiers::Dynamic {
             name: "SYN_DYNAMIC".into(),
             scoped_modifiers: vec![
                 ("attack".into(), b"1".to_vec()),
@@ -1105,10 +1105,10 @@ fn static_relation_and_province_descriptions_preserve_indentation() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let modifiers = content_reader_core::modifiers::values(
-        &content_reader_core::parser::parse(b"attack=1").unwrap().items,
+    let modifiers = content_reader_script::modifiers::values(
+        &content_reader_parser::parser::parse(b"attack=1").unwrap().items,
     );
-    let static_modifiers = content_reader_core::static_modifiers::Descriptions::from_blocks([
+    let static_modifiers = content_reader_politics::static_modifiers::Descriptions::from_blocks([
         ("SYN_RELATION".to_owned(), modifiers.clone()),
         ("SECOND_IDEA".to_owned(), Modifiers::default()),
     ]);
@@ -1145,12 +1145,12 @@ fn scaled_static_modifiers_scale_each_value_and_prefix_each_line() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
-    let modifiers = content_reader_core::modifiers::values(
-        &content_reader_core::parser::parse(b"attack=1 defense=2")
+    let modifiers = content_reader_script::modifiers::values(
+        &content_reader_parser::parser::parse(b"attack=1 defense=2")
             .unwrap()
             .items,
     );
-    let static_modifiers = content_reader_core::static_modifiers::Descriptions::from_blocks([(
+    let static_modifiers = content_reader_politics::static_modifiers::Descriptions::from_blocks([(
         "SYN_NETWORK".to_owned(),
         modifiers,
     )]);

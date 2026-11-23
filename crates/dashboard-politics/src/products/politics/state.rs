@@ -383,7 +383,7 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
                 max: bounds.map(|(_, max)| max),
             }
         });
-        let trending = (!content_reader_core::parser::c_string(&record.trending).is_empty()).then(|| side(catalogue, &record.trending, reply));
+        let trending = (!content_reader_parser::parser::c_string(&record.trending).is_empty()).then(|| side(catalogue, &record.trending, reply));
         let record_members = members
             .iter()
             .filter(|member| member.record == record.ordinal)
@@ -456,14 +456,14 @@ fn member_row(row: &replay_data::rows::PowerBalanceMemberRow) -> engine_power_ba
 
 fn drift_sources(
     catalogue: &Catalogue,
-    statics: &content_reader_core::static_modifiers::Descriptions,
+    statics: &content_reader_politics::static_modifiers::Descriptions,
     registry: &replay_derive::modifier_registry::Registry<'_>,
     sources: &[Vec<u8>],
 ) -> Result<Vec<BalanceSource>, String> {
     let layers = &catalogue.content.layers;
     let mut blocks = Vec::with_capacity(sources.len());
     for source in sources {
-        let key = std::str::from_utf8(content_reader_core::parser::c_string(source)).map_err(|_| format!("static modifier {} is not UTF-8", String::from_utf8_lossy(source)))?;
+        let key = std::str::from_utf8(content_reader_parser::parser::c_string(source)).map_err(|_| format!("static modifier {} is not UTF-8", String::from_utf8_lossy(source)))?;
         blocks.push(statics.get(layers, key)?.1);
     }
     let inputs: Vec<_> = sources

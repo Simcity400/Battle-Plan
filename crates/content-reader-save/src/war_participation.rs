@@ -94,7 +94,7 @@ pub fn parse(items: &[Item]) -> io::Result<Ledger> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::parser;
+    use content_reader_parser::parser;
 
     fn ledger(extra: &str) -> io::Result<Ledger> {
         parse(&parser::parse(

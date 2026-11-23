@@ -86,7 +86,7 @@ pub struct GameSpeeds([f64; 5]);
 impl GameSpeeds {
     const FASTEST: usize = 4;
 
-    pub fn load(defines: &content_reader_core::defines::Defines) -> Result<Self, String> {
+    pub fn load(defines: &content_reader_defines::defines::Defines) -> Result<Self, String> {
         let read = defines
             .numbers("NGame", "GAME_SPEED_SECONDS")
             .map_err(|error| error.to_string())?;

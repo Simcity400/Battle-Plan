@@ -2,7 +2,7 @@ use super::*;
 use std::{collections::BTreeMap, time::Duration};
 
 fn assets(name: &str) -> Arc<AircraftAssets> {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root =
         std::env::temp_dir().join(format!("viewer-fly-aircraft-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -37,8 +37,8 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let map = content_reader_core::map::MapData {
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let map = content_reader_map::map::MapData {
         width: 1,
         height: 1,
         province_ids: vec![0],
@@ -50,8 +50,8 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
         content_reader_image::native::Decode::default(),
         &map,
         (
-            &content_reader_core::defines::Defines::new().unwrap(),
-            &content_reader_core::defines::Defines::new().unwrap(),
+            &content_reader_defines::defines::Defines::new().unwrap(),
+            &content_reader_defines::defines::Defines::new().unwrap(),
         ),
         &BTreeMap::new(),
         &mut Vec::new(),

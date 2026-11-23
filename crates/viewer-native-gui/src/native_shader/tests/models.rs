@@ -1,7 +1,7 @@
 use super::*;
 use crate::{native_gui as gui, sprites};
 use eframe::wgpu;
-use content_reader_core::ResolvedLayers;
+use content_reader_layers::ResolvedLayers;
 use content_reader_image::dds;
 use std::sync::Arc;
 
@@ -441,7 +441,7 @@ impl Family {
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn synthetic_gui_parts_match_the_direct_shader_submissions() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let (_install, mut library) = effects();
     if let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
         std::fs::create_dir_all(report).unwrap();

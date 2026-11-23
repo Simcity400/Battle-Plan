@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_vertical_counter_hover_{}",
             std::process::id()
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn bar_hover_uses_authored_placement_at_180_degrees() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = br#"guiTypes = {
             containerWindowType = {
                 name = "naval_combat_mapicon"
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn bar_hover_shares_bar_step_origin_for_vertical_bars_at_half_fill() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let gui = br#"guiTypes = {
             containerWindowType = {
                 name = "naval_combat_mapicon"

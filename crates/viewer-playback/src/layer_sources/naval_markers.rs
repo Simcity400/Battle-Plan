@@ -1,5 +1,5 @@
 use viewer_layers_counters::naval_markers::Shore;
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 
 impl Shore for crate::document::Content {
     fn province_kind(&self, province: u32) -> Option<ProvinceKind> {

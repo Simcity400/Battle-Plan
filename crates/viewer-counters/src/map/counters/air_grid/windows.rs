@@ -478,7 +478,7 @@ mod tests {
     }
     #[test]
     fn carrier_grid_composes_through_both_holders_and_hits_in_the_outer_coordinates() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let source = std::str::from_utf8(window_bytes()).unwrap().replacen(
             "guiTypes={",
             r#"guiTypes={
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn air_item_draws_authored_controls_count_type_selection_flags_and_current_strength() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         super::super::super::tests::with_counter_inputs_fixture(
             super::super::super::tests::action_gui(false),
             |_| {},
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn air_grid_country_plate_reports_non_finite_ui_color_refusal() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let source = std::str::from_utf8(window_bytes()).unwrap().replacen(
             "guiTypes={",
             r#"guiTypes={

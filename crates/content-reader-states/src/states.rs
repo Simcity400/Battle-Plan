@@ -1,22 +1,12 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
-use crate::{
-    ResolvedLayers,
-    crt::{self, Scanned},
-    defines::Defines,
-    fields::{block, invalid},
-    fixed5::decimal_i32,
-    key_names::KeyNames,
-    map::ProvinceDefinition,
-    parser::{
-        Item, Value,
-        native::{self, Shape},
-    },
-    scope::ScopeKind,
-    script_files,
-    tokens::{self, Token},
-};
+use content_reader_layers::{ResolvedLayers, script_files};
+use content_reader_parser::{crt::{self, Scanned}, fields::{block, invalid}, fixed5::decimal_i32, parser::{Item, Value}, tokens::{self, Token}};
+use content_reader_defines::defines::Defines;
+use content_reader_script::{key_names::KeyNames, native::{self, Shape}, scope::ScopeKind};
+use content_reader_map::map::ProvinceDefinition;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MisreadCause {
@@ -29,19 +19,19 @@ pub enum MisreadCause {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
-    pub kind: crate::DiagnosticKind,
+    pub kind: content_reader_parser::DiagnosticKind,
     pub message: String,
     pub cause: Option<MisreadCause>,
 }
 
 impl Diagnostic {
-    pub fn into_diagnostic(self) -> crate::Diagnostic {
+    pub fn into_diagnostic(self) -> content_reader_parser::Diagnostic {
         (self.kind, self.message)
     }
 }
 
-impl From<crate::Diagnostic> for Diagnostic {
-    fn from((kind, message): crate::Diagnostic) -> Self {
+impl From<content_reader_parser::Diagnostic> for Diagnostic {
+    fn from((kind, message): content_reader_parser::Diagnostic) -> Self {
         Self {
             kind,
             message,
@@ -104,7 +94,7 @@ pub struct Resources {
 
 impl Resources {
     pub fn find(&self, name: &[u8]) -> Resource {
-        let shown = String::from_utf8_lossy(crate::parser::c_string(name));
+        let shown = String::from_utf8_lossy(content_reader_parser::parser::c_string(name));
         match Token::existing(name, &self.tokens) {
             Some(token)
                 if tokens::first(self.tokens.iter().map(|known| (known, ())), &token).is_some() =>
@@ -188,7 +178,7 @@ fn read_buildings(items: &[Item], state: &mut StateDefinition, context: &Context
 pub fn parse_states(
     input: &[u8],
     context: &Context<'_>,
-) -> io::Result<(Vec<StateDefinition>, Vec<crate::Diagnostic>)> {
+) -> io::Result<(Vec<StateDefinition>, Vec<content_reader_parser::Diagnostic>)> {
     let parsed = parse_states_attributed(input, context)?;
     Ok((
         parsed.states.into_iter().map(|(state, _)| state).collect(),
@@ -224,7 +214,7 @@ fn parse_states_attributed(input: &[u8], context: &Context<'_>) -> io::Result<Pa
             Some(b"victory_points") => Shape::List,
             Some(b"buildings") if field.opens() => Shape::Object(Node::Buildings),
             Some(b"buildings") => Shape::Skip,
-            _ => crate::effect_keys::shape(Some(names), field).map(|()| Node::History),
+            _ => content_reader_script::effect_keys::shape(Some(names), field).map(|()| Node::History),
         }
     }
     fn building() -> Shape<Node> {
@@ -365,7 +355,7 @@ fn parse_states_attributed(input: &[u8], context: &Context<'_>) -> io::Result<Pa
                 .map(|note| format!("after state {}'s unported reader: {note}", state.id)),
         );
         misreads.extend(notes.into_iter().map(|(cause, message)| Diagnostic {
-            kind: crate::DiagnosticKind::Misread,
+            kind: content_reader_parser::DiagnosticKind::Misread,
             message,
             cause: Some(cause),
         }));
@@ -373,7 +363,7 @@ fn parse_states_attributed(input: &[u8], context: &Context<'_>) -> io::Result<Pa
             states.push((state, state_notes));
         } else {
             misreads.push(Diagnostic::from((
-                crate::DiagnosticKind::Warning,
+                content_reader_parser::DiagnosticKind::Warning,
                 format!(
                     "state id {} is not positive; the game discards the template",
                     state.id as i32
@@ -404,7 +394,7 @@ fn parse_state_block(
                 .map(str::to_owned)
                 .map_err(|why| format!("state name: {why}"));
         } else if item.keyword_is("impassable") {
-            match item.value.scalar().and_then(crate::parser::read_bool) {
+            match item.value.scalar().and_then(content_reader_parser::parser::read_bool) {
                 Some(value) => state.impassable = value,
                 _ => notes.push((
                     MisreadCause::InvalidImpassable,
@@ -536,7 +526,7 @@ fn read_resources(bytes: &[u8], path: &str, resources: &mut Resources) {
         Top,
         Table,
         Resource,
-        Modifier(crate::modifiers::Node),
+        Modifier(content_reader_script::modifiers::Node),
     }
     let mut undecided = Vec::new();
     let read = native::read(
@@ -553,17 +543,17 @@ fn read_resources(bytes: &[u8], path: &str, resources: &mut Resources) {
             }
             Node::Resource => match field.keyword().as_deref() {
                 Some(b"icon_frame" | b"cic" | b"convoys") => Shape::One,
-                Some(b"modifier") => crate::modifiers::shape(
-                    crate::modifiers::Node::Modifier,
+                Some(b"modifier") => content_reader_script::modifiers::shape(
+                    content_reader_script::modifiers::Node::Modifier,
                     field,
-                    crate::modifiers::UNKNOWN,
+                    content_reader_script::modifiers::UNKNOWN,
                     &mut undecided,
                 )
                 .map(Node::Modifier),
                 _ => Shape::Skip,
             },
             Node::Modifier(modifier) => {
-                crate::modifiers::shape(modifier, field, crate::modifiers::UNKNOWN, &mut undecided)
+                content_reader_script::modifiers::shape(modifier, field, content_reader_script::modifiers::UNKNOWN, &mut undecided)
                     .map(Node::Modifier)
             }
         },
@@ -610,7 +600,7 @@ pub fn read(
     layers: &ResolvedLayers,
     defines: &Defines,
     provinces: &BTreeMap<u32, ProvinceDefinition>,
-) -> io::Result<(States, Vec<crate::Diagnostic>)> {
+) -> io::Result<(States, Vec<content_reader_parser::Diagnostic>)> {
     read_with_diagnostics(layers, defines, provinces).map(|(states, notes)| {
         (
             states,
@@ -636,7 +626,7 @@ fn read_templates(layers: &ResolvedLayers, max_building_levels: i32, counted: u3
     let resources = resources(layers)?;
     let names = layers.key_names()?;
     let paths = script_files::paths(layers, DIRECTORY, Some(".txt"))?;
-    let parsed = content_reader_core::parallel::map(&paths, |listed| {
+    let parsed = content_reader_layers::parallel::map(&paths, |listed| {
         let context = Context {
             resource: &|name| resources.find(name),
             max_building_levels,
@@ -668,7 +658,7 @@ fn read_templates(layers: &ResolvedLayers, max_building_levels: i32, counted: u3
             let id = state.id;
             if let Some(kept) = states.sources.get(&id) {
                 conflicts.push(Diagnostic::from((
-                    crate::DiagnosticKind::Warning,
+                    content_reader_parser::DiagnosticKind::Warning,
                     format!(
                         "state {id} is defined by both {kept} and {path}; the game keeps the first"
                     ),

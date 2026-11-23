@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io};
 
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 
 use super::{
     Decimal, block, boolean, bytes, combat_details, decimal, field, integer, integer_list, invalid,
@@ -1028,7 +1028,7 @@ fn division_history(items: &[Item]) -> io::Result<DivisionHistory> {
 mod ship_name_tests {
     use super::*;
     fn ship(text: &str) -> io::Result<Ship> {
-        let document = content_reader_core::parser::parse(
+        let document = content_reader_parser::parser::parse(
             format!("id={{id=4 type=51}} strength=0 organisation=0 {text}").as_bytes(),
         )?;
         parse_ship(9, &document.items)

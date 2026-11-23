@@ -55,7 +55,8 @@ viewer-weather-effects = { workspace = true }
 viewer-world = { workspace = true }
 
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-key-names.workspace = true
+content-reader-map.workspace = true
 content-reader-sound = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
 replay = { workspace = true, features = ["test-support"] }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use content_reader_core::{power_balance::Database, power_balance::Definition, power_balance::Range};
+use content_reader_politics::power_balance::{Database, Definition, Range};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
 
@@ -102,7 +102,7 @@ fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let database = database();
-    let static_modifiers = content_reader_core::static_modifiers::Descriptions::from_blocks([(
+    let static_modifiers = content_reader_politics::static_modifiers::Descriptions::from_blocks([(
         "SYN_MOD".into(),
         Modifiers::default(),
     )]);
@@ -254,7 +254,7 @@ fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
         ]));
     let definition = database().definition(b"SYN_BALANCE").unwrap().clone();
     let modifiers = |body: &[u8]| {
-        content_reader_core::modifiers::values(&content_reader_core::parser::parse(body).unwrap().items)
+        content_reader_script::modifiers::values(&content_reader_parser::parser::parse(body).unwrap().items)
     };
     let database = Database::from_parsed([(
         definition,

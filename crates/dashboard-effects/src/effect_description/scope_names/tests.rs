@@ -11,7 +11,7 @@ const MIO: u64 = 6 << 32 | 79;
 const WING: u64 = 9 << 32 | 77;
 
 fn assert_missing_reference(table: TableId, read: impl FnOnce() -> Result<String, String>) {
-    let (result, failures) = crate::triggers::refusal::capture(read);
+    let (result, failures) = content_reader_script::triggers::refusal::capture(read);
     assert_eq!(
         result.unwrap_err(),
         format!("{}: the object it refers to is not recorded", table.words())
@@ -248,7 +248,7 @@ fn carried_saved_targets_do_not_invent_country_or_state_members() {
     f.with_renderer(&mut graph, Content::default(), |renderer| {
         for name in ["raid", "unit", "project"] {
             let operand =
-                content_reader_core::parser::parse(format!("target=event_target:{name}").as_bytes())
+                content_reader_parser::parser::parse(format!("target=event_target:{name}").as_bytes())
                     .unwrap();
             let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
             assert_eq!(renderer.country_target(&operand.items[0], scopes), Ok(None));

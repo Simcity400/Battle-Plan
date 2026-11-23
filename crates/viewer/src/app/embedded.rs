@@ -516,7 +516,7 @@ impl Viewer {
                 .identity
                 .mods
                 .iter()
-                .map(|recorded| content_reader_core::content::visual::RecordedMod {
+                .map(|recorded| content_reader_layers::content::visual::RecordedMod {
                     id: recorded.id.clone(),
                     name: recorded.display_name.clone(),
                 })
@@ -549,8 +549,8 @@ impl Viewer {
                 }
                 let cancel = std::sync::atomic::AtomicBool::new(false);
                 let failures = std::cell::RefCell::new(Vec::new());
-                let changed = |selected: &[content_reader_core::content::visual::Choice],
-                               recorded: &[content_reader_core::content::visual::RecordedMod],
+                let changed = |selected: &[content_reader_layers::content::visual::Choice],
+                               recorded: &[content_reader_layers::content::visual::RecordedMod],
                                revision: &str| {
                     let Some(options) = &options else {
                         failures
@@ -559,7 +559,7 @@ impl Viewer {
                         return false;
                     };
                     let stage = viewer_runtime::load_record::stage("visual_check.revision");
-                    let now = content_reader_core::content::visual::revision(
+                    let now = content_reader_layers::content::visual::revision(
                         options, selected, recorded, &cancel,
                     );
                     drop(stage);

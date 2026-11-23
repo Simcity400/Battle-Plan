@@ -1,6 +1,6 @@
 
 use super::*;
-use content_reader_core::unit_leader::SubUnits;
+use content_reader_script::sub_units::SubUnits;
 use replay_data::{rows::ShipModelRow, rows::ShipRow, rows::TaskForceRow};
 use viewer_unit_reads::counter_order;
 use viewer_runtime::msvc_stable_sort::sort;
@@ -313,7 +313,7 @@ fn merge_groups<'a>(all: &mut BTreeMap<i32, Group<'a>>, groups: BTreeMap<i32, Gr
 
 fn composition(
     groups: &BTreeMap<i32, Group<'_>>,
-    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_key_names::equipment::Database, &str>,
 ) -> Result<String, String> {
     let mut ordered = groups.values().collect::<Vec<_>>();
     let mut missing = None;
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn copied_type_index_distinguishes_later_rejected_names_and_preserves_original_spelling() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { Custom_Destroyer = {} 1rejected = {} }",
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn nul_declaration_keys_refuse_index_derivation_instead_of_selecting_a_later_prefix() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { \"custom\0tail\" = {} custom = {} }",
@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn current_variant_depth_orders_exact_modded_composition() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let content = viewer_foundation::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_root = { is_archetype = yes type = destroyer }

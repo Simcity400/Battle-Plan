@@ -132,7 +132,7 @@ fn compare_design_templates(
                             tokens
                                 .get(token)
                                 .copied()
-                                .map(content_reader_core::parser::c_string)
+                                .map(content_reader_parser::parser::c_string)
                                 .map(<[u8]>::to_vec)
                                 .ok_or_else(|| {
                                     invalid(format!(
@@ -1435,7 +1435,7 @@ fn name_field(report: &mut Report, label: &str, actual: &[u8], saved: Option<&[u
         saved.is_some(),
     );
     if let Some(saved) = saved {
-        let end = content_reader_core::parser::c_string(actual).len();
+        let end = content_reader_parser::parser::c_string(actual).len();
         equal(report, label, &actual[..end], saved);
         if end < actual.len() {
             report.limitation("text string serialization stops at the first NUL; the captured suffix is not present in the save", label);

@@ -1,7 +1,7 @@
 use super::*;
 use crate::fixtures::folder_catalogue;
 use crate::scripted_text::{EventObject, EventScope, Link};
-use crate::triggers::ContentFacts;
+use content_reader_script::triggers::ContentFacts;
 
 fn fresh() -> EventScopes {
     EventScopes::new(vec![EventScope::of(EventObject::Country(1))])
@@ -44,7 +44,7 @@ fn target(body: &str, graph: EventScopes) -> Result<String, String> {
 fn relation(body: &str) -> Result<String, String> {
     let template = Template {
         name: b"SYN_TRIGGER".to_vec(),
-        body: Ok(content_reader_core::parser::parse(
+        body: Ok(content_reader_parser::parser::parse(
             b"custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}",
         )
         .unwrap()
@@ -124,7 +124,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         scripted.effects()?.view(None),
     );
     let graph = Rc::new(RefCell::new(graph));
-    let scopes = crate::triggers::event_scopes::project(&graph.borrow(), 0)
+    let scopes = content_reader_script::triggers::event_scopes::project(&graph.borrow(), 0)
         .map_err(|why| why.to_string())?;
     let renderer = Renderer {
         context: &context,
@@ -133,7 +133,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         out: Description::default(),
         scripted_stack: Vec::new(),
     };
-    let items = content_reader_core::parser::parse(body.as_bytes())
+    let items = content_reader_parser::parser::parse(body.as_bytes())
         .unwrap()
         .items;
     if template.is_some() {

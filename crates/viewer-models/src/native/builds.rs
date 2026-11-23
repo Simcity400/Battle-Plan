@@ -477,7 +477,7 @@ fn select_alpha_shared(
         .unwrap_or(base))
 }
 
-fn blend(selection: &Selection) -> content_reader_core::pdxshader::BlendState {
+fn blend(selection: &Selection) -> content_reader_gui::pdxshader::BlendState {
     selection
         .effect
         .source

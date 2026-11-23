@@ -1,5 +1,6 @@
 use super::rules::{Lines, Text};
-use content_reader_core::{equipment::Database, equipment::Groups, parser};
+use content_reader_key_names::equipment::{Database, Groups};
+use content_reader_parser::parser;
 use content_reader_localisation::localisation::Argument as Arg;
 use content_reader_localisation::localisation::Localisation;
 use content_reader_raids::raids::RaidType;
@@ -155,7 +156,7 @@ mod tests {
 
     #[test]
     fn anonymous_wrapper_tests_none_before_expanding_members() {
-        let (equipment, groups) = content_reader_core::equipment::fixture::load(&[(
+        let (equipment, groups) = content_reader_key_names::equipment::fixture::load(&[(
             "common/equipment_groups/g.txt",
             "inner = { description = inner_name equipment_type = { b a } }
              cycle = { equipment_type = { cycle } }",
@@ -312,7 +313,7 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect();
-        let (equipment, groups) = content_reader_core::equipment::fixture::load(&[
+        let (equipment, groups) = content_reader_key_names::equipment::fixture::load(&[
             (
                 "common/units/equipment/modules/m.txt",
                 "equipment_modules = { Gun_1 = { } }",

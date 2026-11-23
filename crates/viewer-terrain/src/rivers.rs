@@ -3,7 +3,8 @@ use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
 use viewer_gpu::textures::load_uploadable;
 
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, defines::Defines};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
 use content_reader_image::{dds, native::Decode};
 
 use viewer_gpu::{

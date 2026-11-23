@@ -89,7 +89,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let roster = self.character_table::<tables::CountryCharacters>(ROSTER)?;
             let id = field(children(item), "id")
                 .and_then(|item| item.value.scalar())
-                .and_then(|value| content_reader_core::crt::scan_i32(value).stored())
+                .and_then(|value| content_reader_parser::crt::scan_i32(value).stored())
                 .unwrap_or(0);
             let mut character = self.military_roster_character(roster, country, id)?;
             if character.is_none() {
@@ -154,7 +154,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let operand = content_reader_core::parser::c_string(
+        let operand = content_reader_parser::parser::c_string(
             item.value
                 .scalar()
                 .ok_or("unit leader tooltip token is not scalar")?,
@@ -232,7 +232,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let id = item
             .value
             .scalar()
-            .and_then(|value| content_reader_core::crt::scan_i32(value).stored())
+            .and_then(|value| content_reader_parser::crt::scan_i32(value).stored())
             .unwrap_or(0);
         let leader = if id > 0 {
             let Some(character) = self.effect_character(Scope::Character(id as u32))? else {

@@ -266,7 +266,7 @@ impl Picker {
             .any(Retained::active)
     }
 
-    fn refresh_values(&mut self, state: &State<'_>, root: &content_reader_core::gui::native::Element) {
+    fn refresh_values(&mut self, state: &State<'_>, root: &content_reader_gui::gui::native::Element) {
         if self.root_generation == Some(self.generation) {
             return;
         }
@@ -545,7 +545,7 @@ fn layout_name(four_buttons: bool) -> &'static str {
     }
 }
 
-fn authored_shortcut(root: &content_reader_core::gui::native::Element, path: &str) -> Option<String> {
+fn authored_shortcut(root: &content_reader_gui::gui::native::Element, path: &str) -> Option<String> {
     let shortcut = root.path_named(path)?.button()?.shortcuts.first()?;
     std::str::from_utf8(shortcut).ok().map(str::to_owned)
 }
@@ -562,7 +562,7 @@ pub fn shortcuts(
 }
 
 fn shortcuts_in(
-    root: &content_reader_core::gui::native::Element,
+    root: &content_reader_gui::gui::native::Element,
     four_buttons: bool,
     slots: usize,
 ) -> Vec<(Control, String)> {
@@ -590,7 +590,7 @@ fn shortcuts_in(
     out
 }
 
-fn picker_values(state: &State<'_>, root: &content_reader_core::gui::native::Element) -> Values {
+fn picker_values(state: &State<'_>, root: &content_reader_gui::gui::native::Element) -> Values {
     let mut values = Values::new();
     let layout = layout_name(state.four_buttons);
     let other = layout_name(!state.four_buttons);
@@ -932,10 +932,10 @@ fn draw_slots(
 }
 
 fn grown(
-    root: &content_reader_core::gui::native::Element,
+    root: &content_reader_gui::gui::native::Element,
     rows: usize,
-) -> Result<content_reader_core::gui::native::Element, String> {
-    use content_reader_core::gui::native::Fields;
+) -> Result<content_reader_gui::gui::native::Element, String> {
+    use content_reader_gui::gui::native::Fields;
     if rows == 0 {
         return Ok(root.clone());
     }
@@ -973,7 +973,7 @@ fn grown(
 #[allow(clippy::too_many_arguments)]
 fn draw_window(
     retained: &mut Retained,
-    root: &content_reader_core::gui::native::Element,
+    root: &content_reader_gui::gui::native::Element,
     values: &Values,
     groups: Vec<Group<'_>>,
     windows: &viewer_native_gui::native_windows::NativeWindows,
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn the_find_view_button_opens_the_find_view_by_click_and_shortcut() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = viewer_native_gui::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = MapmodesInterface_Ingame                 buttonType = { name = open_find_view_button shortcut = \"ctrl+f\" } } }",
             [1280, 720],
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn a_mode_list_grows_upward_a_slot_per_scripted_mode() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = viewer_native_gui::test_support::gui::windows(
             br#"guiTypes = { containerWindowType = {
                 name = "List" position = { x = -255 y = -322 } size = { width = 180 height = 296 }
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn buttons_show_their_modes_frame_whatever_the_slot() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = viewer_native_gui::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy } \
               containerWindowType = { name = naval_combat_mapicon } \

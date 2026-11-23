@@ -46,7 +46,7 @@ fn map_counters_take_the_exercise_predicate_from_the_model_witness() {
 
 #[test]
 fn map_counters_markers_and_selections_read_only_recorded_tables() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     with_counter_inputs_fixture(
         action_gui(false),
         |_| {},
@@ -118,23 +118,23 @@ fn map_counters_markers_and_selections_read_only_recorded_tables() {
                 };
                 scoped(
                     "fleet choices",
-                    crate::map::naval_selection::fleet_choices(&frame, viewer).map(drop),
+                    content_reader_map::map::naval_selection::fleet_choices(&frame, viewer).map(drop),
                 );
                 scoped(
                     "fleet home bases",
-                    crate::map::naval_selection::home_bases(&frame, viewer, &fleets).map(drop),
+                    content_reader_map::map::naval_selection::home_bases(&frame, viewer, &fleets).map(drop),
                 );
                 scoped(
                     "naval mission members",
-                    crate::map::naval_selection::mission_members(&frame, viewer, 1, 1).map(drop),
+                    content_reader_map::map::naval_selection::mission_members(&frame, viewer, 1, 1).map(drop),
                 );
                 scoped(
                     "air base target",
-                    crate::map::air_selection::base_target(&frame, viewer, 1, 1).map(drop),
+                    content_reader_map::map::air_selection::base_target(&frame, viewer, 1, 1).map(drop),
                 );
                 scoped(
                     "air mission members",
-                    crate::map::air_selection::mission_members(&frame, viewer, 1, 1).map(drop),
+                    content_reader_map::map::air_selection::mission_members(&frame, viewer, 1, 1).map(drop),
                 );
             });
         },

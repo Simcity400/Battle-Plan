@@ -362,7 +362,7 @@ pub fn template_with(
             out.text,
             "Cached manpower: {}\nHQ command power: {}\nTraining time: {}",
             settings.total_manpower,
-            content_reader_core::fixed5::fixed5_to_string(settings.command_power_cost, -1),
+            content_reader_parser::fixed5::fixed5_to_string(settings.command_power_cost, -1),
             settings.training_time
         )
         .unwrap();
@@ -615,7 +615,7 @@ pub fn hq_with(
                 out.text,
                 "Assembled variant {}: {}",
                 equipment.variant,
-                content_reader_core::fixed5::fixed5_to_string(equipment.amount, -1)
+                content_reader_parser::fixed5::fixed5_to_string(equipment.amount, -1)
             )
             .unwrap();
         }
@@ -628,7 +628,7 @@ pub fn hq_with(
             writeln!(
                 out.text,
                 "Required {name}: {}",
-                content_reader_core::fixed5::fixed5_to_string(required.amount, -1)
+                content_reader_parser::fixed5::fixed5_to_string(required.amount, -1)
             )
             .unwrap();
         }

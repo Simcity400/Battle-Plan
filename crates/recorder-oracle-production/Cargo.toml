@@ -10,18 +10,20 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 game-model.workspace = true
 replay.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
-content-reader-core.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
+content-reader-script = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
-content-reader-core = { workspace = true, features = ["test-support"] }
 engine-scripts.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 

@@ -5,7 +5,7 @@ impl PreparedSlot {
     fn wire(
         &self,
         key: &impl Fn(usize) -> io::Result<Arc<data::AssetKey>>,
-        types: &[content_reader_core::buildings::BuildingType],
+        types: &[content_reader_key_names::buildings::BuildingType],
     ) -> io::Result<data::Slot> {
         let select = |value: Selection| {
             Ok::<_, io::Error>(data::Selection {
@@ -47,7 +47,7 @@ impl PreparedBuildings {
         fog: bool,
         warnings: Vec<String>,
         key: impl Fn(usize) -> io::Result<Arc<data::AssetKey>>,
-        types: &[content_reader_core::buildings::BuildingType],
+        types: &[content_reader_key_names::buildings::BuildingType],
         authored: Arc<Vec<data::AuthoredSlot>>,
         previous: Option<(&Chunked<PreparedSlot>, &data::Buildings)>,
     ) -> io::Result<data::Buildings> {

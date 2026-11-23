@@ -250,8 +250,8 @@ fn province_areas(source: &Source) -> Result<Arc<Vec<i64>>, String> {
     held.0
         .get_or_insert_with(|| {
             let pack = source.facts().map_err(|reason| format!("the recording carries no game facts: {reason}"))?;
-            let options = content_reader_core::content::ResolveOptions { game_dir: Default::default(), user_dir: Default::default(), cache_dir: Default::default() };
-            let content = content_reader_core::content::playback(&source.replay_ref().identity, Ok(pack), &options)
+            let options = content_reader_layers::content::ResolveOptions { game_dir: Default::default(), user_dir: Default::default(), cache_dir: Default::default() };
+            let content = content_reader_layers::content::playback(&source.replay_ref().identity, Ok(pack), &options)
                 .map_err(|error| format!("the recording's game facts cannot be mounted: {error}"))?;
             source
                 .in_scope(|| content_reader_province_area::province_area::ProvinceAreas::read(&content.layers))

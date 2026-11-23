@@ -1,6 +1,7 @@
 use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
-use content_reader_core::{country_scorers::Database, key_names::KeyNames};
+use content_reader_politics::country_scorers::Database;
+use content_reader_script::key_names::KeyNames;
 
 #[allow(clippy::field_reassign_with_default)]
 fn make_database(body: &[u8]) -> (KeyNames, Database) {
@@ -20,7 +21,7 @@ fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
     let (names, database) = make_database(b"sample={targets={targets={BBB AAA CCC} score={base=10}} targets={targets={BBB} score={base=3}}} ties={targets={targets={CCC BBB AAA} score={base=5}}}");
     fixture.with_renderer(&mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() }, |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        let effects = content_reader_core::effect_keys::read_body(b"get_highest_scored_country_temp={var=chosen scorer=sample} get_sorted_scored_countries_temp={array=ordered scores=points scorer=sample} get_sorted_scored_countries_temp={array=tied scores=tied_points scorer=ties}", &names).unwrap();
+        let effects = content_reader_script::effect_keys::read_body(b"get_highest_scored_country_temp={var=chosen scorer=sample} get_sorted_scored_countries_temp={array=ordered scores=points scorer=sample} get_sorted_scored_countries_temp={array=tied scores=tied_points scorer=ties}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
         let evaluator = renderer.evaluator().unwrap();
@@ -45,14 +46,14 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
         let default = renderer.evaluator().unwrap().fresh_country_scope(None, None).unwrap();
         assert_eq!(default.this, Scope::Country(0));
         assert_eq!(default.root, Scope::Country(0));
-        let effects = content_reader_core::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=1} set_temp_variable={var=candidates^0 value=BBB.id} get_highest_scored_country_temp={scorer=sample} get_sorted_scored_countries_temp={scorer=sample}", &names).unwrap();
+        let effects = content_reader_script::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=1} set_temp_variable={var=candidates^0 value=BBB.id} get_highest_scored_country_temp={scorer=sample} get_sorted_scored_countries_temp={scorer=sample}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
         let evaluator = renderer.evaluator().unwrap();
         assert_eq!(evaluator.scoped_country(b"highest_scored_country", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_value(b"country_list_scores^0", scopes).unwrap(), 300_000);
         assert_eq!(evaluator.scoped_value(b"sorted_country_list^num", scopes).unwrap(), 100_000);
-        let effects = content_reader_core::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=2} set_temp_variable={var=candidates^0 value=AAA.id} set_temp_variable={var=candidates^1 value=BBB.id} get_highest_scored_country_temp={var=changed scorer=changing}", &names).unwrap();
+        let effects = content_reader_script::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=2} set_temp_variable={var=candidates^0 value=AAA.id} set_temp_variable={var=candidates^1 value=BBB.id} get_highest_scored_country_temp={var=changed scorer=changing}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
         assert_eq!(renderer.evaluator().unwrap().scoped_country(b"changed", scopes).unwrap(), Some(3));

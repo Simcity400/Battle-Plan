@@ -16,7 +16,7 @@ fn decoded_source_keeps_resolved_mod_names_scripted_branches_and_scope_promotion
         ),
     ]);
     let layers =
-        content_reader_core::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&overlay.0, &[][..])])
+        content_reader_layers::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&overlay.0, &[][..])])
             .unwrap();
     let catalogue = crate::catalogue::tests::layers_catalogue(layers);
     let content = catalogue.scripted_content().unwrap();

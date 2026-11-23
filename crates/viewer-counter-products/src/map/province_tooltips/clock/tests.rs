@@ -124,7 +124,7 @@ fn held_night_uses_native_signed_rounding_without_clamping() {
 
 #[test]
 fn content_defines_keep_native_conversions() {
-    let raw = content_reader_core::defines::Defines::new().unwrap();
+    let raw = content_reader_defines::defines::Defines::new().unwrap();
     raw.load(
         "clock.lua",
         br#"

@@ -1,5 +1,5 @@
 use super::intel_details::IntelValue;
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use replay_data::rows::IntelContributionRow;
 
 fn value(name: impl Into<String>, value: impl ToString) -> IntelValue {

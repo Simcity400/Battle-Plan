@@ -3,9 +3,8 @@ use replay_data::rows::{ProvinceRow, ResourceDefinitionRow};
 
 const PROVINCE_STATE: u64 = mask::<ProvinceRow>(&["state"]);
 const RESOURCE_TOKEN: u64 = mask::<ResourceDefinitionRow>(&["token"]);
-use content_reader_core::{
-    buildings::BuildingType, crt::Scanned, crt::scan_i32, parser, parser::c_string,
-};
+use content_reader_key_names::buildings::BuildingType;
+use content_reader_parser::{crt::{Scanned, scan_i32}, parser::{self, c_string}};
 
 fn plain_integer(items: &[Item], name: &str) -> Option<i32> {
     items
@@ -22,7 +21,7 @@ fn plain_fixed5(items: &[Item], name: &str) -> i64 {
     items
         .iter()
         .filter(|item| item.keyword_is(name))
-        .filter_map(|item| content_reader_core::fixed5::script_fixed5(item.value.scalar()?))
+        .filter_map(|item| content_reader_parser::fixed5::script_fixed5(item.value.scalar()?))
         .next_back()
         .unwrap_or(0)
 }
@@ -218,7 +217,7 @@ impl Renderer<'_, '_, '_> {
             return if province.is_none() {
                 Ok(String::new())
             } else {
-                Err("remove_building provincial targeting: core content plumbing pending: content_reader_core::movement::MovementMap::terrain(id).flags for the province-definition land flag".into())
+                Err("remove_building provincial targeting: core content plumbing pending: content_reader_map::movement::MovementMap::terrain(id).flags for the province-definition land flag".into())
             };
         }
         if kind.is_none() && province.is_some() {
@@ -310,7 +309,7 @@ impl Renderer<'_, '_, '_> {
             Some(amount) => self.scoped_value(scalar_operand(amount)?, scopes)?,
             None => 0,
         };
-        let amount = crate::triggers::fixed_round(amount) as i32;
+        let amount = content_reader_script::triggers::fixed_round(amount) as i32;
         let resource = self.resource_icon(item)?;
         let resource = format!("{}\u{13}resources_strip|{resource} ", amount.wrapping_abs());
         let state = match field(children(item), "state") {
@@ -331,7 +330,7 @@ impl Renderer<'_, '_, '_> {
             Some(days) => self.scoped_value(scalar_operand(days)?, scopes)?,
             None => 0,
         };
-        let days = crate::triggers::fixed_round(days) as i32;
+        let days = content_reader_script::triggers::fixed_round(days) as i32;
         let show = parser::read_bool_field(children(item), "show_state_in_tooltip", true);
         let key: &[u8] = match (amount > 0, days != 0, show) {
             (true, false, true) => b"EFFECT_ADD_RESOURCE",
@@ -588,7 +587,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    fn buildings(&self) -> Result<&content_reader_core::buildings::Buildings, String> {
+    fn buildings(&self) -> Result<&content_reader_key_names::buildings::Buildings, String> {
         self.context
             .content
             .buildings
@@ -637,7 +636,7 @@ impl Renderer<'_, '_, '_> {
             Some(level) => self.scoped_value(scalar_operand(level)?, scopes)?,
             None => default,
         };
-        Ok(crate::triggers::fixed_round(value) as i32)
+        Ok(content_reader_script::triggers::fixed_round(value) as i32)
     }
 
     fn building_province(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, String> {
@@ -678,7 +677,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    fn resources(&self) -> Result<&[content_reader_core::resources::Resource], String> {
+    fn resources(&self) -> Result<&[content_reader_key_names::resources::Resource], String> {
         self.context
             .content
             .resources
@@ -734,7 +733,7 @@ impl Renderer<'_, '_, '_> {
         }
         first.icon_frame.map(|frame| frame as i32).ok_or_else(|| {
             format!(
-                "add_resource resource {name} signed/default/nonpositive icon_frame is not preserved by content_reader_core::resources::Resource.icon_frame"
+                "add_resource resource {name} signed/default/nonpositive icon_frame is not preserved by content_reader_key_names::resources::Resource.icon_frame"
             )
         })
     }

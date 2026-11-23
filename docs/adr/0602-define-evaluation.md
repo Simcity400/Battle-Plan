@@ -8,4 +8,4 @@ Typed consumers read `NDefines` values through the matching native conversion. L
 
 Simulation sections always come from the recording. Both the map and dashboard can replace presentation sections using visual mods. If those scripts fail, or a mod deletes or retypes a required value, retain the recorded value and name the refusal in content diagnostics. Compare Lua integer and float values as the same type. Copy graphs by source identity so aliases and cycles survive. Use separate copies for recorded and modded sections so a shared table cannot link a modded graphics value back into simulation data.
 
-[Define reader](../../crates/content-reader-core/src/defines.rs)
+[Define reader](../../crates/content-reader-defines/src/defines.rs)

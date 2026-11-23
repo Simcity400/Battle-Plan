@@ -1,6 +1,6 @@
-use crate::triggers::Failure;
+use content_reader_script::triggers::Failure;
 
-use content_reader_core::{tag_aliases::TagAlias, tag_aliases::VariableKey};
+use content_reader_key_names::tag_aliases::{TagAlias, VariableKey};
 use std::{cell::RefCell, rc::Rc};
 
 use super::{Eval, Scope, Scopes, eval::Evaluator};
@@ -17,7 +17,7 @@ pub(super) struct Entry {
 impl Evaluator<'_, '_> {
     pub fn script_state_target_candidates(
         &self,
-        targets: &content_reader_core::country_scorers::ScriptTargets,
+        targets: &content_reader_politics::country_scorers::ScriptTargets,
         caller: Scopes,
     ) -> Result<Vec<u32>, Failure> {
         self.with_variable_context(caller, || {
@@ -180,7 +180,7 @@ impl Evaluator<'_, '_> {
                 .collect());
         }
         if alias.original_tag_assignments > 1 {
-            return Err(crate::triggers::refusal::refused(format!(
+            return Err(content_reader_script::triggers::refusal::refused(format!(
                 "it assigns original_tag {} times, and the country specifier's state across assignments is not replayed",
                 alias.original_tag_assignments
             )));
@@ -231,7 +231,7 @@ impl Evaluator<'_, '_> {
             .into());
         }
         let targets = self.script_target_candidates(
-            &content_reader_core::country_scorers::ScriptTargets {
+            &content_reader_politics::country_scorers::ScriptTargets {
                 targets: alias.targets.clone(),
                 ..Default::default()
             },
@@ -242,7 +242,7 @@ impl Evaluator<'_, '_> {
 
     pub fn script_target_candidates(
         &self,
-        targets: &content_reader_core::country_scorers::ScriptTargets,
+        targets: &content_reader_politics::country_scorers::ScriptTargets,
         caller: Scopes,
     ) -> Result<Vec<u32>, Failure> {
         self.with_variable_context(caller, || {

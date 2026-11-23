@@ -1,5 +1,5 @@
 use super::*;
-use crate::map::division_eta::test_support::put_modifier_definitions;
+use content_reader_map::map::division_eta::test_support::put_modifier_definitions;
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
     rows::CountryRow, rows::LexicalTokenRow, rows::MovementDefines,
@@ -264,8 +264,8 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
 }
 
 fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
-    let mut units = content_reader_core::unit_leader::SubUnits::default();
-    engine_executable::executable_tables::scope(Some(content_reader_core::test_game::tables()), || {
+    let mut units = content_reader_script::sub_units::SubUnits::default();
+    engine_executable::executable_tables::scope(Some(content_reader_script::test_game::tables()), || {
         units.read(
             b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
             "common/units/test.txt",

@@ -5,7 +5,10 @@ use std::{collections::BTreeMap, io};
 use viewer_gpu::textures::load_image;
 
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, parser, parser::Value};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_map::map::MapData;
+use content_reader_parser::parser::{self, Value};
 use content_reader_image::{SharedRgba8Image as Rgba8Image, native::Decode};
 use content_reader_regions::regions::StrategicRegion;
 

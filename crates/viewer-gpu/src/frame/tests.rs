@@ -317,7 +317,7 @@ fn the_buffer_layout_matches_the_hlsl_registers() {
 }
 
 fn game_speeds(seconds: &str) -> Result<GameSpeeds, String> {
-    let defines = content_reader_core::defines::Defines::new().unwrap();
+    let defines = content_reader_defines::defines::Defines::new().unwrap();
     let source = format!("NDefines = {{ NGame = {{ GAME_SPEED_SECONDS = {{ {seconds} }} }} }}");
     defines.load("test.lua", source.as_bytes()).unwrap();
     GameSpeeds::load(&defines)
@@ -365,7 +365,7 @@ fn a_hidden_cycle_fades_out_rather_than_snapping() {
 
 #[test]
 fn a_mods_game_speeds_move_where_the_cycle_hides() {
-    use content_reader_core::ResolvedLayers;
+    use content_reader_layers::ResolvedLayers;
     let root = std::env::temp_dir().join(format!("mod-game-speeds-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (base, addon) = (root.join("base"), root.join("mod"));
@@ -378,7 +378,7 @@ fn a_mods_game_speeds_move_where_the_cycle_hides() {
         "NDefines = { NGame = { GAME_SPEED_SECONDS = { 2.0, 0.5, 0.2, 0.1, 0.0 } } }",
     );
     let speeds = |layers: &ResolvedLayers| {
-        GameSpeeds::load(&content_reader_core::defines::read(layers).unwrap())
+        GameSpeeds::load(&content_reader_defines::defines::read(layers).unwrap())
     };
     let vanilla = speeds(&ResolvedLayers::from_folders(&[(&base, &[])]).unwrap()).unwrap();
     assert!(!vanilla.shows_cycle(true, 24.0));

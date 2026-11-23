@@ -1,4 +1,4 @@
-use content_reader_core::unit_leader::SubUnits;
+use content_reader_script::sub_units::SubUnits;
 
 pub fn subunits() -> SubUnits {
     let mut subunits = SubUnits::default();

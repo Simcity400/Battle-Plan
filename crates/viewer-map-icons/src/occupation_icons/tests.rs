@@ -1,7 +1,5 @@
 use super::*;
-use content_reader_core::{
-    occupation_modifiers::Definition, occupation_modifiers::Definitions, occupation_modifiers::Kind,
-};
+use content_reader_politics::occupation_modifiers::{Definition, Definitions, Kind};
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::OccupationMap, rows::StateResistanceRow,
     rows::StateRow, rows::TableId, rows::TableRows,
@@ -370,7 +368,7 @@ const GUI: &[u8] = br#"guiTypes = {
 
 #[test]
 fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use viewer_native_gui::test_support::gui;
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
@@ -414,7 +412,7 @@ fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
 
 #[test]
 fn occupation_grid_centres_admitted_badges_and_reuses_retained_windows() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use viewer_native_gui::test_support::gui;
     let mut resources = gui::fixture();
     resources.physical = Some([400, 400]);
@@ -609,7 +607,7 @@ fn assert_same_entry(
 
 #[test]
 fn occupation_erased_and_outside_parents_hide_and_tick_retained_badge_rows() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = viewer_native_gui::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
@@ -661,7 +659,7 @@ fn occupation_erased_and_outside_parents_hide_and_tick_retained_badge_rows() {
 
 #[test]
 fn occupation_parent_fade_preserves_badge_clocks_through_the_delayed_hide() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = viewer_native_gui::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
@@ -709,7 +707,7 @@ fn occupation_parent_fade_preserves_badge_clocks_through_the_delayed_hide() {
 
 #[test]
 fn occupation_empty_badges_settle_before_the_same_parent_slot_is_reused() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut resources = viewer_native_gui::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(

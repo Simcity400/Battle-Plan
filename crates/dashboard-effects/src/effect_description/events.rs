@@ -1,10 +1,8 @@
 
 use super::*;
-use crate::{
-    scripted_text::{EventObject, EventScope, Link, random},
-    triggers::{NULL_STATE, Scope},
-};
-use content_reader_core::decisions::Decision;
+use crate::scripted_text::{EventObject, EventScope, Link, random};
+use content_reader_script::triggers::{NULL_STATE, Scope};
+use content_reader_politics::decisions::Decision;
 use replay_data::rows::{
     ClockRow, CountryAppearanceRow, DecisionRandomItemRow, DecisionRow, PoliticalPartyRow,
     PoliticsRow, tables,
@@ -115,7 +113,7 @@ fn name_key(
 
 pub fn decision_name_key_at<'f>(
     frame: impl Into<HourFrame<'f>>,
-    recorded: &crate::scope::RecordedScopes<'_>,
+    recorded: &content_reader_script::scope::RecordedScopes<'_>,
     localisation: &Localisation,
     definition: &Decision,
     country: u32,
@@ -151,7 +149,7 @@ pub fn decision_name_key_at<'f>(
         .map_err(built)?
         .ok_or("political parties lacks decision-name ruling ideology")?;
     let utf8 = |bytes: &[u8]| {
-        std::str::from_utf8(content_reader_core::parser::c_string(bytes))
+        std::str::from_utf8(content_reader_parser::parser::c_string(bytes))
             .map(str::to_owned)
             .map_err(|_| "decision-name key is not UTF-8".to_owned())
     };
@@ -189,7 +187,7 @@ impl Renderer<'_, '_, '_> {
             .filter_map(|item| {
                 item.value
                     .scalar()
-                    .and_then(|value| content_reader_core::crt::scan_i32(value).stored())
+                    .and_then(|value| content_reader_parser::crt::scan_i32(value).stored())
             })
             .next_back()
             .unwrap_or(0);
@@ -215,7 +213,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn custom_tooltip(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
         self.bound_localisation(
-            &content_reader_core::gui::native::BoundLocalization::from_value(&item.value),
+            &content_reader_script::localization_binding::BoundLocalization::from_value(&item.value),
             scopes,
             true,
         )
@@ -343,14 +341,14 @@ impl Renderer<'_, '_, '_> {
         let evaluator = self.evaluator()?;
         if let Some(item) = target {
             let value = item.value.scalar().unwrap_or_default();
-            let text = std::str::from_utf8(content_reader_core::parser::c_string(value))
+            let text = std::str::from_utf8(content_reader_parser::parser::c_string(value))
                 .map_err(|_| "decision target is not UTF-8")?;
             let parsed =
-                content_reader_core::scope::parse(text, item.quoted(), self.context.world()?.recorded());
+                content_reader_script::scope::parse(text, item.quoted(), self.context.world()?.recorded());
             if matches!(
                 parsed,
-                content_reader_core::scope::Scope::Keyword(_)
-                    | content_reader_core::scope::Scope::EventTarget { .. }
+                content_reader_script::scope::Scope::Keyword(_)
+                    | content_reader_script::scope::Scope::EventTarget { .. }
             ) {
                 return Ok(
                     match evaluator
@@ -708,7 +706,7 @@ mod politics_days {
                 reason: "unused decision execution data".into(),
             };
         }
-        let mut database = content_reader_core::decisions::Database::default();
+        let mut database = content_reader_politics::decisions::Database::default();
         database.entries.insert(
             b"syn_decision".to_vec(),
             Decision {

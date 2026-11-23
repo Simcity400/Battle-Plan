@@ -14,7 +14,7 @@ use viewer_foundation::color_inheritance::{Inheritance, inheritance, slot_of};
 #[cfg(any(test, feature = "test-support"))]
 use viewer_foundation::color_inheritance::active_subject;
 
-use content_reader_core::{map::MapData, map::ProvinceKind};
+use content_reader_map::map::{MapData, ProvinceKind};
 use content_reader_regions::regions::StrategicRegion;
 #[cfg(test)]
 use replay_data::rows::CountryRow;

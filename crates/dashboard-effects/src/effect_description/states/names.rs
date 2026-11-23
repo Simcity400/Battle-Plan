@@ -54,7 +54,7 @@ impl Renderer<'_, '_, '_> {
         let name = if reset {
             &[][..]
         } else {
-            content_reader_core::parser::c_string(
+            content_reader_parser::parser::c_string(
                 item.value
                     .scalar()
                     .ok_or_else(|| "set_state_name requires one value".to_string())?,

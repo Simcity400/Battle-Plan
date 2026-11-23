@@ -8,4 +8,4 @@ Retain signed authored counts and weights. A type's generated slot limit default
 
 Preserve the reader's actual token consumption. List keys can consume tokens even without a block opener. Fields that accept bound localization recurse, while its localization key reads one string. Integer operands use the native prefix scan, including octal when the token begins with zero, and a failed scan leaves the existing value. Resource keys use their C-string bytes and fold ASCII case before lookup. Keep first encounter order when merging resource amounts and append specialization tokens in authored order. Map slots route the air-base, gun and rocket site flags. The construction queue's icon frame is one-based, the facilities icon uses the first specialization, and the state-view DLC predicate runs in an empty scope.
 
-[Building reader and resolution](../../crates/content-reader-core/src/buildings.rs) · [Building reader tests](../../crates/content-reader-core/src/buildings/tests.rs)
+[Building reader and resolution](../../crates/content-reader-key-names/src/buildings.rs) · [Building reader tests](../../crates/content-reader-key-names/src/buildings/tests.rs)

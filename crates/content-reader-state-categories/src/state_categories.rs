@@ -1,16 +1,9 @@
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
-use crate::{
-    ResolvedLayers,
-    fields::invalid,
-    key_names::KeyNames,
-    modifiers,
-    parser::{
-        c_string,
-        native::{self, Shape},
-    },
-    script_files,
-};
-use content_reader_core::ideologies::ColorReads;
+use content_reader_layers::{ResolvedLayers, script_files};
+use content_reader_parser::{fields::invalid, parser::c_string};
+use content_reader_script::{key_names::KeyNames, modifiers, native::{self, Shape}};
+use content_reader_key_names::ideologies::ColorReads;
 use std::io;
 
 #[derive(Default)]
@@ -65,7 +58,7 @@ impl Database {
         }
     }
 
-    fn read_colors(&mut self, index: usize, body: &[crate::parser::Item]) {
+    fn read_colors(&mut self, index: usize, body: &[content_reader_parser::parser::Item]) {
         for field in body.iter().filter(|field| field.keyword_is("color")) {
             self.colors[index].get_or_insert_default().read(field);
         }
@@ -84,7 +77,7 @@ impl Database {
 
 struct Parsed {
     database: Database,
-    bodies: Vec<Vec<Vec<crate::parser::Item>>>,
+    bodies: Vec<Vec<Vec<content_reader_parser::parser::Item>>>,
 }
 
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
@@ -141,7 +134,7 @@ fn parse_file(input: &[u8], names: &KeyNames) -> io::Result<Parsed> {
         return Err(invalid(format!("state categories: {cause}")));
     }
     let mut database = Database::default();
-    let mut bodies: Vec<Vec<Vec<crate::parser::Item>>> = Vec::new();
+    let mut bodies: Vec<Vec<Vec<content_reader_parser::parser::Item>>> = Vec::new();
     database
         .notes
         .extend(read.misreads.iter().map(ToString::to_string));
@@ -191,7 +184,7 @@ mod tests {
 
     #[test]
     fn state_category_names_and_consumption() {
-        content_reader_core::test_game::with(|game| {
+        content_reader_script::test_game::with(|game| {
             game.modifiers(["local_building_slots", "local_supplies"])
         });
         for (input, expected) in [
@@ -208,7 +201,7 @@ mod tests {
 
     #[test]
     fn state_category_colours_replay_on_the_object() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let database = parse(
             b"state_categories={Syn={color={1 2 3}} plain={} SYN={color={0.5 0.25 0.125 0.75}} late={color={255 0 0}} LATE={color={0 0}}}",
             &KeyNames::default(),
@@ -265,7 +258,7 @@ mod tests {
 
     #[test]
     fn state_category_stack_order_and_replacement() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!("state-category-{}", std::process::id()));
         let _folder = Folder(root.clone());
         let base = root.join("base");
@@ -309,7 +302,7 @@ mod tests {
 
     #[test]
     fn uncertain_state_category_modifier_names_are_named() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic missing registry".into());
         let error = parse(b"state_categories={syn={unresolved_modifier={}}}", &names)

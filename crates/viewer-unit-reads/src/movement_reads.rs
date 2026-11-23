@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use content_reader_unit_path::{
     unit_path, unit_path::Army, unit_path::ArmyCombat, unit_path::CounterClass,
     unit_path::CounterRequest, unit_path::Country, unit_path::Fact, unit_path::MoveWorld,
@@ -28,7 +28,7 @@ pub struct ReadOperands<'a> {
     pub moves: &'a Result<content_reader_unit_path::unit_path::MoveGraph, String>,
     pub trigger_content: &'a viewer_foundation::trigger_content::TriggerContent,
     pub regions: &'a BTreeMap<u32, u32>,
-    pub geometry: &'a content_reader_core::province_geometry::ProvinceGeometry,
+    pub geometry: &'a content_reader_map::province_geometry::ProvinceGeometry,
     pub combat_minimum_time: i32,
     pub avoid_enemy: bool,
     pub day_night: &'a Result<replay_data::day_night::Defines, String>,
@@ -185,7 +185,7 @@ impl<'w, 'a> Moves<'w, 'a> {
 
     pub fn naval_rule(
         &self,
-        rule: &content_reader_core::adjacency_rules::AdjacencyRule,
+        rule: &content_reader_map::adjacency_rules::AdjacencyRule,
         raw_owner: u32,
         submarine: bool,
     ) -> Fact<bool> {
@@ -197,9 +197,9 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(rule.permits(
             mover.verdict(rule, self.slot(raw_owner)?)?,
             if submarine {
-                content_reader_core::adjacency_rules::SUBMARINE
+                content_reader_map::adjacency_rules::SUBMARINE
             } else {
-                content_reader_core::adjacency_rules::NAVY
+                content_reader_map::adjacency_rules::NAVY
             },
         ))
     }

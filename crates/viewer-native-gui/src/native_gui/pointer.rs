@@ -1,6 +1,6 @@
 
 use super::{Holder, Layout, Pointed, Pointer, Target, lifecycle::Instance};
-use content_reader_core::gui::native::ButtonSounds;
+use content_reader_gui::gui::native::ButtonSounds;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Place {

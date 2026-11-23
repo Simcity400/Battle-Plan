@@ -14,7 +14,7 @@ replay-data.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
-content-reader-core.workspace = true
+content-reader-parser.workspace = true
 recorder-oracle-characters.workspace = true
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 

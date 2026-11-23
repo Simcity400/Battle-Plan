@@ -603,7 +603,7 @@ fn mixed_grids_keep_each_template_and_a_refused_flag_keeps_counts() {
 
 #[test]
 fn pride_loss_tint_reads_stacked_rgba_or_hsv_and_preserves_the_sprite_on_refusal() {
-    let defines = content_reader_core::defines::Defines::new().unwrap();
+    let defines = content_reader_defines::defines::Defines::new().unwrap();
     defines.load("synthetic.lua", b"NDefines = { NGraphics = { PRIDE_OF_THE_FLEET_MODULATE = { 0.5, 0.25, 1, 0.75, 99 } } }").unwrap();
     assert_eq!(
         pride_color(&defines).unwrap(),

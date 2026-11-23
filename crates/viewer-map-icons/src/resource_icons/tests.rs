@@ -327,7 +327,7 @@ fn placed(text: bool, rows: usize, flag: Option<u32>) -> PreparedResourceIcons {
 
 #[test]
 fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
     let context = Context {
@@ -358,7 +358,7 @@ fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
 
 #[test]
 fn an_icon_s_quads_stand_at_its_anchor() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
     let context = Context {

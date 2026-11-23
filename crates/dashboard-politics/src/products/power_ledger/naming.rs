@@ -242,7 +242,7 @@ struct CharacterFact {
     id: u32,
     script_token: Option<String>,
     saved_name: String,
-    template: Result<content_reader_core::characters::BuiltTemplate, String>,
+    template: Result<content_reader_key_names::characters::BuiltTemplate, String>,
     portrait: RecordedPortrait,
 }
 
@@ -775,11 +775,11 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
             if row.cause == PowerCause::Diplomacy {
                 let relation = row.component == Some(PowerDailyCostKind::Relation as u32);
                 let key = if relation {
-                    Some(content_reader_core::diplomacy::improve_relation_title_key().to_owned())
+                    Some(content_reader_politics::diplomacy::improve_relation_title_key().to_owned())
                 } else if !row.item_key.is_empty() {
-                    content_reader_core::diplomacy::scripted_action_name_key(std::str::from_utf8(&row.item_key).unwrap_or_default()).ok()
+                    content_reader_politics::diplomacy::scripted_action_name_key(std::str::from_utf8(&row.item_key).unwrap_or_default()).ok()
                 } else if row.charged {
-                    row.item_token.and_then(content_reader_core::diplomacy::charged_action_name_key).map(str::to_owned)
+                    row.item_token.and_then(content_reader_politics::diplomacy::charged_action_name_key).map(str::to_owned)
                 } else {
                     None
                 };

@@ -159,7 +159,7 @@ pub fn operatives(row: &OperationRow, slots: Option<&[OperationAssignmentRow]>, 
                         .ok_or_else(|| "Assigned operative name missing or contradictory at this read".to_owned())
                         .and_then(|member| member.name.require("name of operative memberships").cloned())
                         .and_then(|bytes| {
-                            std::str::from_utf8(content_reader_core::parser::c_string(&bytes))
+                            std::str::from_utf8(content_reader_parser::parser::c_string(&bytes))
                                 .map(str::to_owned)
                                 .map_err(|_| "Assigned operative name has non-text bytes".to_owned())
                         }),

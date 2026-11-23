@@ -862,7 +862,7 @@ fn with_the_camera_still_a_unit_walking_out_or_in_crosses_the_cull_on_the_frame_
         x: 0.,
         pad: 0.,
     };
-    let distance = content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    let distance = content_reader_mesh::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     let mut list = Kept::default();
     let mut culled = Vec::new();
     for frame in 0..6 {

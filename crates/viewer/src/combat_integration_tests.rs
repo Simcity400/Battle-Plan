@@ -1,4 +1,6 @@
-use content_reader_core::{ResolvedLayers, defines::Defines, gui::native::resources::Registry};
+use content_reader_layers::ResolvedLayers;
+use content_reader_defines::defines::Defines;
+use content_reader_gui::gui::native::resources::Registry;
 use content_reader_image::native::Decode;
 use std::time::Duration;
 use std::time::Instant;
@@ -113,7 +115,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     lazy.set_background(false);
     let flags = flag_set(
         &shared,
-        content_reader_core::flags::FlagSet::Normal,
+        content_reader_gui::flags::FlagSet::Normal,
         [1, 1],
         |_| {},
         &lazy,

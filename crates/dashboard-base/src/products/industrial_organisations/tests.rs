@@ -168,8 +168,8 @@ fn details(policy: u32) -> rows::IndustrialOrganisationDetailsRow {
 
 struct Content {
     root: std::path::PathBuf,
-    traits: content_reader_core::mio_traits::Catalog,
-    policies: content_reader_core::industrial_organisations::policies::Catalog,
+    traits: content_reader_military::mio_traits::Catalog,
+    policies: content_reader_military::industrial_organisations::policies::Catalog,
 }
 impl Content {
     fn read(available: &str) -> Self {
@@ -197,11 +197,11 @@ impl Content {
                 "attached_policy={{organization_modifier={{{modifier}=-0.1}}}} candidate_policy={{organization_modifier={{{modifier}=-0.5}}}}"
             ),
         );
-        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-        let names = content_reader_core::key_names::KeyNames::read(&layers).unwrap();
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let names = content_reader_key_names::key_name_products::KeyNameProducts::read(&layers).unwrap();
         Self {
-            traits: content_reader_core::mio_traits::read(&layers).unwrap(),
-            policies: content_reader_core::industrial_organisations::read(&layers, &names)
+            traits: content_reader_military::mio_traits::read(&layers).unwrap(),
+            policies: content_reader_military::industrial_organisations::read(&layers, &names)
                 .unwrap()
                 .policies,
             root,

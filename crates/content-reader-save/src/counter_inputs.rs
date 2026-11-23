@@ -278,7 +278,7 @@ mod tests {
                     .to_vec();
             text.extend_from_slice(body);
             text.extend_from_slice(b"}}}}}");
-            let doc = content_reader_core::parser::parse(&text)?;
+            let doc = content_reader_parser::parser::parse(&text)?;
             parse(&doc.items)
         };
         let pack = parse_task(
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn naval_counter_fields_keep_order_absence_and_literal_values() {
         let saved = parse(
-            &content_reader_core::parser::parse(
+            &content_reader_parser::parser::parse(
                 br#"countries={
                 GER={ pride_of_the_fleet={ id=32 type=51 }
                   units={ division={ id={ id=7 type=4 } } division={ id={ id=3 type=4 } } fleet={ id={ id=1 type=61 } color={ 219 219 10 }
@@ -381,7 +381,7 @@ mod tests {
     }
     #[test]
     fn transfer_source_is_not_target_and_combat_keeps_null_and_repeated_occurrences() {
-        let doc = content_reader_core::parser::parse(
+        let doc = content_reader_parser::parser::parse(
             br"countries={ X={ strategic_navy={ naval_transport={
             id={id=2 type=4713} target=91 province=42 combat={
                 {id=7 type=4713} {id=0 type=0} {id=7 type=4713}
@@ -406,13 +406,13 @@ mod tests {
             "combat={x={id=1 type=4713}}",
             "combat={{id=1}}",
         ] {
-            let doc = content_reader_core::parser::parse(format!("countries={{X={{strategic_navy={{naval_transport={{id={{id=2 type=4713}} {body}}}}}}}}}").as_bytes()).unwrap();
+            let doc = content_reader_parser::parser::parse(format!("countries={{X={{strategic_navy={{naval_transport={{id={{id=2 type=4713}} {body}}}}}}}}}").as_bytes()).unwrap();
             assert!(parse(&doc.items).is_err());
         }
     }
     #[test]
     fn sent_volunteers_preserve_order_nulls_and_omitted_empty_lists() {
-        let doc = content_reader_core::parser::parse(
+        let doc = content_reader_parser::parser::parse(
             br"countries={ AAA={ volunteers_sent={
             {id=9 type=4} {id=0 type=0} {id=2 type=7} {id=9 type=4}
         }} BBB={} }",
@@ -429,7 +429,7 @@ mod tests {
             "volunteers_sent={ {id=1} }",
         ] {
             let doc =
-                content_reader_core::parser::parse(format!("countries={{AAA={{{body}}}}}").as_bytes())
+                content_reader_parser::parser::parse(format!("countries={{AAA={{{body}}}}}").as_bytes())
                     .unwrap();
             assert!(parse(&doc.items).is_err());
         }
@@ -441,7 +441,7 @@ mod manpower_tests {
     use super::*;
     #[test]
     fn manpower_expeditionary_save_refs_keep_nulls_duplicates_and_native_order() {
-        let doc = content_reader_core::parser::parse(
+        let doc = content_reader_parser::parser::parse(
             b"countries={MOD={expeditionaries_sent={{id=0 type=0}{id=7 type=51}{id=7 type=51}}}}",
         )
         .unwrap();

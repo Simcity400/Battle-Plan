@@ -312,7 +312,7 @@ pub struct TodayNaval {
 }
 
 impl HourTables {
-    pub fn naval_members(&self, ground: SeaGround<'_>, kinds: UnitKinds, equipment: Result<&content_reader_core::equipment::Database, &str>) -> io::Result<TodayNaval> {
+    pub fn naval_members(&self, ground: SeaGround<'_>, kinds: UnitKinds, equipment: Result<&content_reader_key_names::equipment::Database, &str>) -> io::Result<TodayNaval> {
         let frame = &self.frame;
         let ideology = |slot: u32| self.ideologies.get(&slot).cloned().unwrap_or(Ok(None));
         let sources = NavalSources {

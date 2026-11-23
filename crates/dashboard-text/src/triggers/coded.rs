@@ -1,8 +1,8 @@
-use crate::triggers::Failure;
+use content_reader_script::triggers::Failure;
 
 use std::collections::BTreeSet;
 
-use content_reader_core::{parser::Item, parser::Operator};
+use content_reader_parser::parser::{Item, Operator};
 use replay_data::rows::{TableSchema, tables};
 use replay_frame::frame::Leader;
 
@@ -135,7 +135,7 @@ impl Evaluator<'_, '_> {
                         if let Some(gap) = gap {
                             return Err(gap.to_string().into());
                         }
-                        Err(crate::triggers::refusal::refused(format!(
+                        Err(content_reader_script::triggers::refusal::refused(format!(
                             "leader ideology {} has no recorded-content declaration",
                             String::from_utf8_lossy(token)
                         )))
@@ -326,7 +326,7 @@ impl Evaluator<'_, '_> {
                 .to_ascii_lowercase();
             let continents = world.continents.map_err(Failure::from)?;
             if !continents.contains(&wanted) {
-                return Err(crate::triggers::refusal::refused(format!(
+                return Err(content_reader_script::triggers::refusal::refused(format!(
                     "continent {wanted} has no recorded-content declaration"
                 )));
             }
@@ -341,7 +341,7 @@ impl Evaluator<'_, '_> {
                     .map_err(|_| "recorded continent token is not UTF-8")?
                     .to_ascii_lowercase();
                 if !continents.contains(&name) {
-                    return Err(crate::triggers::refusal::refused(format!(
+                    return Err(content_reader_script::triggers::refusal::refused(format!(
                         "recorded continent {name} has no recorded-content declaration"
                     )));
                 }
@@ -440,7 +440,7 @@ impl Evaluator<'_, '_> {
                 .value
                 .scalar()
                 .ok_or("has_dynamic_modifier name is not a scalar")?;
-            return Ok((content_reader_core::parser::c_string(name), None));
+            return Ok((content_reader_parser::parser::c_string(name), None));
         };
         let mut name = b"".as_slice();
         for field in block {
@@ -450,7 +450,7 @@ impl Evaluator<'_, '_> {
                     .read_string()
                     .ok_or("has_dynamic_modifier modifier is not a string token")?;
             } else if field.keyword_is("scope") && field.value.scalar().is_none() {
-                return Err(crate::triggers::refusal::refused(
+                return Err(content_reader_script::triggers::refusal::refused(
                     "has_dynamic_modifier scope is not a scalar scoped-variable token",
                 ));
             }
@@ -516,7 +516,7 @@ impl Evaluator<'_, '_> {
                         (Some("activated"), Some("yes")) => activated = Some(true),
                         (Some("activated"), Some("no")) => activated = Some(false),
                         (Some("preparation"), Some(value)) => {
-                            let threshold = content_reader_core::fixed5::script_fixed5(value.as_bytes())
+                            let threshold = content_reader_parser::fixed5::script_fixed5(value.as_bytes())
                                 .ok_or_else(|| -> Failure {
                                     format!("{name} preparation {value} is not a number").into()
                                 })?;
@@ -938,7 +938,7 @@ impl Evaluator<'_, '_> {
                     ruling_only = entry
                         .value
                         .scalar()
-                        .and_then(content_reader_core::parser::read_bool)
+                        .and_then(content_reader_parser::parser::read_bool)
                         .unwrap_or(ruling_only);
                 }
                 _ => {

@@ -1,7 +1,7 @@
 
 use std::sync::Arc;
 
-use content_reader_core::{mesh::NavalHitMissEffect, mesh::Transform};
+use content_reader_mesh::mesh::{NavalHitMissEffect, Transform};
 use viewer_models::{
     entity_animation::{self, Clock, Event, Player, Rig},
     mesh_pose::{self, Actor, Binding, LookupMode, Matrix},
@@ -284,7 +284,7 @@ fn effect_instance(matrix: Matrix, root_scale: f32, animation: u32) -> ModelInst
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::{mesh::EntityState, mesh::Mesh};
+    use content_reader_mesh::mesh::{EntityState, Mesh};
     use std::collections::BTreeMap;
     use viewer_models::entity_animation::{Clip, Node};
 

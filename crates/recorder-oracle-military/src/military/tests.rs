@@ -981,7 +981,7 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
 
 #[test]
 fn divisions_compare_locations_strength_and_missing_rows_despite_membership_exclusions() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();

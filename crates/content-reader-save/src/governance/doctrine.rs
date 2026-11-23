@@ -197,7 +197,7 @@ mod tests {
             equipment_bonus={{id=4294967295 index=-1 equipment_bonus=4}}
         }}}"#;
         let pack =
-            super::super::parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap();
+            super::super::parse(&content_reader_parser::parser::parse(text).unwrap().items).unwrap();
         let state = &pack.doctrine.unwrap()[0];
         assert_eq!(state.folders.len(), 2);
         assert_eq!(
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn doctrine_grant_filters_keep_authored_track_tokens_separate_from_indices() {
-        let document = content_reader_core::parser::parse(br#"countries={} doctrine={countries={{
+        let document = content_reader_parser::parser::parse(br#"countries={} doctrine={countries={{
             daily_mastery={
                 {relevant_tracks={track=mod_screens track_index=0} daily_mastery=1 bonus=0 days=5}
                 {relevant_tracks={track=mod_support} daily_mastery=1 bonus=0 days=5}
@@ -261,7 +261,7 @@ mod tests {
             &b"countries={} doctrine={countries={{cost_reduction={named={}}}}}"[..],
         ] {
             assert!(
-                super::super::parse(&content_reader_core::parser::parse(text).unwrap().items).is_err()
+                super::super::parse(&content_reader_parser::parser::parse(text).unwrap().items).is_err()
             );
         }
     }

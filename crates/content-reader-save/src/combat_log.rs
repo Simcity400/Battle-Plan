@@ -262,7 +262,7 @@ fn parse_month(items: &[Item]) -> io::Result<Month> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_core::parser;
+    use content_reader_parser::parser;
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&parser::parse(text)?.items)

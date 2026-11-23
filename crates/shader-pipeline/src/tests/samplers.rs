@@ -12,7 +12,7 @@ fn point_float32_uses_actual_sampler_pairs_without_filterable_feature() {
             .features()
             .contains(wgpu::Features::FLOAT32_FILTERABLE)
     );
-    let program = content_reader_core::pdxshader::program::read_with(b"point.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"point.shader", &|path| {
         Some(if path == b"point.shader" {
             br#"VertexStruct I {
 float3 position : POSITION;
@@ -136,7 +136,7 @@ Effect Test { VertexShader = V PixelShader = P }
         .samplers
         .get_mut(&binding(4, Stage::Pixel))
         .unwrap()
-        .min = content_reader_core::pdxshader::program::Filter::Linear;
+        .min = content_reader_gui::pdxshader::program::Filter::Linear;
     let filtered = gpu::Pipeline::with_state(
         &device,
         &compiled,
@@ -159,7 +159,7 @@ Effect Test { VertexShader = V PixelShader = P }
 #[ignore = "requires a shader compiler and GPU"]
 fn linear_float32_matches_bilinear_and_mip_addressing_without_feature() {
     crate::tests::initialize_runtime_tables();
-    use content_reader_core::pdxshader::{Address, program::Filter};
+    use content_reader_gui::pdxshader::{Address, program::Filter};
     let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
     let compiler = Compiler::discover().unwrap();
     let (device, queue) = device();
@@ -270,7 +270,7 @@ MainCode P [[ float4 main(O v) : SV_TARGET {{ return Map_Texture.{method}(Map_Sa
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"float.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"float.shader", &|path| {
             Some(if path == b"float.shader" {
                 source.as_bytes().to_vec()
             } else {
@@ -466,7 +466,7 @@ MainCode P [[ float4 main(Output v) : PDX_COLOR {{ return Map_Texture.{method}(M
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"sampler.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"sampler.shader", &|path| {
             Some(if path == b"sampler.shader" {
                 source.as_bytes().to_vec()
             } else {
@@ -759,7 +759,7 @@ MainCode P [[ float4 main(Output v) : PDX_COLOR {{ return {expression}; }} ]]
 Effect Test {{ VertexShader = V PixelShader = P }}
 "#
         );
-        let program = content_reader_core::pdxshader::program::read_with(b"mirror.shader", &|path| {
+        let program = content_reader_gui::pdxshader::program::read_with(b"mirror.shader", &|path| {
             Some(if path == b"mirror.shader" {
                 source.as_bytes().to_vec()
             } else {

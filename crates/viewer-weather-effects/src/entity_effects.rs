@@ -1,7 +1,9 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use viewer_models::entity_animation::Event;
 use viewer_scene_base::pointlights::Light;
 use super::weather_effects::{Curve, block, get, text, tokens};
-use content_reader_core::{ResolvedLayers, parser};
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::parser;
 use std::{collections::BTreeMap, io};
 
 struct Parameter {
@@ -216,7 +218,7 @@ mod tests {
 
     #[test]
     fn an_unsupported_light_curve_withholds_only_that_light() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_entity_light_withheld_{}_{:?}",
             std::process::id(),

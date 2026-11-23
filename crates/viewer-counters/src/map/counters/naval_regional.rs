@@ -142,11 +142,11 @@ pub(super) fn compare(a: SortKey, b: SortKey, coarse: bool) -> i32 {
             return first(b.reserve);
         }
         if !a.reserve && a.fleet != b.fleet {
-            return crate::map::naval_combat_grid::fleet_difference(a.fleet, b.fleet);
+            return content_reader_map::map::naval_combat_grid::fleet_difference(a.fleet, b.fleet);
         }
     }
     if a.selected {
-        return crate::map::naval_combat_grid::fleet_difference(a.handle, b.handle);
+        return content_reader_map::map::naval_combat_grid::fleet_difference(a.handle, b.handle);
     }
     if !coarse {
         return a.mission.cmp(&b.mission) as i32;
@@ -603,7 +603,7 @@ pub(super) fn prepare<'a>(
                             .join("; ")
                     })?;
                     let height = extent.map_or(0, |size| size[1]);
-                    let y = content_reader_core::crt::truncate_f32(
+                    let y = content_reader_parser::crt::truncate_f32(
                         (1.0 - (packet
                             .raiding_spotting
                             .ok_or("regional convoy spotting is unavailable")?

@@ -10,8 +10,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
 engine-executable.workspace = true
-content-reader-core.workspace = true
 replay.workspace = true
 
 [dev-dependencies]

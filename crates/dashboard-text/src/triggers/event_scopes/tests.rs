@@ -41,7 +41,7 @@ fn cursored_scope_without_a_bound_graph_refuses_instead_of_panicking() {
             "event_target:missing.FROM",
             "SOV",
         ] {
-            let parsed = content_reader_core::scope::parse(key, false, world.recorded());
+            let parsed = content_reader_script::scope::parse(key, false, world.recorded());
             assert!(
                 evaluator
                     .enter_scope(&parsed, caller)
@@ -58,7 +58,7 @@ fn cursored_scope_without_a_bound_graph_refuses_instead_of_panicking() {
         assert!(
             evaluator
                 .enter_scope(
-                    &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Root),
+                    &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Root),
                     caller
                 )
                 .unwrap_err()
@@ -89,7 +89,7 @@ fn graph_cursors_preserve_nested_from_and_restore_root_prev() {
             evaluator.evaluate(&items("FROM.FROM = { tag = SOV }"), caller),
             Eval::True
         );
-        let parsed = content_reader_core::scope::parse("FROM.FROM", false, world.recorded());
+        let parsed = content_reader_script::scope::parse("FROM.FROM", false, world.recorded());
         let entered = evaluator.enter_scope(&parsed, caller).unwrap().unwrap();
         assert_eq!(
             (entered.this, entered.root, entered.prev),
@@ -101,7 +101,7 @@ fn graph_cursors_preserve_nested_from_and_restore_root_prev() {
         );
         let root = evaluator
             .enter_scope(
-                &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Root),
+                &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Root),
                 caller,
             )
             .unwrap()
@@ -109,7 +109,7 @@ fn graph_cursors_preserve_nested_from_and_restore_root_prev() {
         assert_eq!(evaluator.scoped_country(b"FROM", root), Ok(Some(0)));
         let prev = evaluator
             .enter_scope(
-                &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Prev),
+                &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Prev),
                 entered,
             )
             .unwrap()
@@ -141,7 +141,7 @@ fn description_cleanup_keeps_distinct_root_storage_and_predicate_saved_only() {
         );
         let root = evaluator
             .enter_scope(
-                &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Root),
+                &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Root),
                 caller,
             )
             .unwrap()
@@ -155,7 +155,7 @@ fn description_cleanup_keeps_distinct_root_storage_and_predicate_saved_only() {
         evaluator.begin_description();
         let root = evaluator
             .enter_scope(
-                &content_reader_core::scope::Scope::Keyword(content_reader_core::scope::Keyword::Root),
+                &content_reader_script::scope::Scope::Keyword(content_reader_script::scope::Keyword::Root),
                 caller,
             )
             .unwrap()
@@ -485,7 +485,7 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
         );
         let entered = evaluator
             .enter_scope(
-                &content_reader_core::scope::parse("SOV", false, world.recorded()),
+                &content_reader_script::scope::parse("SOV", false, world.recorded()),
                 caller,
             )
             .unwrap()

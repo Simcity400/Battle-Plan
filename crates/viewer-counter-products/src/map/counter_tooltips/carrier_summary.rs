@@ -201,7 +201,7 @@ pub(super) fn full_country_header(tag: &str, name: &str) -> String {
 }
 
 fn fuel_amount(raw: i64) -> String {
-    use content_reader_core::fixed5::format_fixed5;
+    use content_reader_parser::fixed5::format_fixed5;
     let (add, divisor, precision, suffix) = match raw {
         value if value < 0x5f51db0 => return format_fixed5(value, false, 0),
         value if value < 0x1748291620 => (100_000, 100_000_000, 1, 'K'),
@@ -1488,9 +1488,9 @@ mod tests {
             )
             .collect();
         loc.language = "english".into();
-        let defines = content_reader_core::defines::Defines::new().unwrap();
+        let defines = content_reader_defines::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.2,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1}}").unwrap();
-        let mut subunits = content_reader_core::unit_leader::SubUnits::default();
+        let mut subunits = content_reader_script::sub_units::SubUnits::default();
         subunits.read(
             b"sub_units={DeckPlane={type=cas} EmptyDeck={type=naval_bomber}}",
             "synthetic.txt",
@@ -1555,7 +1555,7 @@ mod tests {
 
     #[test]
     fn state_fuel_emits_empty_registered_subtypes_and_full_header_without_wing_operands() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         put(
             &mut frame,
@@ -1594,7 +1594,7 @@ mod tests {
 
     #[test]
     fn state_idle_current_fuel_is_known_zero_when_cached_maximum_operands_are_refused() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         put(
             &mut frame,
@@ -1662,7 +1662,7 @@ mod tests {
 
     #[test]
     fn accessible_base_wrapper_replaces_delayed_fuel_text_even_with_empty_selection() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = fixture();
         with_context(&frame, false, false, None, |context| {
             let mut out = Tooltip {
@@ -1706,7 +1706,7 @@ mod tests {
 
     #[test]
     fn ordinary_land_transfer_does_not_demand_unreached_equipment_classification() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let target = BASE + 1;
         let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
@@ -1749,7 +1749,7 @@ mod tests {
 
     #[test]
     fn rocket_site_groups_include_empty_wings_and_use_its_own_capacity_key() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         put(
             &mut frame,
@@ -1829,7 +1829,7 @@ mod tests {
 
     #[test]
     fn state_header_uses_level_value_damage_gate_and_signed_occupancy_colours() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let loc: Localisation = [
             ("AIR_BASE_LEVEL", "$NAME$/$VAL$"),
             ("AIRBASE_AIRPLANES_KNOWN", "$VALUE$:$CAPACITY$"),
@@ -1850,7 +1850,7 @@ mod tests {
 
     #[test]
     fn state_summary_uses_state_controller_name_and_registered_pool_owner_without_carrier_suffix() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         put(
             &mut frame,
@@ -1891,7 +1891,7 @@ mod tests {
 
     #[test]
     fn composed_carrier_keeps_dense_repeats_pool_owner_names_and_empty_fuel_pools() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let out = render(&fixture(), false, false, None);
         assert!(out.refused.is_empty(), "{:?}", out.refused);
         let first = out.title.find("\u{12}BBB").unwrap();
@@ -1909,7 +1909,7 @@ mod tests {
 
     #[test]
     fn sea_and_port_controls_share_composed_carrier_and_viewer_nato() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = fixture();
         with_context(&frame, false, true, None, |context| {
             let sea = super::super::task_force_children::specific(
@@ -1961,7 +1961,7 @@ mod tests {
 
     #[test]
     fn current_fuel_failure_keeps_maximum_and_other_signed_groups() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut rows = registrations(&frame);
         let Recorded::Value(Some(inputs)) = &mut rows[0].carrier else {
@@ -1979,7 +1979,7 @@ mod tests {
 
     #[test]
     fn repeated_wings_and_equal_signed_fuel_groups_wrap_before_daily_scaling() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
         wings[0].planes = i32::MAX;
@@ -2017,7 +2017,7 @@ mod tests {
     #[test]
     fn large_equal_key_group_uses_first_empty_definition_and_keeps_mixed_indices_and_signed_counts()
     {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
         wings[0].planes = -3;
@@ -2087,7 +2087,7 @@ mod tests {
 
     #[test]
     fn maximum_failure_preserves_current_groups_and_other_maximum_groups() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut rows = registrations(&frame);
         let Recorded::Value(Some(inputs)) = &mut rows[0].carrier else {
@@ -2105,7 +2105,7 @@ mod tests {
 
     #[test]
     fn empty_inventory_keeps_container_fuel_without_requiring_wings_or_subtype_content() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut rows = registrations(&frame);
         for row in &mut rows {
@@ -2129,7 +2129,7 @@ mod tests {
 
     #[test]
     fn low_tier_uses_complete_clock_host_numeric_id_and_native_country_slots() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let frame = fixture();
         with_context(&frame, true, false, None, |context| {
             assert_eq!(context.vision.air_port_level(3), Some(1));
@@ -2165,7 +2165,7 @@ mod tests {
 
     #[test]
     fn absent_viewer_fuel_container_is_known_absence_in_a_complete_census() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
         let Recorded::Value(Some(inputs)) = &mut bases[0].carrier else {
@@ -2200,7 +2200,7 @@ mod tests {
 
     #[test]
     fn no_intel_does_not_require_unreached_estimates_and_unknown_sharing_cannot_choose_a_tier() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         put(
             &mut frame,
@@ -2233,7 +2233,7 @@ mod tests {
 
     #[test]
     fn historical_pool_absence_and_bad_ranges_do_not_erase_known_plane_totals_or_fuel_scalars() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         for bad_range in [false, true] {
             let mut frame = fixture();
             let mut rows = registrations(&frame);
@@ -2267,7 +2267,7 @@ mod tests {
 
     #[test]
     fn host_language_failure_preserves_independent_occupancy_countries_and_fuel() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let out = render(&fixture(), false, false, Some("other_language"));
         assert!(!out.title.contains("Host deck"));
         assert!(out.title.contains("\u{11}R7\u{11}!"));
@@ -2282,7 +2282,7 @@ mod tests {
 
     #[test]
     fn refused_country_fragment_keeps_ordered_known_siblings_at_both_intel_tiers() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         let mut appearances = frame
             .complete::<tables::CountryAppearance>()
@@ -2304,7 +2304,7 @@ mod tests {
 
     #[test]
     fn null_stale_and_live_broken_hosts_keep_native_invalid_refusals() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         for (host, task_force) in [(0, 7), (SHIP + 1, 7), (SHIP, 0)] {
             let mut frame = fixture();
             let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
@@ -2325,7 +2325,7 @@ mod tests {
 
     #[test]
     fn subtype_database_index_distinguishes_null_unknown_and_registered_content() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         with_context(&fixture(), false, false, None, |context| {
             let units = context.units.as_ref().unwrap();
             assert_eq!(units.subunit(0).unwrap(), ("", 0));
@@ -2336,7 +2336,7 @@ mod tests {
 
     #[test]
     fn pool_owner_zero_uses_the_recorded_reserved_tag() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let mut frame = fixture();
         put(
             &mut frame,

@@ -52,7 +52,7 @@ fn successful_program_matches_fresh_multiframe_bytes_offsets_and_queued_pixels()
             &[3, 5],
         ),
     };
-    let program = content_reader_core::pdxshader::program::read_with(b"retained.shader", &|path| {
+    let program = content_reader_gui::pdxshader::program::read_with(b"retained.shader", &|path| {
         Some(if path == b"retained.shader" {
             b"Effect Retained { }".to_vec()
         } else {

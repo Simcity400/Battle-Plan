@@ -1,18 +1,10 @@
-use crate::key_names::KeyNames;
-use crate::{
-    ResolvedLayers,
-    fields::invalid,
-    modifiers,
-    parser::{
-        Item,
-        native::{self, Shape},
-    },
-    scope::ScopeKind,
-};
-use content_reader_core::{
-    coverage::{Coverage, Gap},
-    script_files::ScriptPath,
-};
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
+use content_reader_script::key_names::KeyNames;
+use content_reader_layers::ResolvedLayers;
+use content_reader_parser::{fields::invalid, parser::Item};
+use content_reader_script::{modifiers, native::{self, Shape}, scope::ScopeKind};
+use content_reader_parser::coverage::{Coverage, Gap};
+use content_reader_layers::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
 
 pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
@@ -139,8 +131,8 @@ pub struct FocusDefinition {
     pub icon: Option<String>,
     pub scripted_icon: bool,
     pub icon_present: bool,
-    pub icons: crate::scripted_keys::ScriptedKey,
-    pub alternate_icons: crate::scripted_keys::ScriptedKey,
+    pub icons: content_reader_script::scripted_keys::ScriptedKey,
+    pub alternate_icons: content_reader_script::scripted_keys::ScriptedKey,
     pub alternate_icon_present: bool,
 }
 
@@ -231,7 +223,7 @@ pub fn parse(
     input: &[u8],
     database: Database,
     names: &KeyNames,
-) -> Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
+) -> Result<(Definitions, Vec<content_reader_parser::Diagnostic>), (content_reader_parser::DiagnosticKind, io::Error)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -416,12 +408,12 @@ pub fn parse(
     }
     if let Some(cause) = undecided.first() {
         return Err((
-            crate::DiagnosticKind::Unsettled,
+            content_reader_parser::DiagnosticKind::Unsettled,
             invalid(format!("focus: {cause}")),
         ));
     }
     if let Some(cause) = refused.first() {
-        return Err((crate::DiagnosticKind::Refused, invalid(cause)));
+        return Err((content_reader_parser::DiagnosticKind::Refused, invalid(cause)));
     }
     fn vectors(items: &[Item], inlay: bool) -> io::Result<()> {
         for item in items {
@@ -430,12 +422,12 @@ pub fn parse(
                     let valid = !inlay && children.len() == 2 && children.iter().all(Item::number)
                         || children.len() == 6
                             && children[0].value.scalar().is_some_and(|v| {
-                                content_reader_core::parser::c_string(v).eq_ignore_ascii_case(b"x")
+                                content_reader_parser::parser::c_string(v).eq_ignore_ascii_case(b"x")
                             })
                             && children[1].value.scalar_str() == Some("=")
                             && children[2].number()
                             && children[3].value.scalar().is_some_and(|v| {
-                                content_reader_core::parser::c_string(v).eq_ignore_ascii_case(b"y")
+                                content_reader_parser::parser::c_string(v).eq_ignore_ascii_case(b"y")
                             })
                             && children[4].value.scalar_str() == Some("=")
                             && children[5].number();
@@ -456,7 +448,7 @@ pub fn parse(
         }
         Ok(())
     }
-    vectors(&document.items, false).map_err(|error| (crate::DiagnosticKind::Unsupported, error))?;
+    vectors(&document.items, false).map_err(|error| (content_reader_parser::DiagnosticKind::Unsupported, error))?;
     fn collect(items: &[Item], output: &mut BTreeMap<String, FocusDefinition>) -> io::Result<()> {
         for item in items {
             let Some(children) = item.value.items() else {
@@ -470,8 +462,8 @@ pub fn parse(
                     return Err(invalid("focus definition has no id"));
                 };
                 let localisation = scalar(children, "text")?.unwrap_or(id);
-                let mut icons = crate::scripted_keys::ScriptedKey::default();
-                let mut alternate_icons = crate::scripted_keys::ScriptedKey::default();
+                let mut icons = content_reader_script::scripted_keys::ScriptedKey::default();
+                let mut alternate_icons = content_reader_script::scripted_keys::ScriptedKey::default();
                 let mut alternate_icon_present = false;
                 let mut icon_present = false;
                 for field in children {
@@ -503,7 +495,7 @@ pub fn parse(
                             .rev()
                             .filter(|item| item.keyword_is("cost"))
                             .filter_map(|item| item.value.scalar())
-                            .find_map(crate::fixed5::script_fixed5)
+                            .find_map(content_reader_parser::fixed5::script_fixed5)
                             .filter(|cost| *cost >= 0)
                             .map(|cost| cost as f64 / 100_000.0),
                         icon,
@@ -530,7 +522,7 @@ pub fn parse(
         .into_iter()
         .filter(|item| roots.iter().any(|root| item.keyword_is(root)))
         .collect();
-    collect(&own, &mut result).map_err(|error| (crate::DiagnosticKind::Refused, error))?;
+    collect(&own, &mut result).map_err(|error| (content_reader_parser::DiagnosticKind::Refused, error))?;
     Ok((
         result,
         document
@@ -542,7 +534,7 @@ pub fn parse(
 }
 
 pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
-    let defines = match crate::defines::read(layers) {
+    let defines = match content_reader_defines::defines::read(layers) {
         Ok(defines) => defines,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(None),
         Err(error) => return Err(error),
@@ -553,11 +545,11 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
         .filter(|days| days.is_finite() && *days > 0.0))
 }
 
-pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
     read_databases(layers, true)
 }
 
-pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
     read_databases(layers, false)
 }
 
@@ -592,7 +584,7 @@ fn database_paths(
 fn read_databases(
     layers: &ResolvedLayers,
     continuous: bool,
-) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
     let paths = database_paths(layers, continuous)?;
     let names = layers.key_names()?;
     let workers = std::thread::available_parallelism().map_or(1, usize::from);
@@ -600,7 +592,7 @@ fn read_databases(
 }
 
 type ParsedFile =
-    Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
+    Result<(Definitions, Vec<content_reader_parser::Diagnostic>), (content_reader_parser::DiagnosticKind, io::Error)>;
 
 fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
     paths: &[(usize, ScriptPath)],
@@ -608,7 +600,7 @@ fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
     workers: usize,
     mut read: impl FnMut(&ScriptPath) -> io::Result<B>,
     parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
-) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+) -> io::Result<(Focuses, Vec<content_reader_parser::Diagnostic>)> {
     let mut result = Focuses::default();
     let mut warnings = Vec::new();
     for wave in paths.chunks(workers.max(1)) {
@@ -690,7 +682,7 @@ mod tests {
 
     #[test]
     fn national_lookup_excludes_continuous_database() -> io::Result<()> {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("national-focus-names-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/national_focus"))?;
@@ -716,7 +708,7 @@ mod tests {
 
     #[test]
     fn layer_warnings_name_and_count_deferred_effect_readers() -> io::Result<()> {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let root = std::env::temp_dir().join(format!("focus-effect-gap-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/national_focus"))?;
         std::fs::write(
@@ -744,14 +736,14 @@ free_operative = { operative = a } free_operative = { operative = b }
         );
         assert!(warning.contains("count: 2"), "{warning}");
         assert!(read(&layers)?.1.iter().any(|(kind, message)| *kind
-            == crate::DiagnosticKind::Unsupported
+            == content_reader_parser::DiagnosticKind::Unsupported
             && message == warning));
         std::fs::remove_dir_all(root)?;
         Ok(())
     }
     #[test]
     fn focus_variables_keywords_and_scripted_key_dispatch() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let defs = parse(
             br#"@name=A @sprite=GFX_a focus_tree={FOCUS={id=@name "text"=ignored
             icon={@sprite=yes {ignored={}}} unknown={id=hidden} cost=0x2}}
@@ -768,7 +760,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn focus_scripted_icons_preserve_repeated_cases_and_refuse_unknown_conditions() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let defs = parse(
             br#"focus_tree={focus={id=A
             icon={CONDITIONAL={always=yes}}
@@ -801,7 +793,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn authored_text_shared_and_conditional_icons() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let defs = parse(br#"focus_tree={focus={id=A icon=GFX_goal_a text=TITLE} focus={id=B icon={value=GFX_goal_b}}} shared_focus={id=C icon=GFX_goal_c}"#, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(defs["A"].localisation, "TITLE");
         assert_eq!(defs["A"].description, "TITLE_desc");
@@ -814,7 +806,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn unknown_description_is_skipped_by_the_focus_reader() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let defs = parse(
             br#"focus_tree={focus={id=A text=TITLE desc=DESCRIPTION}}"#,
             Database::National,
@@ -826,7 +818,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn inlay_positions_take_only_the_read_int_point_form() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         assert!(
             parse(
                 br#"focus_tree={inlay_window={id=w position={1 2}} focus={id=A}}"#,
@@ -848,7 +840,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn each_database_reads_only_its_own_roots() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let text = br#"focus_tree={focus={id=A}} continuous_focus_palette={focus={id=E}} shared_focus={id=B}"#;
         let national = parse(text, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(national.keys().collect::<Vec<_>>(), ["A", "B"]);
@@ -858,7 +850,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn a_failed_repeated_cost_keeps_the_stored_one() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let defs = parse(
             br#"focus_tree={focus={id=A cost=2 cost=bad} focus={id=B cost=bad}}"#,
             Database::National,
@@ -870,7 +862,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn authored_costs_and_scripted_costs() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let defs = parse(br#"focus_tree={focus={id=A cost=10} focus={id=B cost=2.5} focus={id=C cost=@scripted} focus={id=D cost=-1}}"#, Database::National, &KeyNames::default()).unwrap();
         let continuous = parse(
             br#"continuous_focus_palette={focus={id=E}}"#,
@@ -905,7 +897,7 @@ mod icon_selection_tests {
 
     #[test]
     fn first_true_case_wins_and_an_earlier_unknown_is_not_skipped() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let definition = focus();
         let mut visited = 0;
         assert_eq!(
@@ -940,7 +932,7 @@ mod icon_selection_tests {
 
     #[test]
     fn fallback_agreement_needs_no_window_mode() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let (definitions, _) = parse(
             br#"focus_tree={
                 focus={id=fallback alternate_icon=GFX_goal_unknown}
@@ -993,7 +985,7 @@ mod sprite_override_tests {
 
     #[test]
     fn only_a_focus_with_an_icon_field_tries_the_qualified_sprites_on_its_button() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         for (source, database) in [
             (&b"focus_tree={focus={id=f_icon icon=GFX_own}}"[..], Database::National),
             (b"continuous_focus_palette={focus={id=f_icon icon=GFX_own}}", Database::Continuous),

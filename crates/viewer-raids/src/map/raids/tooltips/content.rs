@@ -2,7 +2,7 @@ use super::{
     super::{RaidDefines, unit_inputs::SpeedDefines},
     intel,
 };
-use content_reader_core::defines::Defines;
+use content_reader_defines::defines::Defines;
 use content_reader_states::states::StateDefinition;
 use std::collections::BTreeMap;
 
@@ -17,7 +17,7 @@ pub struct Content {
     pub state_names: BTreeMap<u32, Result<String, String>>,
     pub terrain_names: Result<Vec<String>, String>,
     pub unit_names: Result<content_reader_raids::raids::names::Groups, String>,
-    pub projects: Result<content_reader_core::special_projects::Catalog, String>,
+    pub projects: Result<content_reader_military::special_projects::Catalog, String>,
 }
 impl Default for Content {
     fn default() -> Self {
@@ -39,7 +39,7 @@ impl Content {
     pub fn read(
         d: &Defines,
         states: &BTreeMap<u32, StateDefinition>,
-        layers: &content_reader_core::ResolvedLayers,
+        layers: &content_reader_layers::ResolvedLayers,
     ) -> Self {
         let speed = (|| {
             let r = RaidDefines::read(d).map_err(|e| e.to_string())?;
@@ -61,7 +61,7 @@ impl Content {
             speed,
             unit_names: content_reader_raids::raids::names::Groups::read(layers)
                 .map_err(|e| e.to_string()),
-            projects: content_reader_core::special_projects::Catalog::read(layers)
+            projects: content_reader_military::special_projects::Catalog::read(layers)
                 .map_err(|e| e.to_string()),
             prepare_days: d
                 .int32("NRaids", "BASE_DAYS_TO_PREPARE")
@@ -89,7 +89,7 @@ impl Content {
                 .iter()
                 .map(|(&id, s)| (id, s.name_key.clone()))
                 .collect(),
-            terrain_names: content_reader_core::terrain::read_definitions(layers)
+            terrain_names: content_reader_key_names::terrain::read_definitions(layers)
                 .map_err(|e| e.to_string())
                 .and_then(|d| {
                     d.categories

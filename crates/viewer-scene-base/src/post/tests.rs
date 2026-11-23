@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 use viewer_gpu::camera::MapDefines;
 
 const BERLIN_DAY: i32 = 60832933;
@@ -67,7 +67,7 @@ fn map(width: u32, top_down: &[u32], kinds: &[(u32, ProvinceKind)]) -> MapData {
                 let rgb = [id as u8, 0, 0];
                 (
                     id,
-                    content_reader_core::map::ProvinceDefinition {
+                    content_reader_map::map::ProvinceDefinition {
                         id,
                         rgb,
                         kind,

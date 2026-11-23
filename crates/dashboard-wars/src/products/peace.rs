@@ -951,7 +951,7 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
 }
 
 fn is_keyword(spelling: &str, keyword: &str) -> bool {
-    content_reader_core::parser::native::Token { kind: content_reader_core::parser::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
+    content_reader_script::native::Token { kind: content_reader_script::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
 }
 
 fn takes_states(spelling: &str) -> bool {

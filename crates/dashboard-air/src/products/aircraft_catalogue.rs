@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 
 use replay_frame::frame::DecodedFrame;
 use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue, View}, products::{ContentOptions, LoadContext, Product, check_reply_budget}};
@@ -216,8 +217,8 @@ fn built(
 }
 
 pub struct Content {
-    pub roster: Arc<content_reader_core::mesh::Roster>,
-    pub equipment: Arc<content_reader_core::equipment::Database>,
+    pub roster: Arc<content_reader_mesh::mesh::Roster>,
+    pub equipment: Arc<content_reader_key_names::equipment::Database>,
     pub pools: equipment_graphics::Content,
     pub warnings: Vec<String>,
 }
@@ -231,10 +232,10 @@ impl Content {
             warnings.push(format!(
                 "Which names are aircraft cannot be told from equipment: the equipment database is refused ({why}); every entity and mesh is still listed"
             ));
-            Arc::new(content_reader_core::equipment::Database::default())
+            Arc::new(content_reader_key_names::equipment::Database::default())
         });
         let pools = (|| {
-            let default_map = content_reader_core::terrain::read_default_map(layers)?;
+            let default_map = content_reader_key_names::terrain::read_default_map(layers)?;
             let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings)?;
             equipment_graphics::Content::load(layers, &names)
         })()
@@ -302,7 +303,7 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                         .iter()
                         .filter(|row| !row.explicit_entity.is_empty())
                     {
-                        let Ok(model) = content_reader_core::parser::text(&variant.explicit_entity)
+                        let Ok(model) = content_reader_parser::parser::text(&variant.explicit_entity)
                         else {
                             continue;
                         };

@@ -20,7 +20,7 @@ fn equipment_icon_warnings_name_every_refused_technology() {
     let refused: Vec<_> = (0..9).map(|entry| format!("technology_{entry}")).collect();
     let content = crate::products::equipment_icon::IconContent::from_parts(
         Default::default(),
-        content_reader_core::technology::Enablers {
+        content_reader_military::technology::Enablers {
             refused: refused.clone(),
             ..Default::default()
         },
@@ -39,7 +39,7 @@ fn equipment_icon_warnings_name_every_refused_technology() {
 #[test]
 fn equipment_icons_keep_null_archetype_fallbacks() {
     use super::{Icon, IconContent, IconHour};
-    use content_reader_core::{technology::Enabler, technology::Enablers};
+    use content_reader_military::technology::{Enabler, Enablers};
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
 
@@ -192,7 +192,7 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
 #[test]
 fn authored_equipment_icons_keep_null_archetype_candidates() {
     use super::{Icon, IconContent};
-    use content_reader_core::{technology::Enabler, technology::Enablers};
+    use content_reader_military::technology::{Enabler, Enablers};
 
     let content = IconContent::from_parts(
         equipment_types(&[b"equipments = { bare_type = { } }"]).unwrap(),
@@ -234,7 +234,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
-    use content_reader_core::{technology::Enabler, technology::Enablers};
+    use content_reader_military::technology::{Enabler, Enablers};
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
     let units = equipment_types(&[br#"
@@ -573,9 +573,10 @@ fn equipment_icons_follow_the_production_rows_rule() {
 
 #[test]
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
-    use content_reader_core::{ResolvedLayers, technology};
+    use content_reader_layers::ResolvedLayers;
+    use content_reader_military::technology;
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
     let root = std::env::temp_dir().join(format!(
@@ -627,7 +628,7 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     let layers = ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])]).unwrap();
     let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
     let content = IconContent::from_parts(
-        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
+        content_reader_key_names::equipment::Database::load_complete(&layers).unwrap(),
         technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
         equipment_graphics::Content::from_texts(
             &[],
@@ -698,7 +699,7 @@ fn inactive_dot_icon_and_invalid_inactive_kind_follow_native_icon_entry_rules() 
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::{CountryAppearanceRow, PoliticalPartyRow, PoliticsRow, VariantDefinitionRow};
 
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let units = equipment_types(&[br#"
         equipments = {
             tanks = { is_archetype = yes type = armor }
@@ -807,14 +808,14 @@ fn inactive_dot_icon_and_invalid_inactive_kind_follow_native_icon_entry_rules() 
 #[test]
 fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
     use super::{Icon, IconContent, IconHour};
-    use content_reader_core::ResolvedLayers;
+    use content_reader_layers::ResolvedLayers;
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::{
         CountryAppearanceRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, Recorded, StateRow,
         VariantDefinitionRow,
     };
 
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_dashboard_mixed_continent_{}_{:?}",
         std::process::id(),
@@ -853,12 +854,12 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
         std::fs::write(file, text).unwrap();
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let default_map = content_reader_core::terrain::read_default_map(&layers).unwrap();
-    let provinces = content_reader_core::map::parse_definitions(
+    let default_map = content_reader_key_names::terrain::read_default_map(&layers).unwrap();
+    let provinces = content_reader_map::map::parse_definitions(
         &layers.read(&default_map.file("definitions").unwrap()).unwrap(),
     )
     .unwrap();
-    let defines = content_reader_core::defines::read(&layers).unwrap();
+    let defines = content_reader_defines::defines::read(&layers).unwrap();
     let geography =
         equipment_graphics::context::Content::load(&layers, &default_map, &provinces, &defines)
             .unwrap();
@@ -1090,7 +1091,7 @@ fn dynamic_creator_fallback_uses_original_reference_and_witnessed_handle_tag() {
         ReservedCountryNamingRow, StateRow, VariantDefinitionRow,
     };
 
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let units = equipment_types(&[br#"
         equipments = {
             tanks = { is_archetype = yes type = armor }
@@ -1314,12 +1315,12 @@ fn dynamic_creator_fallback_uses_original_reference_and_witnessed_handle_tag() {
 #[test]
 fn static_slot_technology_tag_and_missing_boundary_agreement() {
     use super::{Icon, IconContent, IconHour};
-    use content_reader_core::technology::{Enabler, Enablers};
+    use content_reader_military::technology::{Enabler, Enablers};
     use replay_data::rows::{
         CountryAppearanceRow, Recorded, ReservedCountryNamingRow, VariantDefinitionRow,
     };
 
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let units = equipment_types(&[br#"
         equipments = {
             rifles = { is_archetype = yes type = infantry }
@@ -1467,7 +1468,7 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
         VariantDefinitionRow,
     };
 
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let units = equipment_types(&[br#"
         equipments = {
             tanks = { is_archetype = yes type = armor }
@@ -2108,9 +2109,10 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
 
 #[test]
 fn unverified_technology_parse_withholds_equipment_icon_fallback_and_warns() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
-    use content_reader_core::{ResolvedLayers, technology};
+    use content_reader_layers::ResolvedLayers;
+    use content_reader_military::technology;
     use content_reader_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
 
@@ -2137,7 +2139,7 @@ fn unverified_technology_parse_withholds_equipment_icon_fallback_and_warns() {
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let content = IconContent::from_parts(
-        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
+        content_reader_key_names::equipment::Database::load_complete(&layers).unwrap(),
         technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
         equipment_graphics::Content::from_texts(
             &[],
@@ -2181,7 +2183,7 @@ fn unverified_technology_parse_withholds_equipment_icon_fallback_and_warns() {
     let prep = content.preparation_warnings();
     assert!(
         prep.iter().any(|(kind, warning)| *kind
-            == content_reader_core::DiagnosticKind::Unsettled
+            == content_reader_parser::DiagnosticKind::Unsettled
             && warning.contains("common/technologies/broken.txt")),
         "{prep:?}"
     );
@@ -2226,7 +2228,7 @@ fn unverified_technology_parse_withholds_equipment_icon_fallback_and_warns() {
     let layers = ResolvedLayers::from_folders(&[(&unreadable_root, &[][..])]).unwrap();
     std::fs::remove_file(unreadable_root.join("common/technologies/gone.txt")).unwrap();
     let content = IconContent::from_parts(
-        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
+        content_reader_key_names::equipment::Database::load_complete(&layers).unwrap(),
         technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
         equipment_graphics::Content::from_texts(
             &[],

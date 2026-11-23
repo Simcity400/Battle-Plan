@@ -4,4 +4,4 @@ Order a subject state's name and color by its authored minimum freedom level, th
 
 Replay variables through the database reader and consume fields according to their native readers. A definition whose tokens cannot be followed ends that file's coverage, with the verified prefix retained. The unread suffix might redefine an earlier level or insert a state earlier among equal ones. Mark those levels or places unknown until a later completed definition settles them, and keep unknown states in load order after the placed states. A caller looking up a particular ID sees the named coverage gap where it could still change, separately from an absent ID.
 
-[Autonomy reader and tests](../../crates/content-reader-core/src/autonomy.rs)
+[Autonomy reader and tests](../../crates/content-reader-politics/src/autonomy.rs)

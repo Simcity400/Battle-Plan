@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::parser;
+use content_reader_parser::parser;
 use replay_data::{rows::VariantDefinitionRow, rows::tables};
 
 const VARIANT: u64 = tables::VariantDefinitions::ID.full_mask();
@@ -26,8 +26,8 @@ fn integer_field(items: &[Item], name: &str, default: i32) -> i32 {
         .iter()
         .filter(|item| item.keyword_is(name))
         .filter_map(
-            |item| match content_reader_core::crt::scan_i32(item.value.scalar()?) {
-                content_reader_core::crt::Scanned::Stored(value) => Some(value),
+            |item| match content_reader_parser::crt::scan_i32(item.value.scalar()?) {
+                content_reader_parser::crt::Scanned::Stored(value) => Some(value),
                 _ => None,
             },
         )
@@ -156,7 +156,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    fn units_equipment(&self) -> Result<&content_reader_core::equipment::Database, String> {
+    fn units_equipment(&self) -> Result<&content_reader_key_names::equipment::Database, String> {
         self.context
             .content
             .equipment
@@ -185,7 +185,7 @@ impl Renderer<'_, '_, '_> {
                 parser::c_string(field.value.scalar().ok_or(
                     "equipment-type block operand is unsupported by the direct token reader",
                 )?);
-            if !content_reader_core::tokens::Token::c_str(value).is_rejected() {
+            if !content_reader_parser::tokens::Token::c_str(value).is_rejected() {
                 cached = database.get(value);
             }
             if cached.is_none() {
@@ -309,7 +309,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             field(fields, "count")
                 .and_then(|field| field.value.scalar())
-                .map(content_reader_core::fixed5::decimal_i32)
+                .map(content_reader_parser::fixed5::decimal_i32)
                 .unwrap_or(0)
         };
         let count_text = if count < 0 {
@@ -359,7 +359,7 @@ impl Renderer<'_, '_, '_> {
             &[
                 (
                     "AMOUNT",
-                    Argument::Int32(crate::triggers::fixed_round(amount) as i32),
+                    Argument::Int32(content_reader_script::triggers::fixed_round(amount) as i32),
                 ),
                 ("EQUIPMENT_NAME", Argument::Text(&name)),
                 ("COUNTRY", Argument::Text(&country)),
@@ -440,7 +440,7 @@ impl Renderer<'_, '_, '_> {
             Some(value) => self.scoped_value(scalar_operand(value)?, scopes)?,
             None => 0,
         };
-        let amount = crate::triggers::fixed_round(amount) as i32;
+        let amount = content_reader_script::triggers::fixed_round(amount) as i32;
         let producer = match field(fields, "producer") {
             Some(value) => self
                 .evaluator()?
@@ -971,7 +971,7 @@ impl Renderer<'_, '_, '_> {
                 let mut modules = BTreeMap::new();
                 for body in fields.iter().filter(|field| field.keyword_is("modules")) {
                     for module in children(body) {
-                        let slot = content_reader_core::tokens::Token::c_str(
+                        let slot = content_reader_parser::tokens::Token::c_str(
                             module.key.as_deref().unwrap_or_default(),
                         );
                         if module.value_keyword().as_deref() == Some("empty") {
@@ -986,7 +986,7 @@ impl Renderer<'_, '_, '_> {
                 for mask in modules.values() {
                     category |= *mask;
                 }
-                category = content_reader_core::equipment::normalize_category(category);
+                category = content_reader_key_names::equipment::normalize_category(category);
             }
             let archetype = family.archetype.map_or(b"".as_slice(), |index| {
                 database.equipment[index].name.as_slice()
@@ -1079,7 +1079,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn units_manpower(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let amount =
-            crate::triggers::fixed_round(self.scoped_value(scalar_operand(item)?, scopes)?) as i32;
+            content_reader_script::triggers::fixed_round(self.scoped_value(scalar_operand(item)?, scopes)?) as i32;
         let (key, name) = match scopes.this {
             Scope::State(state) if (state as i32) > 0 => (
                 b"EFFECT_MANPOWER_ADD_STATE".as_slice(),
@@ -1400,7 +1400,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let result = (|| {
-            let copied = crate::triggers::event_scopes::project(&self.graph.borrow(), at)
+            let copied = content_reader_script::triggers::event_scopes::project(&self.graph.borrow(), at)
                 .map_err(|why| why.to_string())?;
             self.units_create_in(item, copied, scopes)
         })();
@@ -1421,7 +1421,7 @@ impl Renderer<'_, '_, '_> {
             Some(count) => self.scoped_value(scalar_operand(count)?, scopes)?,
             None => 100_000,
         };
-        let count = crate::triggers::fixed_round(count) as i32;
+        let count = content_reader_script::triggers::fixed_round(count) as i32;
         if count < 1 {
             return Ok(String::new());
         }
@@ -1663,7 +1663,7 @@ impl Renderer<'_, '_, '_> {
                                     ))
                                 });
                             let result = (|| {
-                                let projected = crate::triggers::event_scopes::project(
+                                let projected = content_reader_script::triggers::event_scopes::project(
                                     &self.graph.borrow(),
                                     at,
                                 )?;
@@ -1729,13 +1729,13 @@ impl Renderer<'_, '_, '_> {
             .and_then(|names| names.sub_units.as_ref())
             .ok_or_else(|| self.content_gap("effect key names"))?;
         let index = match units.get(name) {
-            content_reader_core::unit_leader::SubUnit::Index(index) => index,
-            content_reader_core::unit_leader::SubUnit::Unknown => {
+            content_reader_script::sub_units::SubUnit::Index(index) => index,
+            content_reader_script::sub_units::SubUnit::Unknown => {
                 return Err(format!(
                     "sub-unit {name} is not defined by the recorded content stack"
                 ));
             }
-            content_reader_core::unit_leader::SubUnit::Uncertain(why) => {
+            content_reader_script::sub_units::SubUnit::Uncertain(why) => {
                 return Err(format!("sub-unit {name}: {why}"));
             }
         };
@@ -1760,9 +1760,9 @@ impl Renderer<'_, '_, '_> {
                 field(fields, "division_template").and_then(|item| item.value.read_string())
             })
             .unwrap_or_default();
-        let label = std::str::from_utf8(content_reader_core::parser::c_string(value))
+        let label = std::str::from_utf8(content_reader_parser::parser::c_string(value))
             .map_err(|_| "template name is not UTF-8")?;
-        let disband = content_reader_core::parser::read_bool_field(fields, "disband", false);
+        let disband = content_reader_parser::parser::read_bool_field(fields, "disband", false);
         self.line(
             if disband {
                 b"EFFECT_DISBAND_UNIT_TEMPLATE_AND_UNITS"
@@ -1798,14 +1798,14 @@ impl Renderer<'_, '_, '_> {
                     }
                     let Some(index) = stat
                         .keyword()
-                        .and_then(|key| content_reader_core::equipment::stat_index(&key.folded()))
+                        .and_then(|key| content_reader_script::equipment_stats::stat_index(&key.folded()))
                     else {
                         continue;
                     };
                     let value = stat
                         .value
                         .scalar()
-                        .and_then(content_reader_core::fixed5::script_fixed5)
+                        .and_then(content_reader_parser::fixed5::script_fixed5)
                         .unwrap_or(0);
                     match stats.iter_mut().find(|(stored, _)| *stored == index) {
                         Some((_, previous)) => *previous = previous.wrapping_add(value),
@@ -1815,7 +1815,7 @@ impl Renderer<'_, '_, '_> {
                 let mut lines = Vec::new();
                 for (index, value) in stats {
                     let (_, label_key, positive_good) =
-                        content_reader_core::equipment::stat_metadata()[index];
+                        content_reader_script::equipment_stats::stat_metadata()[index];
                     let key = label_key.as_bytes();
                     let label = self.localised(key, &[], scopes, false)?;
                     let difference = format!(

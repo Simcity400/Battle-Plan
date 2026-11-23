@@ -699,7 +699,7 @@ fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_i
 #[test]
 fn a_compose_on_the_hosts_worker_validates_the_strategic_layout_with_the_recordings_tables() {
     let ambient = synthetic_game::enter();
-    let tables = content_reader_core::test_game::tables();
+    let tables = content_reader_script::test_game::tables();
     assert!(!std::ptr::eq(ambient, tables));
     let units = record(BLOCK, |_, _| Status::Complete, |at, store| {
         if at == 0 {

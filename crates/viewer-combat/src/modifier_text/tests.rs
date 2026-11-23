@@ -2,7 +2,7 @@ use super::*;
 use dashboard_text::modifier_text::{
     BOOLEAN, NEUTRAL, NO_PLUS, PERCENT, PERCENT_TIMES_HUNDRED, POSITIVE_IS_GOOD,
 };
-use content_reader_core::modifiers::TooltipTable;
+use content_reader_script::modifiers::TooltipTable;
 use std::sync::Arc;
 use std::time::Instant;
 use viewer_foundation::tooltip_text::NoIcons;
@@ -161,18 +161,18 @@ fn weather_icon_requires_a_nonzero_effective_category_one_entry() {
     assert!(visible.has_category_one(&definitions).unwrap());
 }
 
-fn entry(key: &str, value: &str) -> content_reader_core::parser::Item {
-    content_reader_core::parser::Item {
+fn entry(key: &str, value: &str) -> content_reader_parser::parser::Item {
+    content_reader_parser::parser::Item {
         key: Some(key.as_bytes().to_vec()),
         key_quoted: false,
-        operator: content_reader_core::parser::Operator::Equals,
-        value: content_reader_core::parser::Value::Scalar(value.as_bytes().to_vec()),
-        kind: content_reader_core::parser::Kind::Bare,
+        operator: content_reader_parser::parser::Operator::Equals,
+        value: content_reader_parser::parser::Value::Scalar(value.as_bytes().to_vec()),
+        kind: content_reader_parser::parser::Kind::Bare,
     }
 }
 
 fn keys(keys: &[&str]) -> TooltipTable {
-    let mut modifiers = content_reader_core::modifiers::Modifiers::default();
+    let mut modifiers = content_reader_script::modifiers::Modifiers::default();
     for key in keys {
         modifiers.read(&entry("custom_modifier_tooltip", key));
     }
@@ -216,7 +216,7 @@ fn sparse_definition_tables_are_admitted_and_format_by_index() {
         .unwrap();
     assert_eq!(definitions.index("key_3"), Ok(Some(3)));
     assert_eq!(definitions.index("KEY_3"), Ok(Some(3)));
-    let authored = content_reader_core::modifiers::values(&[entry("Key_3", "0.1")]);
+    let authored = content_reader_script::modifiers::values(&[entry("Key_3", "0.1")]);
     let (built, dropped) = Block::build(&definitions, &authored).unwrap();
     assert!(dropped.is_empty());
     assert_eq!(built.values, BTreeMap::from([(3, 10_000)]));
@@ -272,12 +272,12 @@ fn a_block_keeps_the_readers_last_value_in_source_order() {
         ..Default::default()
     }];
     let definitions = Definitions::from_parts(&rows, &[(b"a", 0)], Some(0));
-    let hidden = content_reader_core::parser::Item {
-        value: content_reader_core::parser::Value::Block(vec![entry("A", "0.2")]),
+    let hidden = content_reader_parser::parser::Item {
+        value: content_reader_parser::parser::Value::Block(vec![entry("A", "0.2")]),
         ..entry("hidden_modifier", "")
     };
     let authored =
-        content_reader_core::modifiers::values(&[entry("a", "0.1"), hidden, entry("a", "0.3")]);
+        content_reader_script::modifiers::values(&[entry("a", "0.1"), hidden, entry("a", "0.3")]);
     let (block, dropped) = Block::build(&definitions, &authored).unwrap();
     assert!(dropped.is_empty());
     assert_eq!(block.values, BTreeMap::from([(0, 30_000)]));

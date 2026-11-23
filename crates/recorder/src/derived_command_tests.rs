@@ -32,7 +32,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         );
         return;
     };
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let installation = synthetic_game::Installation::new("derived-verdict").build();
     let game = installation.game_dir.clone();
     let user = installation.user_dir.clone();
@@ -87,7 +87,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
     bitmap[28..30].copy_from_slice(&8_u16.to_le_bytes());
     bitmap[54..].fill(0);
     fs::write(game.join("map/rivers.bmp"), &bitmap).unwrap();
-    let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
+    let gathered = content_reader_layers::gather(&content_reader_layers::GatherOptions {
         game_dir: game.clone(),
         user_dir: user.clone(),
         cache_dir: installation.cache_dir.clone(),
@@ -110,7 +110,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         launcher: Roster::default(),
         memory: Roster::default(),
     };
-    let mut records = crate::test_support::allocation_records();
+    let mut records = content_reader_layers::test_support::allocation_records();
     let mut encoder = FrameEncoder::new();
     for record in &mut records {
         match record {
@@ -208,7 +208,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         }
         let replay = Replay::from_records(
             recorder_derive::writers(),
-            crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
+            content_reader_layers::test_support::ALLOCATION_CAMPAIGN.to_vec(),
             &[records],
         )
         .unwrap();

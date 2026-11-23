@@ -394,7 +394,7 @@ fn gap_research_grants_pending_output_uses_exact_selected_assignment_and_never_f
         cache.view(None),
     );
     let definitions =
-        content_reader_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+        content_reader_military::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
     let output = &definitions.projects["mod_project"].output;
     let absent = project_output_description(output, &context, 100, 8, Ok(None), Ok(None));
     assert!(!absent.text.contains("Scientist"));

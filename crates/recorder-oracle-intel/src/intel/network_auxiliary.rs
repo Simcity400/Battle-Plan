@@ -396,7 +396,7 @@ mod tests {
 }
                  }
             } } } }"#;
-        let pack = saved::parse(&content_reader_core::parser::parse(save).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_parser::parser::parse(save).unwrap().items).unwrap();
         let network = &pack.strategic_operatives.as_ref().unwrap()[&7].networks[0];
         let tokens = TokenNames::from([
             (0x4bfe, b"owned_worth".as_slice()),

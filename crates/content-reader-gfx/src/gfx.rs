@@ -4,12 +4,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use content_reader_core::kept::{Input, Table, put_bytes, put_texts};
+use content_reader_layers::kept::{Input, Table, put_bytes, put_texts};
 
-use crate::{
-    ResolvedLayers,
-    gui::native::sprites::{self, SpriteFacts, SpriteKind, Sprites},
-};
+use content_reader_layers::ResolvedLayers;
+use content_reader_gui::gui::native::sprites::{self, SpriteFacts, SpriteKind, Sprites};
 
 pub fn content_path(raw: &str) -> String {
     let mut path = String::with_capacity(raw.len());
@@ -303,7 +301,7 @@ pub fn read(layers: &ResolvedLayers) -> std::io::Result<SpriteSet> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::native::sprites::read_sprites;
+    use content_reader_gui::gui::native::sprites::read_sprites;
 
     fn set(files: &[(&str, &[u8])]) -> SpriteSet {
         SpriteSet::new(
@@ -328,7 +326,7 @@ mod tests {
 
     #[test]
     fn each_kind_gives_its_texture_and_frames() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let set = set(&[(
             "interface/mapicons.gfx",
             br#"spriteTypes = {
@@ -373,7 +371,7 @@ mod tests {
 
     #[test]
     fn a_file_the_tree_could_not_parse_reads_as_the_game_reads_it() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let set = set(&[
             (
                 "interface/a.gfx",
@@ -399,7 +397,7 @@ mod tests {
 
     #[test]
     fn a_later_declaration_replaces_an_earlier_one_and_a_refused_one_hides_it() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let set = set(&[
             (
                 "interface/a.gfx",
@@ -438,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_declaration_the_game_does_not_define_is_refused_by_name() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let set = set(&[(
             "interface/a.gfx",
             br#"spriteTypes = {

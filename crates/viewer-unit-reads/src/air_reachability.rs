@@ -10,7 +10,7 @@ mod scans;
 pub use scans::Scans;
 
 use engine_native::cbuilding_template;
-use content_reader_core::map::ProvinceKind;
+use content_reader_map::map::ProvinceKind;
 #[cfg(test)]
 use replay_data::rows::AirBaseRow;
 use replay_data::rows::{

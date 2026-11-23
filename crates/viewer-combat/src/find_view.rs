@@ -517,7 +517,7 @@ impl FindView {
             .find(|region| results_element.is_some_and(|results| results.path == region.path))
             .and_then(|region| gui::region_rect(region, origin));
         if let Some(field) = root.path_named(FIELD)
-            && let content_reader_core::gui::native::Fields::EditBox(edit) = &field.fields
+            && let content_reader_gui::gui::native::Fields::EditBox(edit) = &field.fields
         {
             let [x, y] = edit.position();
             let [w, h] = edit.size();
@@ -587,7 +587,7 @@ impl FindView {
 }
 
 fn button_texts(
-    root: &content_reader_core::gui::native::Element,
+    root: &content_reader_gui::gui::native::Element,
     localisation: &content_reader_localisation::localisation::Localisation,
     refused: &mut BTreeMap<String, usize>,
 ) -> Values {
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn the_buttons_show_their_authored_text_localised() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let windows = viewer_native_gui::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = find_view                 buttonType = { name = find_button buttonText = \"FIND\" buttonFont = \"hoi_16mbs\" }                 buttonType = { name = goto_home_button buttonText = \"GOTO_CAPITAL\" buttonFont = \"hoi_16mbs\" }                 buttonType = { name = back_button buttonFont = \"hoi_16mbs\" } } }",
             [1280, 720],

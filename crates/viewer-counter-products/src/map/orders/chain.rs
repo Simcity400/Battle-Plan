@@ -1,7 +1,7 @@
 
 use std::collections::BTreeMap;
 
-use content_reader_core::map::MapData;
+use content_reader_map::map::MapData;
 use replay_data::rows::ProvinceRow;
 
 use super::fixed::{self, Point, SCALE, Smoothing};

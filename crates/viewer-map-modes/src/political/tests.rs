@@ -31,7 +31,7 @@ fn build_oracle(
     })
 }
 
-use content_reader_core::map::ProvinceDefinition;
+use content_reader_map::map::ProvinceDefinition;
 use replay_data::{
     rows::AutonomyRow, rows::CountryLinkRow, rows::TableId,
     rows::TableRows,

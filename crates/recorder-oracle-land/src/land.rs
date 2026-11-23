@@ -1,5 +1,5 @@
 use super::*;
-use content_reader_core::{parser::Item, parser::Value};
+use content_reader_parser::parser::{Item, Value};
 
 fn equal<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
@@ -553,7 +553,7 @@ mod tests {
     use super::*;
     fn read(bytes: &[u8]) -> io::Result<Saved> {
         super::read(
-            &content_reader_core::parser::parse(bytes)?.items,
+            &content_reader_parser::parser::parse(bytes)?.items,
             Comparison::All,
         )
     }
@@ -563,7 +563,7 @@ mod tests {
             history={history={{location=9 attacker=A defender=B end_date=1936.1.2.1 type=1}}}}
             countries={A={units={division={id={id=9 type=4713} max_supply=2
                 army_current_supply_ratio=1 army_manpower={army_manpower_value={}}}}}}"#;
-        let doc = content_reader_core::parser::parse(bytes).unwrap();
+        let doc = content_reader_parser::parser::parse(bytes).unwrap();
         assert_eq!(
             super::read(&doc.items, Comparison::Divisions)
                 .unwrap()
@@ -588,7 +588,7 @@ mod tests {
         let bytes = br#"combat={land_combat={id={id=7 type=62}
             attacker={log={combat_side_data={}}} defender={log={combat_side_data={}}}}}
             countries={A={units={division={id={id=9 type=4713}}}}}"#;
-        let doc = content_reader_core::parser::parse(bytes).unwrap();
+        let doc = content_reader_parser::parser::parse(bytes).unwrap();
         assert!(
             super::read(&doc.items, Comparison::Divisions)
                 .err()
@@ -609,7 +609,7 @@ mod tests {
                 .history
                 .is_empty()
         );
-        let doc = content_reader_core::parser::parse(b"countries={}").unwrap();
+        let doc = content_reader_parser::parser::parse(b"countries={}").unwrap();
         assert!(super::read(&doc.items, Comparison::Divisions).is_ok());
         assert!(super::read(&doc.items, Comparison::History).is_err());
         assert!(super::read(&doc.items, Comparison::Losses).is_err());

@@ -3,7 +3,7 @@ use std::cell::RefCell;
 pub mod bridge;
 pub mod legacy;
 
-use content_reader_core::parser::Item;
+use content_reader_parser::parser::Item;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Copy)]

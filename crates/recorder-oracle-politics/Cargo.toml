@@ -10,16 +10,18 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+content-reader-key-names.workspace = true
+content-reader-parser.workspace = true
+content-reader-script.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
-content-reader-core.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 content-reader-save.workspace = true
 recorder-oracle-characters.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-script = { workspace = true, features = ["test-support"] }
 recorder-oracle-support = { workspace = true, features = ["test-support"] }
 
 [lints]

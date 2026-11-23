@@ -1,3 +1,4 @@
+use content_reader_mesh::mesh::MeshProducts as _;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -8,7 +9,8 @@ use viewer_gpu::textures::load_image;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use content_reader_core::{ResolvedLayers, mesh, mesh::Descriptors};
+use content_reader_layers::ResolvedLayers;
+use content_reader_mesh::mesh::{self, Descriptors};
 use content_reader_image::{IndexedImage, SharedRgba8Image as Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::{BUFFER_FORMAT, DEPTH_MAP_FORMAT};
@@ -783,7 +785,7 @@ impl TreePass {
         self.compile_lit(device, inputs.high)?;
         let cached = self.compiled_lit.borrow();
         let compiled = &cached.as_ref().expect("compiled above").1;
-        use content_reader_core::pdxshader::program::Stage;
+        use content_reader_gui::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let mut textures: BTreeMap<_, _> = inputs
             .textures
@@ -923,7 +925,7 @@ impl TreePass {
             return Ok(());
         };
         let fade = tree_fade(&frame.camera.defines, frame.camera.height);
-        use content_reader_core::pdxshader::program::Stage;
+        use content_reader_gui::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let mut textures: BTreeMap<_, _> = inputs
             .textures

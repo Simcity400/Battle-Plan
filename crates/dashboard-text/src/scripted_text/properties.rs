@@ -38,8 +38,8 @@ fn first_leader(party: &PoliticalPartyRow) -> u128 {
 
 impl<'a> ScriptedText<'a> {
     pub(super) fn party_support(&self, slot: u32) -> Result<String, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::PartySupport(slot)),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::PartySupport(slot)),
             || self.party_support_unrecorded(slot),
         )
     }
@@ -74,7 +74,7 @@ impl<'a> ScriptedText<'a> {
                 .checked_div(total)
                 .ok_or("GetPartySupport: native signed quotient overflows")?
         };
-        Ok(content_reader_core::fixed5::format_fixed5(
+        Ok(content_reader_parser::fixed5::format_fixed5(
             value.wrapping_mul(100),
             true,
             5,
@@ -82,8 +82,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn manpower(&self, slot: u32) -> Result<i32, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::Manpower(slot)),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::Manpower(slot)),
             || self.manpower_unrecorded(slot),
         )
     }
@@ -137,8 +137,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn agency(&self, slot: u32) -> Result<String, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::Agency(slot)),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::Agency(slot)),
             || self.agency_unrecorded(slot),
         )
     }
@@ -157,9 +157,9 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn old_name(&self, slot: u32, entry: &str, suffix: &str) -> Result<String, String> {
-        crate::triggers::inputs::query(
+        content_reader_script::triggers::inputs::query(
             || {
-                crate::triggers::inputs::Key::Text(TextQuery::OldName(
+                content_reader_script::triggers::inputs::Key::Text(TextQuery::OldName(
                     slot,
                     entry.to_owned(),
                     suffix.to_owned(),
@@ -194,8 +194,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn character_gender(&self, id: u32) -> Result<u32, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::CharacterGender(id)),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CharacterGender(id)),
             || self.character_gender_unrecorded(id),
         )
     }
@@ -208,8 +208,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn country_pronoun(&self, slot: u32, name: &str) -> Result<String, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::CountryPronoun(slot, name.to_owned())),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::CountryPronoun(slot, name.to_owned())),
             || self.country_pronoun_unrecorded(slot, name),
         )
     }
@@ -305,9 +305,9 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn party_leader(&self, slot: u32, group: Option<&str>) -> Result<String, String> {
-        crate::triggers::inputs::query(
+        content_reader_script::triggers::inputs::query(
             || {
-                crate::triggers::inputs::Key::Text(TextQuery::PartyLeader(
+                content_reader_script::triggers::inputs::Key::Text(TextQuery::PartyLeader(
                     slot,
                     group.map(str::to_owned),
                 ))
@@ -330,9 +330,9 @@ impl<'a> ScriptedText<'a> {
         group: &str,
         tag: &str,
     ) -> Result<String, String> {
-        crate::triggers::inputs::query(
+        content_reader_script::triggers::inputs::query(
             || {
-                crate::triggers::inputs::Key::Text(TextQuery::NamedPartyName(
+                content_reader_script::triggers::inputs::Key::Text(TextQuery::NamedPartyName(
                     slot,
                     group.to_owned(),
                     tag.to_owned(),
@@ -355,8 +355,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn last_election(&self, slot: u32) -> Result<String, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::LastElection(slot)),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::LastElection(slot)),
             || self.last_election_unrecorded(slot),
         )
     }
@@ -386,8 +386,8 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(super) fn date_property(&self, name: &str) -> Result<Option<String>, String> {
-        crate::triggers::inputs::query(
-            || crate::triggers::inputs::Key::Text(TextQuery::DateProperty(name.to_owned())),
+        content_reader_script::triggers::inputs::query(
+            || content_reader_script::triggers::inputs::Key::Text(TextQuery::DateProperty(name.to_owned())),
             || self.date_property_unrecorded(name),
         )
     }

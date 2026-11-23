@@ -8,7 +8,7 @@ pub(super) struct Defines {
     ratio: i64,
 }
 impl Defines {
-    pub(super) fn read(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
+    pub(super) fn read(defines: &content_reader_defines::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             average: defines.int32("NAir", "AIR_WING_AVERAGE_SIZE")?,
             bases: defines.fixed5("NCountry", "AIR_VOLUNTEER_BASES_CAPACITY_LIMIT")?,

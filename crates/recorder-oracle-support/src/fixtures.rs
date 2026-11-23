@@ -12,7 +12,7 @@ pub fn fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    content_reader_core::equipment::Database,
+    content_reader_key_names::equipment::Database,
 ) {
     let save = save::parse(br#"HOI4txt
 player="GER" date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
@@ -187,7 +187,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
         frame,
         save,
         membership,
-        content_reader_core::equipment::Database::default(),
+        content_reader_key_names::equipment::Database::default(),
     )
 }
 
@@ -248,7 +248,7 @@ pub fn division_fixture() -> (
     DecodedFrame,
     Save,
     save::PartialMapMembership,
-    content_reader_core::equipment::Database,
+    content_reader_key_names::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
     add_country(&mut frame, &mut save, 201, 8, b"D01");
@@ -307,7 +307,7 @@ pub fn read_membership(
 pub fn with_content<T>(
     history: &str,
     province_count: u32,
-    read: impl FnOnce(&content_reader_core::ResolvedLayers) -> io::Result<T>,
+    read: impl FnOnce(&content_reader_layers::ResolvedLayers) -> io::Result<T>,
 ) -> io::Result<T> {
     with_content_files(history, province_count, &[], read)
 }
@@ -316,10 +316,10 @@ pub fn with_content_files<T>(
     history: &str,
     province_count: u32,
     extra_files: &[(&str, &str)],
-    read: impl FnOnce(&content_reader_core::ResolvedLayers) -> io::Result<T>,
+    read: impl FnOnce(&content_reader_layers::ResolvedLayers) -> io::Result<T>,
 ) -> io::Result<T> {
     if !engine_executable::executable_tables::is_initialized() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
     }
     struct Content(std::path::PathBuf);
     impl Drop for Content {
@@ -374,6 +374,6 @@ pub fn with_content_files<T>(
         }
         std::fs::write(bitmap_path, bmp).unwrap();
     }
-    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&content.0, &[])]).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&content.0, &[])]).unwrap();
     read(&layers)
 }

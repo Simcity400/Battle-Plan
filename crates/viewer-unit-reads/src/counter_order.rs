@@ -105,7 +105,7 @@ pub struct Hull<'a> {
 pub fn better_hull(
     a: &Hull<'_>,
     b: &Hull<'_>,
-    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_key_names::equipment::Database, &str>,
 ) -> Result<bool, String> {
     let air = |hull: &Hull<'_>| {
         hull.model
@@ -132,7 +132,7 @@ pub fn better_hull(
 fn preferred_variant(
     a: &ShipModelRow,
     b: &ShipModelRow,
-    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_key_names::equipment::Database, &str>,
 ) -> Result<bool, String> {
     let (a, b) = (variant_packet(a)?, variant_packet(b)?);
     let definition = |index: Option<i32>| -> Result<(i32, Option<usize>), String> {
@@ -216,7 +216,7 @@ fn variant_packet(model: &ShipModelRow) -> Result<&replay_data::rows::HullVarian
 }
 
 fn plane_definition(
-    equipment: &content_reader_core::equipment::Database,
+    equipment: &content_reader_key_names::equipment::Database,
     index: usize,
 ) -> Result<bool, String> {
     let mut chain = Vec::new();
@@ -250,7 +250,7 @@ pub enum HullIcon {
 
 pub fn hull_icon<'a>(
     ships: impl IntoIterator<Item = Hull<'a>>,
-    equipment: Result<&content_reader_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_key_names::equipment::Database, &str>,
 ) -> HullIcon {
     let mut best: Vec<Hull<'a>> = Vec::new();
     for ship in ships {
@@ -617,7 +617,7 @@ mod tests {
         }
     }
 
-    fn definition_index(database: &content_reader_core::equipment::Database, name: &[u8]) -> i32 {
+    fn definition_index(database: &content_reader_key_names::equipment::Database, name: &[u8]) -> i32 {
         database
             .equipment
             .iter()
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn current_modded_parent_depth_resolves_equal_strength_before_later_fields() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let content = viewer_foundation::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_root = { is_archetype = yes type = screen_ship }
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn current_raw_score_wraps_and_equal_scores_use_the_signed_marker() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let content = viewer_foundation::test_support::equipment_from_documents(&[br"
             equipments = { mod_root = { is_archetype = yes type = screen_ship } }
         "]);
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn left_recursive_plane_classification_uses_unsigned_versions_without_marker_fallthrough() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let content = viewer_foundation::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_plane = { is_archetype = yes type = fighter }
@@ -826,7 +826,7 @@ mod tests {
             organisation_marker: Some(-5),
             ..null
         };
-        let mut incomplete = content_reader_core::equipment::Database::default();
+        let mut incomplete = content_reader_key_names::equipment::Database::default();
         incomplete.lost = Some("fixture definition gap".into());
         for equipment in [Err("absent content"), Ok(&incomplete)] {
             assert_eq!(
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn null_and_real_definitions_keep_depth_and_left_plane_precedence() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         let content = viewer_foundation::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_plane = { is_archetype = yes type = fighter }

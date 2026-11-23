@@ -32,7 +32,7 @@ impl Naval for Content {
         let definitions = &self.map.definitions;
         let land = |province| match movement.and_then(|movement| movement.map.terrain(province)) {
             Some(terrain) => terrain.flags & 1 != 0,
-            None => matches!(definitions.get(&province).map(|it| it.kind), Some(content_reader_core::map::ProvinceKind::Land)),
+            None => matches!(definitions.get(&province).map(|it| it.kind), Some(content_reader_map::map::ProvinceKind::Land)),
         };
         let anchor = |province, slot| counters.anchor(province, slot);
         let scale = |province, kind| counters.stack_scale(province, kind);
@@ -43,7 +43,7 @@ impl Naval for Content {
     fn rosters(&self, frame: &DecodedFrame, forces: &[u64]) -> io::Result<(Vec<(u64, Roster)>, Decided)> {
         engine_executable::executable_tables::scope(self.tables, || {
             let hour = crate::document::Hour::new(self, frame, 0.0);
-            let evaluate = |items: &[content_reader_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
+            let evaluate = |items: &[content_reader_parser::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
             let values = LimitValues::default();
             let limits = Limits::new(&values, &evaluate);
             let rosters = self.unit_models.resolve_rosters(frame, limits, &self.counters.terrain.combat_terrain, &self.names.localisation, forces)?;
@@ -54,7 +54,7 @@ impl Naval for Content {
     fn decide_the_same(&self, frame: &DecodedFrame, decided: &Decided) -> bool {
         engine_executable::executable_tables::scope(self.tables, || {
             let hour = crate::document::Hour::new(self, frame, 0.0);
-            let evaluate = |items: &[content_reader_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
+            let evaluate = |items: &[content_reader_parser::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
             let values = LimitValues::default();
             Limits::new(&values, &evaluate).decide_the_same(decided)
         })

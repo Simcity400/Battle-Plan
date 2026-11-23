@@ -1,5 +1,5 @@
 use super::*;
-use crate::key_names::KeyNames;
+use content_reader_script::key_names::KeyNames;
 
 const EQUIPMENT: Equipment<'static> = &|key| Some(matches!(key, b"convoy" | b"ship_hull_light"));
 
@@ -9,7 +9,7 @@ fn doc(bytes: &[u8]) -> io::Result<parser::Document> {
 
 #[test]
 fn raid_reader_notes_keep_diagnostic_kinds() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut notes = Vec::new();
     reader::document(
         b"types = { a = { unit_model = { type = x } success_levels = { success = { actor_effects = { free_operative = { operative = x } } } } } }",
@@ -21,13 +21,13 @@ fn raid_reader_notes_keep_diagnostic_kinds() {
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
+            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Misread),
         "{notes:?}"
     );
     assert!(
         notes
             .iter()
-            .any(|(kind, _)| *kind == crate::DiagnosticKind::Unsupported),
+            .any(|(kind, _)| *kind == content_reader_parser::DiagnosticKind::Unsupported),
         "{notes:?}"
     );
 }
@@ -63,7 +63,7 @@ fn types_doc() -> io::Result<parser::Document> {
 
 #[test]
 fn a_type_keeps_the_fields_offers_read_in_database_order() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let categories =
         doc(b"categories = { air_raids = { free_targeting = yes visible = { has_dlc = x } } }")
             .unwrap();
@@ -126,7 +126,7 @@ fn a_type_keeps_the_fields_offers_read_in_database_order() {
 
 #[test]
 fn every_field_updates_the_types_persistent_objects() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
         &[],
         &[doc(br#"types = {
@@ -199,7 +199,7 @@ fn every_field_updates_the_types_persistent_objects() {
 
 #[test]
 fn type_and_category_names_are_folded_tokens() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let categories =
         doc(b"categories = { Air = { free_targeting = no } AIR = { free_targeting = yes } }")
             .unwrap();
@@ -218,7 +218,7 @@ fn type_and_category_names_are_folded_tokens() {
 
 #[test]
 fn scalar_selector_names_read_the_lexers_current_token() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
             &[],
             &[doc(b"types = { t = { target_type = { building = { is_coastal = no type custom_fort } } } }")
@@ -234,8 +234,8 @@ fn scalar_selector_names_read_the_lexers_current_token() {
 
 #[test]
 fn launch_buildings_resolve_types_and_tags_in_database_order() {
-    content_reader_core::test_game::enter();
-    let buildings = crate::buildings::parse(
+    content_reader_script::test_game::enter();
+    let buildings = content_reader_key_names::buildings::parse(
         b"buildings = {
                 launcher = { tags = { launch_group } level_cap = { province_max = 1 } }
                 Silo = { level_cap = { province_max = 2 } }
@@ -269,7 +269,7 @@ fn launch_buildings_resolve_types_and_tags_in_database_order() {
 
 #[test]
 fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut notes = Vec::new();
     let types = reader::document(
         b"categories = no types = { t = { unit_model = { type = transport scale = 2 } } }",
@@ -295,7 +295,7 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
 
 #[test]
 fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let partial: Equipment<'static> = &|key| (key == b"convoy").then_some(true);
     let types = reader::document(
         br#"types = {
@@ -317,7 +317,7 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
     assert!(catalog.uncertain[0].reason.contains("equipment tank"));
     assert_eq!(
         catalog.uncertain[0].kind,
-        crate::DiagnosticKind::Unsupported
+        content_reader_parser::DiagnosticKind::Unsupported
     );
     let block = reader::document(
         b"types = { later = { essential_equipment = { tank = { 3 } } } }",
@@ -335,7 +335,7 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
 
 #[test]
 fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let mut notes = Vec::new();
     let types = reader::document(
         br#"types = {
@@ -382,7 +382,7 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
 
 #[test]
 fn the_icon_key_follows_the_documented_two_step_lookup() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(&[], &[types_doc().unwrap()], EQUIPMENT).unwrap();
     let facility = &catalog.types[0];
     let known = |name: &str| name.starts_with("GFX_raid_type_icon_facility_raid");
@@ -395,7 +395,7 @@ fn the_icon_key_follows_the_documented_two_step_lookup() {
 
 #[test]
 fn raids_empty_custom_map_icon_uses_generated_base_and_building_suffix() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
         &[],
         &[doc(br#"types = { synthetic_empty = { custom_map_icon = "" } }"#).unwrap()],
@@ -422,7 +422,7 @@ fn raids_empty_custom_map_icon_uses_generated_base_and_building_suffix() {
 
 #[test]
 fn a_name_declared_twice_or_thrice_is_refused_once() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
         &[],
         &[doc(b"types = { a = {} b = {} a = {} a = { command_power = 1 } }").unwrap()],
@@ -435,12 +435,12 @@ fn a_name_declared_twice_or_thrice_is_refused_once() {
     assert_eq!(catalog.uncertain.len(), 1);
     assert_eq!(catalog.uncertain[0].name, "a");
     assert_eq!(catalog.uncertain[0].declarations.len(), 3);
-    assert_eq!(catalog.uncertain[0].kind, crate::DiagnosticKind::Refused);
+    assert_eq!(catalog.uncertain[0].kind, content_reader_parser::DiagnosticKind::Refused);
 }
 
 #[test]
 fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
             &[],
             &[doc(br#"types = {
@@ -472,7 +472,7 @@ fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
 
 #[test]
 fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
             &[],
             &[doc(br#"types = {
@@ -505,7 +505,7 @@ fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
     assert_eq!(drop.arrow, RaidArrowKind::Air);
     assert_eq!(
         Some(drop.unit_model.equipment),
-        crate::equipment::category_mask("air_transport")
+        content_reader_script::equipment_stats::category_mask("air_transport")
     );
     assert_eq!(
         (drop.unit_model.start_offset_raw, drop.unit_model.scale_raw),
@@ -555,7 +555,7 @@ fn graphics_defines(replace: &[(&str, &str)]) -> io::Result<RaidGraphicsDefines>
             assert!(source.contains(from), "{from} is not in the fixture");
             source.replace(from, to)
         });
-    let defines = crate::defines::Defines::new().unwrap();
+    let defines = content_reader_defines::defines::Defines::new().unwrap();
     defines
         .load("common/defines/raid_fixture.lua", source.as_bytes())
         .unwrap();
@@ -640,7 +640,7 @@ fn segment_and_subdivision_counts_are_at_least_one() {
 
 #[test]
 fn unit_animation_stages_keep_authored_order_across_blocks() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let catalog = parse(
         &[],
         &[doc(br#"types = { militia = {
@@ -679,7 +679,7 @@ fn unit_animation_stages_keep_authored_order_across_blocks() {
 
 #[test]
 fn a_repeated_category_is_the_later_declaration_alone() {
-    content_reader_core::test_game::enter();
+    content_reader_script::test_game::enter();
     let categories = doc(
         b"categories = { air = { free_targeting = yes visible = { always = yes } } }
               categories = { air = { available = { always = no } } }",

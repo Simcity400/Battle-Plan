@@ -575,7 +575,7 @@ fn bad_input_is_a_named_error_rather_than_a_panic() {
 #[test]
 fn political_fill_uses_controller_and_borders_use_owner() {
     use viewer_map_modes::political::{regions, test_support::{map, occupied}};
-    use content_reader_core::map::ProvinceKind;
+    use content_reader_map::map::ProvinceKind;
     use viewer_scene_base::gradient::NO_REGION;
     let map = map();
     let frame = occupied();

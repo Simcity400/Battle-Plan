@@ -134,7 +134,7 @@ struct JsonReply<'a> {
     context: &'a LoadContext,
     content_dependent: bool,
     prefix: String,
-    _content: Option<std::sync::Arc<content_reader_core::content::ResolvedContent>>,
+    _content: Option<std::sync::Arc<content_reader_layers::content::ResolvedContent>>,
 }
 
 impl<'a> JsonReply<'a> {

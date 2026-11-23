@@ -1,6 +1,6 @@
 
 use super::*;
-use content_reader_core::{parser::c_string, parser::text};
+use content_reader_parser::parser::{c_string, text};
 mod pass;
 pub(super) use pass::Pass;
 #[cfg(test)]
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn owner_local_first_requirement_preserves_zero_and_differs_from_global() {
-        content_reader_core::test_game::enter();
+        content_reader_script::test_game::enter();
         use replay_data::{
             rows::CountryLinkRow, rows::CountryLocalSubunitRow, rows::LexicalTokenRow,
             rows::LocalSubunitRequirement, rows::TableRows, rows::TableSchema,
