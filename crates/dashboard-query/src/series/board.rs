@@ -280,7 +280,7 @@ mod tests {
         let fixture = Fixture::new(Data::Power, hour..=hour);
         let query = fixture.query();
         let factories = dashboard_declare::series("country-factories").unwrap();
-        let col = Column { line: Line::new(&query, factories, factories.measure("civilian").unwrap()).unwrap(), partial: None };
+        let col = Column { line: Line::new(&query, factories, factories.measure("free1").unwrap()).unwrap(), partial: None };
         let board = at(&[col], Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
         assert!(board.rows.is_empty());
         assert_eq!(board.missing, table_unrecorded(factories.table, Status::NotRecorded, None));
