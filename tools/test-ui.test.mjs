@@ -128,17 +128,15 @@ test('the production group runner reports actual Node test failures, and a group
     await writeFile(resolve(root, 'pass.test.mjs'), `import assert from 'node:assert/strict'; import test from 'node:test';
 test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
-    await writeFile(resolve(root, 'leak.test.mjs'), `import test from 'node:test'; import { writeFileSync } from 'node:fs';
+    await writeFile(resolve(root, 'leak.test.mjs'), `import test from 'node:test';
 test('synthetic leak', () => {
   const { port1 } = new MessageChannel();
   port1.on('message', () => {});
   process.stdin.on('end', () => port1.close()).resume();
-  writeFileSync(new URL('./leaked', import.meta.url), '');
 });`);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
-import { watch } from 'node:fs';
 let reported = '';
 const output = { write(chunk) { reported += chunk; } };
 const passed = await executeGroup({ files: ['pass.test.mjs'], concurrency: true }, ${JSON.stringify(root)}, output);
@@ -152,9 +150,8 @@ const failed = await executeGroup({ files: ['fail.test.mjs'], concurrency: 1 }, 
 const failureReport = reported;
 reported = '';
 const controller = new AbortController();
-const watcher = watch(${JSON.stringify(root)}, (_, name) => { if (name === 'leaked') controller.abort(); });
-const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs', 'pass.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, output, controller.signal);
-watcher.close();
+const stopping = { write(chunk) { reported += chunk; if (chunk.includes('synthetic leak')) controller.abort(); } };
+const stopped = await executeGroup({ name: 'Synthetic group', files: ['leak.test.mjs', 'pass.test.mjs'], concurrency: 1 }, ${JSON.stringify(root)}, stopping, controller.signal);
 console.log(JSON.stringify({ passed, failed, passReport, failureReport, stopped, stopReport: reported, cwd: process.cwd(), relativePassed }));
 `);
     const env = { ...process.env };
