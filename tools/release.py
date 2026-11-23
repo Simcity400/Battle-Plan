@@ -641,11 +641,12 @@ def newest_green(repo, since):
 def whole_run_state(repo):
     """Why main's last whole-workspace CI run, the scheduled one, bars a nightly, or None when it
     passed or none has run. A push's run tests only what changed since the last green commit, so a
-    break only the whole run sees holds every nightly until a whole run passes again; a run still
-    going holds them too, because a retried run shows only its newest attempt."""
+    break only the whole run sees holds every nightly until a whole run passes again. A run still
+    going or cancelled holds them too: a retried run shows only its newest attempt, so either can
+    hide the failure it retries."""
     runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{CI_WORKFLOW}/runs?branch=main&event=schedule"
-                           "&per_page=100"]).stdout)["workflow_runs"]
-    last = next((found for found in runs if found["conclusion"] != "cancelled"), None)
+                           "&per_page=1"]).stdout)["workflow_runs"]
+    last = runs[0] if runs else None
     if last and last["status"] != "completed":
         return f"main's whole-workspace CI run of {last['head_sha'][:12]} is still going"
     if last and last["conclusion"] not in SETTLED:
@@ -653,9 +654,16 @@ def whole_run_state(repo):
     return None
 
 
-def published_today(feed, today):
-    """Whether the nightly feed's release was published on `today` (UTC), by its feed's date."""
-    return (feed or {}).get("pub_date", "")[:10] == f"{today:%Y-%m-%d}"
+def feed_uploaded(repo, channel):
+    """When GitHub took the published channel feed's latest.json, which can be minutes after the
+    date it carries."""
+    return run(["gh", "api", f"repos/{repo}/releases/tags/{channel}", "--jq",
+                '.assets[] | select(.name == "latest.json") | .updated_at']).stdout.strip()
+
+
+def published_today(uploaded, today):
+    """Whether a feed GitHub took at `uploaded` was published on `today` (UTC)."""
+    return uploaded[:10] == f"{today:%Y-%m-%d}"
 
 
 def nightly_going(repo):
@@ -689,7 +697,7 @@ def resolve(args):
         if not args.draft and (going := nightly_going(repo)):
             return not_yet(f"nightly release run {going} is going")
         feed = read_feed(repo, "nightly")
-        if args.scheduled and published_today(feed, datetime.datetime.now(datetime.UTC)):
+        if args.scheduled and feed and published_today(feed_uploaded(repo, "nightly"), datetime.datetime.now(datetime.UTC)):
             say(f"Today's nightly, {feed['version']}, is out; the next is due tomorrow (UTC).")
             return outputs(found, args.github_output) or 0
         if not args.draft and (why := whole_run_state(repo)):

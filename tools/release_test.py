@@ -237,6 +237,7 @@ class Resolve(unittest.TestCase):
                         run=mock.Mock(return_value=mock.Mock(returncode=1)),
                         ci_state=mock.Mock(return_value=None), nightly_going=mock.Mock(return_value=None),
                         newest_green=mock.Mock(return_value="b" * 40), whole_run_state=mock.Mock(return_value=None),
+                        feed_uploaded=mock.Mock(return_value="2000-01-01T00:00:00Z"),
                         find_candidate=mock.Mock(return_value=(None, "no candidate candidate-nightly-b was built")),
                         outputs=mock.Mock())
         settings.update(changes)
@@ -267,11 +268,13 @@ class Resolve(unittest.TestCase):
             return json.dumps({"workflow_runs": [{"conclusion": found, "status": "in_progress" if found is None else "completed",
                                                   "head_sha": "c" * 40} for found in conclusions]})
 
-        with mock.patch.object(release, "run", answers(listed("cancelled", "failure", "success"))):
+        with mock.patch.object(release, "run", answers(listed("failure"))):
             self.assertIn("ended failure", release.whole_run_state("owner/repo"))
-        with mock.patch.object(release, "run", answers(listed(None, "success"))):
+        with mock.patch.object(release, "run", answers(listed("cancelled"))):
+            self.assertIn("ended cancelled", release.whole_run_state("owner/repo"))
+        with mock.patch.object(release, "run", answers(listed(None))):
             self.assertIn("still going", release.whole_run_state("owner/repo"))
-        with mock.patch.object(release, "run", answers(listed("success", "failure"))):
+        with mock.patch.object(release, "run", answers(listed("success"))):
             self.assertIsNone(release.whole_run_state("owner/repo"))
         with mock.patch.object(release, "run", answers(listed())):
             self.assertIsNone(release.whole_run_state("owner/repo"))
@@ -288,13 +291,16 @@ class Resolve(unittest.TestCase):
 
     def test_a_scheduled_nightly_is_due_once_a_utc_day_and_a_dispatched_one_whenever_asked(self):
         today = f"{datetime.datetime.now(datetime.UTC):%Y-%m-%d}"
-        fresh = mock.Mock(return_value={"commit": "a" * 40, "version": "1.4.3-nightly.20000101.900", "pub_date": f"{today}T00:40:00Z"})
-        self.assertEqual(self.resolve(read_feed=fresh)["due"], "false")
-        self.assertEqual(self.resolve(read_feed=fresh, scheduled=False)["due"], "true")
-        built_yesterday = {"version": "1.4.3-nightly.20261121.900", "pub_date": "2026-11-22T00:40:00Z"}
-        self.assertTrue(release.published_today(built_yesterday, datetime.datetime(2026, 11, 22, 0, 41)))
-        self.assertFalse(release.published_today(built_yesterday, datetime.datetime(2026, 11, 23)))
-        self.assertFalse(release.published_today(None, datetime.datetime(2026, 11, 22)))
+        stamped_yesterday = mock.Mock(return_value={"commit": "a" * 40, "version": "1.4.3-nightly.20000101.900",
+                                                    "pub_date": "2000-01-01T23:59:00Z"})
+        uploaded = mock.Mock(return_value=f"{today}T00:01:00Z")
+        self.assertEqual(self.resolve(read_feed=stamped_yesterday, feed_uploaded=uploaded)["due"], "false")
+        uploaded.assert_called_once_with("owner/repo", "nightly")
+        self.assertEqual(self.resolve(read_feed=stamped_yesterday, feed_uploaded=uploaded, scheduled=False)["due"], "true")
+        self.assertEqual(self.resolve(feed_uploaded=mock.Mock(return_value="2000-01-01T00:01:00Z"))["due"], "true")
+        self.assertEqual(self.resolve(read_feed=mock.Mock(return_value=None), feed_uploaded=mock.Mock(side_effect=AssertionError))["due"], "true")
+        self.assertTrue(release.published_today("2026-11-22T00:01:00Z", datetime.datetime(2026, 11, 22, 0, 41)))
+        self.assertFalse(release.published_today("2026-11-22T00:01:00Z", datetime.datetime(2026, 11, 23)))
 
     def test_a_named_nightly_commit_needs_green_ci_and_changes_since_the_feeds(self):
         self.assertEqual(self.resolve(sha="b" * 40)["commit"], "b" * 40)
