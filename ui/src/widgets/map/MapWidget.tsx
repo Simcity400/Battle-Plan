@@ -48,8 +48,7 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
         : !desired && track && !nativeUnavailable && !runtime.nativeHidden && !hidden
           ? <WidgetState kind="outside" />
           : <><span className="empty-icon">{preparing ? <span className="spinner" /> : <Icon name="map" />}</span>
-          <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden ? 'Map hidden for layout controls.'
-            : hidden ? 'Map hidden while a menu is open.'
+          <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden || hidden ? 'Map hidden for layout controls.'
             : !track ? 'Load a campaign to see the map.' : matched || framed ? 'Campaign map' : 'Preparing this map…'}</strong>
           {nativeUnavailable && <p>Open a recording in the desktop app to explore its campaign map.</p>}</>}
       </div>

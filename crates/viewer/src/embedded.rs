@@ -1,6 +1,6 @@
 
 use job_priority::SpawnCarried as _;
-use dashboard_core::protocol::{CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_views};
+use dashboard_core::protocol::{CameraMode, DashboardMapState, DashboardMapView, GamepadMessage, NativeCommand, NativeEvent, ViewBounds, ViewerState, validate_map_holes, validate_map_views};
 use eframe::egui;
 use std::{
     cell::{Cell, RefCell},
@@ -75,6 +75,8 @@ pub struct Pending {
     pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
+    holes: Option<Vec<ViewBounds>>,
+    holes_applied: Vec<Box<dyn FnOnce() + Send>>,
     clock_origins: crate::page_clock::OriginGate,
 }
 
@@ -96,6 +98,7 @@ impl Pending {
             && !self.close
             && self.bounds.is_none()
             && self.visibility.is_none()
+            && self.holes.is_none()
             && self.gamepad.is_none()
             && self.error.is_none()
     }
@@ -108,6 +111,12 @@ impl Pending {
             crate::host::Command::Native(command) => command,
             crate::host::Command::Export(job) => {
                 self.exports.push(job);
+                return Ok(());
+            }
+            crate::host::Command::Holes(holes) => {
+                validate_map_holes(&holes.rects)?;
+                self.holes = Some(holes.rects);
+                self.holes_applied.push(holes.applied);
                 return Ok(());
             }
         };
@@ -759,9 +768,13 @@ impl Controller {
             .take();
         pending.close |= self.closing;
         if !pending.close {
+            let holes_applied = std::mem::take(&mut pending.holes_applied);
             let applied = (|| {
                 if pending.campaign_map {
-                    self.window.clear_region()?;
+                    self.window.campaign();
+                }
+                if let Some(holes) = pending.holes.take() {
+                    self.window.holes(holes);
                 }
                 if let Some(bounds) = pending.bounds {
                     self.window.bounds(bounds)?;
@@ -772,11 +785,14 @@ impl Controller {
                 if let Some((_, views)) = &pending.map_views {
                     self.window.map_views(views)?;
                 }
-                Ok::<_, io::Error>(())
+                self.window.reshape()
             })();
-            if let Err(error) = applied {
-                self.error(format!("Embedding window: {error}"));
-                pending.close = true;
+            match applied {
+                Ok(()) => holes_applied.into_iter().for_each(|applied| applied()),
+                Err(error) => {
+                    self.error(format!("Embedding window: {error}"));
+                    pending.close = true;
+                }
             }
         }
         if pending.close {
@@ -954,7 +970,54 @@ impl Placement {
 struct NativeWindow {
     window: crate::host::Window,
     placement: Cell<Placement>,
-    region: RefCell<Option<Vec<ViewBounds>>>,
+    views: RefCell<Option<Vec<ViewBounds>>>,
+    holes: RefCell<Vec<ViewBounds>>,
+    region: RefCell<Option<Shape>>,
+    drawn: Cell<bool>,
+    shaped: Cell<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Shape {
+    parts: Vec<ViewBounds>,
+    holes: Vec<ViewBounds>,
+}
+
+fn shape(views: Option<&[ViewBounds]>, holes: &[ViewBounds], window: ViewBounds) -> Option<Shape> {
+    let local = |rect: ViewBounds| ViewBounds { x: rect.x - window.x, y: rect.y - window.y, ..rect };
+    let holes: Vec<_> = holes.iter().filter_map(|&hole| intersect_bounds(hole, window)).map(local).collect();
+    let parts = match views {
+        Some(views) => views.iter().map(|&view| local(view)).collect(),
+        None if holes.is_empty() => return None,
+        None => vec![local(window)],
+    };
+    Some(Shape { parts, holes })
+}
+
+fn build_region(shape: &Shape) -> io::Result<(HRGN, bool)> {
+    // SAFETY: every region made here is combined into `region` and deleted, or deleted on failure.
+    unsafe {
+        let region = CreateRectRgn(0, 0, 0, 0);
+        if region.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let cuts = shape.parts.iter().map(|part| (part, RGN_OR)).chain(shape.holes.iter().map(|hole| (hole, RGN_DIFF)));
+        let mut kind = NULLREGION;
+        for (rect, mode) in cuts {
+            let part = CreateRectRgn(rect.x, rect.y, rect.x + rect.width as i32, rect.y + rect.height as i32);
+            if part.is_null() {
+                DeleteObject(region);
+                return Err(io::Error::last_os_error());
+            }
+            kind = CombineRgn(region, region, part, mode);
+            DeleteObject(part);
+            if kind == 0 {
+                DeleteObject(region);
+                return Err(io::Error::other("Cannot combine native map clipping regions"));
+            }
+        }
+        Ok((region, kind != NULLREGION))
+    }
 }
 
 impl NativeWindow {
@@ -962,7 +1025,15 @@ impl NativeWindow {
         if unsafe { GetParent(window.hwnd() as HWND) }.is_null() {
             return Err(io::Error::other("The map’s window has no host window"));
         }
-        Ok(Self { window, placement: Cell::new(Placement::default()), region: RefCell::new(None) })
+        Ok(Self {
+            window,
+            placement: Cell::new(Placement::default()),
+            views: RefCell::new(None),
+            holes: RefCell::new(Vec::new()),
+            region: RefCell::new(None),
+            drawn: Cell::new(true),
+            shaped: Cell::new(true),
+        })
     }
 
     fn hwnd(&self) -> HWND {
@@ -971,6 +1042,9 @@ impl NativeWindow {
 
     fn bounds(&self, bounds: ViewBounds) -> io::Result<()> {
         let bounds = bounds.validate().map_err(io::Error::other)?;
+        if self.placement.get().bounds != Some(bounds) {
+            self.shaped.set(false);
+        }
         let placement = Placement { bounds: Some(bounds), ..self.placement.get() };
         self.placement.set(placement);
         let visibility = if placement.show() { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
@@ -991,13 +1065,27 @@ impl NativeWindow {
 
     fn visibility(&self, visible: bool) {
         let placement = Placement { visible, ..self.placement.get() };
+        let focus = self.holes.borrow().is_empty();
         self.placement.set(placement);
         // SAFETY: asynchronous calls on the map's window; its own thread applies them.
         unsafe {
             ShowWindowAsync(self.hwnd(), if placement.show() { SW_SHOWNOACTIVATE } else { SW_HIDE });
-            if placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {
+            if focus && placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {
                 self.window.focus();
             }
+        }
+    }
+
+    fn campaign(&self) {
+        if self.views.replace(None).is_some() {
+            self.shaped.set(false);
+        }
+    }
+
+    fn holes(&self, holes: Vec<ViewBounds>) {
+        if *self.holes.borrow() != holes {
+            *self.holes.borrow_mut() = holes;
+            self.shaped.set(false);
         }
     }
 
@@ -1021,52 +1109,41 @@ impl NativeWindow {
         if self.placement.get().bounds != Some(root) {
             self.bounds(root)?;
         }
-        if self.region.borrow().as_ref() != Some(&regions) {
-            unsafe {
-                let region = CreateRectRgn(0, 0, 0, 0);
-                if region.is_null() {
-                    return Err(io::Error::last_os_error());
-                }
-                for clip in &regions {
-                    let part = CreateRectRgn(
-                        clip.x,
-                        clip.y,
-                        clip.x + clip.width as i32,
-                        clip.y + clip.height as i32,
-                    );
-                    if part.is_null() {
-                        DeleteObject(region);
-                        return Err(io::Error::last_os_error());
-                    }
-                    let combined = CombineRgn(region, region, part, RGN_OR);
-                    DeleteObject(part);
-                    if combined == 0 {
-                        DeleteObject(region);
-                        return Err(io::Error::other(
-                            "Cannot combine native map clipping regions",
-                        ));
-                    }
-                }
-                if SetWindowRgn(self.hwnd(), region, 1) == 0 {
-                    DeleteObject(region);
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            *self.region.borrow_mut() = Some(regions.clone());
-        }
-        let visible = !regions.is_empty();
-        if self.placement.get().visible != visible {
-            self.visibility(visible);
+        if self.views.borrow().as_ref() != Some(&regions) {
+            *self.views.borrow_mut() = Some(regions);
+            self.shaped.set(false);
         }
         Ok(())
     }
 
-    fn clear_region(&self) -> io::Result<()> {
-        if self.region.borrow().is_some() {
-            if unsafe { SetWindowRgn(self.hwnd(), ptr::null_mut(), 1) } == 0 {
-                return Err(io::Error::last_os_error());
+    fn reshape(&self) -> io::Result<()> {
+        if self.shaped.replace(true) {
+            return Ok(());
+        }
+        let Some(window) = self.placement.get().bounds else {
+            return Ok(());
+        };
+        let shape = shape(self.views.borrow().as_deref(), &self.holes.borrow(), window);
+        if *self.region.borrow() != shape {
+            let (region, drawn) = match &shape {
+                None => (ptr::null_mut(), true),
+                Some(shape) => build_region(shape)?,
+            };
+            // SAFETY: Windows takes the region only when it accepts it, so a refused one is still deleted here.
+            if unsafe { SetWindowRgn(self.hwnd(), region, 1) } == 0 {
+                let error = io::Error::last_os_error();
+                if !region.is_null() {
+                    // SAFETY: `build_region` made this region and nothing else holds it.
+                    unsafe { DeleteObject(region) };
+                }
+                self.shaped.set(false);
+                return Err(error);
             }
-            *self.region.borrow_mut() = None;
+            *self.region.borrow_mut() = shape;
+            self.drawn.set(drawn);
+        }
+        if self.views.borrow().is_some() && self.placement.get().visible != self.drawn.get() {
+            self.visibility(self.drawn.get());
         }
         Ok(())
     }
@@ -1859,5 +1936,21 @@ mod tests {
             Some((Some("page-A".into()), Vec::new())),
             "a stamped empty clear for the active origin is admitted to hide the campaign map"
         );
+    }
+
+    #[test]
+    fn popover_holes_cut_the_window_region_in_window_coordinates() {
+        let rect = |x, y, width, height| ViewBounds { x, y, width, height };
+        let campaign = rect(100, 50, 800, 600);
+        assert_eq!(shape(None, &[], campaign), None, "a campaign map with no hole keeps no region");
+        assert_eq!(shape(None, &[rect(0, 0, 90, 40)], campaign), None, "a hole beside the map leaves it whole");
+        let cut = shape(None, &[rect(850, 40, 200, 100)], campaign).unwrap();
+        assert_eq!(cut, Shape { parts: vec![rect(0, 0, 800, 600)], holes: vec![rect(750, 0, 50, 90)] });
+
+        let root = rect(0, 0, 1000, 800);
+        let views = [rect(0, 0, 400, 300), rect(500, 0, 400, 300)];
+        let dashboard = shape(Some(&views), &[rect(350, 0, 600, 300), rect(0, 900, 10, 10)], root).unwrap();
+        assert_eq!(dashboard, Shape { parts: views.to_vec(), holes: vec![rect(350, 0, 600, 300)] }, "a hole off the window is dropped");
+        assert_eq!(shape(Some(&[]), &[], root), Some(Shape { parts: Vec::new(), holes: Vec::new() }), "a dashboard with no view keeps an empty region");
     }
 }

@@ -227,6 +227,12 @@ impl ExportJob {
 pub enum Command {
     Native(NativeCommand),
     Export(ExportJob),
+    Holes(Holes),
+}
+
+pub struct Holes {
+    pub rects: Vec<dashboard_core::protocol::ViewBounds>,
+    pub applied: Box<dyn FnOnce() + Send>,
 }
 
 impl From<NativeCommand> for Command {
@@ -258,7 +264,7 @@ impl Map {
     pub fn send_export(&self, job: ExportJob) -> Result<(), ExportJob> {
         self.commands.send(Command::Export(job)).map_err(|refused| match refused.0 {
             Command::Export(job) => job,
-            Command::Native(_) => unreachable!("an export was sent"),
+            Command::Native(_) | Command::Holes(_) => unreachable!("an export was sent"),
         })
     }
 }
