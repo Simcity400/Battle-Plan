@@ -1,5 +1,6 @@
 use super::sample_playback::{session, source};
-use replay::{campaign::Replay, spool::Record};
+use replay::campaign::Replay;
+use replay_capture_spool::spool::Record;
 use replay_data::{BranchId, Hour, rows::{TableId, TableRows}};
 use replay_frame::{branches::{BranchReason, BranchStart, Parentage}, frame::{FrameEncoder, TableView}};
 use std::ops::RangeInclusive;

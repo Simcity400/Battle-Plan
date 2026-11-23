@@ -13,8 +13,9 @@ use collector_status::status::status;
 use collector_workers::spool_phases::retry_cause;
 use engine_native::{cgame_state::Clock, walk::Outcome};
 #[cfg(test)]
-use replay::spool::SegmentedSpool;
-use replay::{spool::ControlRecord, spool::FileBackend, spool::Record, spool::SegmentBackend};
+use replay_capture_spool::spool::SegmentedSpool;
+use replay_recording::control::ControlRecord;
+use replay_capture_spool::spool::{FileBackend, Record, SegmentBackend};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     BranchId, codec::invalid_static as invalid, identity::SessionStart, identity::is_campaign_uuid,
@@ -1295,7 +1296,7 @@ impl<B: SegmentBackend> Campaign<B> {
         let mut prepared = frame?;
         let span = span.switch(collector_workers::spool_phases::Phase::Columnar);
         let lanes = crate::columnar::Lanes::new(helpers);
-        let row = replay::native_frame::RowFrame {
+        let row = replay_journal::native_frame::RowFrame {
             baselines: Some(&self.encoder),
             keyframe: prepared.frame().keyframe(),
             changed: prepared.changed_rows(),
@@ -3260,7 +3261,7 @@ impl Processor {
                         .tracker
                         .observe_commands(
                             context.hour,
-                            replay::commands::load_marker(context.load_signal),
+                            replay_recording::command_packet::load_marker(context.load_signal),
                         )?
                         .branch;
                     campaign.world_generation = Some(world);
@@ -3288,7 +3289,7 @@ impl Processor {
                 // draining.
                 unsafe { collector_player_commands::player_commands::Drain::catalog() }?;
             }
-            let mut packet = replay::commands::Packet::pack(
+            let mut packet = replay_recording::command_packet::Packet::pack(
                 *branch,
                 drained.capture,
                 drained.world,
@@ -3306,7 +3307,7 @@ impl Processor {
                     .get(&(drained.world, *branch))
                     .copied()
                     .unwrap_or((context.qpc, context.hour, context.load_signal));
-                packet.phase = Some(replay::commands::Phase {
+                packet.phase = Some(replay_recording::command_packet::Phase {
                     start: campaign
                         .tracker
                         .branch_start(*branch)
@@ -4687,7 +4688,7 @@ mod tests {
         let mut frames = 0;
         for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
             if file.file_name().to_string_lossy().starts_with("spool.") {
-                for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
+                for record in replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
                 {
                     if let Record::Frame(frame) = record {
                         let decoded = decoder.apply(&frame).unwrap();
@@ -4715,7 +4716,7 @@ mod tests {
 
     #[test]
     fn paused_commands_publish_both_formats_with_or_without_a_later_hour() {
-        use replay::commands::{Batch, Event, Origin, Recording, Span};
+        use replay_recording::command_packet::{Batch, Event, Origin, Span};
         for hourly in [None, Some(10), Some(11)] {
             let directory = std::env::temp_dir().join(format!(
                 "hoi4-command-paused-{}-{}",
@@ -4814,7 +4815,7 @@ mod tests {
                 .map(|(index, file)| {
                     (
                         index as u32,
-                        replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                        replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                     )
                 })
                 .collect();
@@ -4839,7 +4840,7 @@ mod tests {
             assert_eq!(resumed.current_branch(), Some(command_branch));
             drop((prepared, resumed, lease));
             for path in [row_path] {
-                let recording = Recording::open_path(&path).unwrap();
+                let recording = replay::campaign::commands::open_path(&path).unwrap();
                 let commands: Vec<_> = recording
                     .controls
                     .iter()
@@ -4866,7 +4867,6 @@ mod tests {
 
     #[test]
     fn same_world_reactivation_keeps_the_earliest_phase_in_both_formats() {
-        use replay::commands::Recording;
         let directory =
             std::env::temp_dir().join(format!("hoi4-command-reactivated-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
@@ -4904,7 +4904,7 @@ mod tests {
             .map(|(index, file)| {
                 (
                     index as u32,
-                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                    replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                 )
             })
             .collect();
@@ -4912,7 +4912,7 @@ mod tests {
         let row_path = directory.join("reactivated.battleplan");
         replay.write_atomic(&row_path).unwrap();
         for path in [row_path] {
-            let recording = Recording::open_path(&path).unwrap();
+            let recording = replay::campaign::commands::open_path(&path).unwrap();
             assert_eq!(recording.branches.len(), 1);
             let packets: Vec<_> = recording
                 .controls
@@ -4950,7 +4950,7 @@ mod tests {
 
     #[test]
     fn command_submit_allocation_failure_retains_packet_for_exact_once_retry() {
-        use replay::commands::{Batch, Event, Origin, Packet, Phase, Recording, Span};
+        use replay_recording::command_packet::{Batch, Event, Origin, Packet, Phase, Span};
         let directory = std::env::temp_dir().join(format!(
             "hoi4-command-submit-retry-{}",
             std::process::id()
@@ -4971,7 +4971,7 @@ mod tests {
             let campaign = processor.campaign(campaign_id).unwrap();
             let branch = campaign
                 .tracker
-                .observe_commands(10, replay::commands::load_marker(1234))
+                .observe_commands(10, replay_recording::command_packet::load_marker(1234))
                 .unwrap()
                 .branch;
             let start = campaign.tracker.branch_start(branch).unwrap().clone();
@@ -5044,14 +5044,14 @@ mod tests {
             .map(|(index, file)| {
                 (
                     index as u32,
-                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                    replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                 )
             })
             .collect();
         let replay = replay::campaign::Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap();
         let row_path = directory.join("submit-retry.battleplan");
         replay.write_atomic(&row_path).unwrap();
-        let recording = Recording::open_path(&row_path).unwrap();
+        let recording = replay::campaign::commands::open_path(&row_path).unwrap();
         let ordinals: Vec<_> = recording
             .controls
             .iter()
@@ -5066,7 +5066,7 @@ mod tests {
 
     #[test]
     fn delayed_command_world_declares_its_branch_without_interrupting_hourly_frames() {
-        use replay::commands::{Batch, Span};
+        use replay_recording::command_packet::{Batch, Span};
         for later in [false, true] {
             let directory = std::env::temp_dir().join(format!(
                 "hoi4-command-delayed-{}-{later}",
@@ -5151,7 +5151,7 @@ mod tests {
                 .map(|(index, file)| {
                     (
                         index as u32,
-                        replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                        replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()),
                     )
                 })
                 .collect();
@@ -5274,7 +5274,7 @@ mod tests {
         );
         let [before, after] = segments().try_into().unwrap();
         assert_eq!(before, open);
-        let records = |path: &Path| replay::spool::recover_prefix(&fs::read(path).unwrap()).records;
+        let records = |path: &Path| replay_capture_spool::spool::recover_prefix(&fs::read(path).unwrap()).records;
         let summary = |records: &[Record]| {
             records
                 .iter()
@@ -5303,9 +5303,9 @@ mod tests {
             &[
                 (
                     0,
-                    replay::spool::recover_prefix(&fs::read(&before).unwrap()),
+                    replay_capture_spool::spool::recover_prefix(&fs::read(&before).unwrap()),
                 ),
-                (1, replay::spool::recover_prefix(&fs::read(&after).unwrap())),
+                (1, replay_capture_spool::spool::recover_prefix(&fs::read(&after).unwrap())),
             ],
         )
         .unwrap();
@@ -5344,14 +5344,14 @@ mod tests {
         let root = scratch_root("restart-unsaved");
         let target = root.join("recordings");
         let name = std::str::from_utf8(ID).unwrap();
-        let unsaved = replay::publication::unsaved_path(&target, name);
+        let unsaved = replay_settings::publication::unsaved_path(&target, name);
         let settings = root.join("settings.json");
         let naming = replay_io::Naming {
             localisation: None,
             settings: &settings,
             report: None,
         };
-        let recording = || replay::recording_files::recording_of(&target, ID).unwrap();
+        let recording = || replay_files::recording_files::recording_of(&target, ID).unwrap();
         let mut branches = Vec::new();
         for (process, signal, hours) in [(1, 1234, 10..=12), (2, 5678, 20..=21)] {
             let session = SessionStart {
@@ -5626,7 +5626,7 @@ mod tests {
             if !file.file_name().to_string_lossy().starts_with("spool.") {
                 continue;
             }
-            for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
+            for record in replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
                 match record {
                     Record::Frame(frame) => hours.push(frame.hour),
                     Record::Gap(gap) => gaps.push((gap.first_hour, gap.last_hour, gap.reason)),
@@ -5679,7 +5679,7 @@ mod tests {
                 if !file.file_name().to_string_lossy().starts_with("spool.") {
                     continue;
                 }
-                for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
+                for record in replay_capture_spool::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
                 {
                     let Record::Frame(frame) = record else {
                         continue;
@@ -5847,7 +5847,7 @@ mod tests {
             let mut decoder = FrameDecoder::new();
             let mut frames = Vec::new();
             for spool in spools {
-                for record in replay::spool::recover_prefix(&fs::read(spool).unwrap()).records {
+                for record in replay_capture_spool::spool::recover_prefix(&fs::read(spool).unwrap()).records {
                     let Record::Frame(frame) = record else {
                         continue;
                     };
@@ -6170,7 +6170,7 @@ mod tests {
     }
 
     use engine_native::msvc_string::Text;
-    use replay::{spool::SegmentSink, spool::recover_prefix};
+    use replay_capture_spool::spool::{SegmentSink, recover_prefix};
     use replay_frame::{branches::BranchReason, branches::Parentage};
     use std::{cell::RefCell, io::Write, rc::Rc};
 
@@ -6816,7 +6816,7 @@ mod tests {
     }
     impl Write for MemorySink {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.last_tag = bytes[replay::spool::RECORD_HEADER_BYTES];
+            self.last_tag = bytes[replay_capture_spool::spool::RECORD_HEADER_BYTES];
             self.store
                 .borrow_mut()
                 .segments
@@ -9506,7 +9506,7 @@ mod tests {
 
     #[test]
     fn a_table_read_with_no_time_of_its_own_is_marked_read_and_a_skipped_one_is_not() {
-        use replay::native_frame::FrameWriter;
+        use replay_journal::native_frame::FrameWriter;
         use replay_data::rows::{CountryFuelRow, ProductionLineOutputRow, TableId};
         let (fuel, output, anchor) = (
             TableId::CountryFuel,

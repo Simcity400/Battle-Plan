@@ -417,7 +417,7 @@ impl Drop for Core {
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, records, source};
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_frame::frame::FrameEncoder;
 
     #[test]

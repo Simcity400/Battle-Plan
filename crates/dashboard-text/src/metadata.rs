@@ -9,7 +9,8 @@ use std::{
     },
 };
 
-use replay::{campaign::BlockIndex, campaign::Replay, columnar_frames::Recording};
+use replay::campaign::{BlockIndex, Replay};
+use replay_recording::columnar_frames::Recording;
 use replay_data::{
     BranchId, format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
     rows::tables,
@@ -489,9 +490,9 @@ pub fn build_warnings(replay: &Replay) -> Vec<String> {
 }
 
 pub fn partial_recording(
-    control: &replay::spool::ControlRecord,
+    control: &replay_recording::control::ControlRecord,
 ) -> io::Result<Option<PartialRecording>> {
-    let replay::spool::ControlRecord::Partial {
+    let replay_recording::control::ControlRecord::Partial {
         session,
         reason,
         failed_hour,

@@ -7,7 +7,7 @@ use crate::{
     read,
 };
 use dashboard_declare::{Measure, Series};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::Source};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ pub struct Part {
 }
 
 struct ExtentRead {
-    chart: replay::lanes::Chart,
+    chart: replay_lanes::lanes::Chart,
     index: HashMap<u128, usize>,
     first: i32,
     last: i32,
@@ -269,7 +269,7 @@ pub fn next_read(query: &Query<'_>, table: replay_data::rows::TableId, origin: O
         if lo <= hi {
             let mut found: Option<i32> = None;
             for stretch in query.timeline.within(lo as i32, hi as i32) {
-                let reads = crate::cost::storage(|| replay::lanes::available_reads(recording, stretch.run, table, stretch.first, stretch.last))?;
+                let reads = crate::cost::storage(|| replay_lanes::lanes::available_reads(recording, stretch.run, table, stretch.first, stretch.last))?;
                 let hour = match forward {
                     true => reads.first().map(|read| read.0),
                     false => reads.last().map(|read| read.1),
@@ -376,7 +376,7 @@ pub struct RankedLine {
 pub fn grid(hours: i64, width: u32) -> (u8, i64) {
     let per_pixel = (hours / i64::from(width.max(1))).max(1);
     if per_pixel < replay_columnar::summary::bucket_hours(0) {
-        return (replay::lanes::WALKED, per_pixel);
+        return (replay_lanes::lanes::WALKED, per_pixel);
     }
     let mut level = 0u8;
     while replay_columnar::summary::bucket_hours(level + 1) <= per_pixel {
@@ -388,7 +388,7 @@ pub fn grid(hours: i64, width: u32) -> (u8, i64) {
 
 pub fn whole_buckets(recording: &Recording, run: u32, (first, last): (i32, i32), level: u8) -> io::Result<(i64, i64)> {
     let (from, to) = (i64::from(first), i64::from(last));
-    if level == replay::lanes::WALKED {
+    if level == replay_lanes::lanes::WALKED {
         return Ok((from, to));
     }
     let held = recording.run(run)?;
@@ -412,10 +412,10 @@ pub fn charts_within(
     (first, last): (i32, i32),
     level: u8,
     bin_hours: i64,
-) -> io::Result<Vec<(replay::lanes::Chart, (i32, i32))>> {
+) -> io::Result<Vec<(replay_lanes::lanes::Chart, (i32, i32))>> {
     let (a, b) = whole_buckets(recording, run, (first, last), level)?;
     let below = match level {
-        0 => replay::lanes::WALKED,
+        0 => replay_lanes::lanes::WALKED,
         _ => level - 1,
     };
     if a > b {
@@ -425,7 +425,7 @@ pub fn charts_within(
     if a > i64::from(first) {
         out.extend(charts_within(recording, run, (table, column), keys, (first, (a - 1) as i32), below, bin_hours)?);
     }
-    let chart = crate::cost::storage(|| replay::lanes::chart_at(recording, run, table, column, keys, a as i32, b as i32, level, bin_hours))?;
+    let chart = crate::cost::storage(|| replay_lanes::lanes::chart_at(recording, run, table, column, keys, a as i32, b as i32, level, bin_hours))?;
     out.push((chart, (a as i32, b as i32)));
     if b < i64::from(last) {
         out.extend(charts_within(recording, run, (table, column), keys, ((b + 1) as i32, last), below, bin_hours)?);
@@ -445,7 +445,7 @@ pub struct Line<'q, 'a> {
 
 #[derive(Default)]
 struct Unread {
-    statuses: HashMap<(u32, i32, i32), Arc<Vec<replay::lanes::StatusRun>>>,
+    statuses: HashMap<(u32, i32, i32), Arc<Vec<replay_lanes::lanes::StatusRun>>>,
     lives: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
 }
 
@@ -479,9 +479,9 @@ impl<'q, 'a> Line<'q, 'a> {
     fn withheld_at(&self, run: u32, hour: i32) -> Option<&str> {
         let recording = self.query.replay.recording();
         match recording.table_coverage(self.series.table.index(), run) {
-            replay::columnar_frames::TableCoverage::Valid => None,
-            replay::columnar_frames::TableCoverage::WithheldAll(reason) => Some(reason),
-            replay::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
+            replay_recording::columnar_frames::TableCoverage::Valid => None,
+            replay_recording::columnar_frames::TableCoverage::WithheldAll(reason) => Some(reason),
+            replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
                 let valid = recording.run(run).ok()?.first_hour + ordinal as i32;
                 (hour < valid).then_some(reason)
             }
@@ -494,9 +494,9 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         let recording = self.query.replay.recording();
         match recording.table_coverage(self.series.table.index(), run) {
-            replay::columnar_frames::TableCoverage::Valid => None,
-            replay::columnar_frames::TableCoverage::WithheldAll(reason) => Some((first, last, reason)),
-            replay::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
+            replay_recording::columnar_frames::TableCoverage::Valid => None,
+            replay_recording::columnar_frames::TableCoverage::WithheldAll(reason) => Some((first, last, reason)),
+            replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
                 let valid = recording.run(run).ok()?.first_hour + ordinal as i32;
                 (first < valid).then(|| (first, last.min(valid - 1), reason))
             }
@@ -506,9 +506,9 @@ impl<'q, 'a> Line<'q, 'a> {
     fn valid_part(&self, part: &Part) -> Option<Part> {
         let recording = self.query.replay.recording();
         match recording.table_coverage(self.series.table.index(), part.run) {
-            replay::columnar_frames::TableCoverage::Valid => Some(*part),
-            replay::columnar_frames::TableCoverage::WithheldAll(_) => None,
-            replay::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => {
+            replay_recording::columnar_frames::TableCoverage::Valid => Some(*part),
+            replay_recording::columnar_frames::TableCoverage::WithheldAll(_) => None,
+            replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => {
                 let valid = recording.run(part.run).ok()?.first_hour + ordinal as i32;
                 let first = part.first.max(valid);
                 (first <= part.last).then_some(Part { first, starts: part.starts || first > part.first, ..*part })
@@ -626,7 +626,7 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
-        let snapshot = crate::cost::storage(|| replay::lanes::at(recording, stretch.run, self.series.table, hour, Some(&columns)))?;
+        let snapshot = crate::cost::storage(|| replay_lanes::lanes::at(recording, stretch.run, self.series.table, hour, Some(&columns)))?;
         if !matches!(snapshot.status, Status::Complete) {
             return Ok(Vec::new());
         }
@@ -709,7 +709,7 @@ impl<'q, 'a> Line<'q, 'a> {
                     let (lo, hi) = (start.max(i64::from(stretch.first)), (start + bin_hours - 1).min(i64::from(stretch.last)));
                     let slot = ((start.max(first_bin) - first_bin) / bin_hours) as usize;
                     if slot < bins {
-                        place(slot, self.exact_top(stretch.run, (lo as i32, hi as i32), replay::lanes::WALKED, bin_hours, n, &holders)?);
+                        place(slot, self.exact_top(stretch.run, (lo as i32, hi as i32), replay_lanes::lanes::WALKED, bin_hours, n, &holders)?);
                     }
                     start += bin_hours;
                 }
@@ -719,7 +719,7 @@ impl<'q, 'a> Line<'q, 'a> {
             let (level, stretch_bins) = grid(span, stretch_width);
             let stretch_first = i64::from(stretch.first).div_euclid(stretch_bins) * stretch_bins;
             let best = crate::cost::storage(|| {
-                replay::lanes::top(recording, stretch.run, self.series.table, self.column, stretch.first, stretch.last, stretch_width, n + 1, replay::lanes::By::Last)
+                replay_lanes::lanes::top(recording, stretch.run, self.series.table, self.column, stretch.first, stretch.last, stretch_width, n + 1, replay_lanes::lanes::By::Last)
             })?;
             let (whole_first, whole_last) = self.whole_buckets(stretch.run, (stretch.first, stretch.last), level)?;
             let edges = (whole_first > i64::from(stretch.first), whole_last < i64::from(stretch.last));
@@ -858,7 +858,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let (lo, hi) = parts.range(owner);
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
-        let snapshot = crate::cost::storage(|| replay::lanes::at_keys(recording, run, self.series.table, hour, Some(&columns), read::Keys::Range(lo, hi)))?;
+        let snapshot = crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, self.series.table, hour, Some(&columns), read::Keys::Range(lo, hi)))?;
         if let Some(reason) = status_reason(self.series.table, &snapshot.status) {
             return Ok(Err(reason));
         }
@@ -955,7 +955,7 @@ impl<'q, 'a> Line<'q, 'a> {
             let block_first = held.first_hour + (block * UNIT_ORDINALS) as i32;
             let block_last = (block_first + UNIT_ORDINALS as i32 - 1).min(held.first_hour + held.ordinals as i32 - 1);
             let valid_floor = match recording.table_coverage(self.series.table.index(), run) {
-                replay::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => held.first_hour + ordinal as i32,
+                replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => held.first_hour + ordinal as i32,
                 _ => held.first_hour,
             };
             let from = (block_first - 1).max(valid_floor);
@@ -1253,10 +1253,10 @@ impl<'q, 'a> Line<'q, 'a> {
         let scale = self.scale();
         let six = bucket_hours(0);
         let ratio = match level {
-            replay::lanes::WALKED => 1,
+            replay_lanes::lanes::WALKED => 1,
             _ => bucket_hours(level) / six,
         };
-        let mut folded: Vec<Option<(replay::lanes::Bin, u32, u128)>> = vec![None; bins];
+        let mut folded: Vec<Option<(replay_lanes::lanes::Bin, u32, u128)>> = vec![None; bins];
         for read in reads {
             let Some(&at) = read.index.get(&key) else { continue };
             let chart = &read.chart;
@@ -1329,7 +1329,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let tag_of = |key: u128, hour: i32| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
-        let snapshot = crate::cost::storage(|| replay::lanes::at(recording, run, self.series.table, last, Some(&columns)))?;
+        let snapshot = crate::cost::storage(|| replay_lanes::lanes::at(recording, run, self.series.table, last, Some(&columns)))?;
         if !matches!(snapshot.status, Status::Complete) {
             return Ok(Vec::new());
         }
@@ -1519,7 +1519,7 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(complete)
     }
 
-    fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<Vec<replay::lanes::StatusRun>>> {
+    fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<Vec<replay_lanes::lanes::StatusRun>>> {
         if let Some(held) = self.unread.lock().unwrap_or_else(PoisonError::into_inner).statuses.get(&(run, from, to)) {
             return Ok(held.clone());
         }

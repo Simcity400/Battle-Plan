@@ -1,13 +1,9 @@
 use super::*;
-use crate::{
-    branches::{BranchReason, Parentage},
-    campaign::{fixtures, writer},
-    columnar_journal::Journal,
-    frame::{Frame, Metrics, TableUpdate, TableView},
-    identity::{CaptureMode, SampleBoundary, Verification},
-    rows::{CampaignRow, ClockRow, TableId, TableRows},
-    spool::Record as Spooled,
-};
+use replay_frame::{branches::{BranchReason, Parentage}, frame::{Frame, Metrics, TableUpdate, TableView}};
+use crate::campaign::{fixtures, writer};
+use replay_journal::columnar_journal::Journal;
+use replay_data::{identity::{CaptureMode, SampleBoundary, Verification}, rows::{CampaignRow, ClockRow, TableId, TableRows}};
+use replay_capture_spool::spool::Record as Spooled;
 use std::collections::{BTreeMap, BTreeSet};
 
 const CAMPAIGN: &[u8; 36] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
@@ -50,7 +46,7 @@ impl Folder {
     }
 
     fn segments(&self) -> Vec<(u32, u32)> {
-        crate::columnar_journal::segments(&self.journal())
+        replay_journal::columnar_journal::segments(&self.journal())
             .unwrap()
             .into_iter()
             .map(|(capture, segment, _)| (capture, segment))
@@ -137,7 +133,7 @@ fn frame(branch: BranchId, hour: Hour, load: i64) -> Frame {
                 }]),
                 table => TableRows::empty(table),
             };
-            match crate::frame::current_absence(rows.table()) {
+            match replay_frame::frame::current_absence(rows.table()) {
                 Some(TableView::NotRecorded { mode }) => TableUpdate::NotRecorded { mode },
                 Some(TableView::Unavailable { reason }) => TableUpdate::Unavailable { reason },
                 None => TableUpdate::Snapshot(rows),
@@ -353,7 +349,7 @@ fn a_session_facts_file_whose_identity_passes_a_mebibyte_reads_alike_from_memory
     let folder = Folder::new("large-facts");
     let Spooled::SessionStart(start) = session() else { unreachable!("the session's start") };
     let mods = (0..25_000)
-        .map(|at| crate::identity::Mod { id: format!("mod-{at:05}"), display_name: format!("A synthetic mod with a long display name, number {at}"), declared_version: "1.0".into(), hash: [4; 32] })
+        .map(|at| replay_data::identity::Mod { id: format!("mod-{at:05}"), display_name: format!("A synthetic mod with a long display name, number {at}"), declared_version: "1.0".into(), hash: [4; 32] })
         .collect();
     let identity = Identity { mods, ..start.identity.clone() };
     let pack = b"a session's facts";
@@ -381,10 +377,8 @@ fn a_session_facts_file_whose_identity_passes_a_mebibyte_reads_alike_from_memory
 
 #[test]
 fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a_resume() {
-    use crate::{
-        encode_report::{Everything, stopped_after},
-        multiplied::{Factors, Multiplied},
-    };
+    use crate::campaign::encode_report::{Everything, stopped_after};
+    use replay_journal::multiplied::{Factors, Multiplied};
     let folder = Folder::new("committed-blocks");
     let mut records = vec![session(), branch(1, 100)];
     records.extend(hours(1, 100..=399, 19));
@@ -434,7 +428,7 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
 
 #[test]
 fn an_encoding_is_taken_up_only_by_a_run_reading_its_journal_alike() {
-    use crate::encode_report::{Everything, encoder_source, open_encoded};
+    use crate::campaign::encode_report::{Everything, encoder_source, open_encoded};
     let folder = Folder::new("encoded-alike");
     let mut records = vec![session(), branch(1, 100)];
     records.extend(hours(1, 100..=399, 19));
@@ -853,7 +847,7 @@ fn a_recording_of_another_format_is_refused_by_name() {
     records.push(detach(103));
     fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records], true).unwrap();
     folder.write(0, &mut Deciding::everything(true));
-    assert_eq!(crate::columnar_frames::Recording::open_path(&path).unwrap().hours(), 4, "a recording of format 12 reads");
+    assert_eq!(replay_recording::columnar_frames::Recording::open_path(&path).unwrap().hours(), 4, "a recording of format 12 reads");
 }
 
 #[test]
@@ -986,7 +980,7 @@ impl recorder_derive_framework::framework::Writer for Probe {
 fn linked(branch: BranchId, hour: Hour) -> Frame {
     let mut frame = frame(branch, hour, 19);
     let first = (hour / 10) as u32;
-    let links = (first..first + 3).map(|id| crate::rows::CountryLinkRow { id, canonical_slot: hour as u32 }).collect();
+    let links = (first..first + 3).map(|id| replay_data::rows::CountryLinkRow { id, canonical_slot: hour as u32 }).collect();
     frame.tables[TableId::CountryLinks.index()] = TableUpdate::Snapshot(TableRows::CountryLinks(links));
     frame
 }
@@ -1095,8 +1089,8 @@ impl recorder_derive_framework::framework::Writer for Ledger {
 fn push_ledger(writers: &mut recorder_derive_framework::framework::Writers) {
     let kinds = schema().unwrap();
     let derived = writers.keyed();
-    let summarized: Vec<usize> = crate::summaries::registry().unwrap().iter().map(|(table, _)| *table).collect();
-    let logs = crate::rows::logs();
+    let summarized: Vec<usize> = replay_recording::summaries::registry().unwrap().iter().map(|(table, _)| *table).collect();
+    let logs = replay_data::rows::logs();
     let (table, column) = (0..kinds.len())
         .filter(|&table| {
             ![TableId::Campaign.index(), TableId::Clock.index()].contains(&table)
@@ -1113,7 +1107,8 @@ fn push_ledger(writers: &mut recorder_derive_framework::framework::Writers) {
 
 #[test]
 fn an_encoded_journal_carries_its_sessions_facts() {
-    use crate::{campaign::{SESSION_FACTS_FILE, encode_session_facts}, encode_report};
+    use crate::campaign::{SESSION_FACTS_FILE, encode_session_facts};
+    use crate::campaign::encode_report;
     let folder = Folder::new("facts");
     let session_dir = folder.0.join("session");
     let journal = session_dir.join(std::str::from_utf8(CAMPAIGN).unwrap());
@@ -1173,8 +1168,8 @@ mod definitions {
     fn level_table() -> (usize, usize) {
         let kinds = schema().unwrap();
         let derived = recorder_derive::writers().keyed();
-        let summarized: Vec<usize> = crate::summaries::registry().unwrap().iter().map(|(table, _)| *table).collect();
-        let logs = crate::rows::logs();
+        let summarized: Vec<usize> = replay_recording::summaries::registry().unwrap().iter().map(|(table, _)| *table).collect();
+        let logs = replay_data::rows::logs();
         (0..kinds.len())
             .rev()
             .filter(|&table| {

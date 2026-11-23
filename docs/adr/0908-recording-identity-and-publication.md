@@ -20,4 +20,4 @@ Classic write-through replacement is available only when POSIX rename reports an
 
 The Win32 paths passed to these functions are absolute UTF-16, reject interior NUL, and have one terminator. The `FILE_RENAME_INFO` byte length excludes that terminator. Its variable-length buffer has the alignment and tail space of the struct and stays live with the file handle through the call. For disposition the live structure's actual size is passed. Classic replacement takes a closed, fully synced sibling on the same volume.
 
-[Recording names](../../crates/replay/src/recording_files.rs) · [Recorder preferences](../../crates/replay/src/recorder_settings.rs) · [Publication helpers](../../crates/replay/src/publication.rs)
+[Recording names](../../crates/replay-files/src/recording_files.rs) · [Recorder preferences](../../crates/replay-settings/src/recorder_settings.rs) · [Publication helpers](../../crates/replay-settings/src/publication.rs)

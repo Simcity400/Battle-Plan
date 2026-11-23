@@ -1,5 +1,5 @@
 use super::*;
-use replay::spool::Record;
+use replay_capture_spool::spool::Record;
 use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::Verification};
 use std::io::Read as _;
 
@@ -206,7 +206,7 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
         ..session.clone()
     };
     fs::write(root.join("Germany 1936.battleplan"), replay.bytes()).unwrap();
-    let unsaved = replay::publication::unsaved_path(&root, id);
+    let unsaved = replay_settings::publication::unsaved_path(&root, id);
     fs::create_dir_all(unsaved.parent().unwrap()).unwrap();
     fs::write(&unsaved, replay.bytes()).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
@@ -235,7 +235,7 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
     refused(id);
     refused(other);
     fs::remove_file(&unsaved).unwrap();
-    let fresh = replay::publication::unsaved_path(&root, other);
+    let fresh = replay_settings::publication::unsaved_path(&root, other);
     let bytes = recording(other).bytes().to_vec();
     fs::write(
         &fresh,
@@ -758,7 +758,7 @@ fn resident_history_lease_never_blocks_recorder_append_or_rollback() {
     drop(writer);
     let replacement = root.join("replacement.bin");
     fs::write(&replacement, b"rolled back").unwrap();
-    replay::publication::replace_file(&replacement, &path).unwrap();
+    replay_settings::publication::replace_file(&replacement, &path).unwrap();
     let mut bytes = Vec::new();
     resident.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"resident snapshot appended");
@@ -845,7 +845,7 @@ fn the_history_load_leaves_no_thread_it_started_running() {
     )
     .unwrap();
     assert!(!replay.index.is_empty());
-    let unsaved = replay::publication::unsaved_path(&root, campaign);
+    let unsaved = replay_settings::publication::unsaved_path(&root, campaign);
     fs::create_dir_all(unsaved.parent().unwrap()).unwrap();
     fs::write(&unsaved, replay.bytes()).unwrap();
     let session = SessionStart { id: 2, ..session() };

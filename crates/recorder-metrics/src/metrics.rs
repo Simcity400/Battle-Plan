@@ -1,6 +1,7 @@
 
 use engine_allocation as allocation;
-use replay::{campaign::Replay, spool::ControlRecord};
+use replay::campaign::Replay;
+use replay_recording::control::ControlRecord;
 use replay_data::{BranchId, Hour, cadence::refresh_text, codec::invalid, rows::TableId};
 use replay_frame::frame::TableView;
 use serde_json::{Value, json};
@@ -177,7 +178,7 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
 mod tests {
     use super::*;
     use crate::test_support::replay;
-    use replay::spool::Record;
+    use replay_capture_spool::spool::Record;
     use replay_data::rows::TableRows;
     use replay_frame::{branches::Gap, frame::TableUpdate};
 

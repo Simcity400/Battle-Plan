@@ -473,7 +473,7 @@ mod tests {
                 let wire = encoder.encode_bytes(frame, false).unwrap();
                 let frame = wire.decode().unwrap();
                 assert_eq!(frame.keyframe, matches!(hour, 100 | 102));
-                replay::spool::encode_record(&replay::spool::Record::Frame(frame.clone())).unwrap();
+                replay_capture_spool::spool::encode_record(&replay_capture_spool::spool::Record::Frame(frame.clone())).unwrap();
                 let decoded = decoder.apply(&frame).unwrap();
                 for table in TABLES {
                     match &*decoded.tables[table.index()] {

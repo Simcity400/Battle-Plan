@@ -7,7 +7,7 @@ use dashboard_base::products::{
     resources::{RESOURCE_DECIMALS, ResourceInfo, ResourceNaming},
 };
 use dashboard_query::{Query, identity::Holder};
-use replay::lanes::{self, Cell, Keys, Step};
+use replay_lanes::lanes::{self, Cell, Keys, Step};
 use replay_data::rows::{TableId, TagHolderRow, field_of_key};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -248,7 +248,7 @@ fn gather(
     let read = dashboard_query::cost::storage(|| lanes::available_reads(recording, run, TableId::ResourceExchanges, first, last))?;
     let written: Vec<(i32, i32)> = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::TradeFlows, first, last))?
         .into_iter()
-        .filter(|held| replay::columnar_frames::available(held.status))
+        .filter(|held| replay_recording::columnar_frames::available(held.status))
         .map(|held| (held.first, held.last))
         .collect();
     gathered.known.extend(both(&read, &written).into_iter().map(|(first_hour, last_hour)| HourSpan { first_hour, last_hour }));

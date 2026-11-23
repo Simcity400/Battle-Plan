@@ -12,7 +12,7 @@ use dashboard_text::{
     idea_names::IdeaCountry,
 };
 use content_reader_core::{characters::BuiltTemplate, coverage::Gap, modifiers::Modifier, modifiers::Modifiers};
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{CharacterRow, LexicalTokenRow, ModifierDefinitionRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -579,13 +579,13 @@ pub(crate) fn recorded_definitions(source: &Source, query: &Query<'_>) -> io::Re
 
 fn definitions_at(query: &Query<'_>, run: u32, hour: i32) -> io::Result<RecordedDefinitions> {
     let recording = query.replay.recording();
-    let definitions = cost::storage(|| replay::at::frame(recording, run, hour, &[replay::at::Read::all(TableId::ModifierDefinitions)]))?;
+    let definitions = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read::all(TableId::ModifierDefinitions)]))?;
     let Ok(rows) = definitions.complete::<tables::ModifierDefinitions>() else { return Ok(None) };
     let mut words: Vec<u128> = rows.iter().map(|row| u128::from(row.token)).collect();
     words.sort_unstable();
     words.dedup();
-    let reads = [replay::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay::at::Keys::These(&words) }];
-    let lexicon = cost::storage(|| replay::at::frame(recording, run, hour, &reads))?;
+    let reads = [replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&words) }];
+    let lexicon = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
     let Ok(lexical) = lexicon.complete::<tables::LexicalTokens>() else { return Ok(None) };
     Ok(Some(idea_format::index_recorded(rows, lexical)))
 }

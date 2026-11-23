@@ -51,7 +51,7 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
     ]);
     let (options, identity) = content_identity(&folder.0);
     let mut input = records(1, (100..=110).map(frame).collect());
-    let replay::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
+    let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
     session.identity = identity;
     let saved = std::env::temp_dir().join(format!("place-names-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&saved).unwrap();

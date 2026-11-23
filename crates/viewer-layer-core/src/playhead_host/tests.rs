@@ -288,7 +288,7 @@ fn changed_inputs_redeclare_and_reset_only_the_tables_whose_columns_changed() {
 
 #[test]
 fn a_column_the_schema_lacks_refuses_the_layer_by_name() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = Inputs::new(&kinds, "political");
     let missing = inputs.number::<u32>(TableId::Provinces, "no_such_field").unwrap_err().to_string();
     assert!(missing.contains("political") && missing.contains("Provinces.no_such_field"), "{missing}");
@@ -413,10 +413,8 @@ fn a_renumber_moves_only_the_rows_past_the_first_freed_slot() {
 #[test]
 fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
     use playhead::pages::{Span, WorldPages};
-    use replay::columnar_frames::{
-        Recording, fixtures,
-        synthetic::{Input, Sample},
-    };
+    use replay_recording::columnar_frames::Recording;
+    use replay_journal::{fixtures, synthetic::{Input, Sample}};
     use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
     let table = TableId::Divisions;
     let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];

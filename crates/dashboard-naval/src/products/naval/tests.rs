@@ -7,7 +7,7 @@ use super::{
 };
 use dashboard_world::products::groups::MembershipRun;
 use game_model::calendar::HOUR_EPOCH;
-use replay::lanes::Cell;
+use replay_lanes::lanes::Cell;
 use replay_data::rows::{NavalLossTotalRow as Row, NavalResultObservationRow as Observation, NavalResultRow, Recorded, SunkShipEntry};
 use std::collections::HashMap;
 

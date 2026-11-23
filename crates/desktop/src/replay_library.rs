@@ -1,4 +1,4 @@
-use replay::recorder_settings::RecorderSettings;
+use replay_settings::recorder_settings::RecorderSettings;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::WebviewWindow;
@@ -90,7 +90,7 @@ fn walk(
             let path = entry.path();
             if kind.is_dir() {
                 pending.push(path);
-            } else if kind.is_file() && replay::recording_files::is_recording(&path) {
+            } else if kind.is_file() && replay_files::recording_files::is_recording(&path) {
                 checkpoint()?;
                 each(&root, &directory, &path, &metadata)?;
             }
@@ -116,7 +116,7 @@ pub(super) fn configured_folder() -> Result<PathBuf, String> {
 pub async fn replay_library() -> Result<ReplayLibrary, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let folder = configured_folder()?;
-        if folder == replay::recorder_settings::default_save_folder() {
+        if folder == replay_settings::recorder_settings::default_save_folder() {
             std::fs::create_dir_all(&folder)
                 .map_err(|e| format!("Couldn’t create the recordings folder: {e}"))?;
         }
@@ -191,7 +191,7 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
         rfd::FileDialog::new()
             .set_parent(&window)
             .set_title("Open recording")
-            .add_filter("BattlePlan", &[replay::recording_files::EXTENSION])
+            .add_filter("BattlePlan", &[replay_files::recording_files::EXTENSION])
             .pick_file()
             .map(|path| path.to_string_lossy().into_owned())
     })

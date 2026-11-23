@@ -1,5 +1,6 @@
 
-use replay::{columnar_frames::Recording, lanes::Keys, points};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::{lanes::Keys, points};
 use replay_data::rows::TableId;
 use std::{collections::HashMap, io};
 

@@ -390,17 +390,17 @@ pub struct SeenTemplate {
     pub country: Option<i32>,
 }
 
-pub fn run_templates(recording: &replay::columnar_frames::Recording, run: u32) -> io::Result<Vec<SeenTemplate>> {
+pub fn run_templates(recording: &replay_recording::columnar_frames::Recording, run: u32) -> io::Result<Vec<SeenTemplate>> {
     use dashboard_query::{cost::storage, read};
     let held = recording.run(run)?;
     let (first, last) = (held.first_hour, held.last_hour());
-    let spans = storage(|| replay::lanes::logged_hours(recording, run, TableId::DivisionEvents, first, last))?;
+    let spans = storage(|| replay_lanes::lanes::logged_hours(recording, run, TableId::DivisionEvents, first, last))?;
     let mut seen: BTreeMap<u32, SeenTemplate> = BTreeMap::new();
     if spans.is_empty() {
         return Ok(Vec::new());
     }
     let columns = [column::TEMPLATE_ID, column::TEMPLATE_LITERAL, column::TEMPLATE_KEY, column::TEMPLATE_COUNTRY];
-    let mut reader = storage(|| replay::cells::TableReader::new(recording, run, TableId::DivisionEvents, Some(&columns)))?;
+    let mut reader = storage(|| replay_recording::cells::TableReader::new(recording, run, TableId::DivisionEvents, Some(&columns)))?;
     for (from, to) in spans {
         let start = if from > first { from - 1 } else { from };
         let mut before: HashSet<u128> = HashSet::new();
@@ -479,7 +479,7 @@ impl Product for DivisionLogManifest {
                 (TableId::Divisions, "Divisions not read; divisions first seen then are dated at the next read", &mut reply.available),
                 (TableId::DivisionEquipmentDeletions, "division equipment deletions unavailable; removal causes and totals incomplete", &mut reply.losses_available),
             ] {
-                let read = dashboard_query::cost::storage(|| replay::lanes::reads(recording, stretch.run, table, stretch.first, stretch.last))?;
+                let read = dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, table, stretch.first, stretch.last))?;
                 *held |= !read.is_empty();
                 reply.gaps.extend(unread(&read, stretch.first, stretch.last).into_iter().map(|(first_hour, last_hour)| DivisionLogGap { first_hour, last_hour, reason: reason.to_owned() }));
             }

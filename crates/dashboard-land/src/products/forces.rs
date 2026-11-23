@@ -15,7 +15,7 @@ use dashboard_query::{
     series::{Line, Part},
 };
 use content_reader_core::unit_leader::{SubUnit, SubUnits};
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{AirForceWingSignatureRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{

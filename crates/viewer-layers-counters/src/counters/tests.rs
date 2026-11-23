@@ -80,7 +80,7 @@ fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, hour: impl FnMut(
 }
 
 fn record_writing(hours: u32, writing: Writing, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, writing).unwrap());
     let mut memory = Memory::default();
@@ -405,7 +405,7 @@ fn a_mode_without_land_counters_declares_nothing_and_a_mode_with_them_composes()
         _ => {}
     });
     let resources = View { map_mode: MapMode::Stock(Stock::Resources), ..fog_off() };
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "counters");
     layer_seeing_all().inputs(&resources, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "the resources mode draws no unit counters");
@@ -445,7 +445,7 @@ fn a_new_vision_takes_every_division_s_sight_again() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "counters");
     layer_seeing_all().inputs(&fog_off(), &mut inputs).unwrap();
     let declared: Vec<usize> = inputs.into_tables().into_keys().collect();
@@ -527,7 +527,7 @@ fn reading_side_with(fed: bool, more: impl Fn(u32, &mut Store)) -> MapSide {
     };
     let mut tables: Vec<TableId> = read();
     tables.extend(VISION_TABLES.iter().copied().filter(|table| !tables.contains(table)).collect::<Vec<_>>());
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
     store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
     let mut memory = Memory::default();

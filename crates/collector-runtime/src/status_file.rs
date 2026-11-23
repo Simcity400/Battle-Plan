@@ -49,7 +49,7 @@ fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { File::from_raw_handle(handle) };
-    replay::publication::posix_replace(&file, target)
+    replay_settings::publication::posix_replace(&file, target)
 }
 
 static POSIX_RENAME_UNSUPPORTED: std::sync::atomic::AtomicBool =

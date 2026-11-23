@@ -288,7 +288,7 @@ mod lend_lease {
 mod market {
     use super::*;
     use crate::products::economy::market::{MarketLendLease, history::ended_spans};
-    use replay::lanes::{Cell, Step};
+    use replay_lanes::lanes::{Cell, Step};
     use replay_data::rows::{CountryLinkRow, CountryMarketRow, CountryRow, LendLeaseAgreementRow, MarketContractTermsRow, MarketEquipment, MarketPool, PurchaseContractRow, SharedMarketPool, tables};
 
     const FRA: u32 = 44;
