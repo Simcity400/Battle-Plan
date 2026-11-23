@@ -183,21 +183,21 @@ fn built(designs: &[(String, String)]) -> (Built, impl Drop) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = dashboard_base::catalogue::tests::folder_catalogue(PLANES);
-    (Built::new(&Arc::new(catalogue), designs), folder)
+    (Built::new(&Arc::new(catalogue), designs, &BTreeMap::new()), folder)
 }
 
 fn page(
     built: &Built,
-    scope: AircraftScope,
     query: &str,
     first: u32,
     count: u32,
+    origin: Option<AircraftOriginFilter>,
 ) -> AircraftCatalogueReply {
     built.page(&AircraftCatalogueParams {
-        scope,
         query: query.into(),
         first,
         count,
+        origin,
     })
 }
 
@@ -210,34 +210,34 @@ fn names(reply: &AircraftCatalogueReply) -> Vec<&str> {
 }
 
 #[test]
-fn pages_list_flyable_aircraft_first_with_their_titles_and_counted_refusals() {
+fn pages_list_flyable_aircraft_first_alphabetically_with_their_titles_and_counted_refusals() {
     let designs = [(
         "fighter_equipment_1".to_owned(),
         "designer_plane_entity".to_owned(),
     )];
     let (built, _folder) = built(&designs);
-    let reply = page(&built, AircraftScope::Aircraft, "", 0, 100);
+    let reply = page(&built, "", 0, 100, None);
     assert_eq!(
         names(&reply),
         [
-            "ENG_fighter_equipment_1_entity",
             "light_plane_entity",
-            "designer_plane_entity",
+            "ENG_fighter_equipment_1_entity",
             "ghost_plane_entity",
             "missing_plane_entity",
-        ]
+            "designer_plane_entity",
+        ],
+        "flyable then refused, each by the first title without case, then by name"
     );
-    assert_eq!((reply.matching, reply.aircraft, reply.first), (5, 5, 0));
-    assert_eq!(reply.all, 8);
-    assert_eq!(reply.entries[0].titles, ["Spitfire"]);
-    assert_eq!(reply.entries[1].titles, ["Fighter"]);
+    assert_eq!((reply.matching, reply.first), (5, 0));
+    assert_eq!(reply.entries[0].titles, ["Fighter"]);
+    assert_eq!(reply.entries[1].titles, ["Spitfire"]);
     assert_eq!(
-        reply.entries[2].references,
+        reply.entries[4].references,
         [AircraftReference::Design {
             equipment: "fighter_equipment_1".into()
         }]
     );
-    assert_eq!(reply.entries[2].titles, ["Fighter I"]);
+    assert_eq!(reply.entries[4].titles, ["Fighter I"]);
     assert_eq!(
         reply.refusals,
         [
@@ -254,11 +254,33 @@ fn pages_list_flyable_aircraft_first_with_their_titles_and_counted_refusals() {
         ]
     );
     assert_eq!(
-        reply.entries[3].refusal,
+        reply.entries[2].refusal,
         Some(AircraftRefusal {
             kind: AircraftRefusalKind::NoGeometry,
             reason: "it names no pdxmesh".into()
         })
+    );
+    let folder_mod = AircraftOrigin::Mod {
+        id: "test0".into(),
+        name: "test0".into(),
+    };
+    assert_eq!(reply.entries[2].origin, Some(folder_mod.clone()));
+    assert_eq!(reply.entries[4].origin, None, "no descriptor registers it");
+    assert_eq!(
+        reply.origins,
+        [AircraftOriginCount {
+            origin: folder_mod,
+            count: 3
+        }]
+    );
+    assert_eq!(
+        page(&built, "designer", 0, 100, None).refusals,
+        [AircraftRefusalCount {
+            kind: AircraftRefusalKind::Unregistered,
+            label: "not registered by any descriptor".into(),
+            count: 1,
+        }],
+        "refusals count only what matches"
     );
 }
 
@@ -266,75 +288,219 @@ fn pages_list_flyable_aircraft_first_with_their_titles_and_counted_refusals() {
 fn queries_match_names_titles_and_references_without_case_and_pages_slice_them() {
     let (built, _folder) = built(&[]);
     assert_eq!(
-        names(&page(&built, AircraftScope::Aircraft, "SPIT", 0, 10)),
+        names(&page(&built, "SPIT", 0, 10, None)),
         ["ENG_fighter_equipment_1_entity"]
     );
     assert_eq!(
-        names(&page(
-            &built,
-            AircraftScope::Aircraft,
-            " fighter_equipment ",
-            0,
-            10
-        )),
+        names(&page(&built, " fighter_equipment ", 0, 10, None)),
         [
-            "ENG_fighter_equipment_1_entity",
             "light_plane_entity",
+            "ENG_fighter_equipment_1_entity",
             "ghost_plane_entity",
             "missing_plane_entity"
         ]
     );
     assert_eq!(
-        names(&page(&built, AircraftScope::Aircraft, "Ghost plane", 0, 10)),
+        names(&page(&built, "Ghost plane", 0, 10, None)),
         ["ghost_plane_entity"],
         "the readable label made from a name finds its model"
     );
     assert_eq!(
-        names(&page(&built, AircraftScope::Aircraft, "eng fighter equipment 1", 0, 10)),
+        names(&page(&built, "eng fighter equipment 1", 0, 10, None)),
         ["ENG_fighter_equipment_1_entity"]
     );
-    let all = page(&built, AircraftScope::All, "", 0, 100);
-    for name in ["bare_mesh", "fighter_mesh", "rifle_entity"] {
-        let entry = all.entries.iter().find(|entry| entry.name == name).unwrap();
-        assert!(
-            entry.references.is_empty() && entry.refusal.is_none(),
-            "{name}"
-        );
-    }
-    assert_eq!(
-        all.entries
-            .iter()
-            .find(|entry| entry.name == "bare_mesh")
-            .unwrap()
-            .kind,
-        AircraftKind::Mesh
+    let all = page(&built, "", 0, 100, None);
+    assert!(
+        !all.entries.iter().any(|entry| entry.name == "rifle_entity" || entry.name == "bare_mesh"),
+        "only aircraft are listed"
     );
     let whole = names(&all).join(" ");
     let mut paged = Vec::new();
     for first in (0..all.matching).step_by(3) {
-        let reply = page(&built, AircraftScope::All, "", first, 3);
+        let reply = page(&built, "", first, 3, None);
         assert_eq!((reply.first, reply.matching), (first, all.matching));
         paged.extend(reply.entries.into_iter().map(|entry| entry.name));
     }
     assert_eq!(paged.join(" "), whole);
-    assert!(
-        page(&built, AircraftScope::All, "", all.matching, 3)
-            .entries
-            .is_empty()
+    assert!(page(&built, "", all.matching, 3, None).entries.is_empty());
+    assert_eq!(page(&built, "no such plane", 0, 3, None).matching, 0);
+}
+
+#[test]
+fn origins_name_the_mod_or_dlc_supplying_a_declaration_or_its_geometry() {
+    let folder = |name: &str, base: bool, files: &[(&str, &str)]| {
+        let root = std::env::temp_dir().join(format!(
+            "battleplan_aircraft_origins_{}_{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        if base {
+            dashboard_base::catalogue::texture_tests::write_sprite_program(&root);
+        }
+        for (path, text) in files {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        dashboard_base::catalogue::tests::Folder(root)
+    };
+    let vanilla = folder(
+        "vanilla",
+        true,
+        &[
+            PLANES[0],
+            PLANES[1],
+            PLANES[2],
+            PLANES[6],
+            (
+                "gfx/models/planes.gfx",
+                r#"objectTypes = {
+                    pdxmesh = { name = "fighter_mesh" file = "gfx/models/fighter.mesh" }
+                    pdxmesh = { name = "bomber_mesh" file = "gfx/models/bomber.mesh" }
+                }"#,
+            ),
+            ("gfx/models/fighter.mesh", "mesh"),
+            ("gfx/models/bomber.mesh", "mesh"),
+            (
+                "gfx/entities/planes.asset",
+                r#"
+                entity = { name = "vanilla_plane_entity" pdxmesh = "fighter_mesh" }
+                entity = { name = "reskinned_plane_entity" pdxmesh = "bomber_mesh" }
+                "#,
+            ),
+        ],
+    );
+    let dlc = folder(
+        "dlc",
+        false,
+        &[(
+            "gfx/entities/dlc_planes.asset",
+            r#"entity = { name = "dlc_plane_entity" pdxmesh = "fighter_mesh" }"#,
+        )],
+    );
+    let modded = folder(
+        "mod",
+        false,
+        &[
+            (
+                "gfx/entities/mod_planes.asset",
+                r#"entity = { name = "mod_plane_entity" pdxmesh = "fighter_mesh" }"#,
+            ),
+            ("gfx/models/bomber.mesh", "reskinned mesh"),
+        ],
+    );
+    let mut layers = content_reader_layers::ResolvedLayers::from_folders(&[
+        (&vanilla.0, &[][..]),
+        (&dlc.0, &[][..]),
+        (&modded.0, &[][..]),
+    ])
+    .unwrap();
+    layers.layers[0].role = LayerRole::Vanilla;
+    layers.layers[1].role = LayerRole::Dlc;
+    let catalogue = Arc::new(dashboard_base::catalogue::tests::layers_catalogue(layers));
+    let designs = [
+        "vanilla_plane_entity",
+        "reskinned_plane_entity",
+        "dlc_plane_entity",
+        "mod_plane_entity",
+        "missing_plane_entity",
+    ]
+    .map(|model| ("fighter_equipment_1".to_owned(), model.to_owned()));
+    let mods = BTreeMap::from([("test2".to_owned(), "Modern Wings".to_owned())]);
+    let built = Built::new(&catalogue, &designs, &mods);
+
+    let game = AircraftOrigin::Game { dlc: None };
+    let modern = AircraftOrigin::Mod {
+        id: "test2".into(),
+        name: "Modern Wings".into(),
+    };
+    let all = page(&built, "", 0, 100, None);
+    let origin = |name: &str| {
+        all.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap()
+            .origin
+            .clone()
+    };
+    assert_eq!(origin("vanilla_plane_entity"), Some(game.clone()));
+    assert_eq!(
+        origin("dlc_plane_entity"),
+        Some(AircraftOrigin::Game {
+            dlc: Some("test1".into())
+        }),
+        "a DLC counts as the base game, named by its id when its name is not given"
+    );
+    assert_eq!(origin("mod_plane_entity"), Some(modern.clone()));
+    assert_eq!(
+        origin("reskinned_plane_entity"),
+        Some(modern.clone()),
+        "a base-game declaration drawn from a mod's geometry is the mod's"
+    );
+    assert_eq!(origin("missing_plane_entity"), None);
+    assert_eq!(
+        all.origins,
+        [
+            AircraftOriginCount {
+                origin: game.clone(),
+                count: 2
+            },
+            AircraftOriginCount {
+                origin: modern.clone(),
+                count: 2
+            },
+        ]
+    );
+    let vanilla_only = page(&built, "", 0, 100, Some(AircraftOriginFilter::Game));
+    assert_eq!(
+        names(&vanilla_only),
+        ["dlc_plane_entity", "vanilla_plane_entity"]
     );
     assert_eq!(
-        page(&built, AircraftScope::All, "no such plane", 0, 3).matching,
-        0
+        (vanilla_only.matching, vanilla_only.found),
+        (2, 5),
+        "found counts every origin, the unregistered model's none included"
+    );
+    assert_eq!(
+        names(&page(
+            &built,
+            "",
+            0,
+            100,
+            Some(AircraftOriginFilter::Mod("test2".into()))
+        )),
+        ["mod_plane_entity", "reskinned_plane_entity"]
+    );
+    let dlc_as_mod = page(
+        &built,
+        "",
+        0,
+        100,
+        Some(AircraftOriginFilter::Mod("test1".into())),
+    );
+    assert_eq!(
+        (dlc_as_mod.matching, dlc_as_mod.origins.len()),
+        (0, 2),
+        "a DLC is no origin of its own"
+    );
+    assert_eq!(
+        page(&built, "reskinned", 0, 100, None)
+            .origins
+            .iter()
+            .map(|origin| origin.count)
+            .collect::<Vec<_>>(),
+        [0, 1],
+        "every origin stays listed, counting what matches the query"
     );
 }
 
 #[test]
 fn an_empty_page_is_refused_before_loading() {
     let params = AircraftCatalogueParams {
-        scope: AircraftScope::All,
         query: String::new(),
         first: 0,
         count: 0,
+        origin: None,
     };
     assert!(AircraftCatalogue::validate(&params).is_err());
     assert!(AircraftCatalogue::validate(&AircraftCatalogueParams { count: 1, ..params }).is_ok());

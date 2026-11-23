@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AircraftCatalogueReply, AircraftEntry } from '../generated/dashboard.ts';
-import { AIRCRAFT_PAGE, AircraftPages, pagesFor, refusalLine, refusalText } from './aircraftCatalogue.ts';
+import { AIRCRAFT_PAGE, AircraftPages, catalogueParams, countryTag, originFilter, originLabel, pagesFor, refusalLine, refusalText, sameOrigin } from './aircraftCatalogue.ts';
+import { hourFields } from './regionTime.ts';
 
-const entry = (name: string): AircraftEntry => ({ name, kind: 'entity', titles: [], references: [], refusal: null });
+const entry = (name: string): AircraftEntry => ({ name, kind: 'entity', titles: [], references: [], refusal: null, origin: null });
 
 function reply(first: number, names: string[], matching: number): AircraftCatalogueReply {
-  return { matching, aircraft: matching, all: matching + 7, first, entries: names.map(entry),
-    refusals: [{ kind: 'unregistered', label: 'not registered by any descriptor', count: 3 }], warnings: ['a note'] };
+  return { matching, found: matching + 7, first, entries: names.map(entry),
+    refusals: [{ kind: 'unregistered', label: 'not registered by any descriptor', count: 3 }],
+    origins: [{ origin: { kind: 'game', dlc: null }, count: matching }], warnings: ['a note'] };
 }
 
 test('pages cover the rows asked for, the last partial page included', () => {
@@ -22,6 +24,7 @@ test('pages cover the rows asked for, the last partial page included', () => {
 test('only the first page is asked for until the listing says how long it is', () => {
   const pages = new AircraftPages('listing');
   assert.equal(pages.matching, null);
+  assert.equal(pages.flyable(), null);
   assert.ok(pages.wants(0));
   assert.ok(!pages.wants(1));
   pages.begin(0);
@@ -32,7 +35,9 @@ test('only the first page is asked for until the listing says how long it is', (
   assert.ok(pages.loading());
   assert.ok(pages.accept(0, reply(0, ['a', 'b'], 500_000)));
   assert.equal(pages.matching, 500_000);
-  assert.equal(pages.all, 500_007);
+  assert.equal(pages.found, 500_007);
+  assert.equal(pages.flyable(), 500_000 - 3, 'refused rows follow every flyable one');
+  assert.deepEqual(pages.origins, [{ origin: { kind: 'game', dlc: null }, count: 500_000 }]);
   assert.equal(pages.entry(1)?.name, 'b');
   assert.equal(pages.entry(2), undefined);
   const last = Math.ceil(500_000 / AIRCRAFT_PAGE) - 1;
@@ -73,4 +78,32 @@ test('counted refusals read as one plain total, a plain tooltip by consequence, 
   assert.equal(refusalText('unregistered'), 'Can’t be flown: its 3D model is missing.');
   assert.equal(refusalText('noGeometry'), 'Can’t be flown: its 3D model is missing.');
   assert.equal(refusalText('declaration'), 'Can’t be flown: BattlePlan can’t read this model.', 'a declaration BattlePlan can’t read says nothing about the game');
+});
+
+test('origins filter as the base game or one mod, and a DLC counts as the base game', () => {
+  const game = { kind: 'game', dlc: 'By Blood Alone' } as const;
+  const modern = { kind: 'mod', id: 'ugc_1', name: 'Modern Wings' } as const;
+  assert.equal(originFilter(game), 'game');
+  assert.deepEqual(originFilter(modern), { mod: 'ugc_1' });
+  assert.equal(originLabel(game), 'Vanilla');
+  assert.equal(originLabel(modern), 'Modern Wings');
+  assert.ok(sameOrigin('game', 'game') && sameOrigin(null, null) && sameOrigin({ mod: 'ugc_1' }, { mod: 'ugc_1' }));
+  assert.ok(!sameOrigin('game', null) && !sameOrigin({ mod: 'ugc_1' }, 'game') && !sameOrigin({ mod: 'ugc_1' }, { mod: 'ugc_2' }));
+});
+
+test('a country tag is a three-character ladder prefix, else pool bucket, and never a culture or default pool', () => {
+  assert.equal(countryTag({ references: [{ kind: 'pool', bucket: 'default', equipment: 'fighter', file: 'f' }, { kind: 'ladder', key: 'fighter_equipment_1', prefix: 'ENG' }] }), 'ENG');
+  assert.equal(countryTag({ references: [{ kind: 'pool', bucket: 'GER', equipment: 'fighter', file: 'f' }] }), 'GER');
+  assert.equal(countryTag({ references: [{ kind: 'ladder', key: 'light_plane', prefix: 'western_european' }, { kind: 'pool', bucket: 'default', equipment: 'fighter', file: 'f' }] }), null);
+  assert.equal(countryTag({ references: [{ kind: 'design', equipment: 'fighter_equipment_1' }] }), null);
+});
+
+test('every request the catalogue sends is one the request contract accepts', () => {
+  for (const origin of [null, 'game', { mod: 'ugc_1' }] as const) {
+    const refused: string[] = [];
+    const params = catalogueParams(' spit ', 100, 100, origin);
+    assert.ok(hourFields('aircraft-catalogue', params, () => {}, (path, expected) => refused.push(`${path} is not ${expected}`)));
+    assert.deepEqual(refused, [], JSON.stringify(origin));
+    assert.equal(params.query, 'spit');
+  }
 });

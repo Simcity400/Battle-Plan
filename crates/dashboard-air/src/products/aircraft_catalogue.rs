@@ -3,10 +3,11 @@ use content_reader_mesh::mesh::MeshProducts as _;
 use replay_frame::frame::DecodedFrame;
 use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue, View}, products::{ContentOptions, LoadContext, Product, check_reply_budget}};
 use content_reader_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
+use content_reader_layers::{LayerRole, ResolvedLayers};
 use replay_data::{rows::TableId, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{
         Arc,
@@ -16,25 +17,62 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub enum AircraftScope {
-    Aircraft,
-    All,
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AircraftCatalogueParams {
-    pub scope: AircraftScope,
     #[doc = " Matched without case against names, titles and what references them;"]
     #[doc = " empty matches every name."]
     pub query: String,
     #[doc = " The first matching entry to answer."]
     pub first: u32,
     #[doc = " How many matching entries to answer from `first`."]
+    pub count: u32,
+    #[doc = " Only the base game's entries, with its DLC's, or only one mod's; absent"]
+    #[doc = " matches every origin."]
+    #[serde(default)]
+    pub origin: Option<AircraftOriginFilter>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum AircraftOriginFilter {
+    Game,
+    Mod(String),
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AircraftOrigin {
+    Game { dlc: Option<String> },
+    Mod { id: String, name: String },
+}
+
+impl AircraftOrigin {
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Game { .. }, Self::Game { .. }) => true,
+            (Self::Mod { id, .. }, Self::Mod { id: other, .. }) => id == other,
+            _ => false,
+        }
+    }
+
+    fn chosen(&self, filter: &AircraftOriginFilter) -> bool {
+        match (self, filter) {
+            (Self::Game { .. }, AircraftOriginFilter::Game) => true,
+            (Self::Mod { id, .. }, AircraftOriginFilter::Mod(wanted)) => id == wanted,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct AircraftOriginCount {
+    pub origin: AircraftOrigin,
     pub count: u32,
 }
 
@@ -98,10 +136,13 @@ pub struct AircraftEntry {
     #[doc = " The localised names of the equipment that references it, in reference"]
     #[doc = " order without repeats; empty when none has one."]
     pub titles: Vec<String>,
-    #[doc = " Why it is an aircraft's; empty for a name only the complete listing has."]
+    #[doc = " Why it is an aircraft's."]
     pub references: Vec<AircraftReference>,
     #[doc = " Why it cannot be flown."]
     pub refusal: Option<AircraftRefusal>,
+    #[doc = " Who supplies the files it is declared in and drawn from: a mod when any"]
+    #[doc = " of them is a mod's; null when no descriptor registers it."]
+    pub origin: Option<AircraftOrigin>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -117,17 +158,19 @@ pub struct AircraftRefusalCount {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftCatalogueReply {
-    #[doc = " How many of the scope's entries match the query."]
+    #[doc = " How many aircraft match the query and origin."]
     pub matching: u32,
-    #[doc = " How many names are an aircraft's, and how many the complete listing has."]
-    pub aircraft: u32,
-    pub all: u32,
+    #[doc = " How many aircraft match the query, whatever their origin."]
+    pub found: u32,
     pub first: u32,
     #[doc = " Matching entries from `first`: flyable ones first, then refused ones,"]
-    #[doc = " each by name bytes."]
+    #[doc = " each without case by the first title, else the readable name."]
     pub entries: Vec<AircraftEntry>,
-    #[doc = " The scope's refused entries, whatever the query, by kind of reason."]
+    #[doc = " The matching entries that cannot be flown, by kind of reason."]
     pub refusals: Vec<AircraftRefusalCount>,
+    #[doc = " Every origin with an aircraft, the base game first and then mods in load"]
+    #[doc = " order, each with how many of its aircraft match the query."]
+    pub origins: Vec<AircraftOriginCount>,
     pub warnings: Vec<String>,
 }
 
@@ -139,7 +182,7 @@ impl Product for AircraftCatalogue {
     const KEY: &'static str = "aircraft-catalogue";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AircraftCatalogueParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![scope, query, first, count];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![query, first, count, origin];
     type Reply = AircraftCatalogueReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -154,13 +197,15 @@ impl Product for AircraftCatalogue {
         vec![
             Self::Params::decl(),
             Self::Reply::decl(),
-            AircraftScope::decl(),
             AircraftKind::decl(),
             AircraftReference::decl(),
             AircraftRefusalKind::decl(),
             AircraftRefusal::decl(),
             AircraftEntry::decl(),
             AircraftRefusalCount::decl(),
+            AircraftOriginFilter::decl(),
+            AircraftOrigin::decl(),
+            AircraftOriginCount::decl(),
         ]
     }
 
@@ -183,10 +228,18 @@ struct Listed {
     search: String,
 }
 
+impl Listed {
+    fn is_from(&self, origin: &AircraftOrigin) -> bool {
+        self.entry
+            .origin
+            .as_ref()
+            .is_some_and(|known| known.same(origin))
+    }
+}
+
 pub struct Built {
     entries: Vec<Listed>,
-    aircraft: Vec<usize>,
-    all: Vec<usize>,
+    origins: Vec<AircraftOrigin>,
     warnings: Vec<String>,
 }
 
@@ -213,7 +266,14 @@ fn built(
     result.get_or_init(|| {
         let catalogue = catalogue::catalogue(source, options)?;
         let designs = recorded_designs(source, cancelled)?;
-        Ok(Built::new(&catalogue, &designs))
+        let mods: BTreeMap<String, String> = source
+            .replay()
+            .identity
+            .mods
+            .iter()
+            .map(|recorded| (recorded.id.clone(), recorded.display_name.clone()))
+            .collect();
+        Ok(Built::new(&catalogue, &designs, &mods))
     })
 }
 
@@ -320,13 +380,16 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
 }
 
 impl Built {
-    pub fn new(catalogue: &Arc<Catalogue>, designs: &[(String, String)]) -> Self {
+    pub fn new(
+        catalogue: &Arc<Catalogue>,
+        designs: &[(String, String)],
+        mods: &BTreeMap<String, String>,
+    ) -> Self {
         match Content::read(catalogue) {
-            Ok(content) => Self::from_content(catalogue, &content, designs),
+            Ok(content) => Self::from_content(catalogue, &content, designs, mods),
             Err(why) => Self {
                 entries: Vec::new(),
-                aircraft: Vec::new(),
-                all: Vec::new(),
+                origins: Vec::new(),
                 warnings: vec![format!("The descriptor roster is refused: {why}")],
             },
         }
@@ -336,6 +399,7 @@ impl Built {
         catalogue: &Catalogue,
         content: &Content,
         designs: &[(String, String)],
+        mods: &BTreeMap<String, String>,
     ) -> Self {
         let listing = content.catalogue(designs);
         let equipment = &content.equipment;
@@ -354,9 +418,12 @@ impl Built {
                 .flatten()
                 .filter(|text| !text.trim().is_empty())
         };
-        let entries: Vec<Listed> = listing
+        let suppliers = Suppliers::new(&catalogue.content.layers, mods);
+        let descriptors = &content.roster.descriptors;
+        let mut entries: Vec<Listed> = listing
             .entries
             .into_iter()
+            .filter(aircraft::Entry::aircraft)
             .map(|entry| {
                 let mut titles: Vec<String> = Vec::new();
                 let mut add = |text: Option<String>| {
@@ -380,6 +447,27 @@ impl Built {
                         | aircraft::Reference::ClonedBy { .. } => {}
                     }
                 }
+                let files: Vec<&str> = match descriptors.inherit(&entry.name) {
+                    Some(entity) => entity
+                        .sources
+                        .first()
+                        .copied()
+                        .and_then(|path| path.to_str())
+                        .into_iter()
+                        .chain(
+                            entity
+                                .mesh
+                                .and_then(|mesh| descriptors.meshes.get(mesh))
+                                .map(|mesh| mesh.file.as_str()),
+                        )
+                        .collect(),
+                    None => descriptors
+                        .meshes
+                        .get(&entry.name)
+                        .map(|mesh| mesh.file.as_str())
+                        .into_iter()
+                        .collect(),
+                };
                 let entry = AircraftEntry {
                     kind: match entry.kind {
                         aircraft::Kind::Entity => AircraftKind::Entity,
@@ -392,6 +480,7 @@ impl Built {
                         kind: refusal_kind(refusal.kind),
                         reason: refusal.reason,
                     }),
+                    origin: suppliers.origin(&files),
                     name: entry.name,
                 };
                 Listed {
@@ -400,60 +489,73 @@ impl Built {
                 }
             })
             .collect();
-        let order = |keep: &dyn Fn(&AircraftEntry) -> bool| {
-            let (mut flyable, mut refused): (Vec<usize>, Vec<usize>) = (0..entries.len())
-                .filter(|&at| keep(&entries[at].entry))
-                .partition(|&at| entries[at].entry.refusal.is_none());
-            flyable.append(&mut refused);
-            flyable
-        };
-        let aircraft = order(&|entry| !entry.references.is_empty());
-        let all = order(&|_| true);
+        entries.sort_by_cached_key(|listed| {
+            let entry = &listed.entry;
+            let shown = entry
+                .titles
+                .first()
+                .cloned()
+                .unwrap_or_else(|| readable_name(&entry.name));
+            (entry.refusal.is_some(), shown.to_lowercase(), entry.name.clone())
+        });
+        let origins = suppliers
+            .listed()
+            .filter(|origin| entries.iter().any(|listed| listed.is_from(origin)))
+            .collect();
         let mut warnings = content.warnings.clone();
         warnings.extend(listing.diagnostics);
         Self {
             entries,
-            aircraft,
-            all,
+            origins,
             warnings,
         }
     }
 
-    fn scope(&self, scope: AircraftScope) -> &[usize] {
-        match scope {
-            AircraftScope::Aircraft => &self.aircraft,
-            AircraftScope::All => &self.all,
-        }
-    }
-
     pub fn page(&self, params: &AircraftCatalogueParams) -> AircraftCatalogueReply {
-        let scope = self.scope(params.scope);
         let query = params.query.trim().to_lowercase();
-        let matching: Vec<usize> = scope
+        let found: Vec<&Listed> = self
+            .entries
             .iter()
-            .copied()
-            .filter(|&at| query.is_empty() || self.entries[at].search.contains(&query))
+            .filter(|listed| query.is_empty() || listed.search.contains(&query))
             .collect();
-        let first = params.first as usize;
-        let entries = matching
+        let total = count(found.len());
+        let origins = self
+            .origins
             .iter()
-            .skip(first)
-            .take(params.count as usize)
-            .map(|&at| self.entries[at].entry.clone())
+            .map(|origin| AircraftOriginCount {
+                origin: origin.clone(),
+                count: count(found.iter().filter(|listed| listed.is_from(origin)).count()),
+            })
             .collect();
-        let mut refusals = std::collections::BTreeMap::new();
-        for refusal in scope
+        let matching: Vec<&Listed> = found
+            .into_iter()
+            .filter(|listed| {
+                params.origin.as_ref().is_none_or(|filter| {
+                    listed
+                        .entry
+                        .origin
+                        .as_ref()
+                        .is_some_and(|known| known.chosen(filter))
+                })
+            })
+            .collect();
+        let mut refusals = BTreeMap::new();
+        for refusal in matching
             .iter()
-            .filter_map(|&at| self.entries[at].entry.refusal.as_ref())
+            .filter_map(|listed| listed.entry.refusal.as_ref())
         {
             *refusals.entry(refusal.kind).or_insert(0_u32) += 1;
         }
         AircraftCatalogueReply {
             matching: count(matching.len()),
-            aircraft: count(self.aircraft.len()),
-            all: count(self.all.len()),
+            found: total,
             first: params.first,
-            entries,
+            entries: matching
+                .iter()
+                .skip(params.first as usize)
+                .take(params.count as usize)
+                .map(|listed| listed.entry.clone())
+                .collect(),
             refusals: refusals
                 .into_iter()
                 .map(|(kind, count)| AircraftRefusalCount {
@@ -462,8 +564,76 @@ impl Built {
                     count,
                 })
                 .collect(),
+            origins,
             warnings: self.warnings.clone(),
         }
+    }
+}
+
+struct Suppliers<'a> {
+    layers: &'a ResolvedLayers,
+    origins: Vec<AircraftOrigin>,
+}
+
+impl<'a> Suppliers<'a> {
+    fn new(layers: &'a ResolvedLayers, mods: &BTreeMap<String, String>) -> Self {
+        let origins = layers
+            .layers
+            .iter()
+            .map(|layer| {
+                let named = |name: &str| AircraftOrigin::Mod {
+                    id: layer.id.clone(),
+                    name: name.to_owned(),
+                };
+                if let Some(name) = layer.visual_mod_name() {
+                    return named(name);
+                }
+                match layer.role {
+                    LayerRole::Vanilla | LayerRole::Builtin | LayerRole::AboveMods => {
+                        AircraftOrigin::Game { dlc: None }
+                    }
+                    LayerRole::Dlc => AircraftOrigin::Game {
+                        dlc: Some(
+                            layer
+                                .dlc_name()
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| layer.id.clone()),
+                        ),
+                    },
+                    LayerRole::Mod | LayerRole::Visual => {
+                        named(mods.get(&layer.id).map_or(layer.id.as_str(), String::as_str))
+                    }
+                    LayerRole::UserDirectory => named("User folder"),
+                }
+            })
+            .collect();
+        Self { layers, origins }
+    }
+
+    fn origin(&self, files: &[&str]) -> Option<AircraftOrigin> {
+        let found: Vec<&AircraftOrigin> = files
+            .iter()
+            .filter_map(|file| self.origins.get(self.layers.layer_index(file)?))
+            .collect();
+        let pick = |wanted: fn(&AircraftOrigin) -> bool| found.iter().copied().find(|origin| wanted(origin));
+        pick(|origin| matches!(origin, AircraftOrigin::Mod { .. }))
+            .or_else(|| pick(|origin| matches!(origin, AircraftOrigin::Game { dlc: Some(_) })))
+            .or_else(|| found.first().copied())
+            .cloned()
+    }
+
+    fn listed(&self) -> impl Iterator<Item = AircraftOrigin> + '_ {
+        let game = self
+            .origins
+            .iter()
+            .any(|origin| matches!(origin, AircraftOrigin::Game { .. }))
+            .then_some(AircraftOrigin::Game { dlc: None });
+        let mods = self.origins.iter().enumerate().filter_map(|(at, origin)| {
+            let first = self.origins[..at].iter().all(|earlier| !earlier.same(origin));
+            (matches!(origin, AircraftOrigin::Mod { .. }) && first).then(|| origin.clone())
+        });
+        game.into_iter().chain(mods)
     }
 }
 

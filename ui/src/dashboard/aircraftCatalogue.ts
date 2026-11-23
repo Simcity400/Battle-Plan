@@ -1,6 +1,6 @@
 import { asFailure } from './queryError.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AircraftCatalogueParams, AircraftCatalogueReply, AircraftEntry, AircraftRefusalCount, AircraftRefusalKind, AircraftScope } from '../generated/dashboard.ts';
+import type { AircraftCatalogueParams, AircraftCatalogueReply, AircraftEntry, AircraftOrigin, AircraftOriginCount, AircraftOriginFilter, AircraftRefusalCount, AircraftRefusalKind } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardSource } from './client';
 import { useContentRevision } from './contentRevision.ts';
 import { loadTransientProduct } from './products.ts';
@@ -21,9 +21,9 @@ export class AircraftPages {
   readonly identity: string;
   readonly size: number;
   matching: number | null = null;
-  aircraft: number | null = null;
-  all: number | null = null;
+  found: number | null = null;
   refusals: AircraftRefusalCount[] = [];
+  origins: AircraftOriginCount[] = [];
   warnings: string[] = [];
   private readonly pages = new Map<number, AircraftEntry[]>();
   private readonly pending = new Set<number>();
@@ -55,9 +55,9 @@ export class AircraftPages {
     }
     this.pages.set(page, reply.entries);
     this.matching = reply.matching;
-    this.aircraft = reply.aircraft;
-    this.all = reply.all;
+    this.found = reply.found;
     this.refusals = reply.refusals;
+    this.origins = reply.origins;
     this.warnings = reply.warnings;
     return true;
   }
@@ -67,6 +67,31 @@ export class AircraftPages {
   error(page: number): Error | undefined { return this.failed.get(page); }
   firstError(): Error | undefined { return this.failed.values().next().value; }
   loading(): boolean { return this.pending.size > 0; }
+
+  flyable(): number | null {
+    return this.matching === null ? null : this.matching - this.refusals.reduce((sum, refusal) => sum + refusal.count, 0);
+  }
+}
+
+export function originFilter(origin: AircraftOrigin): AircraftOriginFilter {
+  return origin.kind === 'game' ? 'game' : { mod: origin.id };
+}
+
+export function sameOrigin(a: AircraftOriginFilter | null, b: AircraftOriginFilter | null): boolean {
+  if (a === null || b === null || a === 'game' || b === 'game') return a === b;
+  return a.mod === b.mod;
+}
+
+export function originLabel(origin: AircraftOrigin): string {
+  return origin.kind === 'game' ? 'Vanilla' : origin.name;
+}
+
+const TAG = /^[A-Z0-9]{3}$/;
+
+export function countryTag(entry: Pick<AircraftEntry, 'references'>): string | null {
+  for (const reference of entry.references) if (reference.kind === 'ladder' && reference.prefix && TAG.test(reference.prefix)) return reference.prefix;
+  for (const reference of entry.references) if (reference.kind === 'pool' && TAG.test(reference.bucket)) return reference.bucket;
+  return null;
 }
 
 export function aircraftRowInteractive(pages: AircraftPages, index: number): boolean {
@@ -94,6 +119,10 @@ export function refusalLine(refusals: readonly AircraftRefusalCount[]): { text: 
 
 export const CATALOGUE_NOTE = 'Some game files couldn’t be read, so this list may be incomplete.';
 
+export function catalogueParams(query: string, first: number, count: number, origin: AircraftOriginFilter | null): AircraftCatalogueParams {
+  return { query: query.trim(), first, count, origin };
+}
+
 export interface AircraftCatalogueState {
   pages: AircraftPages | null;
   version: number;
@@ -101,14 +130,14 @@ export interface AircraftCatalogueState {
   retry: (index: number) => void;
 }
 
-export function useAircraftCatalogue(client: DashboardClient, source: DashboardSource | null, scope: AircraftScope, query: string, active: boolean): AircraftCatalogueState {
+export function useAircraftCatalogue(client: DashboardClient, source: DashboardSource | null, origin: AircraftOriginFilter | null, query: string, active: boolean): AircraftCatalogueState {
   const content = useContentRevision(client);
   const [asked, setAsked] = useState(query);
   useEffect(() => {
     if (asked === query) return;
     return busyWait(() => setAsked(query), AIRCRAFT_QUERY_DELAY);
   }, [query, asked]);
-  const identity = source && active ? JSON.stringify([source.id, source.revision, content, scope, asked.trim()]) : null;
+  const identity = source && active ? JSON.stringify([source.id, source.revision, content, origin, asked.trim()]) : null;
   const [version, setVersion] = useState(0);
   const current = useRef<{ pages: AircraftPages; controllers: Map<AbortController, number> } | null>(null);
   if (identity && current.current?.pages.identity !== identity) {
@@ -131,7 +160,7 @@ export function useAircraftCatalogue(client: DashboardClient, source: DashboardS
     pages.begin(page);
     const controller = new AbortController();
     controllers.set(controller, page);
-    const params: AircraftCatalogueParams = { scope, query: asked.trim(), first: page * pages.size, count: pages.size };
+    const params = catalogueParams(asked, page * pages.size, pages.size, origin);
     void loadTransientProduct<AircraftCatalogueReply>(client, productRequest({ sourceId: source.id, revision: source.revision, product: 'aircraft-catalogue', params }), controller.signal, source)
       .then(reply => { if (!controller.signal.aborted) pages.accept(page, reply); },
         error => { if (!controller.signal.aborted) pages.fail(page, asFailure(error)); })
@@ -139,7 +168,7 @@ export function useAircraftCatalogue(client: DashboardClient, source: DashboardS
         controllers.delete(controller);
         if (!controller.signal.aborted && current.current?.pages === pages) setVersion(version => version + 1);
       });
-  }, [client, source, scope, asked]);
+  }, [client, source, origin, asked]);
   useEffect(() => { if (identity) load(0); }, [identity, load]);
   const request = useCallback((first: number, last: number) => {
     for (const page of pagesFor(first, last + (current.current?.pages.size ?? AIRCRAFT_PAGE))) load(page);
