@@ -88,6 +88,10 @@ test('a chosen source is the pressed tab, a DLC model counts as the base game, a
     const refused = render({ aircraft: chosen.name, state: { kind: 'refused', reason: 'its mesh did not load' } });
     assert.match(refused, /class="aircraft-row-state is-alert"/);
     assert.match(refused, /role="alert" data-detail="its mesh did not load"><svg[^]*?<span>Spitfire can’t be flown\.<\/span>/);
+    const flagged = renderToStaticMarkup(createElement(module.AircraftCatalogueView, { ...view, pages,
+      flag: (tag: string) => createElement('i', { className: 'stub-flag' }, tag) }));
+    assert.match(flagged, /<span class="aircraft-tile has-flag" aria-hidden="true"><i class="stub-flag">ENG<\/i><\/span>/,
+      'a row with a country shows the flag the rest of the app draws');
     const none = renderToStaticMarkup(createElement(module.AircraftCatalogueView, { ...view, pages }));
     assert.match(none, /<p class="aircraft-picker-hint" role="status">No aircraft is chosen: Fly mode is a free camera until you choose one\.<\/p>/);
     const unsourced = new catalogue.AircraftPages('unsourced');

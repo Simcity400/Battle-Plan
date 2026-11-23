@@ -31,9 +31,11 @@ button.aircraft-row:hover:not(:disabled) { background: var(--hover); }
 .aircraft-row:disabled { opacity: 1; cursor: default; }
 .aircraft-tile { display: grid; flex: none; place-items: center; width: 38px; height: 38px; border-radius: calc(var(--r-md) - 1px); background: color-mix(in srgb, var(--text) 6%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft); color: var(--muted-strong); font-size: 0.6875rem; font-weight: 650; letter-spacing: .05em; }
 .aircraft-tile > svg { width: 16px; height: 16px; }
-.aircraft-row[data-origin='mod'] .aircraft-tile { background: color-mix(in srgb, var(--origin-mod) 15%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--origin-mod) 42%, transparent); color: color-mix(in srgb, var(--origin-mod) 70%, var(--text)); }
-.aircraft-row[aria-pressed='true'] .aircraft-tile { background: var(--accent); box-shadow: none; color: var(--accent-text); }
+.aircraft-row[data-origin='mod'] .aircraft-tile:not(.has-flag) { background: color-mix(in srgb, var(--origin-mod) 15%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--origin-mod) 42%, transparent); color: color-mix(in srgb, var(--origin-mod) 70%, var(--text)); }
+.aircraft-row[aria-pressed='true'] .aircraft-tile:not(.has-flag) { background: var(--accent); box-shadow: none; color: var(--accent-text); }
 .aircraft-row:disabled .aircraft-tile { opacity: .55; }
+.aircraft-tile.has-flag { background: none; box-shadow: none; }
+.aircraft-tile.has-flag > .country-flag { width: 36px; height: 24px; flex: 0 0 36px; border-radius: 3px; }
 .aircraft-row-text { display: grid; flex: 1; gap: 3px; min-width: 0; }
 .aircraft-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.84375rem; font-weight: 550; }
 .aircraft-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

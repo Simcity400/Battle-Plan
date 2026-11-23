@@ -8,6 +8,7 @@ import { CATALOGUE_NOTE, aircraftRowInteractive, countryTag, originFilter, origi
 import { aircraftTitle } from '../dashboard/aircraftChoice';
 import type { AircraftChoice } from '../dashboard/aircraftChoice';
 import type { AircraftPages } from '../dashboard/aircraftCatalogue';
+import { SourceFlag } from './CountryFlag';
 import { Icon } from './Icons';
 import { FailureLine } from './FailureLine';
 import { VirtualList } from './VirtualList';
@@ -40,9 +41,11 @@ function ChosenState({ chosen, status }: { chosen: AircraftChoice; status: FlyAi
   return <span className="aircraft-row-state">{state === 'loading' ? <span className="spinner" role="status" aria-label="Loading" /> : <Icon name="check" />}</span>;
 }
 
-function Row({ index, pages, chosen, status, onChoose, request, retry }: {
+type FlagOf = (tag: string) => ReactNode;
+
+function Row({ index, pages, chosen, status, onChoose, request, retry, flag }: {
   index: number; pages: AircraftPages; chosen: AircraftChoice | null; status: FlyAircraftStatus | null; onChoose: (aircraft: AircraftChoice | null) => void;
-  request: (first: number, last: number) => void; retry: (index: number) => void;
+  request: (first: number, last: number) => void; retry: (index: number) => void; flag?: FlagOf;
 }) {
   const entry = pages.entry(index);
   const error = pages.error(Math.floor(index / pages.size));
@@ -59,7 +62,8 @@ function Row({ index, pages, chosen, status, onChoose, request, retry }: {
   const others = entry.titles.slice(1).join(', ');
   return <button type="button" className="aircraft-row" disabled={!!refused} aria-pressed={picked} data-origin={entry.origin?.kind ?? 'unknown'}
     data-tooltip={picked ? 'Click again to go back to the free camera' : undefined} onClick={() => onChoose(picked ? null : { name: entry.name, title })}>
-    <span className="aircraft-tile" aria-hidden="true">{tag ?? <Icon name="plane" />}</span>
+    {tag && flag ? <span className="aircraft-tile has-flag" aria-hidden="true">{flag(tag)}</span>
+      : <span className="aircraft-tile" aria-hidden="true">{tag ?? <Icon name="plane" />}</span>}
     <span className="aircraft-row-text">
       <span className="aircraft-row-title"><span className="aircraft-row-name">{title}</span>{entry.kind === 'mesh' && <small className="aircraft-badge">No animation</small>}</span>
       <small className="aircraft-row-detail"><span className="aircraft-row-source" data-tooltip={from.tooltip}>{from.text}</span>
@@ -85,11 +89,11 @@ function OriginTabs({ found, origins, origin, onOrigin }: {
   </div>;
 }
 
-export function AircraftCatalogueView({ pages, version, origin, onOrigin, query, onQuery, chosen, status, onChoose, request, retry }: {
+export function AircraftCatalogueView({ pages, version, origin, onOrigin, query, onQuery, chosen, status, onChoose, request, retry, flag }: {
   pages: AircraftPages | null; version: number; origin: AircraftOriginFilter | null; onOrigin: (origin: AircraftOriginFilter | null) => void;
   query: string; onQuery: (query: string) => void;
   chosen: AircraftChoice | null; status: FlyAircraftStatus | null; onChoose: (aircraft: AircraftChoice | null) => void;
-  request: (first: number, last: number) => void; retry: (index: number) => void;
+  request: (first: number, last: number) => void; retry: (index: number) => void; flag?: FlagOf;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const matching = pages?.matching ?? 0;
@@ -126,7 +130,7 @@ export function AircraftCatalogueView({ pages, version, origin, onOrigin, query,
       {pages && items.length > 0 && <VirtualList identity={pages} items={items} itemKey={String} estimate={56} label="Aircraft" scrollRef={scroll} isInteractive={interactive}>
         {item => item === REFUSED
           ? <p className="aircraft-group" data-tooltip={refusals?.tooltip} data-detail={refusals?.detail}>Can’t be flown · {(matching - flyable).toLocaleString()}</p>
-          : <Row index={item} pages={pages} chosen={chosen} status={status} onChoose={onChoose} request={request} retry={retry} />}
+          : <Row index={item} pages={pages} chosen={chosen} status={status} onChoose={onChoose} request={request} retry={retry} flag={flag} />}
       </VirtualList>}
     </div>
     {pages && pages.warnings.length > 0 && <p className="aircraft-picker-note" data-detail={pages.warnings.join('\n')}>{CATALOGUE_NOTE}</p>}
@@ -169,7 +173,7 @@ export default function AircraftPicker({ client, source, chosen, status, onChoos
       data-tooltip={line?.text ?? 'Choose the aircraft to fly'} data-detail={line?.detail} onClick={() => setOpen(value => !value)}><Icon name="plane" /><span>{label}</span></button>
     {shown && createPortal(<AircraftPanel id={id} onClose={close} onFreeCamera={chosen ? () => onChoose(null) : undefined}>
       <AircraftCatalogueView pages={pages} version={version} origin={origin} onOrigin={setOrigin} query={query} onQuery={setQuery}
-        chosen={chosen} status={status} onChoose={onChoose} request={request} retry={retry} />
+        chosen={chosen} status={status} onChoose={onChoose} request={request} retry={retry} flag={tag => <SourceFlag client={client} source={source} tag={tag} />} />
     </AircraftPanel>, host)}
   </>;
 }
