@@ -34,6 +34,27 @@ export function resolveRetainedHeadSpan(
   return fallback;
 }
 
+export interface DisplayedStaticSnapshot {
+  readonly data: unknown;
+  readonly moment: string | undefined;
+  readonly span: readonly [number, number] | null;
+}
+
+export function resolveDisplayedStaticSnapshot(
+  previous: DisplayedStaticSnapshot | null,
+  data: unknown,
+  moment: string | undefined,
+  requestedSpan: readonly [number, number] | null,
+): DisplayedStaticSnapshot | null {
+  if (data === undefined) return null;
+  if (previous && previous.data === data && previous.moment === moment) return previous;
+  return {
+    data,
+    moment,
+    span: resolveRetainedHeadSpan(moment, requestedSpan),
+  };
+}
+
 export function effectiveCountryUnobserved(
   selection: CountrySelection,
   raw: readonly HourSpan[] | undefined,
@@ -41,6 +62,17 @@ export function effectiveCountryUnobserved(
   if (!raw?.length) return [];
   if (selection.kind !== 'group' || selection.membership !== 'hour') return [];
   return raw.map(span => [span.firstHour, span.lastHour] as const);
+}
+
+export function selectionUnobservedReason(
+  selection: CountrySelection,
+  raw: readonly HourSpan[] | undefined,
+): string | null {
+  if (!raw?.length) return null;
+  if (selection.kind === 'group' && selection.membership === 'ever') {
+    return 'Group membership is incomplete for this campaign.';
+  }
+  return null;
 }
 
 export interface FamilyFactionData {

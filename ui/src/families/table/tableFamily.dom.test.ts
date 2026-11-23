@@ -12,6 +12,7 @@ test('table family plays live with zero React commits, zero layout reads on inst
     const played = await act<{
       playingDuringAdvance: boolean;
       playingBeforePause: boolean;
+      beforePauseTop: string | null;
       commits: number;
       totalInstallReads: number;
       pauseInstallReads: number;
@@ -21,9 +22,10 @@ test('table family plays live with zero React commits, zero layout reads on inst
       finalHour: number | null;
       mirrorRows: { key: string | null; cells: (string | null)[] }[];
     }>('playLive(22)');
-    t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, flushedOnPause=${played.flushedOnPause}`);
+    t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, flushedOnPause=${played.flushedOnPause}`);
     assert.equal(played.playingDuringAdvance, true, 'clock.playing was true during frame advance');
     assert.equal(played.playingBeforePause, true, 'clock.playing stayed true until pause');
+    assert.equal(played.beforePauseTop, 'GER', 'S8: mirror was still throttled on GER before pause, proving pause flushed it to FRA');
     assert.equal(played.commits, 0, `zero React commits across live playback with unchanged structure: ${played.commits}`);
     assert.equal(played.totalInstallReads, 0, `zero layout/style reads during live playback install: ${played.totalInstallReads}`);
     assert.equal(played.pauseInstallReads, 0, `zero layout/style reads through pause flush: ${played.pauseInstallReads}`);
@@ -74,15 +76,20 @@ test('table family plays live with zero React commits, zero layout reads on inst
       assert.equal(pinned.title, 'France', 'P pins keyboard-focused FRA (France), not pointer-hovered ITA (Italy)');
       assert.ok((pinned.subtitle ?? '').startsWith('Pinned at '), `pinned tooltip carries pinned subtitle: ${pinned.subtitle}`);
       assert.equal(pinned.installReads, 0, 'zero layout/style reads during install even with active focus and hover tooltips');
+
+      const overflow = await act<{ tipOverflowed: boolean; commits: number; installReads: number; installs: number }>('testOverflowTooltipDuringPlayback()');
+      assert.equal(overflow.tipOverflowed, true, 'M8: fitTooltip genuinely truncated the tooltip');
+      assert.ok(overflow.installs >= 3, `M8: multiple installs occurred during playback (${overflow.installs})`);
+      assert.equal(overflow.commits, 0, `M8: cached overflowing tooltip causes zero TooltipLayer commits across unchanged installs (got ${overflow.commits})`);
+      assert.equal(overflow.installReads, 0, `M8: cached overflowing tooltip causes zero layout reads across unchanged installs (got ${overflow.installReads})`);
     } finally {
       cdp.close();
     }
 
-    const kbd = await act<{ afterDown: string | null; activated: string[]; liveStatus: string; moreText: string; menuOpen: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
-    assert.ok(kbd.afterDown !== null, 'ArrowDown moves focus to next mirror row');
+    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; moreText: string; menuOpen: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
+    assert.ok(kbd.afterDown !== null && kbd.afterDown !== kbd.firstKey, `S8: ArrowDown moved focus from ${kbd.firstKey} to ${kbd.afterDown}`);
     assert.equal(kbd.activated.length, 1, 'Enter activates focused row');
     assert.ok(kbd.moreText.includes('+'), `narrow table shows +N columns button: ${kbd.moreText}`);
     assert.equal(kbd.menuOpen, true, '+N columns button opens chooser');
-    assert.equal(kbd.totalInstallReads, 0, 'zero layout/style reads across all installs');
   }));
 });

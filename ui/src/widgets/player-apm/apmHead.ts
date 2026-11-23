@@ -1,11 +1,11 @@
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import type { SortValue } from '../../charts/table/logic';
-import { CELL, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowName, textAt } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';
 
-const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8 } as const;
+const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
 
 const bits = new DataView(new ArrayBuffer(8));
@@ -15,13 +15,8 @@ function float(answer: FollowedRows, at: number): number | null {
   return bits.getFloat64(0, true);
 }
 const whole = (answer: FollowedRows, at: number): bigint | null => cellState(answer, at) === CELL.value ? cellValue(answer, at) : null;
-
-function unpacked(raw: bigint | null): string | null {
-  if (raw === null) return null;
-  let out = '';
-  for (let value = BigInt.asUintN(64, raw); value > 0n; value >>= 8n) out += String.fromCharCode(Number(value & 0xffn));
-  return out || null;
-}
+const textCell = (answer: FollowedRows, at: number): string | null =>
+  cellState(answer, at) === CELL.value ? textAt(answer, Number(cellValue(answer, at))) : null;
 
 export function apmHeadQuery(params: { branchId: string; group: ApmGroup; tags: string[] | null; membership: ApmMembership[] | null; players: string[] },
   branch: { firstHour: number; lastHour: number }, windowHours: number) {
@@ -44,8 +39,11 @@ export function apmHeadRows(answer: FollowedAnswer | undefined): ApmSeries[] {
   const held = rowsOf(answer);
   if (!held) return [];
   return Array.from({ length: held.rows }, (_, row) => {
-    const at = row * held.columns, id = rowName(held, row) ?? String(row), tag = unpacked(whole(held, at + APM.tag));
-    return { id, name: id, tag, hour: Number(whole(held, at + APM.hour) ?? 0n), summary: valueAt(held, row), points: [] };
+    const at = row * held.columns, id = rowName(held, row) ?? String(row);
+    const tag = textCell(held, at + APM.tag);
+    const name = held.columns > APM.name ? textCell(held, at + APM.name) : null;
+    const nameMissing = held.columns > APM.nameMissing ? textCell(held, at + APM.nameMissing) : null;
+    return { id, name, nameMissing, tag, hour: Number(whole(held, at + APM.hour) ?? 0n), summary: valueAt(held, row), points: [] };
   });
 }
 
@@ -54,7 +52,7 @@ export function apmHeadStructure(answer: FollowedAnswer | undefined): string {
   const held = rowsOf(answer);
   if (!held) return '';
   let out = '';
-  for (let row = 0; row < held.rows; row++) out += `${rowName(held, row)}:${unpacked(whole(held, row * held.columns + APM.tag)) ?? ''}\u0000`;
+  for (let row = 0; row < held.rows; row++) out += `${rowName(held, row)}:${textCell(held, row * held.columns + APM.tag) ?? ''}\u0000`;
   return out;
 }
 

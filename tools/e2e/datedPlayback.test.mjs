@@ -600,6 +600,23 @@ test('review 9: a table placement passes exact content only on its own renderer\
   const paused = { ...window(-1), to: 2000 };
   paused.audit = paused.audit.map(sample => ({ ...sample, at: 1500 }));
   assert.equal(datedPlaybackVerdict([paused], records).pass, false, 'review 11: a comparison after the last judged frame, still inside the window, does not count');
+
+  const paintedRecords = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: -1, mode: 'picture', hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const sparseAuditWin = window(-1);
+  const sparseVerdict = datedPlaybackVerdict([sparseAuditWin], paintedRecords);
+  assert.equal(sparseVerdict.pass, false, 'S20: a single audit sample cannot mask 60 unaudited painted pictures');
+  assert.equal(sparseVerdict.placements[0].unauditedPictures, 60);
+  const fullAuditWin = {
+    ...window(-1),
+    audit: presented.map(at => ({ widget: 'w', surface: 'table', placement: 1, owner: -1, at, error: null })),
+  };
+  assert.equal(datedPlaybackVerdict([fullAuditWin], paintedRecords).pass, true, 'S20: full per-picture audit passes');
 });
 
 test('a window with overlapping lost perf records, a refused widget, or a failed input check fails by name', () => {

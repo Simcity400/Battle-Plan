@@ -11,6 +11,7 @@ import {
   nextHoldersChange,
   nextMembershipChange,
   nextRangesChange,
+  nextWindowRangesChange,
   type FamilyFactionRun,
   type HolderRun,
   type HourRanges,
@@ -19,7 +20,7 @@ import type { CountryLooksMap } from './looks.ts';
 import type { TableColumnSpec, TableProjection } from './model.ts';
 import type { TableBase, TableSettings, TableSortDirection } from './settings.ts';
 
-export { holderTagAt, nextHoldersChange, nextMembershipChange, nextRangesChange };
+export { holderTagAt, nextHoldersChange, nextMembershipChange, nextRangesChange, nextWindowRangesChange };
 export type { HolderRun, HourRanges };
 
 export function resolveHeadSpan(
@@ -99,6 +100,7 @@ export type CountryPolicy =
   | {
       readonly mode: 'multi';
       readonly labels?: boolean;
+      readonly colours?: boolean;
       readonly factions?: boolean;
       readonly allowSlots?: boolean;
       readonly allowSingleSlot?: boolean;

@@ -1,4 +1,4 @@
-import type { PictureSample } from '../draw/notifications';
+import type { DrawSample, PictureSample } from '../draw/notifications';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { attributeCommits, takeCommits } from './commitCount.ts';
@@ -109,8 +109,15 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
 }
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
 interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead; placement?: number }
-type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
+type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows?: PictureSample['rows'] };
 type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; at: number; hour: number; error: string | null };
+
+function shouldAuditPicture(record: DrawSample, activeReaders?: Map<string, ExactPicture>): boolean {
+  if (record.t !== 'picture' || record.hour === null) return false;
+  if (record.rows) return true;
+  if (record.mode !== 'picture' || record.detached) return false;
+  return record.auditMissing === true || activeReaders?.has(record.placement + '/' + record.owner) === true;
+}
 
 const READERS_HELD = 1024;
 const EXACT_READS_HELD = 64;
@@ -129,9 +136,10 @@ export class PerfRecorder {
       this.rowChanges.push({ widget, source, previous, current, ...placement !== undefined ? { placement } : {} });
   }
 
-  reader(id: number, owner: number, exact: ExactPicture) {
+  reader(id: number, owner: number, exact: ExactPicture | null) {
     const key = id + '/' + owner;
     this.readers.delete(key);
+    if (!exact) return;
     this.readers.set(key, exact);
     if (this.readers.size > READERS_HELD) this.readers.delete(this.readers.keys().next().value!);
     this.auditReaders?.set(key, exact);
@@ -212,7 +220,7 @@ export class PerfRecorder {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
         this.push(logged);
-        if (record.t === 'picture' && record.rows && record.hour !== null) pictures.push(record as AuditedPicture);
+        if (shouldAuditPicture(record, readers)) pictures.push(record as AuditedPicture);
       }
       if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
       if (this.auditGen !== gen) return { done: true, results: [] };
@@ -230,7 +238,7 @@ export class PerfRecorder {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
         this.push(logged);
-        if (record.t === 'picture' && record.rows && record.hour !== null) work.pictures.push(record as AuditedPicture);
+        if (shouldAuditPicture(record, work.readers)) work.pictures.push(record as AuditedPicture);
       }
       if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
       if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
@@ -242,7 +250,11 @@ export class PerfRecorder {
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null;
-      try { error = pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour, record.auditId)); }
+      try {
+        error = rows
+          ? pictureError(surface, rows, await work.readers?.get(placement + '/' + owner)?.(hour, record.auditId))
+          : 'Painted picture emitted without audit rows';
+      }
       catch (cause) { error = String(cause); }
       return { widget, surface, placement, owner, at: record.at, hour, error };
     });

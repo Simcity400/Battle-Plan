@@ -147,11 +147,13 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
 
-  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', '0']));
+  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', ['int', '0']]));
   assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));
   assert.equal(auditValue(notApplicable('Peacetime'), 'integer'), JSON.stringify(['notApplicable', 'Peacetime']));
-  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', '15', 'Gaps', false]));
+  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', ['int', '15'], 'Gaps', false]));
   assert.notEqual(auditValue(zeroValue(0), 'decimal1'), auditValue(knownValue(0.04), 'decimal1'));
+  assert.notEqual(auditValue(knownValue('1000')), auditValue(knownValue(1000)));
+  assert.equal(auditValue(knownValue(1e21)), auditValue(knownValue(10n ** 21n)));
 });
 
 test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {

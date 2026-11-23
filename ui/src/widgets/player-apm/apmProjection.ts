@@ -1,7 +1,7 @@
-import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
+import { rowName, textAt, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
-import type { DeclaredTableContext, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { nextWindowRangesChange, type DeclaredTableContext, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
 import {
   declareTableProjection,
@@ -11,7 +11,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { GAPS_NOTE, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
@@ -22,7 +22,6 @@ export interface ApmTableProjectionOptions {
   readonly showPaused: boolean;
   readonly cellBars: boolean;
   readonly rankMarkers: boolean;
-  readonly playerNames: Readonly<Record<string, string>>;
   readonly labels: CountryLooksMap;
   readonly unobserved?: HourRanges;
   readonly branchFirst?: number;
@@ -30,19 +29,19 @@ export interface ApmTableProjectionOptions {
   readonly staticSpan?: readonly [number, number] | null;
 }
 
+type DisplayApmRow = ApmSeries & { readonly displayName: string | null };
+
 interface ParsedApm {
-  readonly rows: readonly ApmSeries[];
+  readonly rows: readonly DisplayApmRow[];
   readonly refusal?: string;
   readonly warnings: readonly string[];
 }
 
-const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8 } as const;
+const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
 
-function unpackTag(raw: bigint | null): string | null {
-  if (raw === null) return null;
-  let out = '';
-  for (let v = BigInt.asUintN(64, raw); v > 0n; v >>= 8n) out += String.fromCharCode(Number(v & 0xffn));
-  return out || null;
+function withDisplayNames(rows: readonly ApmSeries[]): DisplayApmRow[] {
+  const names = playerNames(rows);
+  return rows.map(row => ({ ...row, displayName: names.get(row.id) ?? null }));
 }
 
 function apmReason(summary: ApmValue): NullableMeaning {
@@ -76,6 +75,11 @@ function parseAnswer(answer: FollowedAnswer): ParsedApm {
       const v = wireWhole(answer, at + col);
       return v.kind === 'known' || v.kind === 'zero' ? BigInt(v.value) : null;
     };
+    const readText = (col: number): string | null => {
+      if (col >= answer.columns) return null;
+      const idx = readBig(col);
+      return idx === null ? null : textAt(answer, Number(idx));
+    };
     const summary: ApmValue = {
       apm: readFloat(APM.apm),
       confirmedApm: readFloat(APM.confirmedApm),
@@ -85,15 +89,23 @@ function parseAnswer(answer: FollowedAnswer): ParsedApm {
       complete: readBig(APM.complete) === 1n,
       gaps: readBig(APM.gaps) === 1n,
     };
-    rows.push({ id, name: id, tag: unpackTag(readBig(APM.tag)), hour: Number(readBig(APM.hour) ?? 0n), summary, points: [] });
+    rows.push({
+      id,
+      name: readText(APM.name),
+      nameMissing: readText(APM.nameMissing),
+      tag: readText(APM.tag),
+      hour: Number(readBig(APM.hour) ?? 0n),
+      summary,
+      points: [],
+    });
   }
-  return { rows, warnings: [] };
+  return { rows: withDisplayNames(rows), warnings: [] };
 }
 
 function parseReply(raw: unknown): ParsedApm {
   const reply: ApmReply = validateApm(raw);
   return reply.available
-    ? { rows: reply.series, warnings: reply.warnings }
+    ? { rows: withDisplayNames(reply.series), warnings: reply.warnings }
     : { rows: [], refusal: 'Player orders were not recorded in this campaign.', warnings: reply.warnings };
 }
 
@@ -109,35 +121,26 @@ export function apmTableColumns(players: boolean, showPaused: boolean, cellBars:
 }
 
 export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = registerTableProjection(
-  declareTableProjection<ParsedApm, ApmSeries, ApmTableProjectionOptions>({
+  declareTableProjection<ParsedApm, DisplayApmRow, ApmTableProjectionOptions>({
     kind: 'apm-table',
     validate: parseReply,
     fromAnswer: parseAnswer,
-    nextChange: (_sources, hour, opt) => {
-      if (opt.staticSpan || !opt.unobserved?.length) return Infinity;
-      const win = opt.windowHours ?? TRAILING_HOURS;
-      let soonest = Infinity;
-      for (const [first, last] of opt.unobserved) {
-        if (first > hour && first < soonest) soonest = first;
-        const leave = last + win;
-        if (leave > hour && leave < soonest) soonest = leave;
-      }
-      return soonest;
-    },
+    nextChange: (_sources, hour, opt) => (
+      opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, hour)
+    ),
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
-    columns: (_parsed, opt): readonly DeclarativeColumnSpec<ApmSeries, ApmTableProjectionOptions>[] => {
+    columns: (_parsed, opt): readonly DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions>[] => {
       const specs = apmTableColumns(opt.players, opt.showPaused, opt.cellBars);
-      const gapsPartial = (row: ApmSeries) => (row.summary.gaps ? GAPS_NOTE : null);
-      return specs.map((spec): DeclarativeColumnSpec<ApmSeries, ApmTableProjectionOptions> => {
+      const gapsPartial = (row: DisplayApmRow) => (row.summary.gaps ? GAPS_NOTE : null);
+      return specs.map((spec): DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions> => {
         if (spec.key === 'name') {
           return opt.players
             ? {
                 ...spec,
-                value: row => {
-                  const text = opt.playerNames[row.id] ?? row.name;
-                  return valueFromNullable(text && text.trim() ? text : null, { kind: 'notRecorded', reason: 'Player name unavailable' });
-                },
+                value: row => (row.displayName !== null
+                  ? knownValue(row.displayName)
+                  : notRecorded(row.nameMissing ?? 'Player name was not recorded.')),
               }
             : { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
         }
@@ -183,16 +186,16 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     },
     rowKey: row => row.id,
     rowName: (row, hour, opt) => opt.players
-      ? (opt.playerNames[row.id] ?? row.name)
-      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? row.tag ?? row.id),
+      ? (row.displayName ?? 'Name not recorded')
+      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? 'Name not recorded'),
     tooltipTitle: (row, hour, opt) => opt.players
-      ? (opt.playerNames[row.id] ?? row.name)
-      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? row.tag ?? row.id),
+      ? (row.displayName ?? 'Name not recorded')
+      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? 'Name not recorded'),
     tooltipNote: row => valueNote(row.summary),
   }),
 );
 
-function apmHeadParams(ctx: DeclaredTableContext<ApmReply>) {
+function apmHeadParams(ctx: DeclaredTableContext<unknown>) {
   const membership = ctx.countries.membershipRuns
     ? ctx.countries.membershipRuns.flatMap(run => {
       const held = ctx.gateSpan(run.firstHour, run.lastHour);
@@ -208,7 +211,7 @@ function apmHeadParams(ctx: DeclaredTableContext<ApmReply>) {
   };
 }
 
-export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptions, ApmReply> = {
+export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptions> = {
   family: 'table',
   kind: 'apm-table',
   label: 'eAPM over the selected period',
@@ -222,12 +225,6 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     allowSingleSlot: true,
     allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
-  },
-  aux: {
-    product: 'player-apm',
-    when: options => options.group === 'player',
-    params: track => ({ branchId: track.branch.id, group: 'player', registry: true, firstHour: null, lastHour: null, tags: null, membership: null, players: [], buckets: 1 }),
-    validate: validateApm,
   },
   source: {
     kind: 'head',
@@ -247,7 +244,6 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     showPaused: ctx.options.showPausedActions === true,
     cellBars: ctx.options.cellBars === true,
     rankMarkers: ctx.options.rankMarkers === true,
-    playerNames: Object.fromEntries(playerNames(ctx.aux?.players ?? [])),
     labels: ctx.countries.labels,
     unobserved: ctx.countries.unobserved,
     branchFirst: ctx.branch.firstHour,

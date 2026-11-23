@@ -321,9 +321,12 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       }
       const audited = auditByWidget.get(widget.id) ?? [], samples = audited.filter(s => Number.isFinite(s.at) && timed(s));
       const auditedPairs = new Set(samples.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
+      const auditedKeys = new Set(samples.filter(rendered).map(s => `${s.placement}\u0000${s.owner}\u0000${s.at}`));
+      const paintedInWindow = reports.filter(r => r.mode === 'picture' && !r.detached && Number.isFinite(r.hour) && timed(r) && rendered(r));
+      const unauditedPictures = paintedInWindow.filter(r => r.auditMissing || !auditedKeys.has(`${r.placement}\u0000${r.owner}\u0000${r.at}`)).length;
       const exact = required.size > 0 && [...required].every(surface => observedSurfaces.has(surface))
         && [...required].every(surface => samples.some(s => s.surface === surface && rendered(s)))
-        && [...observedPairs].every(pair => auditedPairs.has(pair)) && audited.every(s => s.error === null);
+        && [...observedPairs].every(pair => auditedPairs.has(pair)) && unauditedPictures === 0 && audited.every(s => s.error === null);
       const age = p95(ages), eligible = p95(eligibleAges);
       const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length, draw: drawCost(reports, id) }));
       const pass = playLost.count === 0 && Number.isFinite(age) && age <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(eligible) && eligible <= MAX_PLAYBACK_AGE_HOURS &&
@@ -331,7 +334,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         future === 0 && missing === 0 && exact && boundaryErrors.length === 0;
       placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, p95: Number.isFinite(age) ? age : null,
         eligibleP95: Number.isFinite(eligible) ? eligible : null, surfaces, samples: samples.length, distinctHoursPerSecond: hours.size / seconds,
-        missing, late, lateWithoutCrossing, structureCrossings, future, exact, boundaryErrors,
+        missing, late, lateWithoutCrossing, structureCrossings, future, exact, ...(unauditedPictures > 0 && { unauditedPictures }), boundaryErrors,
         ...(playLost.count > 0 && { lostRecords: playLost.count, reason: `perf log lost ${playLost.count} records during playing window` }), pass });
       reasons.push(...boundaryErrors);
     }
@@ -563,6 +566,9 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const postWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at > w.to) : [];
     const observedPairs = new Set(playingPictures.filter(r => !r.detached).map(r => `${r.surface}\u0000${r.placement}`));
     const auditedPairs = new Set(inWindowAudit.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
+    const auditedKeys = new Set(inWindowAudit.filter(rendered).map(s => `${s.placement}\u0000${s.owner}\u0000${s.at}`));
+    const paintedInWindow = playingPictures.filter(r => r.mode === 'picture' && !r.detached && Number.isFinite(r.hour) && rendered(r));
+    const unauditedPictures = paintedInWindow.filter(r => r.auditMissing || !auditedKeys.has(`${r.placement}\u0000${r.owner}\u0000${r.at}`)).length;
     const inWindowAuditError = inWindowAudit.find(s => s.error !== null)?.error ?? null;
     const postWindowAuditErrors = postWindowAudit.filter(s => s.error !== null).map(s => ({ at: s.at, surface: s.surface, placement: s.placement, error: s.error }));
     const widgetErrors = w.from != null && w.to != null && w.widget
@@ -576,6 +582,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     let exact = outcome === 'content' ? 'not-audited' : 'n/a', exactError = null;
     if (outcome === 'content' && (inWindowAudit.length > 0 || observedPairs.size > 0)) {
       if (inWindowAuditError) { exact = 'fail'; exactError = inWindowAuditError; }
+      else if (unauditedPictures > 0) { exact = 'fail'; exactError = `${unauditedPictures} painted picture${unauditedPictures === 1 ? '' : 's'} emitted without an audit sample`; }
       else if (inWindowAudit.length > 0 && [...observedPairs].every(pair => auditedPairs.has(pair))) { exact = 'pass'; }
       else { exact = 'fail'; exactError = 'missing exact-read audit for an observed surface'; }
     } else if (inWindowAuditError) {

@@ -171,7 +171,7 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
       if (!data || (players && !registry.data) || !query.known) return <WidgetState kind="loading" label="Loading eAPM…" />;
       if (!data.available) return <WidgetState kind="unavailable" message="Player orders were not recorded in this campaign." />;
     }
-    const label = (row: ApmSeries) => players ? names.get(row.id)! : looks.name(row.id);
+    const label = (row: ApmSeries) => players ? (names.get(row.id) ?? 'Name not recorded') : looks.name(row.id);
     return <div className="stacked-share-chart"><div className="stacked-share-plot">
       <TimeChart key={query.identity} label="eAPM: player-issued orders per unpaused real minute" extent={stillView ?? [first, Math.max(first + 1, last)]}
         playhead={following ? query.playbackHour + track.axisOffset : null} liveHead={liveHead}

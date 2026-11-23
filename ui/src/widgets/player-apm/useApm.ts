@@ -29,7 +29,7 @@ export function useApmChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
   return useMemo(() => {
     const players = data?.players ?? [];
     const names = playerNames(players);
-    return { players: players.map(player => ({ value: setToken(player.id), label: `${names.get(player.id)} · ${player.tags.join(', ')}` })) };
+    return { players: players.map(player => ({ value: setToken(player.id), label: `${names.get(player.id) ?? 'Name not recorded'} · ${player.tags.join(', ')}` })) };
   }, [data]);
 }
 

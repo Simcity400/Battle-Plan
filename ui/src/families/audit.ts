@@ -1,29 +1,67 @@
 import type { AuditRow } from '../draw/notifications';
-import type { Value } from './value.ts';
+import type { Scalar, Value } from './value.ts';
+
+function isFamilyValue(input: unknown): input is Value {
+  if (!input || typeof input !== 'object') return false;
+  const kind = (input as { kind?: unknown }).kind;
+  return kind === 'zero' || kind === 'known' || kind === 'partial' || kind === 'notRecorded' || kind === 'notApplicable';
+}
 
 export interface FamilyAuditField {
   readonly id: number;
   readonly rows: readonly AuditRow[];
 }
 
-export function canonicalAuditValue(value: Value): string {
+function canonicalScalar(raw: Scalar): readonly ['str' | 'int' | 'num', string] {
+  if (typeof raw === 'string') return ['str', raw];
+  if (typeof raw === 'bigint') return ['int', raw.toString()];
+  if (Object.is(raw, -0)) return ['int', '0'];
+  if (Number.isFinite(raw) && Math.trunc(raw) === raw) return ['int', BigInt(raw).toString()];
+  return ['num', String(raw)];
+}
+
+function canonicalValueNode(value: Value): readonly unknown[] {
   switch (value.kind) {
     case 'zero':
-      return JSON.stringify(['zero', '0']);
+      return ['zero', ['int', '0']];
     case 'known':
-      return JSON.stringify(['known', typeof value.value === 'bigint' ? value.value.toString() : Object.is(value.value, -0) ? '0' : String(value.value)]);
+      return ['known', canonicalScalar(value.value)];
     case 'partial':
-      return JSON.stringify([
-        'partial',
-        typeof value.value === 'bigint' ? value.value.toString() : Object.is(value.value, -0) ? '0' : String(value.value),
-        value.reason,
-        value.atLeast === true,
-      ]);
+      return ['partial', canonicalScalar(value.value), value.reason, value.atLeast === true];
     case 'notRecorded':
-      return JSON.stringify(['notRecorded', value.reason]);
+      return ['notRecorded', value.reason];
     case 'notApplicable':
-      return JSON.stringify(['notApplicable', value.reason]);
+      return ['notApplicable', value.reason];
   }
+}
+
+export function canonicalAuditValue(value: Value): string {
+  return JSON.stringify(canonicalValueNode(value));
+}
+
+function canonicalAuditNode(input: unknown): unknown {
+  if (input === null || input === undefined) return null;
+  if (typeof input === 'boolean') return input;
+  if (typeof input === 'string' || typeof input === 'number' || typeof input === 'bigint') {
+    return canonicalScalar(input);
+  }
+  if (Array.isArray(input)) return input.map(canonicalAuditNode);
+  if (isFamilyValue(input)) return canonicalValueNode(input);
+  if (typeof input === 'object') {
+    const keys = Object.keys(input as Record<string, unknown>).sort();
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i]!;
+      const v = (input as Record<string, unknown>)[k];
+      if (v !== undefined) out[k] = canonicalAuditNode(v);
+    }
+    return out;
+  }
+  return ['str', String(input)];
+}
+
+export function canonicalAuditData(input: unknown): string {
+  return JSON.stringify(canonicalAuditNode(input));
 }
 
 export function auditIdOf(field: unknown): number | undefined {

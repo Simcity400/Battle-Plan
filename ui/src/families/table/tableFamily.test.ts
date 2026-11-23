@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
@@ -19,10 +19,11 @@ import { occupiedStatesProjection } from '../../widgets/occupied-states/occupied
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
 import { TABLE_BASE as SCOREBOARD_BASE } from '../../widgets/scoreboard/definition.ts';
 import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../widgets/scoreboard/scoreboardProjection.ts';
-import { AuditSnapshotStore, canonicalAuditValue } from '../audit.ts';
+import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
-import { effectiveCountryUnobserved, resolveRetainedHeadSpan } from '../sources.ts';
+import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, resolveSlotHolderRuns } from '../holders.ts';
+import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
@@ -37,11 +38,46 @@ const floatBits = (value: number): bigint => {
   return view.getBigInt64(0, true);
 };
 
-const packTag = (tag: string): bigint => {
-  let out = 0n;
-  for (let i = tag.length - 1; i >= 0; i--) out = (out << 8n) | BigInt(tag.charCodeAt(i));
-  return out;
-};
+function headTextAnswer(rows: readonly { readonly key: bigint; readonly id: string; readonly values: readonly (bigint | string | null)[] }[]) {
+  const cols = rows[0]?.values.length ?? 0;
+  const texts: string[] = [];
+  const held = new Map<string, number>();
+  const intern = (s: string) => {
+    let at = held.get(s);
+    if (at === undefined) held.set(s, at = texts.push(s) - 1);
+    return at;
+  };
+  const names: number[] = [];
+  const rawVals: bigint[] = [];
+  const states: number[] = [];
+  for (const row of rows) {
+    names.push(intern(row.id));
+    for (const v of row.values) {
+      if (v === null) { rawVals.push(0n); states.push(CELL.missing); }
+      else if (typeof v === 'string') { rawVals.push(BigInt(intern(v))); states.push(CELL.value); }
+      else { rawVals.push(v); states.push(CELL.value); }
+    }
+  }
+  const bytes: number[] = [];
+  const u8 = (v: number) => bytes.push(v & 0xff);
+  const u32 = (v: number) => { for (let i = 0; i < 4; i++) u8(Number((BigInt(v) >> BigInt(8 * i)) & 0xffn)); };
+  const u64 = (v: bigint) => { for (let i = 0; i < 8; i++) u8(Number((BigInt.asUintN(64, v) >> BigInt(8 * i)) & 0xffn)); };
+  const pad = () => { while (bytes.length % 8) u8(0); };
+  u8(1); u8(1); u8(0); u8(0); u32(rows.length); u32(cols); u32(texts.length);
+  rows.forEach(r => u64(r.key));
+  rows.forEach(r => u64(r.key >> 64n));
+  rawVals.forEach(v => u64(v));
+  states.forEach(s => u8(s)); pad();
+  for (let i = 0; i < rows.length; i++) u32(0xffff_ffff); pad();
+  names.forEach(n => u32(n)); pad();
+  const enc = texts.map(t => new TextEncoder().encode(t));
+  let end = 0; u32(0);
+  for (const b of enc) { end += b.length; u32(end); }
+  pad();
+  for (const b of enc) b.forEach(u8);
+  pad();
+  return parseAnswer(new Uint8Array(bytes));
+}
 
 const TEST_THEME: TableTheme = {
   surface: '#111111',
@@ -141,12 +177,13 @@ test('campaign-clock projection produces identical audit output for followed wir
     warnings: [],
   };
   const settings = tableSettingsOf(undefined, CLOCK_COLUMNS, CLOCK_TABLE_BASE);
+  const clockLayouts = buildColumnLayouts(CLOCK_COLUMNS, settings);
   const followedModel = campaignClockProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 50, {});
   const exactModel = campaignClockProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 50, {});
-  const followedAudit = deriveTableAudit(resolveTableRows(followedModel, settings), CLOCK_COLUMNS, 50, followedModel.empty);
-  const exactAudit = deriveTableAudit(resolveTableRows(exactModel, settings), CLOCK_COLUMNS, 50, exactModel.empty);
+  const followedAudit = deriveTableAudit({ model: followedModel, flatRows: resolveTableRows(followedModel, settings), visibleColumns: clockLayouts });
+  const exactAudit = deriveTableAudit({ model: exactModel, flatRows: resolveTableRows(exactModel, settings), visibleColumns: clockLayouts });
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.equal(followedAudit.find(r => r.key === 'total:time')?.value, canonicalAuditValue(knownValue(3661)));
+  assert.ok(followedAudit.find(r => r.key === 'total:time')?.value?.includes(canonicalAuditValue(knownValue(3661))));
 });
 
 test('scoreboard projection matches followed and exact audits with missing, partial, zero, and tied rows', () => {
@@ -214,39 +251,31 @@ test('scoreboard projection matches followed and exact audits with missing, part
 
     const followedFlat = resolveTableRows(followedModel, settings);
     const exactFlat = resolveTableRows(exactModel, settings);
-    const followedAudit = deriveTableAudit(followedFlat, specs, 40, followedModel.empty);
-    const exactAudit = deriveTableAudit(exactFlat, specs, 40, exactModel.empty);
+    const sbLayouts = buildColumnLayouts(specs, settings);
+    const followedAudit = deriveTableAudit({ model: followedModel, flatRows: followedFlat, visibleColumns: sbLayouts });
+    const exactAudit = deriveTableAudit({ model: exactModel, flatRows: exactFlat, visibleColumns: sbLayouts });
 
     assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
     assert.equal(followedFlat.at(-1)?.kind === 'data' && followedFlat.at(-1)?.key, 'ENG', `missing ENG sorts last in ${direction}`);
     const order = followedFlat.map(r => r.key);
     assert.ok(order.indexOf('FRA') < order.indexOf('ITA'), 'tied France precedes Italy by name A-Z regardless of wire vs reply input order');
-    assert.equal(followedAudit.find(r => r.key === 'FRA:casualties')?.value, canonicalAuditValue(zeroValue(0)), 'known zero renders zero state');
-    assert.equal(followedAudit.find(r => r.key === 'ITA:casualties')?.value, canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour')));
+    assert.ok(followedAudit.find(r => r.key === 'FRA:casualties')?.value?.includes(canonicalAuditValue(zeroValue(0))), 'known zero renders zero state');
+    assert.ok(followedAudit.find(r => r.key === 'ITA:casualties')?.value?.includes(canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour'))));
   }
 });
 
 test('apm-table projection matches followed wire answers and exact replies, including partial gaps and notApplicable zero minutes', () => {
-  const wire = answer({
-    keys: [1n, 2n],
-    columns: 9,
-    names: ['GER', 'ITA'],
-    values: [
-      floatBits(45.2), floatBits(45.2), 120n, 15n, floatBits(2.6), 1n, 1n, packTag('GER'), 100n,
-      0n, 0n, 0n, 0n, floatBits(0), 1n, 0n, packTag('ITA'), 100n,
-    ],
-    states: [
-      CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value,
-      CELL.missing, CELL.missing, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value,
-    ],
-  });
+  const wire = headTextAnswer([
+    { key: 1n, id: 'GER', values: [floatBits(45.2), floatBits(45.2), 120n, 15n, floatBits(2.6), 1n, 1n, 'GER', 100n, 'GER', null] },
+    { key: 2n, id: 'ITA', values: [null, null, 0n, 0n, floatBits(0), 1n, 0n, 'ITA', 100n, 'ITA', null] },
+  ]);
   const reply: ApmReply = {
     available: true,
     warnings: [],
     players: [],
     series: [
-      { id: 'GER', name: 'GER', tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '120', pausedOrders: '15', unpausedMinutes: 2.6, complete: true, gaps: true }, points: [] },
-      { id: 'ITA', name: 'ITA', tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', pausedOrders: '0', unpausedMinutes: 0, complete: true, gaps: false }, points: [] },
+      { id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '120', pausedOrders: '15', unpausedMinutes: 2.6, complete: true, gaps: true }, points: [] },
+      { id: 'ITA', name: 'ITA', nameMissing: null, tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', pausedOrders: '0', unpausedMinutes: 0, complete: true, gaps: false }, points: [] },
     ],
   };
   const opts = {
@@ -254,18 +283,18 @@ test('apm-table projection matches followed wire answers and exact replies, incl
     showPaused: true,
     cellBars: true,
     rankMarkers: false,
-    playerNames: {},
     labels: { GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: 'Italy' }] },
   };
   const cols = apmTableColumns(false, true, true);
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } });
+  const apmLayouts = buildColumnLayouts(cols, settings);
   const fModel = apmTableProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 100, opts);
   const eModel = apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 100, opts);
-  const fAudit = deriveTableAudit(resolveTableRows(fModel, settings), cols, 100, fModel.empty);
-  const eAudit = deriveTableAudit(resolveTableRows(eModel, settings), cols, 100, eModel.empty);
+  const fAudit = deriveTableAudit({ model: fModel, flatRows: resolveTableRows(fModel, settings), visibleColumns: apmLayouts });
+  const eAudit = deriveTableAudit({ model: eModel, flatRows: resolveTableRows(eModel, settings), visibleColumns: apmLayouts });
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.startsWith('["partial","45.2",'));
-  assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.startsWith('["notApplicable",'));
+  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('["partial",["num","45.2"],'));
+  assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.includes('["notApplicable",'));
 });
 
 test('occupied-states, game-score (with faction groups), and division-template (with obsolete tree) project deterministically', () => {
@@ -294,7 +323,8 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const occSettings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const occRows = resolveTableRows(occModel, occSettings);
   assert.equal(occRows.length, 1);
-  assert.equal(deriveTableAudit(occRows, occModel.columns, 50).find(r => r.key === '1:resistance')?.value, canonicalAuditValue(knownValue(2_500_000)));
+  const occLayouts = buildColumnLayouts(occModel.columns, occSettings);
+  assert.ok(deriveTableAudit({ model: occModel, flatRows: occRows, visibleColumns: occLayouts }).find(r => r.key === '1:resistance')?.value?.includes(canonicalAuditValue(knownValue(2_500_000))));
 
   const gsReply = {
     missing: null,
@@ -441,8 +471,9 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const exactRows = resolveTableRows(exactModel, settings);
   assert.equal(followedRows.length, count);
 
-  const followedAudit = deriveTableAudit(followedRows, specs, 200);
-  const exactAudit = deriveTableAudit(exactRows, specs, 200);
+  const sb1500Layouts = buildColumnLayouts(specs, settings);
+  const followedAudit = deriveTableAudit({ model: followedModel, flatRows: followedRows, visibleColumns: sb1500Layouts, window: { first: 0, count: 30 } });
+  const exactAudit = deriveTableAudit({ model: exactModel, flatRows: exactRows, visibleColumns: sb1500Layouts, window: { first: 0, count: 30 } });
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
 
   const { ctx, counts, reset } = instrumentedContext();
@@ -743,28 +774,32 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     { key: 'rate', label: 'Rate', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'decimal1' },
   ];
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'rate', direction: 'descending' } });
-  const mkRows = (rate: number, groupLabel: string) => resolveTableRows({
+  const mkModel = (rate: number, groupLabel: string) => ({
     columns: cols,
     hour: 10,
     rank: true,
     rows: [
-      { key: 'A', name: 'A', group: { key: 'g1', label: groupLabel, order: 0 }, cells: { name: { value: knownValue('A') }, rate: { value: rate === 0 ? zeroValue(0) : knownValue(rate), format: 'decimal1', country: 'GER' } } },
+      { key: 'A', name: 'A', group: { key: 'g1', label: groupLabel, order: 0 }, cells: { name: { value: knownValue('A') }, rate: { value: rate === 0 ? zeroValue(0) : knownValue(rate), format: 'decimal1' as const, country: 'GER' } } },
     ],
-  }, settings);
-  const auditZero = deriveTableAudit(mkRows(0, 'Axis'), cols, 10, undefined, { rankShown: true });
-  const auditTiny = deriveTableAudit(mkRows(0.04, 'Axis'), cols, 10, undefined, { rankShown: true });
+  });
+  const colLayouts = buildColumnLayouts(cols, settings);
+  const mZero = mkModel(0, 'Axis');
+  const mTiny = mkModel(0.04, 'Axis');
+  const mRenamed = mkModel(0.04, 'New Axis');
+  const auditZero = deriveTableAudit({ model: mZero, flatRows: resolveTableRows(mZero, settings), visibleColumns: colLayouts, rankShown: true });
+  const auditTiny = deriveTableAudit({ model: mTiny, flatRows: resolveTableRows(mTiny, settings), visibleColumns: colLayouts, rankShown: true });
   assert.notEqual(
     pictureError('table', auditZero, { values: new Map(auditTiny.map(r => [r.key, r.value!])), ordered: true }),
     null,
     'canonical audit distinguishes 0 from 0.04 despite identical display rounding',
   );
-  const auditRenamedGroup = deriveTableAudit(mkRows(0.04, 'New Axis'), cols, 10, undefined, { rankShown: true });
+  const auditRenamedGroup = deriveTableAudit({ model: mRenamed, flatRows: resolveTableRows(mRenamed, settings), visibleColumns: colLayouts, rankShown: true });
   assert.notEqual(
     pictureError('table', auditTiny, { values: new Map(auditRenamedGroup.map(r => [r.key, r.value!])), ordered: true }),
     null,
     'canonical audit catches group header changes',
   );
-  const auditOneCol = deriveTableAudit(mkRows(0.04, 'Axis'), [cols[0]!], 10, undefined, { rankShown: true });
+  const auditOneCol = deriveTableAudit({ model: mTiny, flatRows: resolveTableRows(mTiny, settings), visibleColumns: [colLayouts[0]!], rankShown: true });
   assert.notEqual(
     pictureError('table', auditTiny, { values: new Map(auditOneCol.map(r => [r.key, r.value!])), ordered: true }),
     null,
@@ -913,9 +948,118 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     }, laneState, () => `c${seq++}`);
     const firstPaint = mk('ordinary', 1);
     const secondPaint = mk('headquarters', 4);
+    assert.equal(firstPaint.mode, 'picture', 'N4: familyTableLaneView returns explicit mode picture');
     assert.notEqual(firstPaint.fields.nav!.content, secondPaint.fields.nav!.content, 'row.meta change invalidates nav field');
     assert.notEqual(firstPaint.fields.meta!.content, secondPaint.fields.meta!.content, 'column priority change invalidates meta field');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+});
+
+test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert/flag/missingName/pill/tooltip), N6 native slot holder tie-break, M4 ever-gap refusal, S1 frozen static snapshot, M5 dateless game-score empty, and N18 frozen change caches', () => {
+  assert.notEqual(canonicalAuditValue(knownValue('1000')), canonicalAuditValue(knownValue(1000)), 'M1: string "1000" and number 1000 do not collide');
+  assert.equal(canonicalAuditValue(knownValue(1e21)), canonicalAuditValue(knownValue(10n ** 21n)), 'M1: 1e21 and 10n**21n serialize identically');
+  assert.equal(canonicalAuditValue(knownValue(-0)), canonicalAuditValue(knownValue(0)));
+  assert.notEqual(canonicalAuditData({ a: '1000' }), canonicalAuditData({ a: 1000 }));
+  assert.equal(canonicalAuditData({ b: 1, a: 2 }), canonicalAuditData({ a: 2, b: 1 }), 'canonicalAuditData sorts object keys deterministically');
+
+  const occCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
+    { key: 'garrison', label: 'Garrison', as: 'meterBefore', tone: 'blue', offered: ['meterBefore'], priority: 1, numeric: true, format: 'integer' },
+  ];
+  const occSettings = tableSettingsOf(undefined, occCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'garrison', direction: 'descending' } });
+  const occLayouts = buildColumnLayouts(occCols, occSettings);
+  const mkOcc = (opts: { fraction: number; alert: boolean; flag: string; missingName: boolean; pill: string; extra: string }) => {
+    const model = {
+      columns: occCols,
+      hour: 50,
+      rank: true,
+      summaryPill: opts.pill,
+      rows: [{
+        key: 'S1',
+        name: opts.missingName ? 'Name not recorded' : 'Germany',
+        cells: {
+          country: {
+            value: opts.missingName ? notRecorded('Name absent') : knownValue('Germany'),
+            iconSlot: true,
+            country: 'GER',
+            looks: [{ from: 0, name: opts.missingName ? null : 'Germany', flag: opts.flag, ...(opts.missingName ? { status: 'Name absent' } : {}) }],
+          },
+          garrison: {
+            value: knownValue(12),
+            format: 'integer' as const,
+            bar: { fraction: knownValue(opts.fraction), alert: opts.alert },
+          },
+        },
+        tooltipExtra: [{ label: 'Equipment', value: knownValue(opts.extra) }],
+      }],
+    };
+    return deriveTableAudit({ model, flatRows: resolveTableRows(model, occSettings), visibleColumns: occLayouts, rankShown: true });
+  };
+  const baseAudit = mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' });
+  const diff = (other: ReturnType<typeof mkOcc>) => pictureError('table', baseAudit, { values: new Map(other.map(r => [r.key, r.value!])), ordered: true });
+  assert.notEqual(diff(mkOcc({ fraction: 0.4, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison bar fraction change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: true, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison alert flag change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'pol.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches flag identity change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: true, pill: '1 state', extra: '80%' })), null, 'N1: catches missingName hatch change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '2 states', extra: '80%' })), null, 'N1: catches summaryPill change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '40%' })), null, 'N1: catches tooltipExtra change');
+
+  const slotRuns = resolveSlotHolderRuns([
+    { tag: 'Z', firstHour: 0, lastHour: 20, countryId: 5 },
+    { tag: 'A', firstHour: 10, lastHour: 20, countryId: 5 },
+  ]);
+  assert.deepEqual(slotRuns, [{ tag: 'Z', firstHour: 0, lastHour: 20, countryId: 5 }], 'N6: equal countryId breaks tie by earlier firstHour before tag');
+  assert.equal(holderRunAt([
+    { tag: 'Z', firstHour: 0, lastHour: 20, countryId: 5 },
+    { tag: 'A', firstHour: 10, lastHour: 20, countryId: 5 },
+  ], 10)?.tag, 'Z', 'N6: unsorted holderRunAt uses identical (countryId, firstHour, tag) precedence');
+  const nativeCase = resolveSlotHolderRuns([
+    { tag: 'GER', firstHour: 1, lastHour: 10, countryId: 10 },
+    { tag: 'PRU', firstHour: 5, lastHour: 15, countryId: 10 },
+    { tag: 'D01', firstHour: 6, lastHour: 8, countryId: 9 },
+  ]);
+  assert.deepEqual(nativeCase.map(r => [r.tag, r.firstHour, r.lastHour]), [['GER', 1, 5], ['D01', 6, 8], ['GER', 9, 10], ['PRU', 11, 15]]);
+
+  assert.equal(
+    selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]),
+    'Group membership is incomplete for this campaign.',
+    'M4: membership ever refuses when unobserved gaps make campaign membership incomplete',
+  );
+  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
+  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
+
+  const retainedData = { series: [] };
+  const snap1 = resolveDisplayedStaticSnapshot(null, retainedData, undefined, [10, 50]);
+  const snapHeld = resolveDisplayedStaticSnapshot(snap1, retainedData, undefined, [20, 60]);
+  assert.equal(snapHeld, snap1, 'S1: displayed static snapshot stays frozen on [10,50] while newer [20,60] request is in flight');
+  assert.deepEqual(snapHeld?.span, [10, 50]);
+  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, { series: [1] }, JSON.stringify([20, 60, 1]), [20, 60]);
+  assert.deepEqual(snap2?.span, [20, 60], 'S1: updates once new reply arrives');
+
+  const emptyGsA = gameScoreProjection.project({
+    answers: new Map(),
+    panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
+    live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
+  }, 10, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  const emptyGsB = gameScoreProjection.project({
+    answers: new Map(),
+    panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
+    live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
+  }, 250, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  assert.equal(emptyGsA.empty, 'No country’s scores recorded at this time.', 'M5: dateless empty message');
+  assert.equal(emptyGsA.empty, emptyGsB.empty, 'M5: empty message does not depend on advancing hour');
+
+  const winRanges: [number, number][] = [[10, 20], [50, 60]];
+  assert.equal(nextWindowRangesChange(winRanges, 168, 5), 10);
+  assert.equal(nextWindowRangesChange(winRanges, 168, 15), 50);
+  assert.equal(nextWindowRangesChange(winRanges, 168, 55), 188);
+  assert.equal(nextWindowRangesChange(winRanges, 168, 190), 228);
+  assert.throws(() => { winRanges.push([100, 110]); }, TypeError, 'N18: indexed ranges are frozen against in-place mutation');
+  const mutHolders: Record<string, { tag: string; firstHour: number; lastHour: number }[]> = { GER: [{ tag: 'GER', firstHour: 0, lastHour: 10 }] };
+  assert.equal(nextHoldersChange(mutHolders, 5), 11);
+  assert.throws(() => { mutHolders.GER![0]!.lastHour = 99; }, TypeError, 'N18: indexed holder runs are frozen against in-place mutation');
+  const mutRanges: [number, number][] = [[1, 5]];
+  assert.equal(nextRangesChange(mutRanges, 2), 6);
+  assert.throws(() => { mutRanges[0]![1] = 20; }, TypeError, 'N18: indexed range tuples are frozen against in-place mutation');
 });

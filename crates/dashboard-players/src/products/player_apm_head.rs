@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmBucket, ApmGroup, ApmMembership, ApmParams, ApmValue, Coverage, index, merge_intervals, player_id, query, tag};
+use super::{Amount, ApmBucket, ApmGroup, ApmMembership, ApmParams, ApmValue, Coverage, index, merge_intervals, player_id, player_name, query, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -45,6 +45,8 @@ struct Version {
     version: usize,
     from: u64,
     to: u64,
+    name: Option<String>,
+    name_missing: Option<String>,
 }
 
 struct Part {
@@ -65,11 +67,25 @@ struct Played {
     amount: Amount,
     shown: Option<(u64, u64)>,
     tag: String,
+    name: Option<String>,
+    name_missing: Option<String>,
 }
 
 type Laid = BTreeMap<(String, String), Part>;
 
-pub const APM_COLUMNS: [&str; 9] = ["apm", "confirmedApm", "orders", "pausedOrders", "unpausedMinutes", "complete", "gaps", "tag", "hour"];
+pub const APM_COLUMNS: [&str; 11] = [
+    "apm",
+    "confirmedApm",
+    "orders",
+    "pausedOrders",
+    "unpausedMinutes",
+    "complete",
+    "gaps",
+    "tag",
+    "hour",
+    "name",
+    "nameMissing",
+];
 
 pub struct ApmHead {
     index: Arc<Index>,
@@ -107,9 +123,17 @@ impl ApmHead {
                     }
                     let end = history.get(version + 1).map_or(departed, |next| next.at_qpc).min(departed);
                     let id = if params.group == ApmGroup::Country { tag.to_owned() } else { player.clone() };
+                    let (name, name_missing) = if params.group == ApmGroup::Country {
+                        (Some(tag.to_owned()), None)
+                    } else {
+                        match player_name(observation) {
+                            Ok(name) => (Some(name), None),
+                            Err(reason) => (None, Some(reason)),
+                        }
+                    };
                     let part = parts.entry((id, tag.to_owned())).or_insert_with(|| Part { series: 0, tag: tag.to_owned(), ranges: Vec::new(), versions: Vec::new() });
                     part.ranges.push((observation.at_qpc, end));
-                    part.versions.push(Version { actor, version, from: observation.at_qpc, to: end });
+                    part.versions.push(Version { actor, version, from: observation.at_qpc, to: end, name, name_missing });
                 }
             }
             for part in parts.values_mut() {
@@ -184,11 +208,14 @@ impl ApmHead {
                 if present.is_empty() {
                     continue;
                 }
-                let display_at = (timeline.session, present.iter().map(|version| version.from).max().expect("present is non-empty"));
+                let latest = present.iter().max_by_key(|version| version.from).expect("present is non-empty");
+                let display_at = (timeline.session, latest.from);
                 let entry = out.entry(part.series).or_default();
                 if entry.shown.is_none_or(|shown| shown <= display_at) {
                     entry.shown = Some(display_at);
                     entry.tag.clone_from(&part.tag);
+                    entry.name.clone_from(&latest.name);
+                    entry.name_missing.clone_from(&latest.name_missing);
                 }
                 for &(from_hour, to_hour) in &spans {
                     for &(from, to) in &part.ranges {
@@ -238,7 +265,7 @@ impl HeadValue for ApmHead {
             return Err("Player orders were not recorded in this campaign.".into());
         }
         let (first, last) = self.window_at(hour).ok_or("This time is outside the recording.")?;
-        for (series, Played { amount, tag, .. }) in self.amounts(first, last) {
+        for (series, Played { amount, tag, name, name_missing, .. }) in self.amounts(first, last) {
             let value: ApmValue = amount.value();
             rows.row(series as u128, &self.ids[series]);
             rows.float(value.apm);
@@ -248,8 +275,10 @@ impl HeadValue for ApmHead {
             rows.float(value.unpaused_minutes);
             rows.flag(value.complete);
             rows.flag(value.gaps);
-            rows.number(Some(packed(&tag)));
+            rows.text(Some(&tag));
             rows.number(amount.last_hour.map(i64::from));
+            rows.text(name.as_deref());
+            rows.text(name_missing.as_deref());
         }
         Ok(())
     }
@@ -263,10 +292,6 @@ fn unknown_rate(value: &ApmValue) -> String {
     } else {
         "It is unclear whether some orders count toward eAPM; the rate is unknown.".into()
     }
-}
-
-fn packed(tag: &str) -> i64 {
-    tag.bytes().take(8).enumerate().fold(0i64, |out, (at, byte)| out | i64::from(byte) << (8 * at))
 }
 
 pub struct ClockHead {

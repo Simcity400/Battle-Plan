@@ -154,6 +154,7 @@ export class Pipeline {
       if (!owners.length && answers.length) continue;
       for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
       const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
+      const auditMissing = view.mode === 'picture' && audit !== undefined && rows === undefined;
       const rawAudit = view.mode === 'picture' && view.fields ? view.fields.audit : undefined;
       const auditId = rawAudit && typeof rawAudit === 'object' && typeof (rawAudit as { id?: unknown }).id === 'number' && (rawAudit as { id: number }).id > 0
         ? (rawAudit as { id: number }).id
@@ -165,7 +166,7 @@ export class Pipeline {
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
         ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
           face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
-        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {},
+        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {}, ...auditMissing ? { auditMissing: true } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
       }

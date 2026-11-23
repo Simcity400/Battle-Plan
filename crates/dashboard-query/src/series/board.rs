@@ -38,6 +38,23 @@ pub struct Board {
     pub missing: Option<String>,
 }
 
+pub fn table_unrecorded(table: replay_data::rows::TableId, status: Status, reason: Option<&str>) -> Option<String> {
+    let name = table.words();
+    match status {
+        Status::Complete => None,
+        Status::NotRecorded => Some(format!("{name} not recorded at this hour")),
+        Status::Truncated { missing } => Some(format!("{name} read only in part at this hour ({missing} rows not read), and which rows were read is not held at the head")),
+        Status::Unavailable { .. } => Some(match reason.filter(|reason| !reason.is_empty()) {
+            Some(reason) => format!("{name} not available at this hour: {reason}"),
+            None => format!("{name} not available at this hour"),
+        }),
+    }
+}
+
+pub fn measure_unrecorded(tag: &str, measure: &str) -> String {
+    format!("{tag}'s {measure} was not recorded at this hour")
+}
+
 pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<Board> {
     let Some(first) = columns.first() else {
         return Err(invalid("A board names no column"));
@@ -107,11 +124,17 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
             true => None,
             false => Some(crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
         };
-        let complete = snapshot.as_ref().is_some_and(|snapshot| matches!(snapshot.status, Status::Complete));
+        let unrecorded = snapshot.as_ref().and_then(|snapshot| {
+            let reason = match snapshot.status {
+                Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
+                _ => None,
+            };
+            table_unrecorded(table, snapshot.status, reason)
+        });
         let view = snapshot.as_ref().map(|snapshot| snapshot.view());
         let slots: HashMap<u128, u32> = view.iter().flat_map(|view| view.rows().filter_map(move |slot| Some((view.key(slot)?, slot)))).collect();
         for &line in &group {
-            let (kind, measure) = (lines[line].series().kind, lines[line].measure_name());
+            let measure = lines[line].measure_name();
             out[line] = Some(
                 keys[line]
                     .iter()
@@ -119,14 +142,14 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
                     .map(|(key, country)| {
                         let key = key.clone()?;
                         let tag = query.holders.name(country, hour);
-                        if !complete {
-                            return Err(format!("{kind} was not recorded at this hour"));
+                        if let Some(reason) = &unrecorded {
+                            return Err(reason.clone());
                         }
                         let Some(slot) = slots.get(&key) else {
-                            return if lines[line].series().absent_none { Ok(0) } else { Err(format!("{tag} holds no row of {kind} at this hour")) };
+                            return if lines[line].series().absent_none { Ok(0) } else { Err(measure_unrecorded(&tag, measure)) };
                         };
                         let view = view.as_ref().expect("a complete read");
-                        lines[line].source().value(view, *slot).ok_or_else(|| format!("{tag}'s {measure} was not recorded at this hour"))
+                        lines[line].source().value(view, *slot).ok_or_else(|| measure_unrecorded(&tag, measure))
                     })
                     .collect(),
             );

@@ -15,14 +15,16 @@ import {
   valueFromLive,
   valueFromNullable,
   valueFromRawBigInt,
+  valueNumber,
   type NullableMeaning,
   type Scalar,
   type Value,
 } from '../value.ts';
-import { canonicalAuditValue } from '../audit.ts';
+import { canonicalAuditData } from '../audit.ts';
 import { formatValueState, spokenValue, type ValueFormat } from '../valueFormat.ts';
+import type { FamilyColumnLayout } from './layout.ts';
 import { lookAt, type CountryLook, type CountryLooksMap } from './looks.ts';
-import type { TableColumnDefaults, TableSettings, TableSortDirection } from './settings.ts';
+import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export interface TableColumnSpec extends TableColumnDefaults {
   readonly priority: number;
@@ -299,48 +301,174 @@ export function nextTableChange(model: TableModel, hour: number): number {
   return soonest;
 }
 
-export function deriveTableAudit(
-  flatRows: readonly FlatTableRow[],
-  columns: readonly TableColumnSpec[],
+export interface CellPaintModel {
+  readonly value: Value;
+  readonly format: ValueFormat | undefined;
+  readonly bar: {
+    readonly fraction: number | null;
+    readonly alert: boolean;
+    readonly rawFraction?: Value<number>;
+  };
+  readonly tone: string | null;
+  readonly status: 'dot' | 'outline' | 'fill' | null;
+  readonly country: string | null;
+  readonly icon: string | null;
+  readonly iconSlot: boolean;
+  readonly missingName: boolean;
+}
+
+export function computeColumnMaxima(
+  rows: readonly FlatTableRow[],
+  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'numeric'>[],
   hour: number,
-  empty?: string,
-  options?: { readonly rankShown?: boolean; readonly emptyKind?: 'empty' | 'unavailable' },
-): AuditRow[] {
-  const rankShown = options?.rankShown === true;
-  const emptyKind = options?.emptyKind ?? 'empty';
-  const out: AuditRow[] = [
-    { row: '__columns__', key: '__columns__:visible', value: JSON.stringify(columns.map(col => col.key)) },
-  ];
-  const hasData = flatRows.some(item => item.kind === 'data');
-  if (!hasData) {
-    if (empty !== undefined) {
-      out.push({ row: 'empty', key: 'empty:notice', value: JSON.stringify([emptyKind, empty]) });
+): Map<string, number> {
+  const maxima = new Map<string, number>();
+  for (const column of columns) {
+    if (!column.numeric || !measuresColumn(column)) continue;
+    let maximum = 0;
+    let measured = false;
+    for (const item of rows) {
+      if (item.kind !== 'data') continue;
+      const cell = item.row.cells[column.key];
+      if (!cell || cell.maximum !== undefined || cell.bar !== undefined) continue;
+      measured = true;
+      const resolved = resolveCellAtHour(cell, hour);
+      const num = valueNumber(resolved.value);
+      if (num !== undefined && num > maximum) maximum = num;
     }
-    return out;
+    if (measured && maximum > 0) maxima.set(column.key, maximum);
   }
-  for (const item of flatRows) {
+  return maxima;
+}
+
+export function barFractionOf(
+  cell: TableCell,
+  value: Value,
+  top: number | undefined,
+): { readonly fraction: number | null; readonly alert: boolean } {
+  if (cell.bar === null) return { fraction: null, alert: false };
+  if (cell.bar !== undefined) {
+    const raw = valueNumber(cell.bar.fraction);
+    if (raw === undefined) return { fraction: null, alert: false };
+    return { fraction: Math.max(0, Math.min(1, raw)), alert: cell.bar.alert === true };
+  }
+  if (value.kind === 'zero') return { fraction: null, alert: false };
+  const num = valueNumber(value);
+  if (num === undefined || top === undefined || top <= 0 || num <= 0) return { fraction: null, alert: false };
+  return { fraction: Math.max(0, Math.min(1, num / top)), alert: false };
+}
+
+export function resolveCellPaintModel(
+  cell: TableCell | undefined,
+  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat'>,
+  hour: number,
+  maxima: ReadonlyMap<string, number>,
+): CellPaintModel {
+  const resolved = cell
+    ? resolveCellAtHour(cell, hour)
+    : { value: notRecorded('Not recorded'), icon: undefined, missingName: false };
+  const bar = cell
+    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key))
+    : { fraction: null, alert: false };
+  return {
+    value: resolved.value,
+    format: cell?.format ?? column.valueFormat,
+    bar: cell?.bar ? { ...bar, rawFraction: cell.bar.fraction } : bar,
+    tone: cell?.tone ?? column.tone ?? null,
+    status: cell?.status ?? null,
+    country: cell?.country ?? null,
+    icon: resolved.icon ?? null,
+    iconSlot: cell?.iconSlot === true,
+    missingName: resolved.missingName,
+  };
+}
+
+export interface TableAuditInput {
+  readonly model: TableModel;
+  readonly flatRows: readonly FlatTableRow[];
+  readonly visibleColumns: readonly Pick<FamilyColumnLayout, 'key' | 'label' | 'display' | 'tone' | 'numeric' | 'valueFormat'>[];
+  readonly hiddenKeys?: ReadonlySet<string>;
+  readonly rankShown?: boolean;
+  readonly maxima?: ReadonlyMap<string, number>;
+  readonly window?: { readonly first: number; readonly count: number };
+}
+
+const EMPTY_HIDDEN: ReadonlySet<string> = new Set();
+
+export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
+  const { model, flatRows, visibleColumns, window } = input;
+  const hour = model.hour;
+  const hiddenKeys = input.hiddenKeys ?? EMPTY_HIDDEN;
+  const rankShown = input.rankShown === true;
+  const maxima = input.maxima ?? computeColumnMaxima(flatRows, visibleColumns, hour);
+  const hasData = flatRows.some(item => item.kind === 'data');
+  const out: AuditRow[] = [
+    {
+      row: '__table__',
+      key: '__table__:columns',
+      value: canonicalAuditData(
+        visibleColumns.map(col => ({
+          key: col.key,
+          label: col.label,
+          display: col.display,
+          tone: col.tone ?? null,
+          numeric: col.numeric,
+          valueFormat: col.valueFormat ?? null,
+        })),
+      ),
+    },
+    {
+      row: '__table__',
+      key: '__table__:meta',
+      value: canonicalAuditData({
+        summaryPill: model.summaryPill ?? null,
+        notes: model.notes ?? [],
+        warnings: model.warnings ?? [],
+        rankShown,
+        totalRows: flatRows.length,
+        empty: hasData ? null : (model.empty ?? null),
+        emptyKind: hasData ? null : (model.emptyKind ?? 'empty'),
+        emptyDetail: hasData ? null : (model.emptyDetail ?? null),
+      }),
+    },
+  ];
+  if (!hasData) return out;
+  const first = window ? Math.max(0, Math.min(window.first, flatRows.length)) : 0;
+  const end = window ? Math.min(flatRows.length, first + window.count) : flatRows.length;
+  for (let i = first; i < end; i++) {
+    const item = flatRows[i]!;
     if (item.kind === 'group-header') {
       out.push({
         row: item.key,
         key: `${item.key}:group`,
-        value: JSON.stringify(['group-header', item.label]),
+        value: canonicalAuditData({ kind: 'group-header', label: item.label, count: item.count }),
       });
       continue;
     }
     out.push({
       row: item.key,
-      key: `${item.key}:_meta`,
-      value: JSON.stringify(['data', rankShown ? item.rank : null, item.level, item.isTreeGroup ? item.isOpen : null]),
+      key: `${item.key}:_row`,
+      value: canonicalAuditData({
+        kind: 'data',
+        rank: rankShown ? item.rank : null,
+        level: item.level,
+        treeGroup: item.isTreeGroup,
+        open: item.isTreeGroup ? item.isOpen : null,
+        muted: item.row.muted === true,
+      }),
     });
-    for (const col of columns) {
-      const cell = item.row.cells[col.key];
-      const resolved = cell ? resolveCellAtHour(cell, hour) : { value: notRecorded('Not recorded') };
+    for (const col of visibleColumns) {
       out.push({
         row: item.key,
         key: `${item.key}:${col.key}`,
-        value: canonicalAuditValue(resolved.value),
+        value: canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima)),
       });
     }
+    out.push({
+      row: item.key,
+      key: `${item.key}:_tooltip`,
+      value: canonicalAuditData(deriveRowTooltip(item, model.columns, hiddenKeys, hour)),
+    });
   }
   return out;
 }
@@ -407,16 +535,13 @@ function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, 
   }
 }
 
-export function deriveTableTooltip(
-  flatRows: readonly FlatTableRow[],
-  itemKey: string,
+export function deriveRowTooltip(
+  found: Extract<FlatTableRow, { kind: 'data' }>,
   allColumns: readonly TableColumnSpec[],
   hiddenKeys: ReadonlySet<string>,
   hour: number,
   options?: { readonly pinned?: boolean },
-): TooltipContent | null {
-  const found = flatRows.find(item => item.kind === 'data' && item.key === itemKey);
-  if (!found || found.kind !== 'data') return null;
+): TooltipContent {
   const { row } = found;
   const rows: TooltipRow[] = [];
   const firstCol = allColumns[0];
@@ -455,6 +580,19 @@ export function deriveTableTooltip(
     ...(noteParts.length ? { note: noteParts.join(' \u00b7 ') } : {}),
     ...(row.tooltipDetail ? { detail: row.tooltipDetail } : {}),
   };
+}
+
+export function deriveTableTooltip(
+  flatRows: readonly FlatTableRow[],
+  itemKey: string,
+  allColumns: readonly TableColumnSpec[],
+  hiddenKeys: ReadonlySet<string>,
+  hour: number,
+  options?: { readonly pinned?: boolean },
+): TooltipContent | null {
+  const found = flatRows.find(item => item.kind === 'data' && item.key === itemKey);
+  if (!found || found.kind !== 'data') return null;
+  return deriveRowTooltip(found, allColumns, hiddenKeys, hour, options);
 }
 
 const pathPartsCache = new Map<string, readonly string[]>();

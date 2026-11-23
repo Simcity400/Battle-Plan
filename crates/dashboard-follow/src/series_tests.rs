@@ -499,3 +499,34 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
         ],
     );
 }
+
+#[test]
+fn golden_slot_and_tag_answers_match_checked_in_fixtures_and_board_reasons() {
+    use dashboard_query::{identity::Country, series::board};
+    let state = query();
+    let series = dashboard_declare::series("country-measure").unwrap();
+    let measure = series.measure("politicalPower").unwrap();
+    let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
+    let countries = vec![Country::Slot(7), Country::Tag("ITA".into())];
+    let followed = Query::Series { series, measure, countries: countries.clone(), top: None, least: false, parts: false, identity };
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+
+    let lane_525 = lane(&pages, &followed, vec![POWER], 525);
+    let bytes_525 = answer_at(&followed, &lane_525).unwrap();
+    assert_eq!(bytes_525.as_slice(), include_bytes!("../fixtures/series_slot_tag_525.bin").as_slice());
+
+    let lane_800 = lane(&pages, &followed, vec![POWER], ITA_FROM);
+    let bytes_800 = answer_at(&followed, &lane_800).unwrap();
+    assert_eq!(bytes_800.as_slice(), include_bytes!("../fixtures/series_slot_tag_800.bin").as_slice());
+
+    let line = Line::new(&state, series, measure).unwrap();
+    let cols = [board::Column { line, partial: None }];
+    let board_525 = board::at(&cols, board::Rows::Countries(&countries), 525).unwrap();
+    assert_eq!(board_525.rows.len(), 1);
+    assert_eq!(board_525.rows[0].country, Country::Slot(7));
+    assert_eq!(board_525.rows[0].tag, "GER");
+    assert_eq!(board_525.rows[0].cells[0].missing.as_deref(), Some("GER's politicalPower was not recorded at this hour"));
+
+    let parsed_525 = Answer::parse(&bytes_525).unwrap();
+    assert_eq!(parsed_525.reason(0), board_525.rows[0].cells[0].missing.as_deref());
+}

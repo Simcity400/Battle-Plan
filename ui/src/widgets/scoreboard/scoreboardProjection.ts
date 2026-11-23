@@ -97,20 +97,6 @@ function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
   return { value: notRecorded(look?.status ?? 'Country name unavailable'), name: tag, runs };
 }
 
-function scoreboardMissingReason(column: ScoreboardColumn, displayTag: string, rawReason: string | null | undefined): string {
-  const family = column.family;
-  if (!rawReason || rawReason === 'Not in the answer') {
-    return `${displayTag}'s ${column.label} was not recorded at this hour`;
-  }
-  if (family && (
-    rawReason.endsWith(` holds no row of ${family.kind} at this hour`)
-    || rawReason.endsWith(`'s ${family.measure} was not recorded at this hour`)
-  )) {
-    return `${displayTag}'s ${column.label} was not recorded at this hour`;
-  }
-  return rawReason;
-}
-
 export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerTableProjection({
   kind: 'scoreboard',
   family: 'table',
@@ -147,7 +133,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
             ? notRecorded(column.reason ?? 'Unavailable')
             : valueFromRawBigInt(
               rawCell.valueRaw,
-              { kind: 'notRecorded', reason: scoreboardMissingReason(column, row.tag, rawCell.missing ?? column.reason) },
+              { kind: 'notRecorded', reason: rawCell.missing ?? column.reason ?? 'Not recorded at this hour' },
               { partial: rawCell.partial ? 'Some inputs were not recorded at this hour' : null },
             );
           if (value.kind === 'partial') hasPartial = true;
@@ -221,9 +207,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
         }
         const base = valueFromNamedAnswer(answer, wireName);
-        let value: Value<NumericScalar> = base.kind === 'notRecorded'
-          ? notRecorded(scoreboardMissingReason(column, displayTag, base.reason))
-          : base;
+        let value: Value<NumericScalar> = base;
         if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
           value = partialValue(base.value, 'Some inputs were not recorded at this hour');
           hasPartial = true;
@@ -270,6 +254,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   countries: {
     mode: 'multi',
     labels: true,
+    colours: true,
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

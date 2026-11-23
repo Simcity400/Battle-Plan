@@ -188,3 +188,54 @@ test('renderer preload status reports incomplete before preload runs', async () 
   assert.equal(status.started, false);
   assert.equal(status.done, false);
 });
+
+test('unaudited painted pictures fail audit explicitly and reader(null) unregisters future audits without breaking an active audit', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+  const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
+  Object.assign(recorder as unknown as Record<string, unknown>, {
+    readers: new Map(),
+    commitSequence: 0,
+    rowChanges: [],
+    exactReads: new Map(),
+    auditGen: 0,
+    lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0,
+    stopped: false,
+    push: () => {},
+    flush: async () => {},
+  });
+
+  recorder.reader(7, -1, async () => ({ values: new Map([['A:v', 'ok']]), ordered: true }));
+  await recorder.beginAudit();
+  recorder.reader(7, -1, null);
+  recordPicture({
+    t: 'picture', at: 10, shownAt: 10, seek: 0, widget: 'w-unaudited', surface: 'table', placement: 7, owner: -1,
+    renderer: 'page', head: 10, hour: 10, offset: 0, eligibleHour: 10, drawMs: 0, mode: 'picture', dim: false,
+    reset: 0, binding: 0, inspect: null, tooltip: false, auditMissing: true,
+  });
+  recordPicture({
+    t: 'picture', at: 11, shownAt: 11, seek: 0, widget: 'w-ok', surface: 'table', placement: 7, owner: -1,
+    renderer: 'page', head: 11, hour: 11, offset: 0, eligibleHour: 11, drawMs: 0, mode: 'picture', dim: false,
+    reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: 'ok' }],
+  });
+  const first = await recorder.auditPicturesBatch(10);
+  assert.equal(first.done, true);
+  assert.equal(first.results.length, 2);
+  assert.equal(first.results[0]!.error, 'Painted picture emitted without audit rows');
+  assert.equal(first.results[1]!.error, null, 'active audit still completes with snapshotted reader after unmount unregister');
+
+  await recorder.beginAudit();
+  recordPicture({
+    t: 'picture', at: 20, shownAt: 20, seek: 0, widget: 'w-unregistered', surface: 'table', placement: 7, owner: -1,
+    renderer: 'page', head: 20, hour: 20, offset: 0, eligibleHour: 20, drawMs: 0, mode: 'picture', dim: false,
+    reset: 0, binding: 0, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: 'ok' }],
+  });
+  const second = await recorder.auditPicturesBatch(10);
+  assert.equal(second.results[0]!.error, 'Displayed rows or exact read missing', 'subsequent audit sees unregistered reader removed');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});

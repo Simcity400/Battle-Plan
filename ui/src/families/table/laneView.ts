@@ -95,6 +95,8 @@ interface HeldFamilyTable {
   validUntil: number;
   cachedModel: TableModel | null;
   cachedRows: readonly FlatTableRow[];
+  cachedHasGroupHeaders: boolean;
+  cachedRowIndex: Map<string, number>;
 
   layoutCols: readonly TableColumnSpec[] | null;
   layoutSettings: TableSettings | null;
@@ -125,6 +127,7 @@ interface HeldFamilyTable {
   flusher: TrailingFlushScheduler;
 
   auditId: number;
+  auditWindowKey: string;
   auditField: FieldEntry | null;
   phases: PhaseTally;
   phasesField: FieldEntry | null;
@@ -266,12 +269,16 @@ function cachedField(held: HeldFamilyTable, name: string, text: string, content:
 }
 
 function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined): string {
-  let out = `${theme?.font ?? ''}|${theme?.fontSize.small ?? 0}|${theme?.fontSize.body ?? 0}|${settings.order.join(',')}`;
-  for (const c of columns) {
-    const own = settings.columns[c.key];
-    out += `;${c.key}:${c.label}:${c.as}:${own?.show ?? true}:${own?.as ?? ''}:${own?.width ?? ''}:${c.numeric ? 1 : 0}`;
-  }
-  return out;
+  return JSON.stringify([
+    theme?.font ?? '',
+    theme?.fontSize.small ?? 0,
+    theme?.fontSize.body ?? 0,
+    settings.order,
+    columns.map(c => {
+      const own = settings.columns[c.key];
+      return [c.key, c.label, c.as, own?.show ?? true, own?.as ?? '', own?.width ?? null, c.numeric ? 1 : 0];
+    }),
+  ]);
 }
 
 function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readonly FlatTableRow[]): Record<string, string[]> {
@@ -294,26 +301,27 @@ function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readon
 }
 
 function navSignature(rows: readonly FlatTableRow[]): string {
-  let sig = String(rows.length);
-  for (let i = 0; i < rows.length; i++) {
-    const item = rows[i]!;
-    if (item.kind === 'data') {
-      const meta = item.row.meta === undefined ? '' : JSON.stringify(item.row.meta);
-      sig += `\u0000${item.key}:${item.name}:${item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1}:${meta}`;
-    } else {
-      sig += `\u0001${item.key}`;
-    }
-  }
-  return sig;
+  return JSON.stringify(
+    rows.map(item => (item.kind === 'data'
+      ? [1, item.key, item.name, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.row.meta ?? null]
+      : [0, item.key])),
+  );
 }
 
 function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, rankWidth: number): string {
-  let cols = '';
-  for (let i = 0; i < model.columns.length; i++) {
-    const c = model.columns[i]!;
-    cols += `,${c.key}:${c.label}:${c.priority}:${c.as}:${c.offered.join('.')}:${c.text ? 1 : 0}:${c.hideable === false ? 0 : 1}:${c.sortable === false ? 0 : 1}:${c.numeric ? 1 : 0}:${c.hint ?? ''}`;
-  }
-  return `${model.empty ?? ''}|${model.emptyDetail ?? ''}|${model.emptyKind ?? 'empty'}|${model.summaryPill ?? ''}|${(model.notes ?? []).join('\u0000')}|${(model.warnings ?? []).join('\u0000')}|${hasTree ? 1 : 0}|${model.unsorted ? 1 : 0}|${rankShown ? 1 : 0}|${rankWidth}|${cols}`;
+  return JSON.stringify([
+    model.empty ?? null,
+    model.emptyDetail ?? null,
+    model.emptyKind ?? 'empty',
+    model.summaryPill ?? null,
+    model.notes ?? [],
+    model.warnings ?? [],
+    hasTree,
+    model.unsorted === true,
+    rankShown,
+    rankWidth,
+    model.columns.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '']),
+  ]);
 }
 
 export function familyTableLaneView(wake: (widget: number) => void): LaneView {
@@ -377,6 +385,8 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           validUntil: -Infinity,
           cachedModel: null,
           cachedRows: [],
+          cachedHasGroupHeaders: false,
+          cachedRowIndex: new Map(),
           layoutCols: null,
           layoutSettings: null,
           layoutWidth: -1,
@@ -400,6 +410,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           focusTipField: null,
           flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate]),
           auditId: -1,
+          auditWindowKey: '',
           auditField: null,
           phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 },
           phasesField: null,
@@ -413,7 +424,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       }
       held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      const sortSig = `${bound.settings.sort.column}\u0000${bound.settings.sort.direction}`;
+      const sortSig = JSON.stringify([bound.settings.sort.column, bound.settings.sort.direction]);
       const canReuseModel = held.cachedModel !== null
         && samePictures(held.prevParts, input.pictures)
         && held.prevOptions === bound.options
@@ -434,6 +445,13 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         const sources = sourcesFromScene(input, bound);
         model = projection.project(sources, input.hour, bound.options);
         flatRows = resolveTableRows(model, bound.settings, bound.expanded);
+        let hasGroups = false;
+        const rowIndex = new Map<string, number>();
+        for (let i = 0; i < flatRows.length; i++) {
+          const item = flatRows[i]!;
+          if (item.kind === 'group-header') hasGroups = true;
+          else rowIndex.set(item.key, i);
+        }
         for (const url of collectCellIcons(flatRows)) loadIcon(held, url);
         let nextBoundary = Math.min(
           nextLookChange(optionsLooks(bound.options), input.hour),
@@ -451,6 +469,8 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         held.validUntil = nextBoundary;
         held.cachedModel = model;
         held.cachedRows = flatRows;
+        held.cachedHasGroupHeaders = hasGroups;
+        held.cachedRowIndex = rowIndex;
       }
       const tProj = timed ? performance.now() : 0;
 
@@ -587,6 +607,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           empty: model.empty,
           icons: held.icons,
           dpr,
+          hasGroupHeaders: held.cachedHasGroupHeaders,
         }, held.picture);
         painted = result.drew;
       }
@@ -639,8 +660,8 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       }
       fields.nav = held.navField!;
 
-      const focusedIndex = focusedKey ? flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey) : -1;
-      const inspectedPresent = inspectedKey ? flatRows.some(item => item.kind === 'data' && item.key === inspectedKey) : false;
+      const focusedIndex = focusedKey ? (held.cachedRowIndex.get(focusedKey) ?? -1) : -1;
+      const inspectedPresent = inspectedKey ? held.cachedRowIndex.has(inspectedKey) : false;
       const tSig = `${flatRows.length}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
       if (tSig !== held.tableSig || !held.tableField) {
         held.tableSig = tSig;
@@ -705,10 +726,22 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
 
       if (bound.audit) {
         const nextAuditId = bound.auditId ?? -1;
-        if (modelChanged || layoutChanged || !held.auditField || held.auditId !== nextAuditId) {
-          const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-          const auditRows = deriveTableAudit(flatRows, visibleSpecs, model.hour, model.empty, { rankShown, emptyKind: model.emptyKind });
+        const winKey = bound.window ? `${bound.window.first}:${bound.window.count}` : '';
+        if (modelChanged || layoutChanged || !held.auditField || held.auditId !== nextAuditId || held.auditWindowKey !== winKey) {
+          const cachedMaxima = held.picture.maxima && held.picture.maximaRows === flatRows && held.picture.maximaHour === model.hour
+            ? held.picture.maxima
+            : undefined;
+          const auditRows = deriveTableAudit({
+            model,
+            flatRows,
+            visibleColumns: layout.columns,
+            hiddenKeys: new Set(layout.hidden),
+            rankShown,
+            maxima: cachedMaxima,
+            window: bound.window,
+          });
           held.auditId = nextAuditId;
+          held.auditWindowKey = winKey;
           held.auditField = { value: { id: nextAuditId, rows: auditRows }, content: content() };
         }
         fields.audit = held.auditField;
@@ -735,7 +768,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      return { surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
+      return { mode: 'picture', surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
     },
   };
 }

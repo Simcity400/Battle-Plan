@@ -20,12 +20,14 @@ import {
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
-import { hasMeasuredValue, valueNumber, type Value } from '../value.ts';
+import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
 import { lookAt } from './looks.ts';
-import { resolveCellAtHour, type FlatTableRow, type TableCell } from './model.ts';
+import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow } from './model.ts';
+
+export { computeColumnMaxima };
 
 export const WATCHING_SPEED = 24;
 export const FAST_SPEED = 168;
@@ -99,6 +101,7 @@ export interface DrawFamilyTableInput {
   readonly empty?: string;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly dpr?: number;
+  readonly hasGroupHeaders?: boolean;
 }
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -117,39 +120,6 @@ function colorOf(theme: TableTheme, tone: string | undefined, country: string | 
   }
   if (tone in theme) return (theme as unknown as Record<string, string>)[tone]!;
   return theme.text;
-}
-
-export function computeColumnMaxima(rows: readonly FlatTableRow[], columns: readonly FamilyColumnLayout[], hour: number): Map<string, number> {
-  const maxima = new Map<string, number>();
-  for (const column of columns) {
-    if (!column.numeric || !measuresColumn(column)) continue;
-    let maximum = 0;
-    let measured = false;
-    for (const item of rows) {
-      if (item.kind !== 'data') continue;
-      const cell = item.row.cells[column.key];
-      if (!cell || cell.maximum !== undefined || cell.bar !== undefined) continue;
-      measured = true;
-      const resolved = resolveCellAtHour(cell, hour);
-      const num = valueNumber(resolved.value);
-      if (num !== undefined && num > maximum) maximum = num;
-    }
-    if (measured && maximum > 0) maxima.set(column.key, maximum);
-  }
-  return maxima;
-}
-
-function barFractionOf(cell: TableCell, value: Value, top: number | undefined): { readonly fraction: number | null; readonly alert: boolean } {
-  if (cell.bar === null) return { fraction: null, alert: false };
-  if (cell.bar !== undefined) {
-    const raw = valueNumber(cell.bar.fraction);
-    if (raw === undefined) return { fraction: null, alert: false };
-    return { fraction: Math.max(0, Math.min(1, raw)), alert: cell.bar.alert === true };
-  }
-  if (value.kind === 'zero') return { fraction: null, alert: false };
-  const num = valueNumber(value);
-  if (num === undefined || top === undefined || top <= 0 || num <= 0) return { fraction: null, alert: false };
-  return { fraction: Math.max(0, Math.min(1, num / top)), alert: false };
 }
 
 function rowMarkState(key: string, inspectedKey: string | null | undefined, selectedKey: string | null | undefined, focusedKey: string | null | undefined): string {
@@ -283,7 +253,7 @@ export function drawFamilyTable(
     return cached;
   };
 
-  const maximaCols = layout.columns.map(c => (c.numeric && measuresColumn(c) ? `${c.key}:${c.display}` : '')).join(',');
+  const maximaCols = JSON.stringify(layout.columns.map(c => (c.numeric && measuresColumn(c) ? [c.key, c.display] : null)));
   let maxima: Map<string, number>;
   if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
     maxima = picture.maxima;
@@ -297,9 +267,20 @@ export function drawFamilyTable(
     }
   }
   const moving = glideDuration > 0 && glide.size > 0;
-  const hasGroupHeaders = rows.some(item => item.kind === 'group-header');
+  const hasGroupHeaders = input.hasGroupHeaders ?? rows.some(item => item.kind === 'group-header');
   const frameKey = picture && !moving && !layout.scrollable && !hasGroupHeaders
-    ? `${width}\u0002${height}\u0002${rowHeight}\u0002${rank}\u0002${scrollTop}\u0002${scrollLeft}\u0002${first}\u0002${last}\u0002${rows.length ? '' : empty ?? ''}\u0002${layout.columns.map(c => `${c.key}:${c.width}:${c.display}:${c.tone ?? ''}`).join(',')}`
+    ? JSON.stringify([
+        width,
+        height,
+        rowHeight,
+        rank,
+        scrollTop,
+        scrollLeft,
+        first,
+        last,
+        rows.length ? '' : empty ?? '',
+        layout.columns.map(c => [c.key, c.width, c.display, c.tone ?? '']),
+      ])
     : null;
 
   const drawSingleCell = (
@@ -503,17 +484,28 @@ export function drawFamilyTable(
 
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout, slotWidth: number) => {
     const cell = item.row.cells[column.key];
-    const resolved = cell ? resolveCellAtHour(cell, hour) : { value: { kind: 'notRecorded' as const, reason: 'Not recorded' }, icon: undefined, missingName: false };
-    const formatted = formatValueState(resolved.value, cell?.format ?? column.valueFormat);
-    const bar = cell ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key)) : { fraction: null, alert: false };
+    const paintModel = resolveCellPaintModel(cell, column, hour, maxima);
+    const formatted = formatValueState(paintModel.value, paintModel.format);
     const span = Math.max(1, barSpanOf(column, slotWidth) * dpr);
-    const pixels = bar.fraction === null ? -1 : Math.round(bar.fraction * span);
-    const fraction = bar.fraction === null ? null : pixels / span;
-    const fill = bar.alert ? theme.red : colorOf(theme, cell?.tone ?? column.tone, cell?.country, fraction, hour);
-    const art = resolved.icon === undefined ? '' : `${resolved.icon}\u0003${icons?.get(resolved.icon) ? 1 : icons?.get(resolved.icon) === null ? 2 : 0}`;
+    const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
+    const fraction = paintModel.bar.fraction === null ? null : pixels / span;
+    const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.country ?? undefined, fraction, hour);
+    const icon = paintModel.icon ?? undefined;
+    const art = icon === undefined ? '' : `${icon}\u0003${icons?.get(icon) ? 1 : icons?.get(icon) === null ? 2 : 0}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
-    const key = `${formatted.kind}\u0002${formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text}\u0002${resolved.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${slotWidth}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}`;
-    return { formatted, fraction, fill, icon: resolved.icon, missingName: resolved.missingName, key };
+    const key = JSON.stringify([
+      formatted.kind,
+      formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text,
+      paintModel.missingName ? 1 : 0,
+      pixels,
+      fill,
+      slotWidth,
+      art,
+      treeKey,
+      item.row.muted ? 1 : 0,
+      paintModel.status ?? '',
+    ]);
+    return { formatted, fraction, fill, icon, missingName: paintModel.missingName, key };
   };
 
   if (picture && frameKey !== null && picture.frame === frameKey) {

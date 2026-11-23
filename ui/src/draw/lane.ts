@@ -630,7 +630,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           hour: selected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
         mode = painted.mode ?? 'picture'; reason = painted.reason;
         const refusals = selected.pictures.map(refusalOf);
-        if (mode === 'picture' && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
+        if (painted.mode === undefined && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
         else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
           painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
       } catch (error) {
