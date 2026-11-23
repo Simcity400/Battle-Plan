@@ -27,6 +27,7 @@ import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableProjection } from './model.ts';
 import './tableFamily.css';
 
+const TABLE_AUDIT = -1;
 const STATIC_HOLD = {};
 const OVERSCAN = 4;
 const CLICK_CANCEL_PX = 4;
@@ -37,7 +38,15 @@ const HOVER_OPEN_MS = 150;
 const HOVER_CLOSE_MS = 100;
 const HEADER_FALLBACK_WIDTH = 120;
 
-let nextAuditOwner = 1;
+let nextAuditSnapshot = 1;
+
+interface AuditSnapshot<TOptions> {
+  readonly declaration: TableProjection<TOptions>;
+  readonly options: TOptions;
+  readonly settings: TableSettings;
+  readonly expanded: Readonly<Record<string, boolean>>;
+  readonly exactSources: (hour: number) => Promise<FamilySources | null>;
+}
 
 export interface FamilySourceSubscription {
   readonly name: string;
@@ -204,7 +213,9 @@ export default function FamilyTableHost<TOptions>({
   const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
   const pendingAuditIdRef = useRef<number | null>(null);
-  const installedAuditIdRef = useRef<number | null>(null);
+  const auditSnapshotsRef = useRef(new Map<number, AuditSnapshot<TOptions>>());
+  const installedSnapshotsByHourRef = useRef(new Map<number, AuditSnapshot<TOptions>>());
+  const activeSnapshotRef = useRef<AuditSnapshot<TOptions> | null>(null);
   const lastTipAtRef = useRef(0);
   const lastMirrorAtRef = useRef(0);
   const lastMirrorKeyRef = useRef('');
@@ -603,14 +614,18 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const auditField = shown.fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
-      if (perfLog && auditField && typeof auditField.id === 'number' && auditField.id > 0 && installedAuditIdRef.current !== auditField.id) {
-        if (installedAuditIdRef.current !== null) pipeline.audit(pipe, installedAuditIdRef.current, null);
-        installedAuditIdRef.current = auditField.id;
-        const expectedId = auditField.id;
-        pipeline.audit(pipe, expectedId, fields => {
-          const current = fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
-          return current && current.id === expectedId ? current.rows : undefined;
-        });
+      if (perfLog && auditField && typeof auditField.id === 'number' && auditField.id > 0) {
+        const snap = auditSnapshotsRef.current.get(auditField.id);
+        if (snap) {
+          activeSnapshotRef.current = snap;
+          const auditedHour = shown.painted ?? shown.through;
+          if (auditedHour !== undefined) {
+            const byHour = installedSnapshotsByHourRef.current;
+            byHour.delete(auditedHour);
+            byHour.set(auditedHour, snap);
+            if (byHour.size > 2048) byHour.delete(byHour.keys().next().value!);
+          }
+        }
       }
 
       const widths = shown.fields.widths as Omit<WidthsState, 'signature'> | undefined;
@@ -857,42 +872,45 @@ export default function FamilyTableHost<TOptions>({
       node.removeEventListener('scroll', onScroll);
       extent.remove();
       surfaceRef.current = null;
-      if (installedAuditIdRef.current !== null) {
-        pipeline.audit(pipe, installedAuditIdRef.current, null);
-        installedAuditIdRef.current = null;
-      }
       holdElement(frameRef.current, false);
     };
   }, [pipeline, pipe, paintMirror, refreshFocusAnchor, runtime.clock, scrollRowIntoView, toggleTreeKey, tooltipOwner]);
 
   const auditable = !!exactSources;
   useLayoutEffect(() => {
-    if (!perfLog || !pipeline || pipe === null || !auditable) {
+    if (!perfLog || !auditable || !exactSources) {
       pendingAuditIdRef.current = null;
-      if (pipeline && pipe !== null && installedAuditIdRef.current !== null) {
-        pipeline.audit(pipe, installedAuditIdRef.current, null);
-        installedAuditIdRef.current = null;
-      }
       return;
     }
-    const id = nextAuditOwner++;
+    const id = nextAuditSnapshot++;
+    const snap: AuditSnapshot<TOptions> = { declaration, options, settings, expanded, exactSources };
+    const map = auditSnapshotsRef.current;
+    map.set(id, snap);
+    if (map.size > 64) map.delete(map.keys().next().value!);
     pendingAuditIdRef.current = id;
-    const snapDeclaration = declaration;
-    const snapOptions = options;
-    const snapSettings = settings;
-    const snapExpanded = expanded;
-    const snapExact = exactSources;
-    perfLog.reader(pipe, id, async hour => {
-      const exact = await snapExact(hour);
+    if (!activeSnapshotRef.current) activeSnapshotRef.current = snap;
+  }, [auditable, declaration, options, settings, expanded, exactSources]);
+
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || pipe === null || !auditable) return;
+    pipeline.audit(pipe, TABLE_AUDIT, fields => {
+      const current = fields.audit as { id: number; rows: readonly AuditRow[] } | undefined;
+      return current?.rows;
+    });
+    perfLog.reader(pipe, TABLE_AUDIT, async hour => {
+      const snap = installedSnapshotsByHourRef.current.get(hour) ?? activeSnapshotRef.current;
+      if (!snap) return null;
+      const exact = await snap.exactSources(hour);
       if (!exact) return null;
-      const model = snapDeclaration.project(exact, hour, snapOptions);
-      const flatRows = resolveTableRows(model, snapSettings, snapExpanded);
-      const allLayouts = buildColumnLayouts(model.columns, snapSettings);
+      const model = snap.declaration.project(exact, hour, snap.options);
+      const flatRows = resolveTableRows(model, snap.settings, snap.expanded);
+      const allLayouts = buildColumnLayouts(model.columns, snap.settings);
       const enabledSpecs = allLayouts.filter(col => col.shown).map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
       const rows = deriveTableAudit(flatRows, enabledSpecs, model.hour, model.empty);
       return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
     });
-  }, [pipeline, pipe, auditable, declaration, options, settings, expanded, exactSources]);
+    return () => pipeline.audit(pipe, TABLE_AUDIT, null);
+  }, [pipeline, pipe, auditable]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();

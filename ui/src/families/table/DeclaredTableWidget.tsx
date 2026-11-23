@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -516,9 +516,13 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     };
   }, [following, staticProduct.data, staticProduct.moment, declaration.source, pinHour, lastHour, staticRange?.last]);
 
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
+
   const exactSources = useCallback(async (wantedHour: number): Promise<FamilySources | null> => {
     if (!ctx || !perfLog) return null;
-    const recorded = gate.recorded(wantedHour);
+    const currentGate = gateRef.current;
+    const recorded = currentGate.recorded(wantedHour);
     if (recorded === null) return null;
     const src = declaration.source;
     if (src.kind === 'panel') {
@@ -540,7 +544,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
             window,
             recorded,
           );
-          return resolved ? gate.span(resolved.first, resolved.last) : null;
+          return resolved ? currentGate.span(resolved.first, resolved.last) : null;
         })();
       if (!span) return null;
       const params = src.productParams(ctx, span);
@@ -554,7 +558,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.exactProduct, params });
     const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
     return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-  }, [ctx, gate.recorded, gate.span, following, staticRange, widget.time.mode, window, declaration.source, runtime.client]);
+  }, [ctx, following, staticRange, widget.time.mode, window, declaration.source, runtime.client]);
 
   const projectionOptions = useMemo(
     () => (ctx ? declaration.projectionOptions(ctx) : ({} as TProjectionOptions)),
