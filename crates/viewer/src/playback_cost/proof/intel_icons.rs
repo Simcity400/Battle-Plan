@@ -1,20 +1,8 @@
 
 use super::Compared;
-use crate::{
-    document::Document,
-    layers::{
-        Layer,
-        intel_icons::{Evaluate, FailedView, Icons},
-    },
-    playhead_host::{
-        MapSide,
-        mirror::Mirrors,
-        views::{
-            Pace,
-            view::{HeadFailure, HeadFailureKind},
-        },
-    },
-};
+use crate::{document::Document, playhead_host::{MapSide, mirror::Mirrors, views::{Pace, view::{HeadFailure, HeadFailureKind}}}};
+use viewer_layer_core::layers::Layer;
+use viewer_layers_forces::intel_icons::{Evaluate, FailedView, Icons};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
@@ -374,7 +362,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     ))
 }
 
-pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = of(layer);
     let (Some((icons, hour)), Some(rows)) = (layer.icons(), layer.newest_rows()) else {
         return Ok(Compared { notes: json!({"skipped": "no icons or no rows yet"}), ..Compared::default() });
@@ -388,7 +376,7 @@ pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::la
 }
 
 pub(super) fn summary(side: &MapSide) -> Value {
-    crate::layers::intel_icons::summary(side)
+    viewer_layers_forces::intel_icons::summary(side)
 }
 
 #[cfg(test)]
@@ -757,7 +745,7 @@ mod tests {
                 frame: &DecodedFrame,
                 choice: &viewer_foundation::perspective::Choice,
             ) -> IntelIcons {
-                let resolved = crate::layers::intel_icons::ours(frame, choice)
+                let resolved = viewer_layers_forces::intel_icons::ours(frame, choice)
                     .map_err(|error| error.to_string());
                 reference_icons_from_ours(frame, resolved, synthetic_eval_for_country)
             }

@@ -617,13 +617,13 @@ impl Viewer {
                         .iter()
                         .flat_map(|side| side.with_side(crate::playhead_host::details::of_map)),
                 ),
-                crate::playback::Current::Gap { reason, .. } => {
+                viewer_playback::map_source::Current::Gap { reason, .. } => {
                     messages.push(format!("Gap: {reason}"))
                 }
-                crate::playback::Current::Refused { reason, .. } => {
+                viewer_playback::map_source::Current::Refused { reason, .. } => {
                     messages.push(format!("Refused: {reason}"))
                 }
-                crate::playback::Current::Frame(frame) => {
+                viewer_playback::map_source::Current::Frame(frame) => {
                     for table in TableId::ALL {
                         messages.push(match &*frame.tables[table.index()] {
                             TableView::Complete(rows) => format!("{table:?}: {} rows", rows.len()),

@@ -569,7 +569,7 @@ pub(crate) fn measure(
 ) -> io::Result<Value> {
     viewer_runtime::worker_priority::frame_priority();
     if !schedule.lean {
-        crate::layers::count_in_view(true);
+        viewer_layer_core::layers::count_in_view(true);
         viewer_runtime::view_record::enable();
     }
     let (window, inputs) = match window {
@@ -626,8 +626,8 @@ pub(crate) fn measure(
         crate::playhead_host::register_only(names.clone());
     }
     let at = crate::playhead_host::At { branch, hour: start, playing: false, speed: schedule.paced.unwrap_or(0.0) };
-    let side = crate::playhead_host::for_document_at(&document, Some(at)).map_err(io::Error::other)?;
-    viewer.playhead_map = Some(crate::playhead_host::side::SideThread::new(side).map_err(io::Error::other)?);
+    let side = viewer_playback::map_open::for_document_at(&document, Some(at)).map_err(io::Error::other)?;
+    viewer.playhead_map = Some(viewer_playback::side::SideThread::new(side).map_err(io::Error::other)?);
     if let Some(side) = &viewer.playhead_map {
         document.playback.read_rosters_of(side.entry());
     }
@@ -935,8 +935,8 @@ pub(crate) fn measure(
                         if index % 30 == 0 {
                             layered.sample_held(side);
                         }
-                        let units = crate::layers::units::of(side);
-                        (units.and_then(crate::layers::units::Units::take_model_counts), units.and_then(crate::layers::units::Units::take_mesh_counts))
+                        let units = viewer_layers_forces::units::of(side);
+                        (units.and_then(viewer_layers_forces::units::Units::take_model_counts), units.and_then(viewer_layers_forces::units::Units::take_mesh_counts))
                     })
                     .unwrap_or_default();
                 let phases = side.installed().find(|(name, ..)| *name == "political").map(|(_, _, wrote)| wrote.phases);
@@ -1250,13 +1250,13 @@ pub(crate) fn measure(
             side.with_side(|side| {
                 report["layers"]["standing"] = side.standing();
                 report["view_store"] = side.views().record(distribution);
-                report["intel_icons"] = crate::layers::intel_icons::summary(side);
-                report["names"] = crate::layers::names::summary(side);
-                report["counters"] = crate::layers::counters::fed::summary(side);
-                report["aircraft"] = crate::layers::aircraft::summary(side);
-                report["buildings"] = crate::layers::buildings::summary(side);
-                report["snow"] = crate::layers::snow::summary(side);
-                report["trains"] = crate::layers::trains::summary(side);
+                report["intel_icons"] = viewer_layers_forces::intel_icons::summary(side);
+                report["names"] = viewer_layers_political::names::summary(side);
+                report["counters"] = viewer_layers_counters::counters::fed::summary(side);
+                report["aircraft"] = viewer_layers_forces::aircraft::summary(side);
+                report["buildings"] = viewer_layers_infrastructure::buildings::summary(side);
+                report["snow"] = viewer_layers_infrastructure::snow::summary(side);
+                report["trains"] = viewer_layers_infrastructure::trains::summary(side);
             });
             report["scope"] = layered.scope_summary(side.names());
             let (checked, differing) = viewer_runtime::install_check::counted();

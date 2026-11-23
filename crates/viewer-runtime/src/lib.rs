@@ -25,6 +25,7 @@ pub mod presentation;
 pub mod profile_writer;
 pub mod profiling;
 pub mod publication_check;
+pub mod reads;
 pub mod recorded_labels;
 pub mod redraws;
 pub mod resource_origins;

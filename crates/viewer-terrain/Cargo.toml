@@ -56,3 +56,4 @@ unify-windows-core = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-terrain = { workspace = true, features = ["test-support"] }

@@ -10,4 +10,4 @@ Local settings govern interface scale, rendering, map options and audio. They ar
 
 Static borders start in the province bucket and are rebucketed by the hour's regions. The strategic region filing feeds borders, counters and aircraft, and its membership is validated before rebuilding battle-name candidates. Region icons can provide anchors for faction-theatre pins. The static railway geometry is shared across hours, while each hour supplies its own graph. Land unit models and buildings use the viewer's visibility, with the native model threshold distinct from the counter threshold.
 
-[Document admission](../../crates/viewer-playback/src/document.rs) · [Visual fallback](../../crates/viewer-playback/src/visual_fallback.rs) · [Asset loading](../../crates/viewer-playback/src/map_assets.rs)
+[Document admission](../../crates/viewer-playback/src/document.rs) · [Visual fallback](../../crates/viewer-playback/src/visual_fallback.rs) · [Asset loading](../../crates/viewer-world/src/map_assets.rs)
