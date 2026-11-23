@@ -74,6 +74,7 @@ pub struct VideoState(
     AtomicBool,
     AtomicU64,
     Mutex<()>,
+    Mutex<[Option<String>; 2]>,
 );
 impl Default for VideoState {
     fn default() -> Self {
@@ -85,6 +86,7 @@ impl Default for VideoState {
             AtomicBool::new(requested),
             AtomicU64::new(0),
             Mutex::new(()),
+            Mutex::new([None, None]),
         )
     }
 }
@@ -117,16 +119,19 @@ fn update(
     path: &Path,
     fallback: Option<&VideoSettings>,
     change: impl FnOnce(&mut VideoSettings),
-) -> Result<VideoSettings, String> {
-    replay::writes::WRITES
-        .under_lock(&path.with_extension("lock"), |writing| {
+) -> Result<(VideoSettings, Option<String>), String> {
+    replay::exit::EXIT
+        .under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
             let mut settings = match load_from(path) {
                 Ok(saved) => saved,
                 Err(error) => fallback.cloned().ok_or_else(|| io::Error::other(error))?,
             };
             change(&mut settings);
-            writing.replace(path, |out| serde_json::to_writer(out, &settings).map_err(io::Error::from))?;
-            Ok(settings)
+            match receipt.replace(path, |out| serde_json::to_writer(out, &settings).map_err(io::Error::from)) {
+                Ok(()) => Ok((settings, None)),
+                Err(error) if replay::exit::is_unconfirmed(&error) => Ok((settings, Some(format!("The change was made, but Windows didn’t confirm it was saved: {error}")))),
+                Err(error) => Err(error),
+            }
         })
         .map_err(|e| e.to_string())
 }
@@ -139,15 +144,15 @@ fn commit(
     state: &Stored,
     change: impl FnOnce(&mut VideoSettings),
     take: impl FnOnce(&mut VideoSettings, &VideoSettings),
-) -> Result<VideoSettings, String> {
+) -> Result<(VideoSettings, Option<String>), String> {
     let fallback = stored(state)?.as_ref().ok().cloned();
-    let saved = update(path, fallback.as_ref(), change)?;
+    let (saved, warning) = update(path, fallback.as_ref(), change)?;
     let mut current = stored(state)?;
     match &mut *current {
         Ok(current) => take(current, &saved),
         Err(_) => *current = Ok(saved.clone()),
     }
-    Ok(saved)
+    Ok((saved, warning))
 }
 fn with_display(saved: &mut VideoSettings, form: &VideoSettings) {
     *saved = VideoSettings {
@@ -165,6 +170,7 @@ pub struct VideoReply {
     game_settings_error: Option<String>,
     game_map_ui_scale: Option<f64>,
     map_ui_scale_choices: &'static [u32],
+    warning: Option<String>,
 }
 fn read_game_settings<T>(read: impl FnOnce(&Path) -> io::Result<T>) -> Result<T, String> {
     let (config, _) = crate::dashboard_service::host_config()?;
@@ -224,6 +230,7 @@ fn reply(settings: VideoSettings) -> VideoReply {
         game_settings_error,
         game_map_ui_scale: game_map_ui_scale(),
         map_ui_scale_choices: &dashboard_core::protocol::MAP_UI_SCALE_CHOICES,
+        warning: None,
     }
 }
 pub fn launch_actions(
@@ -353,7 +360,7 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
         });
         host.set_display(settings.map_ui_scale_action());
         host.set_display(settings.map_frame_limit_action());
-        update(&path()?, Some(&settings), |saved| {
+        let (_, warning) = update(&path()?, Some(&settings), |saved| {
             with_display(saved, &settings)
         })?;
         let popouts = window.state::<crate::popout::PopOuts>();
@@ -362,9 +369,11 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
         });
         popouts.mirror(&settings.map_ui_scale_action());
         popouts.mirror(&settings.map_frame_limit_action());
-        Ok(())
+        Ok(warning)
     })();
-    if let Err(error) = result {
+    let warning = match result {
+        Ok(warning) => warning,
+        Err(error) => {
         let _ = apply_scale(window, &previous);
         host.set_display(dashboard_core::protocol::MapAction::Vsync {
             enabled: previous.vsync,
@@ -372,7 +381,8 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
         host.set_display(previous.map_ui_scale_action());
         host.set_display(previous.map_frame_limit_action());
         return Err(error);
-    }
+        }
+    };
     let settings = {
         let mut current = stored(&state.0)?;
         match &mut *current {
@@ -381,7 +391,7 @@ fn save_video_settings(window: &WebviewWindow, settings: VideoSettings) -> Resul
         }
         current.clone()?
     };
-    Ok(reply(settings))
+    Ok(VideoReply { warning, ..reply(settings) })
 }
 
 fn inherit_game(current: &VideoSettings, game: VideoSettings) -> VideoSettings {
@@ -400,21 +410,36 @@ fn effective_map_diagnostics(requested: bool, stored: &Result<VideoSettings, Str
             .is_ok_and(|settings| settings.map_diagnostics)
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct MapSwitch {
     value: bool,
     sequence: u64,
+    warning: Option<String>,
+}
+
+const DIAGNOSTICS: usize = 0;
+const MUTED: usize = 1;
+
+fn warnings(state: &VideoState) -> std::sync::MutexGuard<'_, [Option<String>; 2]> {
+    state.4.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn read_switch(
     state: &VideoState,
+    which: usize,
     value: impl FnOnce(&Result<VideoSettings, String>) -> bool,
 ) -> MapSwitch {
     let stored = state.0.lock();
     MapSwitch {
         value: stored.as_deref().is_ok_and(value),
         sequence: state.2.load(Ordering::Acquire),
+        warning: warnings(state)[which].clone(),
     }
+}
+
+fn publish(state: &VideoState, which: usize, value: bool, warning: Option<String>) -> MapSwitch {
+    warnings(state)[which].clone_from(&warning);
+    MapSwitch { value, sequence: next_change(state), warning }
 }
 
 fn next_change(state: &VideoState) -> u64 {
@@ -426,7 +451,7 @@ pub fn current_map_diagnostics(state: &VideoState) -> bool {
 }
 
 fn diagnostics_switch(state: &VideoState) -> MapSwitch {
-    read_switch(state, |stored| {
+    read_switch(state, DIAGNOSTICS, |stored| {
         effective_map_diagnostics(state.1.load(Ordering::Acquire), stored)
     })
 }
@@ -435,7 +460,7 @@ fn changing(state: &VideoState) -> std::sync::MutexGuard<'_, ()> {
     state.3.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Result<bool, String> {
+fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Result<(bool, Option<String>), String> {
     let consumed = std::cell::Cell::new(false);
     let saved = commit(
         path,
@@ -450,24 +475,24 @@ fn set_diagnostics(path: &Path, state: &VideoState, enabled: Option<bool>) -> Re
     if saved.is_err() && consumed.get() {
         state.1.store(true, Ordering::Release);
     }
-    saved.map(|saved| saved.map_diagnostics)
+    saved.map(|(saved, warning)| (saved.map_diagnostics, warning))
 }
 
-fn toggle_diagnostics<T>(path: &Path, state: &VideoState, enabled: Option<bool>, announce: impl FnOnce(bool, bool) -> T) -> Result<T, String> {
+fn toggle_diagnostics<T>(path: &Path, state: &VideoState, enabled: Option<bool>, announce: impl FnOnce(bool, Option<String>, bool) -> T) -> Result<T, String> {
     let _changing = changing(state);
     let muted = muted_in(&*stored(&state.0)?);
-    let enabled = set_diagnostics(path, state, enabled)?;
-    Ok(announce(enabled, muted))
+    let (enabled, warning) = set_diagnostics(path, state, enabled)?;
+    Ok(announce(enabled, warning, muted))
 }
 
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
-    let (changed, muted) = toggle_diagnostics(&path()?, &state, enabled, |enabled, muted| {
-        let changed = announce_diagnostics(app, &state, enabled);
+    let (changed, muted) = toggle_diagnostics(&path()?, &state, enabled, |enabled, warning, muted| {
+        let changed = announce_diagnostics(app, &state, enabled, warning);
         let now_muted = stored(&state.0).map_or(muted, |stored| muted_in(&stored));
-        (changed, (now_muted != muted).then(|| announce_muted(app, &state, !muted)))
+        (changed, (now_muted != muted).then(|| announce_muted(app, &state, !muted, None)))
     })?;
-    let _ = app.emit("map-diagnostics", changed);
+    let _ = app.emit("map-diagnostics", &changed);
     if let Some(muted) = muted {
         let _ = app.emit("map-muted", muted);
     }
@@ -478,24 +503,18 @@ fn muted_in(stored: &Result<VideoSettings, String>) -> bool {
     stored.as_ref().is_ok_and(|settings| settings.map_muted)
 }
 
-fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool) -> MapSwitch {
+fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool, warning: Option<String>) -> MapSwitch {
     app.state::<NativeHost>().set_muted(muted);
     app.state::<crate::popout::PopOuts>()
         .mirror(&dashboard_core::protocol::MapAction::Mute { muted });
-    MapSwitch {
-        value: muted,
-        sequence: next_change(state),
-    }
+    publish(state, MUTED, muted, warning)
 }
 
-fn announce_diagnostics(app: &AppHandle, state: &VideoState, enabled: bool) -> MapSwitch {
+fn announce_diagnostics(app: &AppHandle, state: &VideoState, enabled: bool, warning: Option<String>) -> MapSwitch {
     app.state::<NativeHost>().set_diagnostics(enabled);
     app.state::<crate::popout::PopOuts>()
         .mirror(&dashboard_core::protocol::MapAction::Diagnostics { enabled });
-    MapSwitch {
-        value: enabled,
-        sequence: next_change(state),
-    }
+    publish(state, DIAGNOSTICS, enabled, warning)
 }
 
 pub fn current_map_muted(state: &VideoState) -> bool {
@@ -503,18 +522,18 @@ pub fn current_map_muted(state: &VideoState) -> bool {
 }
 
 fn muted_switch(state: &VideoState) -> MapSwitch {
-    read_switch(state, muted_in)
+    read_switch(state, MUTED, muted_in)
 }
 
 pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let _changing = changing(&state);
     let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
-    commit(&path()?, &state.0, |settings| settings.map_muted = muted, |current, saved| current.map_muted = saved.map_muted)?;
-    let changed = announce_muted(app, &state, muted);
+    let (_, warning) = commit(&path()?, &state.0, |settings| settings.map_muted = muted, |current, saved| current.map_muted = saved.map_muted)?;
+    let changed = announce_muted(app, &state, muted, warning);
     let now = effective_map_diagnostics(state.1.load(Ordering::Acquire), &*stored(&state.0)?);
-    let diagnostics = (now != diagnostics).then(|| announce_diagnostics(app, &state, !diagnostics));
-    let _ = app.emit("map-muted", changed);
+    let diagnostics = (now != diagnostics).then(|| announce_diagnostics(app, &state, !diagnostics, None));
+    let _ = app.emit("map-muted", &changed);
     if let Some(diagnostics) = diagnostics {
         let _ = app.emit("map-diagnostics", diagnostics);
     }
@@ -666,17 +685,17 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("hoi4-video-toggle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         let path = folder.join("video.json");
-        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(false), AtomicU64::new(0), Mutex::new(()));
+        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(false), AtomicU64::new(0), Mutex::new(()), Mutex::new([None, None]));
         update(&path, None, |saved| saved.map_diagnostics = true).unwrap();
-        assert!(!set_diagnostics(&path, &state, None).unwrap(), "a toggle that waited on another writer flips what that writer saved, not what this window last read");
+        assert!(!set_diagnostics(&path, &state, None).unwrap().0, "a toggle that waited on another writer flips what that writer saved, not what this window last read");
         assert!(!load_from(&path).unwrap().map_diagnostics);
-        assert!(set_diagnostics(&path, &state, None).unwrap(), "so a second toggle undoes the first");
+        assert!(set_diagnostics(&path, &state, None).unwrap().0, "so a second toggle undoes the first");
         assert!(state.0.lock().unwrap().as_ref().unwrap().map_diagnostics);
         assert!(load_from(&path).unwrap().map_diagnostics);
 
-        let requested = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0), Mutex::new(()));
-        assert!(!set_diagnostics(&path, &requested, None).unwrap(), "--diagnostics shows them, so the first toggle hides them");
-        assert!(set_diagnostics(&path, &requested, None).unwrap());
+        let requested = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0), Mutex::new(()), Mutex::new([None, None]));
+        assert!(!set_diagnostics(&path, &requested, None).unwrap().0, "--diagnostics shows them, so the first toggle hides them");
+        assert!(set_diagnostics(&path, &requested, None).unwrap().0);
         fs::remove_dir_all(&folder).unwrap();
     }
 
@@ -685,12 +704,12 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("hoi4-video-concurrent-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         let path = folder.join("video.json");
-        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0), Mutex::new(()));
+        let state = VideoState(Mutex::new(Ok(VideoSettings::default())), AtomicBool::new(true), AtomicU64::new(0), Mutex::new(()), Mutex::new([None, None]));
         let announced = Mutex::new(Vec::new());
-        let announce = |value: bool, _muted: bool| {
+        let announce = |value: bool, warning: Option<String>, _muted: bool| {
             assert!(state.3.try_lock().is_err(), "no other toggle decides, saves or announces while this one announces");
-            let switch = MapSwitch { value, sequence: next_change(&state) };
-            announced.lock().unwrap().push(switch);
+            let switch = publish(&state, DIAGNOSTICS, value, warning);
+            announced.lock().unwrap().push(switch.clone());
             switch
         };
         std::thread::scope(|scope| {
@@ -703,7 +722,7 @@ mod tests {
             }
         });
         let announced = announced.into_inner().unwrap();
-        let last = announced.iter().max_by_key(|switch| switch.sequence).unwrap();
+        let last = announced.iter().max_by_key(|switch| switch.sequence).unwrap().clone();
         assert_eq!(last.value, load_from(&path).unwrap().map_diagnostics, "the newest announcement is what the file holds");
         assert!(announced.windows(2).all(|pair| pair[0].sequence < pair[1].sequence && pair[0].value != pair[1].value), "each toggle announces in the order it saved, and flips the one before it");
         assert!(!announced[0].value, "--diagnostics was consumed by the first toggle, under its file lock");

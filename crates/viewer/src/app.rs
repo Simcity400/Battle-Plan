@@ -538,8 +538,7 @@ struct Capture {
     frames: u32,
     index: u32,
     paced: bool,
-    request: Option<u64>,
-    permit: Option<replay::writes::Permit>,
+    export: Option<crate::host::ExportJob>,
 }
 
 pub(crate) struct VisualStale {
@@ -842,8 +841,6 @@ pub struct Viewer {
     overlay_art_moved: bool,
     overlay_art_retries: u32,
     held_since: Option<Instant>,
-    export_results: Vec<(u64, Result<String, String>)>,
-    export_permits: Vec<(u64, replay::writes::Permit)>,
     combat_inputs: Option<usize>,
     overlay_pools: viewer_native_gui::icon_windows::Pools,
 
@@ -1184,8 +1181,7 @@ impl Viewer {
             frames: options.window_frames.max(1),
             index: 0,
             paced: false,
-            request: None,
-            permit: None,
+            export: None,
         });
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
@@ -1391,8 +1387,6 @@ impl Viewer {
             overlay_art_moved: false,
             overlay_art_retries: 0,
             held_since: None,
-            export_results: Vec::new(),
-            export_permits: Vec::new(),
             combat_inputs: None,
 
             counter_view,
@@ -1646,16 +1640,7 @@ impl Viewer {
     }
 
     pub(crate) fn holds_export(&self) -> bool {
-        self.capture.as_ref().is_some_and(|capture| capture.request.is_some()) || self.dashboard.as_ref().is_some_and(|dashboard| dashboard.holds_export())
-    }
-
-    pub(crate) fn take_permit(&mut self, request: u64) -> Option<replay::writes::Permit> {
-        let at = self.export_permits.iter().position(|(held, _)| *held == request)?;
-        Some(self.export_permits.swap_remove(at).1)
-    }
-
-    pub(crate) fn hold_permit(&mut self, request: u64, permit: Option<replay::writes::Permit>) {
-        self.export_permits.extend(permit.map(|permit| (request, permit)));
+        self.capture.as_ref().is_some_and(|capture| capture.export.is_some()) || self.dashboard.as_ref().is_some_and(|dashboard| dashboard.holds_export())
     }
 
     fn not_drawn(&mut self) {
@@ -3053,7 +3038,7 @@ impl Viewer {
     }
 
     fn refused(&mut self, error: &str) -> Option<bool> {
-        let capture = self.end_capture()?;
+        let mut capture = self.end_capture()?;
         let message = format!("Capture {} failed: {error}", capture.path.display());
         if capture.exit {
             *self
@@ -3061,24 +3046,22 @@ impl Viewer {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(message.clone());
         }
-        self.answer_export(&capture, Err(message.clone()));
+        Self::answer_export(&mut capture, Err(message.clone()));
         self.capture_note = Some(message);
         Some(capture.exit)
     }
 
-    fn answer_export(&mut self, capture: &Capture, answer: Result<String, String>) {
-        if let Some(request) = capture.request {
-            self.export_results.push((request, answer));
+    fn answer_export(capture: &mut Capture, answer: Result<String, String>) {
+        if let Some(job) = capture.export.take() {
+            job.answer(answer);
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn arm_export(&mut self, path: &str, id: u64) {
-        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(id), permit: None });
-    }
-
-    pub(crate) fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
-        std::mem::take(&mut self.export_results)
+    pub(crate) fn arm_export(&mut self, path: &str) -> std::sync::Arc<std::sync::Mutex<Vec<Result<String, String>>>> {
+        let (job, answers) = crate::host::tests::job(path);
+        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
+        answers
     }
 
     fn end_capture(&mut self) -> Option<Capture> {
@@ -3257,8 +3240,8 @@ impl Viewer {
             if !unverified.is_empty() {
                 render::render_banner(scene, &state.device, &state.queue, &unverified)?;
             }
-            match &capture.permit {
-                Some(permit) => render::write_png_under(permit, scene, &state.device, &state.queue, &output),
+            match &capture.export {
+                Some(job) => render::write_png_under(&job.receipt, scene, &state.device, &state.queue, &output),
                 None => render::write_png(scene, &state.device, &state.queue, &output),
             }
         })();
@@ -3315,7 +3298,7 @@ impl Viewer {
         };
         self.capture_note = Some(answer.clone().unwrap_or_else(|why| why));
         if capture.frames <= 1 {
-            self.answer_export(&capture, answer);
+            Self::answer_export(&mut capture, answer);
         }
         if capture.frames > 1 {
             capture.frames -= 1;
@@ -6824,9 +6807,6 @@ impl Drop for Viewer {
         if self.capture.as_ref().is_some_and(|capture| capture.exit) {
             self.refused("the window closed before its picture was saved");
         }
-        if self.embedded.is_some() {
-            self.answer_exports();
-        }
     }
 }
 
@@ -6852,7 +6832,6 @@ impl eframe::App for Viewer {
         engine_executable::executable_tables::scope(self.tables(), || {
             self.embedded_logic(ctx, frame)
         });
-        self.answer_exports();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -6860,7 +6839,6 @@ impl eframe::App for Viewer {
         let tables = self.tables();
         let pass = replay_frame::cpu::scope("frame.ui", Some("other"));
         engine_executable::executable_tables::scope(tables, || self.campaign_ui(ui, frame));
-        self.answer_exports();
         drop(pass);
         self.trace_switch_frame();
         crate::perf_log::frame_end();
@@ -6868,18 +6846,6 @@ impl eframe::App for Viewer {
 }
 
 impl Viewer {
-    fn answer_exports(&mut self) {
-        let mut ended = self.take_export_results();
-        if let Some(dashboard) = self.dashboard.as_mut() {
-            ended.extend(dashboard.take_export_results());
-        }
-        if let Some(embedded) = &self.embedded {
-            for (request, answer) in ended {
-                embedded.report_export(request, answer);
-            }
-        }
-    }
-
     pub(crate) fn tables(&self) -> Option<engine_executable::executable_tables::Tables> {
         self.document
             .as_ref()
@@ -7471,8 +7437,7 @@ pub(crate) mod tests {
             frames,
             index: 0,
             paced: false,
-            request: None,
-            permit: None,
+            export: None,
         };
         assert!(!builds_warnings(false, None));
         for remaining in [0, 1, 3_321] {
@@ -8638,9 +8603,12 @@ pub(crate) mod tests {
         assert!(viewer.options.replay.is_none());
     }
 
-    fn export(path: &str, request: u64) -> Capture {
-        Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(request), permit: None }
+    fn export(path: &str) -> (Capture, crate::host::tests::Answers) {
+        let (job, answers) = crate::host::tests::job(path);
+        (Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) }, answers)
     }
+
+    use crate::host::tests::taken;
 
     fn closes(output: &egui::FullOutput) -> bool {
         output.viewport_output.values().any(|viewport| viewport.commands.iter().any(|command| matches!(command, egui::ViewportCommand::Close)))
@@ -8659,8 +8627,9 @@ pub(crate) mod tests {
                     None,
                     None,
                 );
+                let (capture, answers) = export("campaign-map.png");
                 if !window_dump {
-                    viewer.capture = Some(export("campaign-map.png", 4));
+                    viewer.capture = Some(capture);
                 }
                 let (send, receive) = mpsc::channel();
                 viewer.loading = Some(receive);
@@ -8679,14 +8648,14 @@ pub(crate) mod tests {
                 assert_eq!(viewer.error.as_deref(), Some(expected));
                 assert_eq!(closes(&output), window_dump);
                 let reported = failure.lock().unwrap().clone();
-                let answered = viewer.take_export_results();
+                let answered = taken(&answers);
                 if window_dump {
                     let message = reported.unwrap();
                     assert!(message.contains("capture.png") && message.contains("replay could not be loaded") && message.contains(expected), "{message}");
                     assert!(answered.is_empty());
                 } else {
                     assert!(reported.is_none(), "an export fails no process");
-                    assert!(matches!(answered.as_slice(), [(4, Err(why))] if why.starts_with("Capture campaign-map.png failed: replay could not be loaded") && why.contains(expected)), "{answered:?}");
+                    assert!(matches!(answered.as_slice(), [Err(why)] if why.starts_with("Capture campaign-map.png failed: replay could not be loaded") && why.contains(expected)), "{answered:?}");
                 }
             }
         }
@@ -8704,8 +8673,9 @@ pub(crate) mod tests {
                 None,
                 None,
             );
+            let (capture, answers) = export("export.png");
             if !window_dump {
-                viewer.capture = Some(export("export.png", 9));
+                viewer.capture = Some(capture);
             }
             let ctx = egui::Context::default();
             let mut output = ctx.run_ui(Default::default(), |ui| {
@@ -8716,13 +8686,13 @@ pub(crate) mod tests {
             assert!(viewer.capture.is_none(), "no capture stays armed in the gap");
             assert_eq!(viewer.map_error.as_deref(), Some("hour 12 was not recorded"));
             let reported = failure.lock().unwrap().clone();
-            let answered = viewer.take_export_results();
+            let answered = taken(&answers);
             if window_dump {
                 assert_eq!(reported.as_deref(), Some("Capture unavailable.png failed: hour 12 was not recorded"));
                 assert!(answered.is_empty());
             } else {
                 assert!(reported.is_none(), "an export fails no process");
-                assert_eq!(answered, [(9, Err("Capture export.png failed: hour 12 was not recorded".to_owned()))]);
+                assert_eq!(answered, [Err("Capture export.png failed: hour 12 was not recorded".to_owned())]);
                 assert!(viewer.error.is_none(), "nor becomes the map's error");
             }
         }
@@ -8731,10 +8701,11 @@ pub(crate) mod tests {
     #[test]
     fn an_export_whose_recording_closes_answers_its_requester() {
         let mut viewer = Viewer::create(Config::default(), Options { replay: Some("campaign.battleplan".into()), ..Default::default() }, None, Arc::default(), None, None);
-        viewer.capture = Some(export("map.png", 6));
+        let (capture, answers) = export("map.png");
+        viewer.capture = Some(capture);
         assert!(viewer.unload_recording(Path::new("campaign.battleplan")));
         assert!(viewer.capture.is_none());
-        assert_eq!(viewer.take_export_results(), [(6, Err("Capture map.png failed: its recording closed".to_owned()))]);
+        assert_eq!(taken(&answers), [Err("Capture map.png failed: its recording closed".to_owned())]);
     }
 
     #[test]
@@ -8742,8 +8713,9 @@ pub(crate) mod tests {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
-        viewer.host_map_action(dashboard_core::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
-        assert_eq!(viewer.take_export_results(), [(8, Err("Open a map and wait for any active export to finish".to_owned()))]);
+        let (job, answers) = crate::host::tests::job("map.png");
+        viewer.host_export(job, &ctx, &mut frame);
+        assert_eq!(taken(&answers), [Err("Open a map and wait for any active export to finish".to_owned())]);
         assert!(viewer.error.is_none() && viewer.capture.is_none());
     }
 
@@ -8760,16 +8732,19 @@ pub(crate) mod tests {
         let controller = crate::embedded::Parent::new(window.clone(), received, Arc::new(|_| {}), service).attach(&ctx).unwrap();
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), Some(controller), None);
         assert!(!viewer.embedded.as_ref().unwrap().visible(), "the map’s window reports itself hidden, as it does once BattlePlan hides its own");
-        let writes: &'static replay::writes::Writes = Box::leak(Box::new(replay::writes::Writes::new()));
-        viewer.capture = Some(Capture { permit: Some(Arc::new(writes.begin().unwrap())), ..export("map.png", 5) });
+        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
+        let (job, answers) = crate::host::tests::job_under(exit, "map.png");
+        viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
         let mut frame = eframe::Frame::_new_kittest();
         let mut output = ctx.run_ui(Default::default(), |ui| eframe::App::logic(&mut viewer, ui.ctx(), &mut frame));
         output.textures_delta.clear();
-        assert!(viewer.take_export_results().is_empty(), "the export the host accepted isn’t refused because its window hid");
-        assert!(viewer.capture.as_ref().is_some_and(|capture| capture.request == Some(5)), "it stays armed to render");
-        assert!(writes.close_admission() && !writes.drained_within(std::time::Duration::ZERO), "and the exit waits for its picture");
+        assert!(taken(&answers).is_empty(), "the export the host accepted isn’t refused because its window hid");
+        assert!(viewer.capture.as_ref().is_some_and(|capture| capture.export.is_some()), "it stays armed to render");
+        exit.seal();
+        assert!(!exit.empty_within(std::time::Duration::ZERO), "and the exit waits for its picture");
         viewer.refused("the test ends");
-        assert!(writes.drained_within(std::time::Duration::ZERO), "the map lets the permit go once the export is answered");
+        assert_eq!(taken(&answers).len(), 1, "the job is answered");
+        assert!(exit.empty_within(std::time::Duration::ZERO), "and lets the exit go once it is");
         window.destroy();
         parent.destroy();
     }
@@ -8832,7 +8807,8 @@ pub(crate) mod tests {
     #[test]
     fn a_refused_export_answers_its_requester_and_the_next_one_starts() {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
-        viewer.capture = Some(export("first.png", 1));
+        let (capture, answers) = export("first.png");
+        viewer.capture = Some(capture);
         viewer.error = Some("an independent map error".into());
         let ctx = egui::Context::default();
         let mut frames = Vec::new();
@@ -8843,13 +8819,13 @@ pub(crate) mod tests {
         assert!(frames.iter().all(Result::is_ok), "an export's refusal is no error of the map's frame");
         assert!(viewer.capture.is_none(), "the refused export is no longer armed");
         assert_eq!((viewer.overlay_art_retries, viewer.overlay_art_moved), (0, false), "nor its retries");
-        let answered = viewer.take_export_results();
-        assert!(matches!(answered.as_slice(), [(1, Err(why))] if why.starts_with("Capture first.png failed: ") && why.contains("hour 10")), "{answered:?}");
+        let answered = taken(&answers);
+        assert!(matches!(answered.as_slice(), [Err(why)] if why.starts_with("Capture first.png failed: ") && why.contains("hour 10")), "{answered:?}");
         assert_eq!(viewer.error.as_deref(), Some("an independent map error"), "the map's own error stays as it was");
         assert!(viewer.failure.lock().unwrap().is_none(), "an export fails no process");
         assert!(!closes(&output), "and closes no window");
 
-        viewer.capture = Some(export("second.png", 2));
+        viewer.capture = Some(export("second.png").0);
         viewer.overlay_fraction = Some(0.0);
         viewer.hold_saved_frame(10, Some(true), None, &ctx).unwrap();
         assert!(viewer.capture.is_some(), "the next export starts");
@@ -8869,11 +8845,12 @@ pub(crate) mod tests {
         assert!(viewer.failure.lock().unwrap().as_deref().is_some_and(|failure| failure.contains("100 of 616 targets")));
 
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
-        viewer.capture = Some(export("map.png", 3));
+        let (capture, answers) = export("map.png");
+        viewer.capture = Some(capture);
         viewer.hold_saved_frame_within(10, Some(false), waiting(), Duration::ZERO, &ctx).unwrap();
         assert!(viewer.capture.is_none());
-        let answered = viewer.take_export_results();
-        assert!(matches!(answered.as_slice(), [(3, Err(why))] if why.contains("100 of 616 targets")), "{answered:?}");
+        let answered = taken(&answers);
+        assert!(matches!(answered.as_slice(), [Err(why)] if why.contains("100 of 616 targets")), "{answered:?}");
 
         let mut viewer = window_dump_viewer();
         viewer.capture.as_mut().expect("a window dump captures").remaining = 1000;
@@ -8893,11 +8870,12 @@ pub(crate) mod tests {
         assert!(viewer.failure.lock().unwrap().as_deref().is_some_and(|failure| failure.contains("no picture")));
 
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
-        viewer.capture = Some(export("map.png", 3));
+        let (capture, answers) = export("map.png");
+        viewer.capture = Some(capture);
         let no_area = || "its map had no area to draw in (0 by 0 points)".to_owned();
         viewer.wait_to_draw_within(10, no_area, Duration::ZERO, &ctx).unwrap();
         assert!(viewer.capture.is_none());
-        assert!(matches!(viewer.take_export_results().as_slice(), [(3, Err(why))] if why.contains("no area to draw in")));
+        assert!(matches!(taken(&answers).as_slice(), [Err(why)] if why.contains("no area to draw in")));
     }
 
     #[test]
@@ -8907,17 +8885,19 @@ pub(crate) mod tests {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
         viewer.last_step = now;
         viewer.anchor_playback(Playhead { branch: 1, hour: 10, fraction: 0.0 }, false, 4.0, true, None, now, 1_000);
-        viewer.capture = Some(export("map.png", 7));
+        let (capture, answers) = export("map.png");
+        viewer.capture = Some(capture);
         viewer.anchor_playback(Playhead { branch: 1, hour: 40, fraction: 0.0 }, true, 4.0, true, None, now + Duration::from_secs(1), 1_000);
-        assert!(viewer.capture.is_some() && viewer.take_export_results().is_empty(), "a seek refuses no export");
+        assert!(viewer.capture.is_some() && taken(&answers).is_empty(), "a seek refuses no export");
         let capture = viewer.end_capture().expect("still armed");
         viewer.capture_written(capture, Path::new("map.png"), (1, 41), Ok(()), &ctx);
-        assert_eq!(viewer.take_export_results(), [(7, Ok("Saved map.png: branch 1, hour 41".to_owned()))]);
+        assert_eq!(taken(&answers), [Ok("Saved map.png: branch 1, hour 41".to_owned())]);
 
-        viewer.capture = Some(export("full.png", 8));
+        let (capture, answers) = export("full.png");
+        viewer.capture = Some(capture);
         let capture = viewer.end_capture().unwrap();
         viewer.capture_written(capture, Path::new("full.png"), (1, 41), Err("disk full".to_owned()), &ctx);
-        assert_eq!(viewer.take_export_results(), [(8, Err("full.png: disk full".to_owned()))]);
+        assert_eq!(taken(&answers), [Err("full.png: disk full".to_owned())]);
     }
 
     #[test]

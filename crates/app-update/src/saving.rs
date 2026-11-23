@@ -1,7 +1,6 @@
 use std::{
-    sync::mpsc,
+    sync::{Arc, Mutex, PoisonError},
     thread,
-    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -11,78 +10,62 @@ use windows_sys::Win32::{
 };
 
 const SAVED: u32 = WM_APP + 1;
+const SAY: u32 = WM_APP + 2;
 const SS_CENTER: u32 = 0x1;
 const SS_CENTERIMAGE: u32 = 0x200;
 const CLASS: &str = "BattlePlanSaving";
 const WIDTH: i32 = 420;
-const HEIGHT: i32 = 110;
-const UNSEEN: Duration = Duration::from_millis(300);
+const HEIGHT: i32 = 130;
+const UNSEEN: std::time::Duration = std::time::Duration::from_millis(300);
 
-pub struct Wait<'a> {
-    pub what: &'static str,
-    pub done_within: &'a dyn Fn(Duration) -> bool,
-}
-
-pub fn drained(waits: &[Wait<'_>], show: impl FnOnce(&'static str) -> Result<Saving, String>) {
-    let unseen = Instant::now() + UNSEEN;
-    let Some(first) = waits.iter().position(|wait| !(wait.done_within)(unseen.saturating_duration_since(Instant::now()))) else {
+pub fn wait_until_empty(title: &str, notices: &[String], empty_within: &dyn Fn(std::time::Duration) -> bool, held: &dyn Fn() -> Option<&'static str>) {
+    if notices.is_empty() && empty_within(UNSEEN) {
         return;
-    };
-    let shown = show(waits[first].what);
-    if let Err(error) = &shown {
-        eprintln!("Couldn’t show what is still being finished before closing: {error}");
     }
-    for wait in &waits[first..] {
-        if let Ok(saving) = &shown {
-            saving.say(wait.what);
-        }
-        while !(wait.done_within)(Duration::from_secs(60)) {}
+    let text = || held().into_iter().map(str::to_owned).chain(notices.iter().cloned()).collect::<Vec<_>>().join("\n");
+    let saving = Saving::show(title, &text());
+    while !empty_within(std::time::Duration::from_secs(1)) {
+        saving.say(&text());
     }
 }
 
-pub struct Saving {
+#[derive(Default)]
+struct Shown {
     hwnd: usize,
-    label: usize,
-    thread: Option<thread::JoinHandle<()>>,
+    text: Vec<u16>,
+    ended: bool,
 }
 
+pub struct Saving(Arc<Mutex<Shown>>);
+
 impl Saving {
-    pub fn show(title: &str, text: &str) -> Result<Self, String> {
-        let (ready, shown) = mpsc::channel();
-        let (title, text) = (title.to_owned(), text.to_owned());
-        let thread = thread::Builder::new()
-            .name("saving".into())
-            .spawn(move || run(&ready, &title, &text))
-            .map_err(|error| error.to_string())?;
-        match shown.recv() {
-            Ok(Ok((hwnd, label))) => Ok(Self { hwnd, label, thread: Some(thread) }),
-            Ok(Err(error)) => {
-                let _ = thread.join();
-                Err(error)
-            }
-            Err(_) => {
-                let _ = thread.join();
-                Err("its window didn’t start".into())
-            }
+    pub fn show(title: &str, text: &str) -> Self {
+        let shown = Arc::new(Mutex::new(Shown { text: wide(text), ..Shown::default() }));
+        let window = Arc::clone(&shown);
+        let title = title.to_owned();
+        if let Err(error) = thread::Builder::new().name("saving".into()).spawn(move || run(&window, &title)) {
+            eprintln!("Couldn’t show what is still being finished before closing: {error}");
         }
+        Self(shown)
     }
-}
 
-impl Saving {
     pub fn say(&self, text: &str) {
-        let text = wide(text);
-        // SAFETY: the label belongs to the window thread, which keeps pumping messages until this
-        // value is dropped, and the text outlives the call.
-        unsafe { SetWindowTextW(self.label as HWND, text.as_ptr()) };
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        shown.text = wide(text);
+        if shown.hwnd != 0 {
+            // SAFETY: posting to a window handle is sound even once the window has gone.
+            unsafe { PostMessageW(shown.hwnd as HWND, SAY, 0, 0) };
+        }
     }
 }
 
 impl Drop for Saving {
     fn drop(&mut self) {
-        // SAFETY: posting to a window handle is sound even once the window has gone.
-        unsafe { PostMessageW(self.hwnd as HWND, SAVED, 0, 0) };
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        shown.ended = true;
+        if shown.hwnd != 0 {
+            // SAFETY: posting to a window handle is sound even once the window has gone.
+            unsafe { PostMessageW(shown.hwnd as HWND, SAVED, 0, 0) };
         }
     }
 }
@@ -91,10 +74,11 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 
-fn run(ready: &mpsc::Sender<Result<(usize, usize), String>>, title: &str, text: &str) {
-    let (class, title, text, label) = (wide(CLASS), wide(title), wide(text), wide("STATIC"));
+fn run(shown: &Arc<Mutex<Shown>>, title: &str) {
+    let (class, title, label) = (wide(CLASS), wide(title), wide("STATIC"));
     // SAFETY: every call below runs on this thread, which owns both windows and their message
-    // loop, and every string outlives the calls that read it.
+    // loop, and every string outlives the calls that read it. The label's handle is kept in the
+    // window's user data, read only by this thread's window procedure.
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let mut description: WNDCLASSEXW = std::mem::zeroed();
@@ -122,30 +106,40 @@ fn run(ready: &mpsc::Sender<Result<(usize, usize), String>>, title: &str, text: 
             std::ptr::null(),
         );
         if hwnd.is_null() {
-            let _ = ready.send(Err(std::io::Error::last_os_error().to_string()));
+            eprintln!("Couldn’t show what is still being finished before closing: {}", std::io::Error::last_os_error());
             return;
         }
         let mut client = RECT::default();
         GetClientRect(hwnd, &mut client);
-        let shown = CreateWindowExW(
+        let text = shown.lock().unwrap_or_else(PoisonError::into_inner).text.clone();
+        let line = CreateWindowExW(
             0,
             label.as_ptr(),
             text.as_ptr(),
             WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
+            8,
             0,
-            0,
-            client.right,
+            client.right - 16,
             client.bottom,
             hwnd,
             std::ptr::null_mut(),
             instance,
             std::ptr::null(),
         );
-        if !shown.is_null() {
-            SendMessageW(shown, WM_SETFONT, GetStockObject(DEFAULT_GUI_FONT) as usize, 0);
+        if !line.is_null() {
+            SendMessageW(line, WM_SETFONT, GetStockObject(DEFAULT_GUI_FONT) as usize, 0);
         }
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Arc::into_raw(Arc::clone(shown)) as isize);
+        SetPropW(hwnd, wide("line").as_ptr(), line.cast());
         ShowWindow(hwnd, SW_SHOWNORMAL);
-        let _ = ready.send(Ok((hwnd as usize, shown as usize)));
+        let ended = {
+            let mut state = shown.lock().unwrap_or_else(PoisonError::into_inner);
+            state.hwnd = hwnd as usize;
+            state.ended
+        };
+        if ended {
+            DestroyWindow(hwnd);
+        }
         let mut message: MSG = std::mem::zeroed();
         while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&message);
@@ -155,9 +149,18 @@ fn run(ready: &mpsc::Sender<Result<(usize, usize), String>>, title: &str, text: 
 }
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // SAFETY: Windows calls this on the window's own thread with its own handle.
+    // SAFETY: Windows calls this on the window's own thread with its own handle; the user data
+    // is the `Arc` that `run` stored, released once at `WM_NCDESTROY`.
     unsafe {
         match message {
+            SAY => {
+                let shown = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Mutex<Shown>;
+                if !shown.is_null() {
+                    let text = (*shown).lock().unwrap_or_else(PoisonError::into_inner).text.clone();
+                    SetWindowTextW(GetPropW(hwnd, wide("line").as_ptr()) as HWND, text.as_ptr());
+                }
+                0
+            }
             SAVED => {
                 DestroyWindow(hwnd);
                 0
@@ -167,39 +170,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 PostQuitMessage(0);
                 0
             }
+            WM_NCDESTROY => {
+                let shown = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *const Mutex<Shown>;
+                if !shown.is_null() {
+                    drop(Arc::from_raw(shown));
+                }
+                RemovePropW(hwnd, wide("line").as_ptr());
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Wait, drained};
-    use std::{sync::Mutex, sync::mpsc::channel, time::Duration};
-
-    #[test]
-    fn an_exit_drains_what_it_admitted_behind_one_window_that_names_each_wait_installer_handoff_included() {
-        let done = |_: Duration| true;
-        drained(&[Wait { what: "launch", done_within: &done }, Wait { what: "writes", done_within: &done }], |_| unreachable!("nothing is under way, so nothing is shown"));
-
-        let (launching, launch) = channel::<()>();
-        let (writing, write) = channel::<()>();
-        let (launch, write) = (Mutex::new(launch), Mutex::new(write));
-        let launched = |limit: Duration| launch.lock().unwrap().recv_timeout(limit).is_ok();
-        let written = |limit: Duration| write.lock().unwrap().recv_timeout(limit).is_ok();
-        std::thread::scope(|scope| {
-            let (showing, shown) = channel();
-            let exit = scope.spawn(|| {
-                drained(&[Wait { what: "launch", done_within: &launched }, Wait { what: "writes", done_within: &written }], move |what| {
-                    showing.send(what).unwrap();
-                    Err("no window in a test".into())
-                })
-            });
-            assert_eq!(shown.recv(), Ok("launch"), "a slow installer handoff shows the window too, saying so");
-            launching.send(()).unwrap();
-            assert!(!exit.is_finished(), "and then it waits for the writes");
-            writing.send(()).unwrap();
-            exit.join().unwrap();
-        });
     }
 }

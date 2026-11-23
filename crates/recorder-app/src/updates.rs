@@ -16,13 +16,9 @@ impl app_update::Host for Host {
         self.0.leave(Leave::Exit)
     }
 
-    fn closed_for_update(&self) {
-        self.0.acknowledged();
-    }
-
     fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-        let _acting = self.0.acting().map_err(std::io::Error::other)?;
-        replay::writes::WRITES.begin()?.replace(path, |out| std::io::Write::write_all(out, bytes))
+        let receipt = self.0.admit(replay::exit::What::Change).map_err(std::io::Error::other)?;
+        receipt.replace(path, |out| std::io::Write::write_all(out, bytes))
     }
 }
 
@@ -39,7 +35,7 @@ mod tests {
         let recorder = Arc::new(crate::worker::Recorder::default());
         let host = Host(Arc::clone(&recorder));
         recorder.commit_exit();
-        assert!(host.write_preference(&path, b"nightly").is_err(), "the channel writer takes the recorder’s own admission, not only the write gate");
+        assert!(host.write_preference(&path, b"nightly").is_err(), "the channel writer is admitted by the recorder’s own exit");
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&folder);
     }

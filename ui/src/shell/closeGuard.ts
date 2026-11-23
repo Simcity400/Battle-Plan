@@ -7,7 +7,7 @@ export type LeavingFor = 'close' | 'update';
 
 export interface CloseRequests {
   watch(): Promise<void>;
-  refresh(): Promise<number>;
+  refresh(givingUpRestarts: boolean): Promise<number>;
 }
 
 export interface CloseGuardHost {
@@ -68,7 +68,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     if (failure && refreshing.has(failure)) return;
     if (failure) refreshing.add(failure);
     const current = () => { if (failure) refreshing.delete(failure); return !ended && failures.get(key) === failure; };
-    requests.refresh().then(seq => { if (current()) fresh?.(seq, failure); }, cause => { if (current() && keep()) fail(key, message, cause, again); });
+    requests.refresh(key === 'recheck').then(seq => { if (current()) fresh?.(seq, failure); }, cause => { if (current() && keep()) fail(key, message, cause, again); });
   };
   const resendDue = () => {
     for (const [id, { after, failure, again }] of [...resend]) {

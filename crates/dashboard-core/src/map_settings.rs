@@ -196,17 +196,17 @@ impl Store {
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<()> {
         self.check().map_err(crate::invalid)?;
-        self.update_at(&replay::writes::WRITES, &path()?, key, choose)
+        self.update_at(&replay::exit::EXIT, &path()?, key, choose)
     }
 
     fn update_at(
         &mut self,
-        writes: &replay::writes::Writes,
+        exit: &replay::exit::Exit,
         path: &std::path::Path,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<()> {
-        let entries = writes.under_lock(&path.with_extension("lock"), |writing| {
+        let entries = exit.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
             let saved = Self {
                 entries: Self::load_from(path)?.entries,
                 game: self.game,
@@ -220,7 +220,7 @@ impl Store {
             if bytes.len() > 4 * 1024 * 1024 {
                 return Err(crate::invalid("Map settings exceed their size limit"));
             }
-            writing.replace(path, |out| io::Write::write_all(out, &bytes))?;
+            receipt.replace(path, |out| io::Write::write_all(out, &bytes))?;
             Ok(entries)
         })?;
         self.entries = entries;
@@ -790,7 +790,7 @@ mod tests {
             rivers: Some(false),
             ..Default::default()
         });
-        let writes = replay::writes::Writes::new();
+        let writes = replay::exit::Exit::new();
         first
             .update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
             .unwrap();
@@ -813,9 +813,9 @@ mod tests {
         assert_eq!(flipped.day_night, Some(false));
         assert_eq!(flipped.rivers, Some(false));
         assert_eq!(saved.preferences("campaign-a"), night_off);
-        writes.close();
+        writes.seal();
         let refused = second.update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(rivers_off.clone())).unwrap_err();
-        assert_eq!(refused.to_string(), replay::writes::CLOSED, "a save asked for once BattlePlan closes is refused, never cut off part way");
+        assert_eq!(refused.to_string(), replay::exit::CLOSED, "a save asked for once BattlePlan closes is refused, never cut off part way");
         assert_eq!(Store::load_from(&path).unwrap().preferences("campaign-a"), night_off);
         std::fs::remove_dir_all(&folder).unwrap();
     }

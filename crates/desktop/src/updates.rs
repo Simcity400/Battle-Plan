@@ -10,32 +10,19 @@ impl Host {
 }
 
 impl app_update::Host for Host {
-    fn install_starting(&self) -> app_update::Starting {
-        self.leaving().install_starting();
-        let app = self.0.clone();
-        app_update::Starting::until(move || app.state::<Leaving>().install_resolved())
-    }
-
     fn busy(&self) -> Option<String> {
         self.leaving().busy()
     }
 
     fn install(&self, launch: app_update::Launch) -> Result<(), String> {
-        self.leaving().install(launch)?;
-        self.0.exit(0);
-        Ok(())
+        self.leaving().install(launch)
     }
 
     fn close_for_update(&self) -> Result<(), String> {
         self.leaving().close_for_update()
     }
 
-    fn closed_for_update(&self) {
-        self.leaving().acknowledged();
-        self.0.exit(0);
-    }
-
     fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-        replay::writes::WRITES.begin()?.replace(path, |out| std::io::Write::write_all(out, bytes))
+        replay::exit::EXIT.admit(replay::exit::What::Change)?.replace(path, |out| std::io::Write::write_all(out, bytes))
     }
 }

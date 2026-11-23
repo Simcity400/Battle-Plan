@@ -65,7 +65,7 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
 #[derive(Default)]
 pub struct Pending {
     pub actions: VecDeque<dashboard_core::protocol::MapAction>,
-    pub permits: Vec<(u64, replay::writes::Permit)>,
+    pub exports: Vec<crate::host::ExportJob>,
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
@@ -89,7 +89,7 @@ impl Pending {
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
-            && self.permits.is_empty()
+            && self.exports.is_empty()
             && !self.campaign_map
             && self.map_views.is_none()
             && self.seek.is_none()
@@ -104,13 +104,16 @@ impl Pending {
         if self.close {
             return Ok(());
         }
-        let crate::host::Command { native: command, permit } = command.into();
+        let command = match command.into() {
+            crate::host::Command::Native(command) => command,
+            crate::host::Command::Export(job) => {
+                self.exports.push(job);
+                return Ok(());
+            }
+        };
         match command {
             NativeCommand::MapAction { action } => {
                 action.validate().map_err(str::to_owned)?;
-                if let (dashboard_core::protocol::MapAction::Export { request, .. }, Some(permit)) = (&action, permit) {
-                    self.permits.push((*request, permit));
-                }
                 if let dashboard_core::protocol::MapAction::Unload { path } = &action {
                     let path = Path::new(path);
                     if self
@@ -590,7 +593,6 @@ impl Parent {
             output_done,
             service,
             sent_maps: Sent::default(),
-            events: Arc::clone(&events),
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
@@ -598,7 +600,7 @@ impl Parent {
             .spawn_carried(move || {
                 while !input.stopped.load(Ordering::Acquire) {
                     let Ok(command) = commands.recv() else { break };
-                    let close = matches!(command.native, NativeCommand::Close);
+                    let close = matches!(command, crate::host::Command::Native(NativeCommand::Close));
                     input.input(command);
                     if close {
                         return;
@@ -719,7 +721,6 @@ pub struct Controller {
     output_done: mpsc::Receiver<()>,
     service: Arc<dashboard::Service>,
     sent_maps: Sent,
-    events: crate::host::Events,
 }
 
 impl Controller {
@@ -801,10 +802,6 @@ impl Controller {
         outgoing.toggle_diagnostics();
         drop(outgoing);
         self.shared.output_ready.notify_one();
-    }
-
-    pub fn report_export(&self, request: u64, answer: Result<String, String>) {
-        (self.events)(NativeEvent::Export { request, answer });
     }
 
     pub fn report_camera_mode(&self, mode: CameraMode, overlays: bool) {

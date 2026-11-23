@@ -1,5 +1,6 @@
 import { invoke, isTauri, transformCallback } from '@tauri-apps/api/core';
 import type { CloseBatch, CloseRequests } from './closeGuard.ts';
+import { lastInstallAttempt, watchedDocument } from './installAttempt';
 import { listen } from '@tauri-apps/api/event';
 import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
 import type { MapPlayback } from '../dashboard/mapPlayback';
@@ -87,7 +88,7 @@ export function seekMap(path: string, revision: string, branch: string, hour: nu
 let closeWatches = 0;
 
 export function closeRequests(onBatch: (batch: CloseBatch) => boolean): CloseRequests {
-  if (!desktopAvailable) return { watch: () => Promise.resolve(), refresh: () => Promise.reject('BattlePlan’s desktop host isn’t here, so the page can’t ask it what stands.') };
+  if (!desktopAvailable) return { watch: () => Promise.resolve(), refresh: (_givingUpRestarts: boolean) => Promise.reject('BattlePlan’s desktop host isn’t here, so the page can’t ask it what stands.') };
   const seq = ++closeWatches;
   const callback = transformCallback<CloseBatch>(batch => onBatch(batch) === true);
   let watched: number | null = null;
@@ -95,11 +96,12 @@ export function closeRequests(onBatch: (batch: CloseBatch) => boolean): CloseReq
     watch: async () => {
       const document = await invoke<number>('close_watch_document');
       watched = document;
+      watchedDocument(document);
       await invoke<void>('watch_close_requests', { document, seq, callback });
     },
-    refresh: async () => {
+    refresh: async (givingUpRestarts: boolean) => {
       if (watched === null) throw 'This page hasn’t watched for BattlePlan closing yet, so it can’t ask again what stands.';
-      return await invoke<number>('refresh_close_requests', { document: watched, seq });
+      return await invoke<number>('refresh_close_requests', { document: watched, seq, attempt: givingUpRestarts ? lastInstallAttempt() : 0 });
     },
   };
 }

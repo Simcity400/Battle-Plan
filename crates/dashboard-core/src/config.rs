@@ -44,11 +44,11 @@ impl Config {
     }
 
     fn save_folders_at(&self, path: &Path) -> io::Result<()> {
-        replay::writes::WRITES.under_lock(&path.with_extension("lock"), |writing| {
+        replay::exit::EXIT.under_lock(&path.with_extension("lock"), replay::exit::What::Change, |receipt| {
             let mut config = Config::load_from(path)?;
             config.game_dir = self.game_dir.clone();
             config.user_dir = self.user_dir.clone();
-            writing.replace(path, |out| serde_json::to_writer_pretty(out, &config).map_err(io::Error::from))
+            receipt.replace(path, |out| serde_json::to_writer_pretty(out, &config).map_err(io::Error::from))
         })
     }
 

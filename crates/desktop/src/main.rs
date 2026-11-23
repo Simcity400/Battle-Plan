@@ -14,7 +14,6 @@ mod served_ui;
 mod updates;
 mod video;
 
-use app_update::saving::{Saving, Wait, drained};
 use dashboard_core::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use leaving::{Answered, Batch, Closing, Leaving, Reach, Stop, Unanswered};
@@ -278,9 +277,56 @@ fn watch_close_requests(
 }
 
 #[tauri::command]
-fn refresh_close_requests(webview: tauri::Webview, leaving: State<'_, Leaving>, document: u64, seq: u64) -> Result<u64, String> {
+fn refresh_close_requests(webview: tauri::Webview, leaving: State<'_, Leaving>, document: u64, seq: u64, attempt: u64) -> Result<u64, String> {
     main_page(&webview)?;
-    leaving.refresh(document, seq).map_err(str::to_owned)
+    leaving.refresh(document, seq, attempt).map_err(str::to_owned)
+}
+
+struct Attempt {
+    app: tauri::AppHandle,
+    document: u64,
+    attempt: u64,
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        self.app.state::<Leaving>().attempt_ended(self.document, self.attempt);
+    }
+}
+
+fn install_attempt(invoke: tauri::ipc::Invoke) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Asked {
+        document: Option<u64>,
+        attempt: u64,
+    }
+    let app = invoke.message.webview().app_handle().clone();
+    let asked = match invoke.message.payload() {
+        tauri::ipc::InvokeBody::Json(value) => serde_json::from_value::<Asked>(value.clone()).map_err(|error| error.to_string()),
+        tauri::ipc::InvokeBody::Raw(_) => Err("A restart is asked with its page and attempt.".to_owned()),
+    };
+    let registered = asked.and_then(|asked| {
+        let document = asked.document.ok_or_else(|| leaving::UNWATCHED.to_owned())?;
+        app.state::<Leaving>().attempt(document, asked.attempt).map_err(str::to_owned)?;
+        Ok(Attempt { app: app.clone(), document, attempt: asked.attempt })
+    });
+    let attempt = match registered {
+        Ok(attempt) => attempt,
+        Err(refused) => {
+            invoke.resolver.reject(refused);
+            return true;
+        }
+    };
+    invoke.resolver.respond_async(async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _attempt = attempt;
+            app_update::commands::install_now(&app)
+        })
+        .await
+        .map_err(|error| tauri::ipc::InvokeError::from(error.to_string()))?
+        .map_err(tauri::ipc::InvokeError::from)
+    });
+    true
 }
 
 #[tauri::command]
@@ -293,11 +339,7 @@ fn answer_close_question(
 ) -> Result<bool, String> {
     main_page(&webview)?;
     Ok(match leaving.answer(id, stays, &basis) {
-        Answered::Leave => {
-            webview.app_handle().exit(0);
-            true
-        }
-        Answered::Heard => true,
+        Answered::Leave | Answered::Heard => true,
         Answered::Unknown => false,
     })
 }
@@ -306,7 +348,6 @@ fn answer_close_question(
 fn leave_app(webview: tauri::Webview, leaving: State<'_, Leaving>) -> Result<(), String> {
     main_page(&webview)?;
     leaving.exit();
-    webview.app_handle().exit(0);
     Ok(())
 }
 
@@ -334,7 +375,6 @@ fn offer_to_close(app: &tauri::AppHandle, why: Unanswered) {
         leaving.chosen();
         if close {
             leaving.exit();
-            handle.exit(0);
         }
     });
     if let Err(error) = shown {
@@ -408,9 +448,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
                     || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
                 {
                     eprintln!("BattlePlan’s page process ended, so closing no longer waits for it.");
-                    if leaving.page_gone() {
-                        app.exit(0);
-                    }
+                    leaving.page_gone();
                 } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE && leaving.page_unresponsive() {
                     eprintln!("BattlePlan’s page isn’t responding, so its update questions were refused and the user is asked whether to close.");
                     offer_to_close(&app, Unanswered::Unresponsive);
@@ -507,6 +545,13 @@ fn main() {
     if let Err(error) = dashboard_text::artwork::configure_desktop() {
         eprintln!("{error}");
     }
+    let exiting: &'static Exiting = match start_exit_worker() {
+        Ok(exiting) => exiting,
+        Err(error) => {
+            eprintln!("BattlePlan couldn’t start, because the thread that closes it in order didn’t start: {error}");
+            std::process::exit(2);
+        }
+    };
     let page_origin = context.config().build.dev_url.as_ref().filter(|_| tauri::is_dev())
         .map_or_else(|| "http://tauri.localhost".to_owned(), |url| url.origin().ascii_serialization());
     let artwork_origin = match HeaderValue::from_str(&page_origin) {
@@ -532,7 +577,8 @@ fn main() {
             serve_artwork(request, responder, artwork_origin.clone())
         })
         .manage(video::VideoState::default())
-        .setup(|app| {
+        .setup(move |app| {
+            let _ = exiting.app.set(app.handle().clone());
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = video::restore(&window)
             {
@@ -556,7 +602,7 @@ fn main() {
             })?;
             if let Some(window) = app.get_webview_window("main") {
                 watch_page(&window)?;
-                if let Err(error) = app_update::session::follow(window.hwnd()?.0 as isize, Arc::new(SessionEnding(app.handle().clone())), SAVING_CHANGES) {
+                if let Err(error) = app_update::session::follow(window.hwnd()?.0 as isize, Arc::new(SessionEnding(app.handle().clone(), exiting))) {
                     eprintln!("BattlePlan can’t hear Windows end the session, so a sign-out or shutdown may not wait for its changes to be saved: {error}");
                 }
                 app.state::<NativeHost>().ensure_started(&window)?;
@@ -568,7 +614,8 @@ fn main() {
         .manage(DashboardService::default())
         .manage(follow_push::FollowPush::default())
         .manage(Leaving::default())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
             video::map_diagnostics,
@@ -630,47 +677,84 @@ fn main() {
             app_update::commands::app_update_install,
             app_update::commands::app_update_set_channel,
             app_update::commands::app_update_open_release,
-        ])
+            ];
+            move |invoke| if invoke.message.command() == "app_update_install" { install_attempt(invoke) } else { commands(invoke) }
+        })
         .build(context)
         .expect("Couldn’t start BattlePlan");
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == "main" => match app.state::<Leaving>().close_requested() {
-            Closing::Through => {
-                if exit_after_maps(app) {
-                    api.prevent_close();
-                }
+        } if label == "main" => {
+            api.prevent_close();
+            match app.state::<Leaving>().close_requested() {
+                Closing::Through => app.state::<Leaving>().exit(),
+                Closing::Held => {}
+                Closing::Offer(why) => offer_to_close(app, why),
             }
-            Closing::Held => api.prevent_close(),
-            Closing::Offer(why) => {
-                api.prevent_close();
-                offer_to_close(app, why);
-            }
-        },
-        tauri::RunEvent::ExitRequested { api, .. } if exit_after_maps(app) => api.prevent_exit(),
-        tauri::RunEvent::Exit => app_update::session::end(&SessionEnding(app.clone())),
+        }
+        tauri::RunEvent::ExitRequested { api, .. } if !exiting.done.is_set() => {
+            app.state::<Leaving>().exit();
+            api.prevent_exit();
+        }
+        tauri::RunEvent::Exit => {
+            app.state::<Leaving>().exit();
+            exiting.done.wait_serving_sent_messages();
+        }
         _ => {}
     });
 }
 
-struct SessionEnding(tauri::AppHandle);
+struct Exiting {
+    done: app_update::session::Done,
+    app: std::sync::OnceLock<tauri::AppHandle>,
+}
+
+struct SessionEnding(tauri::AppHandle, &'static Exiting);
 
 impl app_update::session::Ending for SessionEnding {
     fn commit(&self) {
-        exit_after_maps(&self.0);
+        self.0.state::<Leaving>().exit();
     }
 
-    fn drained_within(&self, limit: std::time::Duration) -> bool {
-        self.0.state::<Leaving>().launched_within(limit) && replay::writes::WRITES.drained_within(limit)
+    fn done(&self) -> &app_update::session::Done {
+        &self.1.done
+    }
+
+    fn saving(&self) -> Option<&'static str> {
+        replay::exit::EXIT.held().map(saving)
+    }
+
+    fn check_drafts(&self, answer: Box<dyn FnOnce(app_update::session::Drafts) + Send>) {
+        let app = self.0.clone();
+        let asked = std::thread::Builder::new().name("shutdown drafts".into()).spawn(move || {
+            answer(match app.state::<Leaving>().shutdown_query() {
+                Some(false) => app_update::session::Drafts::Clean,
+                Some(true) => app_update::session::Drafts::Unsaved,
+                None => app_update::session::Drafts::Unknown,
+            });
+        });
+        if let Err(error) = asked {
+            eprintln!("BattlePlan couldn’t ask its page about unsaved changes before Windows ends the session: {error}");
+        }
+    }
+
+    fn retire_drafts(&self) {
+        self.0.state::<Leaving>().retire_shutdown_query();
     }
 }
 
 const EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
-const STARTING_UPDATE: &str = "Starting the update before BattlePlan closes…";
-const SAVING_CHANGES: &str = "Saving your changes before BattlePlan closes…";
+
+fn saving(held: replay::exit::What) -> &'static str {
+    match held {
+        replay::exit::What::Install => "Starting the update before BattlePlan closes…",
+        replay::exit::What::Export => "Saving the map picture before BattlePlan closes…",
+        _ => "Saving your changes before BattlePlan closes…",
+    }
+}
 
 fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (done, finished) = std::sync::mpsc::channel();
@@ -697,74 +781,34 @@ fn ordered<P: Send + 'static>(
     ended.filter(|_| summarized.is_some())
 }
 
-fn drain_admitted(leaving: &Leaving, show: impl FnOnce(&'static str) -> Result<Saving, String>) {
-    let launched = |limit: std::time::Duration| leaving.launched_within(limit);
-    let written = |limit: std::time::Duration| replay::writes::WRITES.drained_within(limit);
-    drained(&[Wait { what: STARTING_UPDATE, done_within: &launched }, Wait { what: SAVING_CHANGES, done_within: &written }], show);
-}
-
 fn end_now() -> ! {
     std::process::exit(0);
 }
 
-fn exit_after_maps(app: &tauri::AppHandle) -> bool {
-    static EXIT: ExitOrder = ExitOrder::new();
-    EXIT.begin(
-        || app.state::<Leaving>().exit(),
-        || {
-            let handle = app.clone();
-            std::thread::Builder::new()
-                .name("ordered exit".into())
-                .spawn(move || {
-                    drain_admitted(handle.state::<Leaving>().inner(), |what| Saving::show("BattlePlan", what));
-                    let ordered_steps = handle.clone();
-                    let ended = ordered(|| perf::finish_page(&handle), move || shutdown(&ordered_steps), perf::finish, EXIT_BOUND);
-                    EXIT.done();
-                    if ended == Some(true) {
-                        handle.exit(0);
-                    } else {
-                        if ended.is_none() {
-                            eprintln!("BattlePlan’s shutdown didn’t finish within {} seconds, so it ends now.", EXIT_BOUND.as_secs());
-                        }
-                        end_now();
-                    }
-                })
-                .map(drop)
-        },
-        || {
-            drain_admitted(app.state::<Leaving>().inner(), |_| Err("its exit thread didn’t start".into()));
+fn start_exit_worker() -> std::io::Result<&'static Exiting> {
+    static EXITING: std::sync::OnceLock<Exiting> = std::sync::OnceLock::new();
+    let done = app_update::session::Done::new()?;
+    let exiting: &'static Exiting = EXITING.get_or_init(|| Exiting { done, app: std::sync::OnceLock::new() });
+    std::thread::Builder::new().name("ordered exit".into()).spawn(move || {
+        let exit = &replay::exit::EXIT;
+        exit.wait_sealed();
+        app_update::saving::wait_until_empty("BattlePlan", &exit.notices(), &|limit| exit.empty_within(limit), &|| exit.held().map(saving));
+        app_update::control::stop();
+        exiting.done.set();
+        let Some(app) = exiting.app.get().cloned() else { end_now() };
+        let steps = app.clone();
+        let ended = ordered(|| perf::finish_page(&app), move || shutdown(&steps), perf::finish, EXIT_BOUND);
+        if ended != Some(true) {
+            if ended.is_none() {
+                eprintln!("BattlePlan’s shutdown didn’t finish within {} seconds, so it ends now.", EXIT_BOUND.as_secs());
+            }
             end_now();
-        },
-    )
-}
-
-struct ExitOrder(std::sync::atomic::AtomicU8);
-
-impl ExitOrder {
-    const RUNNING: u8 = 1;
-    const DONE: u8 = 2;
-
-    const fn new() -> Self {
-        Self(std::sync::atomic::AtomicU8::new(0))
-    }
-
-    fn begin(&self, commit: impl FnOnce(), start: impl FnOnce() -> std::io::Result<()>, fallback: impl FnOnce()) -> bool {
-        use std::sync::atomic::Ordering;
-        commit();
-        match self.0.compare_exchange(0, Self::RUNNING, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => {}
-            Err(Self::RUNNING) => return true,
-            Err(_) => return false,
         }
-        if start().is_err() {
-            fallback();
-        }
-        true
-    }
-
-    fn done(&self) {
-        self.0.store(Self::DONE, std::sync::atomic::Ordering::Release);
-    }
+        app.exit(0);
+        std::thread::sleep(EXIT_BOUND);
+        end_now();
+    })?;
+    Ok(exiting)
 }
 
 fn shutdown(app: &tauri::AppHandle) -> bool {
@@ -780,8 +824,7 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, Shut, ordered, shut, within};
-    use crate::leaving::Leaving;
+    use super::{Shut, ordered, shut, within};
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -801,21 +844,6 @@ mod tests {
         let (_never, stalled) = std::sync::mpsc::channel::<()>();
         let ended = ordered(|| (), || true, move |()| { let _ = stalled.recv(); }, Duration::from_millis(100));
         assert_eq!(ended, None, "a measurement summary that stalls ends the process from the exit thread, never on the UI thread after it");
-    }
-
-    #[test]
-    fn the_ordered_exit_commits_to_exit_before_it_starts_anything_and_on_every_call() {
-        let writes: &'static replay::writes::Writes = Box::leak(Box::new(replay::writes::Writes::new()));
-        let leaving = Leaving::gated(writes);
-        let exit = ExitOrder::new();
-        assert!(exit.begin(|| leaving.exit(), || {
-            assert!(writes.begin().is_err(), "an exit setup or Tauri asked for closes admission before the maps begin to shut");
-            Ok(())
-        }, || unreachable!()));
-        assert_eq!(leaving.close_requested(), crate::leaving::Closing::Through);
-        let mut committed = 0;
-        assert!(exit.begin(|| committed += 1, || unreachable!(), || unreachable!()));
-        assert_eq!(committed, 1, "a second exit request commits too, and then waits on the first");
     }
 
     struct Window {
@@ -861,19 +889,4 @@ mod tests {
     }
 
 
-    #[test]
-    fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {
-        let exit = ExitOrder::new();
-        let mut fell_back = 0;
-        let held = exit.begin(|| {}, || Err(std::io::Error::other("no thread")), || fell_back += 1);
-        assert!(held, "the window must outlive the map's surface");
-        assert_eq!(fell_back, 1);
-        assert!(exit.begin(|| {}, || unreachable!(), || unreachable!()), "a later close is held too");
-
-        let exit = ExitOrder::new();
-        assert!(exit.begin(|| {}, || Ok(()), || unreachable!()));
-        assert!(exit.begin(|| {}, || unreachable!(), || unreachable!()));
-        exit.done();
-        assert!(!exit.begin(|| {}, || unreachable!(), || unreachable!()), "once the maps end, closes go through");
-    }
 }

@@ -1,6 +1,6 @@
 mod channel;
 pub mod commands;
-mod control;
+pub mod control;
 mod feed;
 mod install;
 pub mod saving;
@@ -63,27 +63,7 @@ impl Role {
 
 pub type Launch = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
-#[derive(Default)]
-pub struct Starting(Option<Box<dyn FnOnce() + Send>>);
-
-impl Starting {
-    pub fn until(resolved: impl FnOnce() + Send + 'static) -> Self {
-        Self(Some(Box::new(resolved)))
-    }
-}
-
-impl Drop for Starting {
-    fn drop(&mut self) {
-        if let Some(resolved) = self.0.take() {
-            resolved();
-        }
-    }
-}
-
 pub trait Host: Send + Sync + 'static {
-    fn install_starting(&self) -> Starting {
-        Starting::default()
-    }
     fn install_blocked(&self) -> Option<String> {
         None
     }
@@ -92,7 +72,6 @@ pub trait Host: Send + Sync + 'static {
     }
     fn install(&self, launch: Launch) -> Result<(), String>;
     fn close_for_update(&self) -> Result<(), String>;
-    fn closed_for_update(&self) {}
     fn write_preference(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>;
 }
 
@@ -300,7 +279,7 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         error_context: None,
         install_blocked: None,
     };
-    let control_error = control::serve(role, Arc::new(Answering(Arc::clone(&host))))
+    let control_error = control::serve(role, Arc::clone(&host))
         .err()
         .map(|error| {
             format!(
@@ -332,22 +311,6 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
             .spawn(move || updates.poll(&app))?;
     }
     Ok(())
-}
-
-struct Answering(Arc<dyn Host>);
-
-impl control::Answer for Answering {
-    fn close_for_update(&self) -> Result<(), String> {
-        self.0.close_for_update()
-    }
-
-    fn closed_for_update(&self) {
-        self.0.closed_for_update()
-    }
-
-    fn busy(&self) -> Option<String> {
-        self.0.busy()
-    }
 }
 
 impl Updates {
@@ -643,7 +606,6 @@ impl Updates {
     }
 
     pub fn install(&self, app: &AppHandle) -> Result<(), String> {
-        let _starting = self.host.install_starting();
         let (package, version) = self.start(app, false, |inner| {
             self.reconcile_channel(inner)?;
             let found = inner

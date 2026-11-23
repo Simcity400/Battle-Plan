@@ -9,7 +9,7 @@ use windows_sys::Win32::{
     },
     System::{
         Registry::{
-            HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW,
+            HKEY_CURRENT_USER, REG_SZ, RRF_NOEXPAND, RRF_RT_ANY, RRF_RT_REG_DWORD, RegDeleteKeyValueW,
             RegGetValueW, RegSetKeyValueW,
         },
         Threading::CreateMutexW,
@@ -60,29 +60,42 @@ fn unread(status: u32) -> String {
     format!("Start with Windows couldn’t be read: {}", std::io::Error::from_raw_os_error(status as i32))
 }
 
-pub fn run_value() -> Result<Option<OsString>, String> {
-    use std::os::windows::ffi::OsStringExt;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunValue {
+    pub kind: u32,
+    pub data: Vec<u8>,
+}
+
+impl RunValue {
+    pub fn command(command: &OsStr) -> Self {
+        Self { kind: REG_SZ, data: wide(command).iter().flat_map(|unit| unit.to_le_bytes()).collect() }
+    }
+}
+
+pub fn run_value() -> Result<Option<RunValue>, String> {
     let key = wide(OsStr::new(RUN_KEY));
     let value = wide(OsStr::new(RUN_VALUE));
     loop {
-        let mut size = 0_u32;
+        let (mut kind, mut size) = (0_u32, 0_u32);
+        // SAFETY: a size query; every pointer is valid for the call.
         let status = unsafe {
-            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size)
+            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_ANY | RRF_NOEXPAND, &mut kind, std::ptr::null_mut(), &mut size)
         };
         match status {
             ERROR_SUCCESS => {}
             ERROR_FILE_NOT_FOUND => return Ok(None),
             status => return Err(unread(status)),
         }
-        let mut data = vec![0_u16; (size as usize).div_ceil(2)];
+        let mut data = vec![0_u8; size as usize];
         let mut read = size;
+        // SAFETY: the buffer holds `read` bytes, as the call is told.
         let status = unsafe {
-            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), data.as_mut_ptr().cast::<c_void>(), &mut read)
+            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_ANY | RRF_NOEXPAND, &mut kind, data.as_mut_ptr().cast::<c_void>(), &mut read)
         };
         match status {
             ERROR_SUCCESS => {
-                data.truncate((read as usize / 2).saturating_sub(1));
-                return Ok(Some(OsString::from_wide(&data)));
+                data.truncate(read as usize);
+                return Ok(Some(RunValue { kind, data }));
             }
             ERROR_MORE_DATA => continue,
             ERROR_FILE_NOT_FOUND => return Ok(None),
@@ -95,22 +108,13 @@ pub fn starts_with_windows() -> Result<bool, String> {
     run_value().map(|value| value.is_some())
 }
 
-pub fn write_run_value(command: Option<&OsStr>) -> Result<(), String> {
+pub fn write_run_value(value: Option<&RunValue>) -> Result<(), String> {
     let key = wide(OsStr::new(RUN_KEY));
-    let status = match command {
-        Some(command) => {
-            let data = wide(command);
-            let value = wide(OsStr::new(RUN_VALUE));
-            unsafe {
-                RegSetKeyValueW(
-                    HKEY_CURRENT_USER,
-                    key.as_ptr(),
-                    value.as_ptr(),
-                    REG_SZ,
-                    data.as_ptr().cast::<c_void>(),
-                    (data.len() * 2) as u32,
-                )
-            }
+    let status = match value {
+        Some(value) => {
+            let name = wide(OsStr::new(RUN_VALUE));
+            // SAFETY: the data outlives the call, which reads its stated length.
+            unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), value.kind, value.data.as_ptr().cast::<c_void>(), value.data.len() as u32) }
         }
         None => remove_run_value(&key, RUN_VALUE),
     };
@@ -140,7 +144,7 @@ pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
     let mut command = OsString::from("\"");
     command.push(executable.as_os_str());
     command.push("\"");
-    write_run_value(Some(&command))
+    write_run_value(Some(&RunValue::command(&command)))
 }
 
 pub fn light_taskbar() -> bool {

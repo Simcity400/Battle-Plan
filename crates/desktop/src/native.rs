@@ -47,16 +47,7 @@ struct Inner {
     display_sent: u64,
     popout: Option<PopOutWindow>,
     muted: Option<bool>,
-    exports: Vec<Export>,
-    export_requests: u64,
     clock_origins: viewer::page_clock::OriginGate,
-}
-
-struct Export {
-    request: u64,
-    generation: u64,
-    answer: tokio::sync::oneshot::Sender<Result<String, String>>,
-    permit: replay::writes::Permit,
 }
 
 pub type StatusChanged = Arc<dyn Fn() + Send + Sync>;
@@ -68,16 +59,9 @@ struct PopOutWindow {
 }
 
 impl Inner {
-    fn export_ended(&mut self, generation: u64, request: u64, answer: Result<String, String>) {
-        if let Some(at) = self.exports.iter().position(|export| export.request == request && export.generation == generation) {
-            let _ = self.exports.remove(at).answer.send(answer);
-        }
-    }
-
     fn refuse_exports(&mut self, why: &str) {
-        self.pending.actions.retain(|action| !matches!(action, dashboard_core::protocol::MapAction::Export { .. }));
-        for export in self.exports.drain(..) {
-            let _ = export.answer.send(Err(why.to_owned()));
+        for job in self.pending.exports.drain(..) {
+            job.answer(Err(why.to_owned()));
         }
     }
 
@@ -89,15 +73,14 @@ impl Inner {
         if !self.pending.can_send(visible) {
             return;
         }
-        for native in self.pending.take_commands(visible) {
-            let permit = match &native {
-                dashboard_core::protocol::NativeCommand::MapAction { action: dashboard_core::protocol::MapAction::Export { request, .. } } => {
-                    self.exports.iter().find(|export| export.request == *request).map(|export| Arc::clone(&export.permit))
-                }
-                _ => None,
-            };
-            if !map.send(viewer::host::Command { native, permit }) {
+        for command in self.pending.take_commands(visible) {
+            if !map.send(command) {
                 break;
+            }
+        }
+        for job in self.pending.exports.drain(..) {
+            if let Err(job) = map.send_export(job) {
+                job.answer(Err(viewer::host::STOPPED.to_owned()));
             }
         }
     }
@@ -107,14 +90,11 @@ impl Inner {
             return Err("The map isn’t ready yet".into());
         }
         self.pending.action_room()?;
-        let request = self.export_requests + 1;
-        let action = dashboard_core::protocol::MapAction::Export { path, view_id, request };
-        action.validate().map_err(str::to_owned)?;
-        let permit = Arc::new(replay::writes::WRITES.begin().map_err(|error| error.to_string())?);
-        self.export_requests = request;
+        dashboard_core::protocol::validate_export(&path, view_id.as_deref()).map_err(str::to_owned)?;
+        let receipt = replay::exit::EXIT.admit(replay::exit::What::Export).map_err(|error| error.to_string())?;
         let (answer, answered) = tokio::sync::oneshot::channel();
-        self.exports.push(Export { request, generation: self.generation, answer, permit });
-        self.pending.actions.push_back(action);
+        let reply = viewer::host::Reply::new(move |result| drop(answer.send(result)));
+        self.pending.exports.push(viewer::host::ExportJob::new(path, view_id, receipt, reply));
         self.flush();
         Ok(answered)
     }
@@ -279,9 +259,6 @@ impl NativeHost {
 
     pub fn map_action(&self, action: dashboard_core::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
-        if matches!(action, dashboard_core::protocol::MapAction::Export { .. }) {
-            return Err("An export is asked for with export_map, which answers it".into());
-        }
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if let dashboard_core::protocol::MapAction::Unload { path } = &action
             && inner.map.is_none()

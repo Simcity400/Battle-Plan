@@ -78,8 +78,7 @@ pub(super) fn viewer(
         frames: 1,
         index: 0,
         paced: true,
-        request: None,
-        permit: None,
+        export: None,
     });
     Ok(viewer)
 }

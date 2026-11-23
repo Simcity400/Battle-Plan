@@ -423,9 +423,10 @@ impl FinalizingAhead {
                 let _ = idle.handle.wait(200);
             });
         }
+        let carried = replay::exit::Carry::current();
         let thread = packing.clone().and_then(|packing| std::thread::Builder::new()
             .name("finalize ahead".into())
-            .spawn(move || {
+            .spawn(move || carried.run(|| {
                 let _pass_progress = progress_io::passes(&session);
                 packing.run(|| {
                 let localisation = content_reader_localisation::localisation::read(&layers, &language)
@@ -486,7 +487,7 @@ impl FinalizingAhead {
                     }
                 }
                 (live, localisation, writing)
-            }) })
+            }) }))
             .ok());
         Self {
             packing,

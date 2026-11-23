@@ -114,7 +114,6 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
         MapAction::RefreshVisualMods => Some(Mirror::RefreshVisualMods),
         MapAction::Unload { .. }
         | MapAction::Configure { .. }
-        | MapAction::Export { .. }
         | MapAction::Inspect
         | MapAction::Folders { .. }
         | MapAction::CameraMode { .. }
@@ -741,11 +740,6 @@ mod tests {
             MapAction::Unload { path: "a".into() },
             MapAction::Configure {
                 options: Default::default(),
-            },
-            MapAction::Export {
-                path: "a.png".into(),
-                view_id: None,
-                request: 1,
             },
             MapAction::Inspect,
             MapAction::Folders {

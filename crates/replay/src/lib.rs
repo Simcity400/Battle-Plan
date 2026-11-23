@@ -40,7 +40,7 @@ pub mod multiplied;
 pub mod recording_files;
 pub mod spool;
 pub mod summaries;
-pub mod writes;
+pub mod exit;
 
 use replay_data::{BranchId, Hour, SessionId, codec, format, identity, scope};
 use replay_frame::{branches, frame, rows};

@@ -150,7 +150,7 @@ test('a question the host asks is answered from the page’s work at that moment
   assert.deepEqual([host.leaves, host.prompts, locked()], [0, 0, null], 'answering never closes, prompts or locks editing');
 });
 
-test('Discard and restart lets the update leave only while its confirmation stands, and editing stays locked until the host says stay', async () => {
+test('Discard and restart lets the update leave only while its confirmation stands, and editing stays locked while a leave is held', async () => {
   const { host, start, ask, hold, stay, locked } = desktop();
   start();
   await flush();
@@ -171,11 +171,9 @@ test('Discard and restart lets the update leave only while its confirmation stan
   assert.deepEqual([host.answers.at(-1), host.bases.at(-1)], [[3, false], [2]], 'once leaving, the page doesn’t take it back, and says why');
   hold(3, 'leave');
   stay(2);
-  assert.equal(locked(), 'update', 'another update still holds the lock');
-  stay(3);
-  assert.equal(locked(), null, 'an install that couldn’t start lets the page go on');
-  stay(3);
-  assert.deepEqual(host.leaving, [null, 'update', null], 'a stay sent again changes nothing');
+  assert.equal(locked(), 'update', 'setup’s accepted close commits BattlePlan to closing, so a failed install leaves editing locked');
+  stay(2);
+  assert.deepEqual(host.leaving, [null, 'update'], 'a stay sent again changes nothing');
 });
 
 test('a batch that retires a leave and asks a close is taken in order, so the close is judged after the page stops leaving', async () => {
@@ -308,7 +306,7 @@ test('a page that loads while BattlePlan holds a leave is locked by the first ba
   assert.equal(locked(), 'update');
 });
 
-test('a leave whose answer was lost stays locked until the host says stay, and the stay clears that answer’s Try again', async () => {
+test('a leave whose answer was lost stays locked until the host gives it up, and that clears its Try again', async () => {
   const { host, start, send, ask, hold, stay, shown, locked } = desktop();
   start();
   await flush();
@@ -327,9 +325,7 @@ test('a leave whose answer was lost stays locked until the host says stay, and t
   ask(5, 'leave');
   await flush();
   stay(5);
-  assert.deepEqual([locked(), shown()], ['update', []], 'an install that couldn’t start leaves nothing of its question to retry');
-  stay(4);
-  assert.equal(locked(), null);
+  assert.deepEqual([locked(), shown()], ['update', []], 'a question the host gave up leaves nothing to retry, and the close it accepted keeps editing locked');
 });
 
 test('an answer the host no longer waits for lets the page go on', async () => {

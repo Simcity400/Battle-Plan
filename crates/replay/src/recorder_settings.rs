@@ -175,15 +175,8 @@ impl RecorderSettings {
             Err(error) => Err(error),
         }
     }
-    pub fn save(&self) -> io::Result<()> {
-        self.save_to(&Self::path())
-    }
-    pub fn save_to(&self, path: &Path) -> io::Result<()> {
-        self.write_under(&crate::writes::WRITES.begin()?, path)
-    }
-
-    fn write_under(&self, writing: &crate::writes::Writing<'_>, path: &Path) -> io::Result<()> {
-        writing.replace(path, |out| serde_json::to_writer_pretty(out, self).map_err(io::Error::from))
+    fn write_under(&self, receipt: &crate::exit::Receipt<'_>, path: &Path) -> io::Result<()> {
+        receipt.replace(path, |out| serde_json::to_writer_pretty(out, self).map_err(io::Error::from))
     }
 
     pub fn update<T>(change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
@@ -193,12 +186,12 @@ impl RecorderSettings {
         Self::hold_at(path, |held| held.update(change))
     }
     pub fn hold_at<T>(path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
-        Self::hold_under(&crate::writes::WRITES, path, work)
+        Self::hold_under(&crate::exit::EXIT, path, work)
     }
-    pub fn hold_under<T>(writes: &crate::writes::Writes, path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
+    pub fn hold_under<T>(exit: &crate::exit::Exit, path: &Path, work: impl FnOnce(&Held<'_>) -> io::Result<T>) -> io::Result<T> {
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
-        writes.under_lock(Path::new(&lock_path), |writing| work(&Held { path, writing }))
+        exit.under_lock(Path::new(&lock_path), crate::exit::What::Change, |receipt| work(&Held { path, receipt }))
     }
 
     pub fn effective_save_folder(&self) -> PathBuf {
@@ -277,7 +270,7 @@ impl RecorderSettings {
 
 pub struct Held<'a> {
     path: &'a Path,
-    writing: &'a crate::writes::Writing<'a>,
+    receipt: &'a crate::exit::Receipt<'a>,
 }
 
 impl Held<'_> {
@@ -285,7 +278,7 @@ impl Held<'_> {
         let mut settings = RecorderSettings::load_from(self.path)?;
         let result = change(&mut settings);
         settings.campaigns.retain(|_, choice| !choice.is_empty());
-        settings.write_under(self.writing, self.path)?;
+        settings.write_under(self.receipt, self.path)?;
         Ok((settings, result))
     }
 }
@@ -499,20 +492,20 @@ mod tests {
     }
 
     #[test]
-    fn an_operation_admitted_before_battleplan_closes_writes_all_its_steps_on_its_one_permit() {
+    fn an_operation_admitted_before_battleplan_closes_writes_all_its_steps_on_its_one_receipt() {
         let root = scratch("admitted");
         let path = root.join("settings.json");
-        let writes = crate::writes::Writes::new();
-        let written = RecorderSettings::hold_under(&writes, &path, |held| {
-            assert!(writes.close_admission(), "BattlePlan starts closing while the operation holds its permit");
+        let exit = crate::exit::Exit::new();
+        let written = RecorderSettings::hold_under(&exit, &path, |held| {
+            assert!(exit.seal(), "BattlePlan starts closing while the operation holds its receipt");
             held.update(|settings| settings.auto_compress = false)?;
             held.update(|settings| settings.record_every_campaign = false)
         });
         assert!(written.is_ok(), "neither the save nor its compensating write asks for a second permit: {written:?}");
         let saved = RecorderSettings::load_from(&path).unwrap();
         assert!(!saved.auto_compress && !saved.record_every_campaign);
-        let refused = RecorderSettings::hold_under(&writes, &path, |held| held.update(|_| ())).unwrap_err();
-        assert_eq!(refused.to_string(), crate::writes::CLOSED, "an operation that begins after the close is refused whole");
+        let refused = RecorderSettings::hold_under(&exit, &path, |held| held.update(|_| ())).unwrap_err();
+        assert_eq!(refused.to_string(), crate::exit::CLOSED, "an operation that begins after the close is refused whole");
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -117,10 +117,6 @@ enum Launched {
 
 impl super::Inner {
     pub(super) fn hear(&mut self, event: NativeEvent, generation: u64) -> Option<NativeEvent> {
-        if let NativeEvent::Export { request, answer } = event {
-            self.export_ended(generation, request, answer);
-            return None;
-        }
         (self.generation == generation && !self.shutting_down && self.map.is_some()).then_some(event)
     }
 
@@ -431,7 +427,6 @@ impl NativeHost {
                 inner.last_diagnostic = Some(message.clone());
                 inner.status.error = Some(message);
             }
-            NativeEvent::Export { .. } => unreachable!("answered above"),
         }
         inner.publish(app);
     }
@@ -541,73 +536,35 @@ mod tests {
         assert!(closing.status.error.is_none());
     }
 
-    fn asked(inner: &mut Inner, path: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
-        asked_under(inner, path, Box::leak(Box::new(replay::writes::Writes::new())))
-    }
-
-    fn asked_under(inner: &mut Inner, path: &str, writes: &'static replay::writes::Writes) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
-        inner.export_requests += 1;
-        let request = inner.export_requests;
+    fn asked(inner: &mut Inner, path: &str, exit: &'static replay::exit::Exit) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
         let (answer, answered) = tokio::sync::oneshot::channel();
-        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer, permit: std::sync::Arc::new(writes.begin().unwrap()) });
-        inner.pending.actions.push_back(dashboard_core::protocol::MapAction::Export { path: path.into(), view_id: None, request });
+        let reply = viewer::host::Reply::new(move |result| drop(answer.send(result)));
+        inner.pending.exports.push(viewer::host::ExportJob::new(path.into(), None, exit.admit(replay::exit::What::Export).unwrap(), reply));
         answered
     }
 
-    fn export(request: u64, answer: Result<&str, &str>) -> dashboard_core::protocol::NativeEvent {
-        dashboard_core::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
-    }
-
     #[test]
-    fn each_export_is_answered_with_its_own_end() {
+    fn a_map_that_ends_answers_the_exports_it_never_took_by_name_and_holds_the_exit_no_longer() {
+        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
         let mut inner = showing("A");
-        let (mut first, mut second) = (asked(&mut inner, "map.png"), asked(&mut inner, "map.png"));
-        assert!(inner.hear(export(2, Err("Capture map.png failed: its recording closed")), 3).is_none());
-        assert_eq!(second.try_recv(), Ok(Err("Capture map.png failed: its recording closed".into())));
-        assert!(first.try_recv().is_err(), "the first is still waiting");
-        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(first.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 12".into())));
-        assert!(inner.exports.is_empty());
-    }
-
-    #[test]
-    fn an_accepted_export_keeps_battleplan_open_until_its_map_answers_it_even_once_the_exit_closes_admission() {
-        let writes: &'static replay::writes::Writes = Box::leak(Box::new(replay::writes::Writes::new()));
-        let mut inner = showing("A");
-        let (mut saved, mut refused) = (asked_under(&mut inner, "saved.png", writes), asked_under(&mut inner, "refused.png", writes));
-        assert!(writes.close_admission(), "the exit waits for both exports, though neither map has read its picture back yet");
-        assert!(inner.hear(export(1, Ok("Saved saved.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(saved.try_recv(), Ok(Ok("Saved saved.png: branch 1, hour 12".into())));
-        assert!(!writes.drained_within(std::time::Duration::ZERO), "the second is still owed its picture");
+        let (mut first, mut second) = (asked(&mut inner, "first.png", exit), asked(&mut inner, "second.png", exit));
+        exit.seal();
+        assert!(!exit.empty_within(std::time::Duration::ZERO), "the exit waits for both exports, though neither map has read its picture back yet");
         inner.shutting_down = true;
         assert!(!inner.map_ended(Ending::Closed));
-        assert!(refused.try_recv().is_ok());
-        assert!(writes.drained_within(std::time::Duration::ZERO), "an export the map ended without is answered, and holds the exit no longer");
-    }
-
-    #[test]
-    fn a_closing_map_answers_the_exports_it_ended_and_refuses_the_rest() {
-        let mut inner = showing("A");
-        let (mut saved, mut waiting) = (asked(&mut inner, "saved.png"), asked(&mut inner, "waiting.png"));
-        inner.shutting_down = true;
-        assert!(inner.hear(export(1, Ok("Saved saved.png: branch 1, hour 12")), 3).is_none());
-        assert_eq!(saved.try_recv(), Ok(Ok("Saved saved.png: branch 1, hour 12".into())));
-        assert!(!inner.map_ended(Ending::Closed));
-        assert_eq!(waiting.try_recv(), Ok(Err("The map stopped before the export finished".into())));
+        assert_eq!(first.try_recv(), Ok(Err("The map stopped before the export finished".into())));
+        assert_eq!(second.try_recv(), Ok(Err("The map stopped before the export finished".into())));
+        assert!(exit.empty_within(std::time::Duration::ZERO));
     }
 
     #[test]
     fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
+        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
         let mut inner = showing("A");
-        let mut refused = asked(&mut inner, "map.png");
+        let mut refused = asked(&mut inner, "map.png", exit);
         assert!(inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Removed".into())));
         assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
-        assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard_core::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
-        let mut next = asked(&mut inner, "map.png");
-        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none(), "the ended map's answer");
-        assert!(next.try_recv().is_err(), "is not the new map's");
-        assert!(inner.hear(export(2, Ok("Saved map.png: branch 1, hour 13")), 4).is_none());
-        assert_eq!(next.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 13".into())));
+        assert!(inner.pending.exports.is_empty(), "the next map never inherits it");
     }
 
     #[test]

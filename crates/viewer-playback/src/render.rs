@@ -203,11 +203,11 @@ pub fn write_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
-    write_png_under(&replay::writes::WRITES.begin()?, scene, device, queue, path)
+    write_png_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, scene, device, queue, path)
 }
 
 pub fn write_png_under(
-    writing: &replay::writes::Writing<'_>,
+    receipt: &replay::exit::Receipt<'_>,
     scene: &Scene,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -216,7 +216,7 @@ pub fn write_png_under(
     let targets = scene
         .targets()
         .ok_or_else(|| invalid("render a map before saving PNG"))?;
-    write_texture_under(writing, targets.output(), device, queue, path)
+    write_texture_under(receipt, targets.output(), device, queue, path)
 }
 
 pub fn write_texture_png(
@@ -225,11 +225,11 @@ pub fn write_texture_png(
     queue: &wgpu::Queue,
     path: &Path,
 ) -> io::Result<()> {
-    write_texture_under(&replay::writes::WRITES.begin()?, texture, device, queue, path)
+    write_texture_under(&replay::exit::EXIT.admit(replay::exit::What::Export)?, texture, device, queue, path)
 }
 
 fn write_texture_under(
-    writing: &replay::writes::Writing<'_>,
+    receipt: &replay::exit::Receipt<'_>,
     texture: &wgpu::Texture,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -237,7 +237,7 @@ fn write_texture_under(
 ) -> io::Result<()> {
     let (width, height) = (texture.width(), texture.height());
     let pixels = read_texture(device, queue, texture, 4)?;
-    writing.replace(path, |out| {
+    receipt.replace(path, |out| {
         let mut encoder = png::Encoder::new(out, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);

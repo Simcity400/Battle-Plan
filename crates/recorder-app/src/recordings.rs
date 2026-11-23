@@ -828,7 +828,8 @@ mod tests {
             earlier_save_folders: vec![earlier.clone(), gone.clone()],
             ..RecorderSettings::default()
         };
-        settings.save_to(&path).unwrap();
+        let saved = settings.clone();
+        RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         let ended = earlier.join("sessions").join("1-1");
         journal(&ended.join(OTHER), 0, 100);
         let waiting = |waiting: serde_json::Value| {
@@ -940,7 +941,8 @@ mod tests {
             earlier_save_folders: vec![earlier.clone()],
             ..RecorderSettings::default()
         };
-        settings.save_to(&path).unwrap();
+        let saved = settings.clone();
+        RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         assert!(settled(&earlier));
         fs::create_dir_all(earlier.join("sessions").join("3-3")).unwrap();
         forget_settled(&path, std::slice::from_ref(&earlier)).unwrap();

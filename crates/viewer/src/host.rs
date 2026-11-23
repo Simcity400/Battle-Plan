@@ -16,7 +16,7 @@ use std::{
 };
 
 pub use embedded::install_follow;
-pub use window::{Inputs, Window};
+pub use window::{Inputs, WM_TAKE_FOCUS, Window};
 
 pub fn log_map_frames(prefix: &std::path::Path) {
     crate::perf_log::log_to(prefix);
@@ -173,14 +173,57 @@ pub struct Launch {
     pub service: Arc<dashboard::Service>,
 }
 
-pub struct Command {
-    pub native: NativeCommand,
-    pub permit: Option<replay::writes::Permit>,
+pub const STOPPED: &str = "The map stopped before the export finished";
+
+pub struct Reply(Option<Box<dyn FnOnce(Result<String, String>) + Send>>);
+
+impl Reply {
+    pub fn new(answer: impl FnOnce(Result<String, String>) + Send + 'static) -> Self {
+        Self(Some(Box::new(answer)))
+    }
+
+    fn send(mut self, answer: Result<String, String>) {
+        if let Some(reply) = self.0.take() {
+            reply(answer);
+        }
+    }
+}
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        if let Some(reply) = self.0.take() {
+            reply(Err(STOPPED.to_owned()));
+        }
+    }
+}
+
+pub struct ExportJob {
+    reply: Reply,
+    pub path: String,
+    pub view_id: Option<String>,
+    pub receipt: replay::exit::Receipt<'static>,
+}
+
+impl ExportJob {
+    pub fn new(path: String, view_id: Option<String>, receipt: replay::exit::Receipt<'static>, reply: Reply) -> Self {
+        Self { reply, path, view_id, receipt }
+    }
+
+    pub fn answer(self, answer: Result<String, String>) {
+        let Self { reply, receipt, .. } = self;
+        reply.send(answer);
+        drop(receipt);
+    }
+}
+
+pub enum Command {
+    Native(NativeCommand),
+    Export(ExportJob),
 }
 
 impl From<NativeCommand> for Command {
     fn from(native: NativeCommand) -> Self {
-        Self { native, permit: None }
+        Self::Native(native)
     }
 }
 
@@ -202,6 +245,13 @@ impl Map {
 
     pub fn send(&self, command: impl Into<Command>) -> bool {
         self.commands.send(command.into()).is_ok()
+    }
+
+    pub fn send_export(&self, job: ExportJob) -> Result<(), ExportJob> {
+        self.commands.send(Command::Export(job)).map_err(|refused| match refused.0 {
+            Command::Export(job) => job,
+            Command::Native(_) => unreachable!("an export was sent"),
+        })
     }
 }
 
@@ -320,8 +370,44 @@ fn embedded_map(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) type Answers = Arc<Mutex<Vec<Result<String, String>>>>;
+
+    pub(crate) fn job_under(exit: &'static replay::exit::Exit, path: &str) -> (ExportJob, Answers) {
+        let answers = Answers::default();
+        let heard = Arc::clone(&answers);
+        let receipt = exit.admit(replay::exit::What::Export).unwrap();
+        (ExportJob::new(path.into(), None, receipt, Reply::new(move |answer| heard.lock().unwrap().push(answer))), answers)
+    }
+
+    pub(crate) fn job(path: &str) -> (ExportJob, Answers) {
+        job_under(Box::leak(Box::new(replay::exit::Exit::new())), path)
+    }
+
+    pub(crate) fn taken(answers: &Answers) -> Vec<Result<String, String>> {
+        std::mem::take(&mut *answers.lock().unwrap())
+    }
+
+    #[test]
+    fn an_export_job_answers_once_and_settles_its_reply_before_it_lets_its_receipt_go() {
+        let exit: &'static replay::exit::Exit = Box::leak(Box::new(replay::exit::Exit::new()));
+        let answers = Answers::default();
+        let heard = Arc::clone(&answers);
+        let job = ExportJob::new("map.png".into(), None, exit.admit(replay::exit::What::Export).unwrap(), Reply::new(move |answer| {
+            assert_eq!(exit.count(replay::exit::What::Export), 1, "the reply is settled while the receipt still holds the exit");
+            heard.lock().unwrap().push(answer);
+        }));
+        job.answer(Ok("Saved map.png".into()));
+        assert_eq!(taken(&answers), [Ok("Saved map.png".to_owned())]);
+        assert_eq!(exit.count(replay::exit::What::Export), 0);
+        let (dropped, answers) = job_under(exit, "lost.png");
+        drop(dropped);
+        assert_eq!(taken(&answers), [Err(STOPPED.to_owned())], "a job the map drops unanswered still answers, by name");
+        assert_eq!(exit.count(replay::exit::What::Export), 0);
+    }
+
 
     #[test]
     fn a_panic_in_the_map_ends_it_by_name_and_where_and_the_next_map_starts() {

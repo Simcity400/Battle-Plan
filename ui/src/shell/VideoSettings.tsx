@@ -6,7 +6,7 @@ import { Icon } from '../components/Icons';
 import { FailureLine } from '../components/FailureLine';
 import { FRAME_LIMIT_HINT, MAX_FRAME_LIMIT, MIN_FRAME_LIMIT, frameLimitInput, sameDisplay } from './videoOptions';
 import type { VideoOptions } from './videoOptions';
-interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[] }
+interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[]; warning: string | null }
 
 const VSYNC = 'VSync';
 const FRAME_LIMIT = 'Frame rate limit';
@@ -41,7 +41,7 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
       const settings = queue.next; queue.next = null;
       try {
         const value = await invoke<VideoReply>('set_video_settings', { settings });
-        if (queue.live) { setReply(value); setError(null); if (!queue.next) setDraft(value.settings); }
+        if (queue.live) { setReply(value); setError(value.warning ? { detail: value.warning, write: null } : null); if (!queue.next) setDraft(value.settings); }
       } catch (cause) {
         if (queue.live) setError({ detail: errorMessage(cause), write: settings });
       }
