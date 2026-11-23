@@ -8,5 +8,6 @@ export function useCountriesSelectionAt(widget: WidgetSpec, runtime: WidgetRunti
   const gate = useRegionGate(runtime, useRegion(widget, time), active, { members: true });
   const members = gate.members!;
   return { gate, track: gate.track, group: gate.groups, hour: gate.hour, outside: gate.outside !== null,
-    countries: members.countries, requestTags: members.requestTags, selectionReason: members.selectionReason, known: members.known };
+    countries: members.countries, requestTags: members.requestTags,
+    selectionReason: gate.stage.stage === 'no-members' ? gate.stage.reason : members.selectionReason, known: members.known };
 }

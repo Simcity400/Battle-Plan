@@ -15,7 +15,7 @@ import { useCountryGroups } from './useCountryGroups.ts';
 import { axisAt, checkedTime, followedProduct, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, type AxisHour,
   type BoundHour, type BoundWindow, type FollowQuery, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
   type TimeRefusal, type TrackHour } from './regionTime.ts';
-import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
+import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
 import { NO_MEMBERS } from './noMembers.ts';
 
 export interface CountryNeed { stored?: unknown; held?: Holder | null; key?: string; setOption?: (key: string, value: string) => void }
@@ -180,7 +180,7 @@ function useCountryAt(region: Region, runtime: Runtime, track: BoundTrack | unde
   }, [slotRuns]);
   if (!need) return null;
   const slotTag = bySlot && slots && hour !== null ? slots.tagAt(slot, hour) : null;
-  const unresolved = picked && !!pick && !!histories && !pickedSelection;
+  const unresolved = picked && !!pick && !!histories && groups.complete && !pickedSelection;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
     : unresolved ? { chosen, tag: null, absent: false, reason: 'The chosen country’s recorded identity is unavailable.' }
     : bySlot ? { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }

@@ -50,7 +50,7 @@ export function useRaidLog(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   const request = track && (!ranged || range) ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'raid-log',
     params: { branchId: track.branch.id, ...(catalogue ? { catalogue: true } : {}), ...(range ? { from: range.firstHour, to: range.lastHour } : {}) } }) : null;
   const product = useProduct<RaidLogReply>(runtime.client, request, active, validateRaidLog, track?.source);
-  const read = catalogue ? null : gatedRead(gate, { ...product, hour: range ? range.lastHour : undefined }, ranged && gate.open && !range ? UNRECORDED_MESSAGE : null);
+  const read = catalogue ? null : gatedRead(gate, range ? { ...product, kind: 'dated', hour: range.lastHour } : { ...product, kind: 'branch' }, ranged && gate.open && !range ? UNRECORDED_MESSAGE : null);
   return { track, read, ...product, data: read ? readData(read) : product.data };
 }
 

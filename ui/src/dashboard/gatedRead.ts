@@ -13,7 +13,10 @@ export type GatedRead<T> =
   | { state: 'failed'; failure: Failure; retry: () => void }
   | { state: 'ready'; data: T; hour: number | null };
 
-export interface ReadResult<T> { data?: T; error?: unknown; retry?: () => void; hour?: number | null }
+interface ReadBase<T> { data?: T; error?: unknown; retry?: () => void }
+export interface DatedRead<T> extends ReadBase<T> { kind: 'dated'; hour: number | null }
+export interface BranchRead<T> extends ReadBase<T> { kind: 'branch' }
+export type ReadResult<T> = DatedRead<T> | BranchRead<T>;
 
 export function gatedRead<T>(gate: Pick<Gate, 'stage' | 'hour'>, read: ReadResult<T> | null, refused: string | null = null, follows = false): GatedRead<T> {
   const stage = gate.stage;
@@ -30,8 +33,10 @@ export function gatedRead<T>(gate: Pick<Gate, 'stage' | 'hour'>, read: ReadResul
   }
   if (refused !== null) return { state: 'refused', reason: refused };
   if (!read) return { state: 'pending' };
-  const landed = read.hour === undefined ? gate.hour : read.hour;
-  if (read.data !== undefined && (follows || read.hour === undefined || landed === gate.hour)) return { state: 'ready', data: read.data, hour: landed };
+  if (read.data !== undefined) {
+    if (read.kind === 'branch') return { state: 'ready', data: read.data, hour: null };
+    if (read.hour !== null && (follows || read.hour === gate.hour)) return { state: 'ready', data: read.data, hour: read.hour };
+  }
   if (read.error) return { state: 'failed', failure: asFailure(read.error), retry: read.retry ?? (() => {}) };
   return { state: 'pending' };
 }

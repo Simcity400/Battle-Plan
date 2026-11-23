@@ -57,7 +57,7 @@ export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, act
     });
     return tags.map(tag => ledgerOf(tag, currency, byTag.get(tag) ?? []));
   }, [replies.data, requests, tags, currency]);
-  const read = gatedRead(gate, { data: ledgers, error: replies.error, retry: replies.retry, hour: span?.lastHour ?? null }, null, widget.time.mode !== 'pin');
+  const read = gatedRead(gate, { kind: 'dated', data: ledgers, error: replies.error, retry: replies.retry, hour: span?.lastHour ?? null }, null, widget.time.mode !== 'pin');
   return { track, gate, read, tags, ledgers: readData(read), span, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: replies.error ?? (groups.data ? undefined : groups.error),
