@@ -1,7 +1,7 @@
 {
   "crates": {
     "app-update": {"build": 2.0, "test": 3.8},
-    "collector": {"build": 0.0, "test": 1653.4},
+    "collector": {"build": 0.0, "test": 0.0},
     "collector-advisors": {"build": 1.1, "test": 7.3},
     "collector-air": {"build": 6.2, "test": 47.3},
     "collector-air-histories": {"build": 1.2, "test": 4.5},
