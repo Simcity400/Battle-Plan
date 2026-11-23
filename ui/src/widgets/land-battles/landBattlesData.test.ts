@@ -59,6 +59,20 @@ test('recorded final winners wait for their supplying hour and terminal-only ros
   assert.equal(row.peakUnknown, true);
   assert.equal(row.sides[0].counts[0].value, null);
   assert.equal(validateLandBattlesReply(wire([transient])).rows.length, 1);
+
+  const unreadPlaceAndHour: LandBattle = { ...transient, provinceId: null, start: { hour: 10, bound: 'exact' }, end: { unknown: 'Ending hour not recorded' },
+    endUnknownHour: 25, settledHour: 25,
+    result: { hour: null, duration: 15, winner: { side: 1 }, countries: [['late attacker'], ['late defender']], countriesUnknown: [false, false] },
+    runs: [{ firstHour: 25, lastHour: 25, counts: [0, 0], rosterUnknown: true, countries: [[], []], countriesUnknown: [true, true], duration: 0 }] };
+  const unreadRow = read(unreadPlaceAndHour, 25)[0];
+  assert.equal(unreadRow.provinceId, null);
+  assert.equal(validateLandBattlesReply(wire([unreadPlaceAndHour])).rows.length, 1);
+  assert.deepEqual(landBattlePlaceRequests([unreadRow]), []);
+
+  const unreadHourFallback: LandBattle = { ...unreadPlaceAndHour, start: { hour: 100, bound: 'exact' }, endUnknownHour: 105, settledHour: 105, counterBase: 0,
+    result: { hour: null, duration: 0, winner: { side: 1 }, countries: [['late attacker'], ['late defender']], countriesUnknown: [false, false] },
+    runs: [{ firstHour: 100, lastHour: 102, counts: [2, 1], rosterUnknown: false, countries: [['late attacker'], ['late defender']], countriesUnknown: [false, false], duration: 0 }] };
+  assert.equal(read(unreadHourFallback, 105)[0].length.value, 5, 'unread result hour keeps main length fallback to settledHour');
 });
 
 test('an end and result written the hour after their own show from that hour, dated by their own, wherever the window boundary falls', () => {
@@ -80,15 +94,14 @@ test('an end and result written the hour after their own show from that hour, da
   assert.throws(() => validateLandBattlesReply(wire([{ ...settled, settledHour: 1.5 }])), /malformed/);
 });
 
-test('a result side without countries keeps the last hourly read\'s participants at that read\'s date', () => {
+test('an unread result side stays unknown as recorded and never substitutes an earlier run roster', () => {
   const h = history();
   h.result = { hour: 21, duration: 25, winner: { side: 0 }, countries: [['late attacker'], []], countriesUnknown: [false, true] };
   const row = read(h, 21)[0];
   assert.deepEqual(row.sides[0].countries, [{ tag: 'late attacker', hour: 21 }]);
-  assert.deepEqual(row.sides[1].countries, [{ tag: 'other', hour: 20 }]);
-  assert.equal(row.sides[1].countriesUnknown, undefined);
-  assert.equal(read(h, 21, false, tag => tag === 'unrelated').length, 0);
-  assert.equal(read(h, 21, false, (tag, at) => tag === 'other' && at === 20).length, 1);
+  assert.deepEqual(row.sides[1].countries, [], 'unread result side does not substitute the earlier run roster');
+  assert.equal(row.sides[1].countriesUnknown, 'Countries not recorded');
+  assert.equal(read(h, 21, false, tag => tag === 'unrelated').length, 1, 'an unread result side never drops a battle from country filters');
   const unread = { ...h, result: { ...h.result, countries: [['late attacker'], ['partial']] as [string[], string[]] },
     runs: [{ ...h.runs[0], countries: [['mod/tag'], []] as [string[], string[]], countriesUnknown: [false, true] as [boolean, boolean] }] };
   const unknown = read(unread, 21)[0];

@@ -15,7 +15,7 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { RevealClock } from '../../charts/reveal';
-import { battleDate, battleDateMoment, battleShortDate, battleTooltip, battleValueText, battleWinner, rowsById } from './battleRows.ts';
+import { battleDate, battleDateMoment, battlePlaceText, battleShortDate, battleTooltip, battleValueText, battleWinner, rowsById } from './battleRows.ts';
 import type { BattleCountryLabel, BattleLabels, BattleLossFormatter, BattleMeasure, BattleRow, BattleSideSummary } from './battleRows';
 import BattleSides from './BattleSides';
 import './battles.css';
@@ -49,7 +49,7 @@ export interface BattleLogProps<T extends BattleRow> {
   onVisibleRows: (rows: readonly T[]) => void;
   placePending?: (row: T) => boolean;
   paintHead?: { hour: () => number | null; rowsAt: (hour: number) => ReadonlyArray<BattleRow>; clock: Pick<PlaybackController, 'subscribe' | 'subscribeFrame'> };
-  keyed?: { place: (row: T) => string; detail?: (row: T) => string };
+  keyed?: { place: (row: T) => string | null; detail?: (row: T) => string };
   logRows: readonly LogRow<T>[];
   reveal?: RevealClock;
 }
@@ -111,8 +111,9 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
     : <span className="battle-sides">{row.sides.map((_: BattleSide, index: number) => cloneElement(sideCell(row, index, country, formatLoss), { key: index }))}</span>;
   const place = (row: T, logRow: boolean) => {
     const loading = row.place.name === null && placePending?.(row) === true;
-    const text = row.place.name ?? (loading ? 'Loading…' : labels.unknownPlace);
-    const painted = row.place.name === null && keyed ? { 'data-keyed': 'place', 'data-keyed-key': keyed.place(row) } : {};
+    const text = battlePlaceText(row as T & { provinceId?: number | null }, labels, loading);
+    const keyedPlace = row.place.name === null && keyed ? keyed.place(row) : null;
+    const painted = keyedPlace !== null ? { 'data-keyed': 'place', 'data-keyed-key': keyedPlace } : {};
     const name = logRow ? <b className={`log-text${loading ? ' is-loading' : ''}`} title={text} {...painted}>{text}</b>
       : <span className={`battle-place${loading ? ' is-loading' : ''}`} title={text} {...painted}>{text}</span>;
     const detail = description?.(row);

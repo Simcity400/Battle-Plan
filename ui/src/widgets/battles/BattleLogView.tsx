@@ -44,7 +44,7 @@ import { useDistinctState } from '../../dashboard/useDistinctState';
 import { useWhyCommit } from '../../dashboard/widgetPerf';
 import { productRequest } from '../../dashboard/request.ts';
 
-interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
+interface ViewRow extends BattleRow { provinceId: number | null; windowIndex: number }
 interface ManifestReply { windows: BattleWindow[]; available: boolean; unavailable: string | null; contentWarnings: string[] }
 interface WindowReply { observed: [number, number][]; contentWarnings: string[]; warnings: BattleWarning[] }
 interface RankingReply { censusHour: number | null; effectiveMeasure: string; warnings: BattleWarning[]; contentWarnings: string[] }
@@ -56,7 +56,7 @@ export interface BattleViewContext {
   rowsAt: (hour: number) => ReadonlyArray<BattleRow>;
   rowAt: (id: string, hour: number) => BattleRow | null;
   rankedMeasure: string;
-  placePending: (row: BattleRow & { provinceId: number }) => boolean;
+  placePending: (row: BattleRow & { provinceId: number | null }) => boolean;
   heldPlaces: readonly { provinceId: number; hour: number }[] | null;
 }
 export interface BattleDetailAsk { id: string; hour: number }
@@ -237,7 +237,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const items = namedBattles(states.map(row => row.item), placeNamesHeld);
     return states.map((row, index) => items[index] === row.item ? row : { ...row, item: items[index] });
   }, [states, placeNamesHeld]);
-  const placePending = useCallback((row: BattleRow & { provinceId: number }) => placeReads.reads.pending({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
+  const placePending = useCallback((row: BattleRow & { provinceId: number | null }) => row.provinceId !== null && placeReads.reads.pending({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
   [placeReads.reads, placeReads.version]);
   const details = adapter.details;
   const detailWanted = useMemo(() => (!details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
@@ -282,7 +282,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const reads = detailReads.reads, pending = reads.pendingKey(key);
     return { text: details?.description(reads.values.get(key), { pending, error: reads.failures.get(key) }) ?? '', loading: pending && !reads.values.has(key) };
   });
-  const keyed = useMemo(() => ({ place: (row: Row) => placeAtKey({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
+  const keyed = useMemo(() => ({ place: (row: Row) => row.provinceId === null ? null : placeAtKey({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
     ...(details ? { detail: (row: Row) => detailKey(details.ask(row, ahead)) } : {}) }), [details, ahead]);
   useWhyCommit('BattleLogView', { block: block.hour, until: block.until, headWindow, windows: history.data, manifest: manifest.data, ranking: ranking.data, names: placeReads.version,
     details: detailReads.version, labels: labelAt, visible, visibleWindows, groups: groups.data, browse });
